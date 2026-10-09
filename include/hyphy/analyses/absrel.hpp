@@ -776,47 +776,183 @@ public:
         // Phase 4: Full Adaptive Model Fitting
         if (progress_cb) progress_cb("Phase 4: Full Adaptive Model Fitting", 0.65);
 
-        // Cyclic block coordinate ascent across all branches to achieve full model convergence
-        const int num_refinement_passes = 4;
-        Scalar prev_refine_ll = compute_tree_log_likelihood(P_branches);
-        for (int pass = 0; pass < num_refinement_passes; ++pass) {
-            for (const auto& node : tree.nodes) {
-                if (node.id == tree.root_id) continue;
-                int32_t bid = node.id;
-                int M = result.branches[node.name].rate_classes;
+        // Joint full model optimization:
+        // 1. Joint L-BFGS on all branch lengths using analytical Inside-Outside gradients
+        // 2. GTR nucleotide exchangeability rate optimization (Brent 1D on 5 rates)
+        // 3. Branch mixture parameter refinement (Nelder-Mead on local mixtures)
+        std::vector<int32_t> all_branches;
+        for (const auto& node : tree.nodes) {
+            if (node.id != tree.root_id) {
+                all_branches.push_back(node.id);
+            }
+        }
+        size_t n_b = all_branches.size();
 
-                // Recompute (V, D) context for branch bid
+        auto run_joint_branch_length_lbfgs = [&]() {
+            struct BranchObjective {
+                ABSRELAnalyzer& abs;
+                const std::vector<int32_t>& nodes;
+                int S_val;
+                size_t n_pat;
+
+                Scalar operator()(const Vector& y, Vector& grad) {
+                    size_t n = nodes.size();
+                    for (size_t i = 0; i < n; ++i) {
+                        abs.branch_alpha[nodes[i]] = std::exp(y(i));
+                    }
+
+                    auto P_b = abs.compute_all_branch_transition_matrices();
+                    Scalar total_ll = 0.0;
+
+                    size_t num_nodes = abs.tree.num_nodes();
+                    std::vector<Matrix> dP_branches(num_nodes, Matrix::Zero(S_val, S_val));
+                    for (int32_t bid : nodes) {
+                        Scalar alpha = abs.branch_alpha[bid];
+                        for (size_t k = 0; k < abs.branch_omegas[bid].size(); ++k) {
+                            Scalar w = abs.branch_omegas[bid][k];
+                            Scalar p = abs.branch_weights[bid][k];
+                            MG94Matrix mat = abs.build_q_matrix(w);
+                            Matrix P_k = mat.transition_matrix(alpha);
+                            dP_branches[bid] += p * (mat.Q * P_k);
+                        }
+                    }
+
+                    std::vector<Scalar> dL_da(num_nodes, 0.0);
+
+                    #pragma omp parallel
+                    {
+                        Scalar local_ll = 0.0;
+                        std::vector<Scalar> local_dL(num_nodes, 0.0);
+
+                        #pragma omp for schedule(dynamic)
+                        for (size_t p = 0; p < n_pat; ++p) {
+                            const auto& pattern = abs.aln.patterns[p];
+                            auto io = LikelihoodEngine::compute_inside_outside(
+                                abs.tree, pattern, abs.leaf_to_taxon, P_b, abs.codon_freqs, S_val
+                            );
+                            Scalar L = io.likelihood;
+                            if (L > 0.0) {
+                                local_ll += pattern.weight * std::log(L);
+                                Scalar inv_L = pattern.weight / L;
+                                for (int32_t bid : nodes) {
+                                    Scalar term = io.V[bid].dot(dP_branches[bid] * io.D[bid]);
+                                    local_dL[bid] += inv_L * term;
+                                }
+                            }
+                        }
+
+                        #pragma omp critical
+                        {
+                            total_ll += local_ll;
+                            for (int32_t bid : nodes) {
+                                dL_da[bid] += local_dL[bid];
+                            }
+                        }
+                    }
+
+                    grad.resize(n);
+                    for (size_t i = 0; i < n; ++i) {
+                        int32_t bid = nodes[i];
+                        Scalar alpha = abs.branch_alpha[bid];
+                        grad(i) = -alpha * dL_da[bid];
+                    }
+
+                    return -total_ll;
+                }
+            };
+
+            BranchObjective b_obj{*this, all_branches, S, num_patterns};
+            Vector y(n_b), lb(n_b), ub(n_b);
+            for (size_t i = 0; i < n_b; ++i) {
+                y(i) = std::log(std::clamp(branch_alpha[all_branches[i]], 1e-6, 50.0));
+                lb(i) = -14.0;
+                ub(i) =   5.0;
+            }
+
+            LBFGSpp::LBFGSBParam<Scalar> opt_param;
+            opt_param.m = 6;
+            opt_param.epsilon = 1e-4;
+            opt_param.max_iterations = 35;
+
+            LBFGSpp::LBFGSBSolver<Scalar> solver(opt_param);
+            Scalar fx = 0.0;
+            try {
+                solver.minimize(b_obj, y, fx, lb, ub);
+            } catch (...) {}
+            return -fx;
+        };
+
+        auto run_gtr_optimization = [&]() {
+            auto opt_rate = [&](Scalar& r_ref) {
+                auto rate_obj = [&](Scalar val) -> Scalar {
+                    Scalar old_val = r_ref;
+                    r_ref = val;
+                    compute_syn_scale();
+                    auto P_b = compute_all_branch_transition_matrices();
+                    Scalar lnl = compute_tree_log_likelihood(P_b);
+                    r_ref = old_val;
+                    return -lnl;
+                };
+                auto [best_r, _] = Brent1D::minimize(rate_obj, 1e-4, r_ref, 20.0, 1e-3, 15);
+                r_ref = best_r;
+                compute_syn_scale();
+            };
+
+            opt_rate(gtr_params.theta_AC);
+            opt_rate(gtr_params.theta_AT);
+            opt_rate(gtr_params.theta_CG);
+            opt_rate(gtr_params.theta_CT);
+            opt_rate(gtr_params.theta_GT);
+
+            auto P_b = compute_all_branch_transition_matrices();
+            return compute_tree_log_likelihood(P_b);
+        };
+
+        auto run_mixture_refinement = [&]() {
+            auto P_b = compute_all_branch_transition_matrices();
+            for (int32_t bid : all_branches) {
+                int M = branch_omegas[bid].size();
                 std::vector<Vector> V_patterns(num_patterns);
                 std::vector<Vector> D_patterns(num_patterns);
                 #pragma omp parallel for schedule(dynamic)
                 for (size_t p = 0; p < num_patterns; ++p) {
                     const auto& pattern = aln.patterns[p];
                     auto io = LikelihoodEngine::compute_inside_outside(
-                        tree, pattern, leaf_to_taxon, P_branches, codon_freqs, S
+                        tree, pattern, leaf_to_taxon, P_b, codon_freqs, S
                     );
                     V_patterns[p] = io.V[bid];
                     D_patterns[p] = io.D[bid];
                 }
 
-                LocalBranchFit refined_fit = optimize_branch_mixture(bid, M, V_patterns, D_patterns, false);
+                auto refined_fit = optimize_branch_mixture(bid, M, V_patterns, D_patterns, false);
                 branch_alpha[bid] = refined_fit.alpha;
                 branch_omegas[bid] = refined_fit.omegas;
                 branch_weights[bid] = refined_fit.weights;
-                P_branches[bid] = compute_branch_transition_matrix(bid);
+                P_b[bid] = compute_branch_transition_matrix(bid);
 
-                result.branches[node.name].rate_distribution.rates = refined_fit.omegas;
-                result.branches[node.name].rate_distribution.weights = refined_fit.weights;
+                result.branches[tree.nodes[bid].name].rate_distribution.rates = refined_fit.omegas;
+                result.branches[tree.nodes[bid].name].rate_distribution.weights = refined_fit.weights;
             }
-            Scalar cur_refine_ll = compute_tree_log_likelihood(P_branches);
+            return compute_tree_log_likelihood(P_b);
+        };
+
+        Scalar prev_full_ll = compute_tree_log_likelihood(P_branches);
+        const int max_joint_passes = 6;
+        for (int iter = 0; iter < max_joint_passes; ++iter) {
+            run_joint_branch_length_lbfgs();
+            run_gtr_optimization();
+            Scalar cur_full_ll = run_mixture_refinement();
+
             if (settings.verbose) {
-                std::cout << "  [Phase 4 Pass " << pass << "] Log(L) = " << cur_refine_ll << " (delta = " << cur_refine_ll - prev_refine_ll << ")" << std::endl;
+                std::cout << "  [Phase 4 Joint Pass " << iter << "] Log(L) = " << cur_full_ll << " (delta = " << cur_full_ll - prev_full_ll << ")\n";
             }
-            if (std::abs(cur_refine_ll - prev_refine_ll) < 0.05) {
+            if (std::abs(cur_full_ll - prev_full_ll) < 0.05) {
                 break;
             }
-            prev_refine_ll = cur_refine_ll;
+            prev_full_ll = cur_full_ll;
         }
 
+        P_branches = compute_all_branch_transition_matrices();
         Scalar full_ll = compute_tree_log_likelihood(P_branches);
         Scalar full_aicc = compute_aicc(full_ll, current_params);
         result.full_adaptive_fit = {full_ll, current_params, full_aicc};
