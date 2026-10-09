@@ -78,6 +78,7 @@ struct ABSRELResult {
     double runtime_seconds = 0.0;
 
     nlohmann::json to_json(const Tree& tree, const Alignment& aln) const {
+        (void)tree;
         nlohmann::json j;
 
         // Analysis metadata
@@ -320,8 +321,6 @@ public:
     // Compute synonymous and nonsynonymous component branch lengths
     std::pair<Scalar, Scalar> compute_es_en(int32_t node_id) const {
         Scalar alpha = branch_alpha[node_id];
-        const auto& omegas = branch_omegas[node_id];
-        const auto& weights = branch_weights[node_id];
         Scalar syn_rate = syn_scale_factor / 3.0;
         Scalar es = alpha * syn_rate;
 
@@ -469,13 +468,14 @@ public:
         bool constrain_null = false
     ) const {
         size_t num_patterns = aln.patterns.size();
-        Scalar cur_alpha = branch_alpha[bid];
+        Scalar cur_alpha = std::max(1e-5, branch_alpha[bid]);
 
         if (M == 1) {
-            auto obj_1d = [&](Scalar log_w) -> Scalar {
+            auto obj_1d = [&](Scalar log_a, Scalar log_w) -> Scalar {
+                Scalar a = std::exp(log_a);
                 Scalar w = constrain_null ? 1.0 : std::exp(log_w);
                 MG94Matrix mat = build_q_matrix(w);
-                Matrix P_b = mat.transition_matrix(cur_alpha);
+                Matrix P_b = mat.transition_matrix(a);
 
                 Scalar ll = 0.0;
                 for (size_t p = 0; p < num_patterns; ++p) {
@@ -491,114 +491,177 @@ public:
 
             LocalBranchFit res;
             if (constrain_null) {
-                res.log_l = -obj_1d(0.0);
+                auto obj_a = [&](Scalar log_a) -> Scalar {
+                    return obj_1d(log_a, 0.0);
+                };
+                Scalar init_log_a = std::log(cur_alpha);
+                auto [best_log_a, best_nll] = Brent1D::minimize(obj_a, init_log_a - 1.5, init_log_a, init_log_a + 1.5, 1e-4, 50);
+                res.log_l = -best_nll;
                 res.omegas = {1.0};
                 res.weights = {1.0};
-                res.alpha = cur_alpha;
+                res.alpha = std::exp(best_log_a);
             } else {
-                Scalar best_obj = 1e20;
-                Scalar best_log_w = 0.0;
-                for (Scalar cand_w : {0.05, 0.2, 0.5, 1.0, 2.5, 5.0}) {
-                    Scalar val = obj_1d(std::log(cand_w));
-                    if (val < best_obj) {
-                        best_obj = val;
-                        best_log_w = std::log(cand_w);
-                    }
-                }
-                auto [best_opt_w, best_opt_nll] = Brent1D::minimize(obj_1d, best_log_w - 1.5, best_log_w, best_log_w + 1.5, 1e-4, 50);
-                res.log_l = -best_opt_nll;
-                res.omegas = {std::exp(best_opt_w)};
+                Scalar init_log_a = std::log(cur_alpha);
+                Scalar init_log_w = std::log(std::max(1e-4, branch_omegas[bid].empty() ? 0.5 : branch_omegas[bid][0]));
+                auto opt = NelderMead2D::minimize(obj_1d, init_log_a, init_log_w, -12.0, 10.0, 1e-4, 80);
+                res.log_l = -opt.f;
+                res.omegas = {std::exp(opt.b)};
                 res.weights = {1.0};
-                res.alpha = cur_alpha;
+                res.alpha = std::exp(opt.a);
             }
             return res;
         }
 
-        // M == 2 classes: omega1 in [0, 1], omega2 in [0, 5000] (or 1.0 if constrained)
-        // weight p1 in (0, 1), p2 = 1 - p1
+        // M == 2 classes:
+        // Parameters:
+        // x[0] = log(alpha)
+        // x[1] = logit(p1): p1 = 1 / (1 + exp(-x[1]))
+        // x[2] = logit(omega1): omega1 = 1 / (1 + exp(-x[2])) in [0, 1]
+        // x[3] = log(omega2): omega2 = exp(x[3]) in [0, 10000]
         if (M == 2) {
-            auto obj_2class = [&](Scalar x0, Scalar x1, Scalar x2) -> Scalar {
-                // x0: transformed p1 via logit: p1 = sigmoid(x0)
-                // x1: transformed omega1: omega1 = sigmoid(x1) in [0, 1]
-                // x2: log(omega2)
-                Scalar p1 = 1.0 / (1.0 + std::exp(-x0));
-                Scalar p2 = 1.0 - p1;
-                Scalar w1 = 1.0 / (1.0 + std::exp(-x1));
-                Scalar w2 = constrain_null ? 1.0 : std::exp(x2);
+            if (constrain_null) {
+                // 3D optimization: log(alpha), logit(p1), logit(omega1) with omega2 = 1.0 fixed
+                auto obj_3d = [&](const std::array<Scalar, 3>& x) -> Scalar {
+                    Scalar a = std::exp(x[0]);
+                    Scalar p1 = 1.0 / (1.0 + std::exp(-x[1]));
+                    Scalar p2 = 1.0 - p1;
+                    Scalar w1 = 1.0 / (1.0 + std::exp(-x[2]));
+                    Scalar w2 = 1.0;
 
-                MG94Matrix mat1 = build_q_matrix(w1);
-                MG94Matrix mat2 = build_q_matrix(w2);
-                Matrix P_mix = p1 * mat1.transition_matrix(cur_alpha) + p2 * mat2.transition_matrix(cur_alpha);
+                    MG94Matrix mat1 = build_q_matrix(w1);
+                    MG94Matrix mat2 = build_q_matrix(w2);
+                    Matrix P_mix = p1 * mat1.transition_matrix(a) + p2 * mat2.transition_matrix(a);
 
-                Scalar ll = 0.0;
-                for (size_t p = 0; p < num_patterns; ++p) {
-                    Scalar Lp = V_patterns[p].dot(P_mix * D_patterns[p]);
-                    if (Lp > 0.0) {
-                        ll += aln.patterns[p].weight * std::log(Lp);
-                    } else {
-                        ll += aln.patterns[p].weight * (-1e20);
+                    Scalar ll = 0.0;
+                    for (size_t p = 0; p < num_patterns; ++p) {
+                        Scalar Lp = V_patterns[p].dot(P_mix * D_patterns[p]);
+                        if (Lp > 0.0) {
+                            ll += aln.patterns[p].weight * std::log(Lp);
+                        } else {
+                            ll += aln.patterns[p].weight * (-1e20);
+                        }
                     }
-                }
-                return -ll;
-            };
+                    return -ll;
+                };
 
-            // Grid search for initialization
-            Scalar best_grid_score = 1e20;
-            Vector best_x = Vector::Zero(3);
+                Scalar init_log_a = std::log(cur_alpha);
+                std::array<Scalar, 3> lb = {init_log_a - 5.0, -6.0, -8.0};
+                std::array<Scalar, 3> ub = {init_log_a + 6.0,  6.0,  5.0};
 
-            std::vector<Scalar> grid_p1 = {0.95, 0.85, 0.65};
-            std::vector<Scalar> grid_w1 = {0.05, 0.2, 0.5};
-            std::vector<Scalar> grid_w2 = constrain_null ? std::vector<Scalar>{1.0} : std::vector<Scalar>{1.5, 5.0, 20.0, 100.0};
+                // Warm-start from current branch state if available
+                Scalar cur_p1 = branch_weights[bid].empty() ? 0.90 : branch_weights[bid][0];
+                Scalar cur_w1 = branch_omegas[bid].empty() ? 0.20 : branch_omegas[bid][0];
+                cur_p1 = std::clamp(cur_p1, 0.01, 0.99);
+                cur_w1 = std::clamp(cur_w1, 1e-4, 0.99);
+                std::array<Scalar, 3> best_pt = {
+                    init_log_a,
+                    std::log(cur_p1 / (1.0 - cur_p1)),
+                    std::log(cur_w1 / (1.0 - cur_w1))
+                };
+                Scalar best_sc = obj_3d(best_pt);
 
-            for (Scalar p1 : grid_p1) {
-                for (Scalar w1 : grid_w1) {
-                    for (Scalar w2 : grid_w2) {
-                        Scalar cand_x0 = std::log(p1 / (1.0 - p1));
-                        Scalar cand_x1 = std::log(w1 / (1.0 - w1));
-                        Scalar cand_x2 = std::log(w2);
-
-                        Scalar sc = obj_2class(cand_x0, cand_x1, cand_x2);
-                        if (sc < best_grid_score) {
-                            best_grid_score = sc;
-                            best_x(0) = cand_x0;
-                            best_x(1) = cand_x1;
-                            best_x(2) = cand_x2;
+                for (Scalar a_mult : {0.5, 1.0, 2.0}) {
+                    Scalar cand_log_a = std::log(cur_alpha * a_mult);
+                    for (Scalar p1 : {0.98, 0.90, 0.75, 0.50}) {
+                        Scalar cand_x1 = std::log(p1 / (1.0 - p1));
+                        for (Scalar w1 : {0.005, 0.05, 0.20, 0.50}) {
+                            Scalar cand_x2 = std::log(w1 / (1.0 - w1));
+                            std::array<Scalar, 3> pt = {cand_log_a, cand_x1, cand_x2};
+                            Scalar sc = obj_3d(pt);
+                            if (sc < best_sc) {
+                                best_sc = sc;
+                                best_pt = pt;
+                            }
                         }
                     }
                 }
-            }
 
-            // Optimize with Nelder-Mead
-            if (constrain_null) {
-                // 2D Nelder-Mead on x(0) and x(1)
-                auto obj_null_2d = [&](Scalar x0, Scalar x1) -> Scalar {
-                    return obj_2class(x0, x1, 0.0);
-                };
-                auto opt = NelderMead2D::minimize(obj_null_2d, best_x(0), best_x(1), -8.0, 8.0, 1e-4, 100);
-                Scalar opt_p1 = 1.0 / (1.0 + std::exp(-opt.a));
-                Scalar opt_w1 = 1.0 / (1.0 + std::exp(-opt.b));
+                auto opt = NelderMeadND<3>::minimize(obj_3d, best_pt, lb, ub, 1e-4, 120);
+                Scalar opt_a = std::exp(opt.x[0]);
+                Scalar opt_p1 = 1.0 / (1.0 + std::exp(-opt.x[1]));
+                Scalar opt_w1 = 1.0 / (1.0 + std::exp(-opt.x[2]));
 
                 LocalBranchFit res;
                 res.log_l = -opt.f;
+                res.alpha = opt_a;
                 res.omegas = {opt_w1, 1.0};
                 res.weights = {opt_p1, 1.0 - opt_p1};
-                res.alpha = cur_alpha;
                 return res;
             } else {
-                // 2D Nelder-Mead on x(0) and x(2)
-                auto obj_free_2d = [&](Scalar x0, Scalar x2) -> Scalar {
-                    return obj_2class(x0, best_x(1), x2);
+                // 4D optimization: log(alpha), logit(p1), logit(omega1), log(omega2)
+                auto obj_4d = [&](const std::array<Scalar, 4>& x) -> Scalar {
+                    Scalar a = std::exp(x[0]);
+                    Scalar p1 = 1.0 / (1.0 + std::exp(-x[1]));
+                    Scalar p2 = 1.0 - p1;
+                    Scalar w1 = 1.0 / (1.0 + std::exp(-x[2]));
+                    Scalar w2 = std::exp(x[3]);
+
+                    MG94Matrix mat1 = build_q_matrix(w1);
+                    MG94Matrix mat2 = build_q_matrix(w2);
+                    Matrix P_mix = p1 * mat1.transition_matrix(a) + p2 * mat2.transition_matrix(a);
+
+                    Scalar ll = 0.0;
+                    for (size_t p = 0; p < num_patterns; ++p) {
+                        Scalar Lp = V_patterns[p].dot(P_mix * D_patterns[p]);
+                        if (Lp > 0.0) {
+                            ll += aln.patterns[p].weight * std::log(Lp);
+                        } else {
+                            ll += aln.patterns[p].weight * (-1e20);
+                        }
+                    }
+                    return -ll;
                 };
-                auto opt = NelderMead2D::minimize(obj_free_2d, best_x(0), best_x(2), -8.0, 10.0, 1e-4, 120);
-                Scalar opt_p1 = 1.0 / (1.0 + std::exp(-opt.a));
-                Scalar opt_w1 = 1.0 / (1.0 + std::exp(-best_x(1)));
-                Scalar opt_w2 = std::exp(opt.b);
+
+                Scalar init_log_a = std::log(cur_alpha);
+                std::array<Scalar, 4> lb = {init_log_a - 5.0, -6.0, -8.0, -2.3};
+                std::array<Scalar, 4> ub = {init_log_a + 8.0,  6.0,  6.0, 10.0};
+
+                // Warm-start from current branch state if available
+                Scalar cur_p1 = branch_weights[bid].empty() ? 0.90 : branch_weights[bid][0];
+                Scalar cur_w1 = branch_omegas[bid].empty() ? 0.20 : branch_omegas[bid][0];
+                Scalar cur_w2 = branch_omegas[bid].size() > 1 ? branch_omegas[bid][1] : 5.0;
+                cur_p1 = std::clamp(cur_p1, 0.005, 0.995);
+                cur_w1 = std::clamp(cur_w1, 1e-4, 0.995);
+                cur_w2 = std::clamp(cur_w2, 0.1, 20000.0);
+
+                std::array<Scalar, 4> best_pt = {
+                    init_log_a,
+                    std::log(cur_p1 / (1.0 - cur_p1)),
+                    std::log(cur_w1 / (1.0 - cur_w1)),
+                    std::log(cur_w2)
+                };
+                Scalar best_sc = obj_4d(best_pt);
+
+                for (Scalar a_mult : {0.5, 1.0, 2.0, 6.0}) {
+                    Scalar cand_log_a = std::log(cur_alpha * a_mult);
+                    for (Scalar p1 : {0.98, 0.92, 0.80, 0.50}) {
+                        Scalar cand_x1 = std::log(p1 / (1.0 - p1));
+                        for (Scalar w1 : {0.005, 0.05, 0.20}) {
+                            Scalar cand_x2 = std::log(w1 / (1.0 - w1));
+                            for (Scalar w2 : {2.0, 15.0, 80.0, 500.0, 2500.0}) {
+                                Scalar cand_x3 = std::log(w2);
+                                std::array<Scalar, 4> pt = {cand_log_a, cand_x1, cand_x2, cand_x3};
+                                Scalar sc = obj_4d(pt);
+                                if (sc < best_sc) {
+                                    best_sc = sc;
+                                    best_pt = pt;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                auto opt = NelderMeadND<4>::minimize(obj_4d, best_pt, lb, ub, 1e-4, 150);
+                Scalar opt_a = std::exp(opt.x[0]);
+                Scalar opt_p1 = 1.0 / (1.0 + std::exp(-opt.x[1]));
+                Scalar opt_w1 = 1.0 / (1.0 + std::exp(-opt.x[2]));
+                Scalar opt_w2 = std::exp(opt.x[3]);
 
                 LocalBranchFit res;
                 res.log_l = -opt.f;
+                res.alpha = opt_a;
                 res.omegas = {opt_w1, opt_w2};
                 res.weights = {opt_p1, 1.0 - opt_p1};
-                res.alpha = cur_alpha;
                 return res;
             }
         }
@@ -700,6 +763,7 @@ public:
             }
 
             if (current_classes > 1) {
+                branch_alpha[bid] = best_fit.alpha;
                 branch_omegas[bid] = best_fit.omegas;
                 branch_weights[bid] = best_fit.weights;
                 P_branches[bid] = compute_branch_transition_matrix(bid);
@@ -711,8 +775,51 @@ public:
 
         // Phase 4: Full Adaptive Model Fitting
         if (progress_cb) progress_cb("Phase 4: Full Adaptive Model Fitting", 0.65);
+
+        // Cyclic block coordinate ascent across all branches to achieve full model convergence
+        const int num_refinement_passes = 4;
+        Scalar prev_refine_ll = compute_tree_log_likelihood(P_branches);
+        for (int pass = 0; pass < num_refinement_passes; ++pass) {
+            for (const auto& node : tree.nodes) {
+                if (node.id == tree.root_id) continue;
+                int32_t bid = node.id;
+                int M = result.branches[node.name].rate_classes;
+
+                // Recompute (V, D) context for branch bid
+                std::vector<Vector> V_patterns(num_patterns);
+                std::vector<Vector> D_patterns(num_patterns);
+                #pragma omp parallel for schedule(dynamic)
+                for (size_t p = 0; p < num_patterns; ++p) {
+                    const auto& pattern = aln.patterns[p];
+                    auto io = LikelihoodEngine::compute_inside_outside(
+                        tree, pattern, leaf_to_taxon, P_branches, codon_freqs, S
+                    );
+                    V_patterns[p] = io.V[bid];
+                    D_patterns[p] = io.D[bid];
+                }
+
+                LocalBranchFit refined_fit = optimize_branch_mixture(bid, M, V_patterns, D_patterns, false);
+                branch_alpha[bid] = refined_fit.alpha;
+                branch_omegas[bid] = refined_fit.omegas;
+                branch_weights[bid] = refined_fit.weights;
+                P_branches[bid] = compute_branch_transition_matrix(bid);
+
+                result.branches[node.name].rate_distribution.rates = refined_fit.omegas;
+                result.branches[node.name].rate_distribution.weights = refined_fit.weights;
+            }
+            Scalar cur_refine_ll = compute_tree_log_likelihood(P_branches);
+            if (settings.verbose) {
+                std::cout << "  [Phase 4 Pass " << pass << "] Log(L) = " << cur_refine_ll << " (delta = " << cur_refine_ll - prev_refine_ll << ")" << std::endl;
+            }
+            if (std::abs(cur_refine_ll - prev_refine_ll) < 0.05) {
+                break;
+            }
+            prev_refine_ll = cur_refine_ll;
+        }
+
         Scalar full_ll = compute_tree_log_likelihood(P_branches);
-        result.full_adaptive_fit = {full_ll, current_params, current_best_aicc};
+        Scalar full_aicc = compute_aicc(full_ll, current_params);
+        result.full_adaptive_fit = {full_ll, current_params, full_aicc};
 
         for (const auto& node : tree.nodes) {
             if (node.id == tree.root_id) continue;
