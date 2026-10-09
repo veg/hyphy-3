@@ -72,12 +72,15 @@ In phylogenetics, computing the gradient of tree log-likelihood with respect to 
 HyPhy 3 computes exact analytical branch gradients in **one single combined pass**:
 - **Inside Pass (Post-Order)**: Computes conditional subtree likelihoods $D_{v}$ from leaves to root.
 - **Outside Pass (Pre-Order)**: Computes ancestral complement likelihoods $V_{v}$ from root to leaves.
-- **Adjoint Contraction**: The exact gradient on branch $b = (u \to v)$ is computed directly by matrix-vector contraction:
-  $$\frac{\partial \ln L}{\partial t_b} = \sum_{p=1}^P \frac{w_p}{L_p} V_{b,p}^{\top} \left( \frac{\partial P_b}{\partial t_b} \right) D_{b,p}$$
-  where $\frac{\partial P_b}{\partial t_b} = Q \exp(Q t_b) = Q P_b$.
+- **Adjoint Contraction for Standard & Mixture Models**:
+  - **Homogeneous Model**:
+    $$\frac{\partial \ln L}{\partial t_b} = \sum_{p=1}^P \frac{w_p}{L_p} V_{b,p}^{\top} \left( \frac{\partial P_b}{\partial t_b} \right) D_{b,p}, \quad \text{where } \frac{\partial P_b}{\partial t_b} = Q P_b$$
+  - **Branch-Site Discrete Mixture (aBSREL)**:
+    $$\frac{\partial \ln L}{\partial \alpha_b} = \sum_{p=1}^P \frac{w_p}{L_p} V_{b,p}^{\top} \left( \sum_{k=1}^{M_b} p_{b,k} Q(1, \omega_{b,k}) P_{b,k} \right) D_{b,p}$$
+    This allows joint L-BFGS optimization across all branch lengths simultaneously in $\mathcal{O}(B)$ time.
 
 ### 2. High-Performance Optimization Suite
-- **Adjoint L-BFGS**: Replaces $O(B^2)$ coordinate-wise Brent search in BUSTED with multi-branch joint ascent directions using two-loop recursion and Armijo line search.
+- **Adjoint L-BFGS**: Replaces $O(B^2)$ coordinate-wise Brent search in BUSTED and aBSREL with multi-branch joint ascent directions using two-loop recursion and Armijo line search.
 - **SQUAREM Accelerator**: Squared polynomial extrapolation for Expectation-Maximization on latent mixture models (e.g. BUSTED rate weights $\mathbf{p}$ and synonymous rate weights $\mathbf{q}$), achieving quadratic convergence without evaluating Hessians.
 - **Nelder-Mead Simplex**: Fast, bounded 2D, 3D, and ND simplex algorithms for low-dimensional non-convex parameter spaces.
 
@@ -85,7 +88,7 @@ HyPhy 3 computes exact analytical branch gradients in **one single combined pass
 
 ## ⚡ Performance Benchmarks
 
-| Analysis / Stage | Dataset | HyPhy 2.5 (Legacy) | HyPhy 3 (Modern C++20) | Speedup |
+| Analysis / Stage | Dataset | HyPhy 2.5 (Legacy) | HyPhy 3 (Modern C++20) | Speedup / Parity |
 |:---|:---|:---:|:---:|:---:|
 | **All Branch Gradients** ($B=43$) | ADH (23 taxa, 254 codons) | 845.8 ms *(FD)* | **9.66 ms** *(Adjoint)* | **$87.6\times$** |
 | **All Branch Gradients** ($B=695$) | Influenza A (349 taxa) | 12,480 ms *(FD)* | **238.1 ms** *(Adjoint)* | **$52.4\times$** |
@@ -94,7 +97,7 @@ HyPhy 3 computes exact analytical branch gradients in **one single combined pass
 | **BUSTED Branch Refinement** | Influenza A (349 taxa, 695 br) | ~208 s *(Brent)* | **7.63 s** *(L-BFGS)* | **$27.3\times$** |
 | **Full BUSTED Analysis** | ADH (23 taxa, 254 codons) | 11.05 s | **4.03 s** | **$2.74\times$** |
 | **Full MEME Analysis** | CD2 (10 taxa, 187 codons) | 4.82 s | **1.21 s** | **$3.98\times$** |
-| **Full aBSREL Analysis** | β-globin (17 taxa, 144 codons) | 48.0 s | **3.26 s** | **$14.7\times$** |
+| **Full aBSREL Analysis** | β-globin (17 taxa, 144 codons) | 48.0 s ($\ln L = -3631.58$) | **25.7 s** ($\ln L = -3633.51$) | **$1.87\times$ ($|\Delta \ln L| \le 1.9$)** |
 
 ---
 
@@ -122,6 +125,7 @@ HyPhy 3 computes exact analytical branch gradients in **one single combined pass
 - Tests whether a proportion of sites have evolved under positive selection along each lineage/branch.
 - Dynamic model complexity selection (AICc step-up) assigns optimal $\omega$ rate classes per branch without over-parameterization.
 - Accelerated via local Inside-Outside projection ($V_{v,p}^{\top} \bar{P}_b D_{v,p}$) during branch complexity search and constrained null testing, avoiding full-tree traversals.
+- **Phase 4 Full Adaptive Refinement**: Joint L-BFGS branch length optimization using analytical Inside-Outside mixture gradients combined with GTR nucleotide rate optimization and local mixture refinement, closing log-likelihood parity with HyPhy 2.5 to within $< 2$ units ($\ln L = -3633.51$ vs $-3631.58$).
 - Exact closed-form asymptotic mixture distribution $p$-value computation ($\frac{1}{2} \chi^2_0 + \frac{1}{2}[0.4 \chi^2_1 + 0.6 \chi^2_2]$).
 - Computes Holm-Bonferroni corrected $p$-values and Empirical Bayes Factors (EBF) for site-level support.
 
@@ -278,17 +282,17 @@ hyphy-3/
 │       ├── core/               # Alignment, Tree, GeneticCode, RateMatrix, LikelihoodEngine
 │       ├── opt/                # Brent, NelderMead, SQUAREM, L-BFGS, Adam
 │       ├── autograd/           # Dynamic computational graph, Var, TreeLikelihoodNode
-│       └── analyses/           # GTR, MG94, FEL, MEME, BUSTED (with SRV)
+│       └── analyses/           # GTR, MG94, FEL, MEME, BUSTED (with SRV), aBSREL
 ├── src/
-│   ├── apps/                   # CLI drivers: hyphy3, hyphy_fel, hyphy_meme, hyphy_busted
+│   ├── apps/                   # CLI drivers: hyphy3, hyphy_fel, hyphy_meme, hyphy_busted, hyphy_absrel
 │   └── python/                 # Nanobind C++ Python bridge (bindings.cpp)
 ├── python/
 │   └── hyphy3/                 # Pure Python high-level API & wrappers
 ├── examples/
-│   ├── cli/                    # Shell scripts: run_fel.sh, run_meme.sh, run_busted.sh
-│   └── python/                 # Python examples (FEL, MEME, BUSTED, Autograd, PyTorch)
+│   ├── cli/                    # Shell scripts: run_fel.sh, run_meme.sh, run_busted.sh, run_absrel.sh
+│   └── python/                 # Python examples (FEL, MEME, BUSTED, aBSREL, Autograd, PyTorch)
 ├── benchmarks/
-│   └── data/                   # Standard benchmark alignments and trees (CD2, ADH, etc.)
+│   └── data/                   # Standard benchmark alignments and trees (CD2, ADH, bglobin, etc.)
 └── tests/                      # Doctest unit & parity test suites
 ```
 
@@ -299,6 +303,7 @@ hyphy-3/
 If you use HyPhy 3 in your research, please cite:
 
 - **HyPhy 3 Modern Core**: Kosakovsky Pond SL, et al. *HyPhy 3: A Modern Differentiable Engine for Molecular Evolution*. (In preparation).
+- **aBSREL**: Smith MD, et al. *Less Is More: An Adaptive Branch-Site Random Effects Model for Efficient Detection of Episodic Diversifying Selection*. Mol Biol Evol. 32(5):1342–1353 (2015).
 - **BUSTED**: Murrell B, et al. *Gene-wide identification of episodic selection*. Mol Biol Evol. 32(5):1365–1371 (2015).
 - **BUSTED-S**: Wisotsky SR, et al. *Synonymous rate variation improves the detection of positive selection*. Mol Biol Evol. 37(8):2430–2439 (2020).
 - **MEME**: Murrell B, et al. *Detecting episodic selection with a mixed effects model of evolution*. PLoS Genet. 8(7):e1002764 (2012).
