@@ -16,6 +16,12 @@ from _hyphy3 import (
     BUSTEDFit,
     BUSTEDResult,
     BUSTEDAnalyzer,
+    ABSRELSettings,
+    ABSRELRateDistribution,
+    ABSRELBranchResult,
+    ABSRELFitSummary,
+    ABSRELResult,
+    ABSRELAnalyzer,
     compute_branch_length_gradients
 )
 
@@ -37,6 +43,12 @@ __all__ = [
     "BUSTEDFit",
     "BUSTEDResult",
     "BUSTEDAnalyzer",
+    "ABSRELSettings",
+    "ABSRELRateDistribution",
+    "ABSRELBranchResult",
+    "ABSRELFitSummary",
+    "ABSRELResult",
+    "ABSRELAnalyzer",
     "compute_branch_length_gradients",
     "autograd"
 ]

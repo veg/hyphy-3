@@ -69,6 +69,36 @@ class TestHyPhy3Python(unittest.TestCase):
         self.assertTrue(res.unconstrained.log_likelihood >= res.constrained.log_likelihood - 1e-4)
         self.assertTrue(res.runtime_seconds > 0.0)
 
+    def test_absrel_analyzer(self):
+        bglobin_candidates = [
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "benchmarks", "data", "bglobin.nex")),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "tests", "data", "bglobin.nex")),
+        ]
+        bglobin_path = next((p for p in bglobin_candidates if os.path.exists(p)), None)
+        if bglobin_path is None:
+            self.skipTest("bglobin.nex not found")
+
+        aln = hyphy3.Alignment.load(bglobin_path)
+        tree = hyphy3.Tree.from_newick(aln.embedded_tree_newick)
+
+        settings = hyphy3.ABSRELSettings()
+        settings.max_rate_classes = 2
+        settings.p_threshold = 0.05
+
+        absrel = hyphy3.ABSRELAnalyzer.create(tree, aln, settings)
+        res = absrel.run()
+
+        self.assertAlmostEqual(res.gtr_fit.log_likelihood, -3926.03, delta=5.0)
+        self.assertAlmostEqual(res.baseline_fit.log_likelihood, -3765.93, delta=15.0)
+        self.assertTrue(res.full_adaptive_fit.log_likelihood >= res.baseline_fit.log_likelihood)
+        self.assertEqual(len(res.tested_branches), 31)
+        self.assertTrue(len(res.positive_branches) > 0)
+        self.assertTrue(res.runtime_seconds > 0.0)
+
+        json_str = res.to_json(tree, aln)
+        self.assertIn("Baseline MG94xREV", json_str)
+        self.assertIn("Full adaptive model", json_str)
+
     @unittest.skipUnless(TORCH_AVAILABLE, "PyTorch required for autograd tests")
     def test_autograd_gradients_vs_finite_differences(self):
         aln = hyphy3.Alignment.load(self.adh_path)

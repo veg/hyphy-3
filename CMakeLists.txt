@@ -70,13 +70,18 @@ add_executable(hyphy_cpp_autograd_test tests/test_cpp_autograd.cpp)
 target_link_libraries(hyphy_cpp_autograd_test PRIVATE hyphy3_core)
 add_test(NAME CppAutogradTest COMMAND hyphy_cpp_autograd_test)
 
+add_executable(hyphy_absrel_test tests/test_absrel.cpp)
+target_link_libraries(hyphy_absrel_test PRIVATE hyphy3_core)
+add_test(NAME ABSRELTest COMMAND hyphy_absrel_test)
 
-# Unified HyPhy 3 CLI Driver (hyphy3 fel ..., hyphy3 meme ..., hyphy3 busted ...)
+
+# Unified HyPhy 3 CLI Driver (hyphy3 fel ..., hyphy3 meme ..., hyphy3 busted ..., hyphy3 absrel ...)
 add_executable(hyphy3
     src/apps/hyphy3.cpp
     src/apps/hyphy_fel.cpp
     src/apps/hyphy_meme.cpp
     src/apps/hyphy_busted.cpp
+    src/apps/hyphy_absrel.cpp
 )
 target_compile_definitions(hyphy3 PRIVATE HYPHY3_COMBINED_DRIVER)
 target_link_libraries(hyphy3 PRIVATE hyphy3_core)
@@ -91,10 +96,14 @@ target_link_libraries(hyphy3-meme PRIVATE hyphy3_core)
 add_executable(hyphy3-busted src/apps/hyphy_busted.cpp)
 target_link_libraries(hyphy3-busted PRIVATE hyphy3_core)
 
+add_executable(hyphy3-absrel src/apps/hyphy_absrel.cpp)
+target_link_libraries(hyphy3-absrel PRIVATE hyphy3_core)
+
 # Backward-compatible aliases
 add_executable(hyphy-fel ALIAS hyphy3-fel)
 add_executable(hyphy-meme ALIAS hyphy3-meme)
 add_executable(hyphy-busted ALIAS hyphy3-busted)
+add_executable(hyphy-absrel ALIAS hyphy3-absrel)
 
 # Python & nanobind bindings
 find_package(Python 3.8 COMPONENTS Interpreter Development.Module)

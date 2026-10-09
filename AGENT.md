@@ -45,7 +45,8 @@ include/hyphy/
     ├── mg94.hpp            # Global MG94xREV baseline model fitter
     ├── fel.hpp             # Fixed Effects Likelihood (pervasive selection)
     ├── meme.hpp            # Mixed Effects Model of Evolution (episodic selection)
-    └── busted.hpp          # BUSTED & BUSTED-S (gene-wide selection with SRV)
+    ├── busted.hpp          # BUSTED & BUSTED-S (gene-wide selection with SRV)
+    └── absrel.hpp          # aBSREL (adaptive branch-site random effects likelihood)
 ```
 
 ---
@@ -82,11 +83,23 @@ SQUAREM extrapolates:
 $$\mathbf{p}_{\text{accelerated}} = \mathbf{p}_0 - 2 \sigma \mathbf{r} + \sigma^2 \mathbf{v}, \quad \sigma = -\frac{\|\mathbf{r}\|}{\|\mathbf{v}\|}$$
 This achieves near-Newtonian quadratic convergence without calculating second derivatives or Hessians.
 
+### 3.4 Local Likelihood Projection for Branch-Site Models (aBSREL)
+When optimizing parameters on an individual branch $b = (u \to v)$ while keeping the rest of the tree fixed (e.g. during aBSREL branch complexity step-up or constrained null hypothesis testing):
+The conditional subtree likelihoods $D_{v,p}$ and ancestral complement likelihoods $V_{v,p}$ are **strictly invariant** with respect to branch $b$'s parameters.
+The pattern likelihood simplifies to an immediate dot-product projection:
+$$L_p = V_{v,p}^{\top} \bar{P}_b D_{v,p}$$
+where $\bar{P}_b = \sum_{k=1}^K p_{b,k} P(t_b, \omega_{b,k})$.
+Evaluating candidate mixtures or optimizing rates on branch $b$ requires **zero tree traversals**, reducing evaluation time to $\approx 10\,\mu\text{s}$.
+Furthermore, the asymptotic null distribution for aBSREL hypothesis testing ($\omega_{b,\max} \le 1$) is a mixture:
+$$\text{Null} \sim \frac{1}{2} \chi^2_0 + \frac{1}{2}\left(0.4 \chi^2_1 + 0.6 \chi^2_2\right)$$
+with closed-form $p$-value:
+$$p = \frac{1}{2}\left[ 0.4 \cdot \text{erfc}\left(\sqrt{\frac{\text{LRT}}{2}}\right) + 0.6 \cdot \exp\left(-\frac{\text{LRT}}{2}\right) \right]$$
+
 ---
 
 ## 4. Step-by-Step Recipe: Implementing a New Model
 
-Follow this recipe to add any new selection model (e.g., SLAC, aBSREL, RELAX, FUBAR):
+Follow this recipe to add any new selection model (e.g., RELAX, FUBAR, SLAC, BUSTED-PH):
 
 ### Step 1: Formulate the Rate Matrix (`include/hyphy/core/rate_matrix.hpp`)
 If your model introduces new parameters (e.g. relaxation parameter $k$ in RELAX, or asymmetric nucleotide parameters):

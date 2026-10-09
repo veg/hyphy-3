@@ -7,6 +7,7 @@
 int run_fel(int argc, char* argv[]);
 int run_meme(int argc, char* argv[]);
 int run_busted(int argc, char* argv[]);
+int run_absrel(int argc, char* argv[]);
 
 void print_hyphy3_banner() {
     std::cout << "\n=======================================================\n"
@@ -24,7 +25,8 @@ void print_hyphy3_usage(const char* prog) {
               << "Available Analyses:\n"
               << "  fel         Fixed Effects Likelihood (site-by-site selection)\n"
               << "  meme        Mixed Effects Model of Evolution (episodic selection)\n"
-              << "  busted      Branch-site Unrestricted Statistical Test (gene-wide selection)\n\n"
+              << "  busted      Branch-site Unrestricted Statistical Test (gene-wide selection)\n"
+              << "  absrel      Adaptive Branch-Site Random Effects Likelihood (lineage selection)\n\n"
               << "General Options:\n"
               << "  --help, -h       Show this help message\n"
               << "  --version, -v    Show version information\n\n"
@@ -66,6 +68,8 @@ int main(int argc, char* argv[]) {
         return run_meme(sub_argc, sub_argv.data());
     } else if (cmd == "busted") {
         return run_busted(sub_argc, sub_argv.data());
+    } else if (cmd == "absrel") {
+        return run_absrel(sub_argc, sub_argv.data());
     } else {
         std::cerr << "Error: Unknown analysis '" << cmd << "'.\n\n";
         print_hyphy3_usage(argv[0]);

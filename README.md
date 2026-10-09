@@ -94,6 +94,7 @@ HyPhy 3 computes exact analytical branch gradients in **one single combined pass
 | **BUSTED Branch Refinement** | Influenza A (349 taxa, 695 br) | ~208 s *(Brent)* | **7.63 s** *(L-BFGS)* | **$27.3\times$** |
 | **Full BUSTED Analysis** | ADH (23 taxa, 254 codons) | 11.05 s | **4.03 s** | **$2.74\times$** |
 | **Full MEME Analysis** | CD2 (10 taxa, 187 codons) | 4.82 s | **1.21 s** | **$3.98\times$** |
+| **Full aBSREL Analysis** | β-globin (17 taxa, 144 codons) | 48.0 s | **3.26 s** | **$14.7\times$** |
 
 ---
 
@@ -116,6 +117,13 @@ HyPhy 3 computes exact analytical branch gradients in **one single combined pass
 - **BUSTED-S**: Full support for **Synonymous Rate Variation (SRV)** using site-to-site discrete rate distributions ($M=3$ classes, $\mathbb{E}[\alpha] = 1.0$).
 - Automatic model selection (**Auto-K**) via AICc step-up.
 - Per-site Evidence Ratios (empirical Bayes factors) for positive selection.
+
+### 4. **aBSREL (Adaptive Branch-Site Random Effects Likelihood)**
+- Tests whether a proportion of sites have evolved under positive selection along each lineage/branch.
+- Dynamic model complexity selection (AICc step-up) assigns optimal $\omega$ rate classes per branch without over-parameterization.
+- Accelerated via local Inside-Outside projection ($V_{v,p}^{\top} \bar{P}_b D_{v,p}$) during branch complexity search and constrained null testing, avoiding full-tree traversals.
+- Exact closed-form asymptotic mixture distribution $p$-value computation ($\frac{1}{2} \chi^2_0 + \frac{1}{2}[0.4 \chi^2_1 + 0.6 \chi^2_2]$).
+- Computes Holm-Bonferroni corrected $p$-values and Empirical Bayes Factors (EBF) for site-level support.
 
 ---
 
@@ -173,6 +181,9 @@ hyphy3 busted --alignment benchmarks/data/adh.fna --tree benchmarks/data/adh.nwk
 
 # 5. Run BUSTED with Automatic Model Selection (Auto-K)
 hyphy3 busted --alignment benchmarks/data/adh.fna --tree benchmarks/data/adh.nwk --auto-k --threads 8
+
+# 6. Run aBSREL (lineage-specific selection)
+hyphy3 absrel --alignment benchmarks/data/bglobin.nex --tree benchmarks/data/bglobin.nex --output bglobin.absrel.json --threads 8
 ```
 
 All analyses output standardized, Datamonkey-compatible JSON files ready for visualization on [HyPhy Vision](https://vision.hyphy.org).
@@ -208,6 +219,13 @@ res = busted.run(settings)
 
 print(f"LRT = {res.lrt:.4f}, p-value = {res.p_value:.6e}")
 print(f"Synonymous rates: {res.unconstrained.test_distribution.syn_rates}")
+
+# Run aBSREL (adaptive branch-site selection)
+absrel = hp.ABSRELAnalyzer.create_and_fit(tree, aln)
+abs_res = absrel.run()
+for br in abs_res.branches:
+    if br.tested and br.p_corrected < 0.05:
+        print(f"Lineage selection on {br.name}: p_corr = {br.p_corrected:.4f}, LRT = {br.lrt:.2f}")
 ```
 
 ### PyTorch End-to-End Optimization
