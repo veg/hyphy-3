@@ -114,10 +114,11 @@ HyPhy 3 computes exact analytical branch gradients in **one single combined pass
 - Uses empirical Bayes 2-rate mixture model: $(\alpha, \beta^-, p^-)$ and $(\alpha, \beta^+, p^+)$ with constraint $\beta^- \le \alpha$.
 - Optimizes mixture parameters per site and reports evidence of episodic positive selection ($\beta^+ > 1$).
 
-### 3. **BUSTED & BUSTED-S (Branch-site Unrestricted Statistical Test)**
+### 3. **BUSTED, BUSTED-S & BUSTED-MH (Branch-site Unrestricted Statistical Test)**
 - Gene-wide test for episodic diversifying positive selection across branches and sites.
 - Constrained Null ($\omega_K = 1.0$) vs Unconstrained Alternative ($\omega_K \ge 1.0$).
 - **BUSTED-S**: Full support for **Synonymous Rate Variation (SRV)** using site-to-site discrete rate distributions ($M=3$ classes, $\mathbb{E}[\alpha] = 1.0$).
+- **BUSTED-MH**: Full support for **Multi-Nucleotide Substitutions (Multiple Hits)** (`Double`, `Double+Triple`), estimating instantaneous 2-hit ($\delta$) and 3-hit ($\psi$) substitution rates and substitution fractions while maintaining exact detailed balance and fast eigendecompositions.
 - Automatic model selection (**Auto-K**) via AICc step-up.
 - Per-site Evidence Ratios (empirical Bayes factors) for positive selection.
 
@@ -183,10 +184,13 @@ hyphy3 busted --alignment benchmarks/data/adh.fna --tree benchmarks/data/adh.nwk
 # 4. Run BUSTED-S (with Synonymous Rate Variation)
 hyphy3 busted --alignment benchmarks/data/adh.fna --tree benchmarks/data/adh.nwk --srv --syn-rates 3 --threads 8
 
-# 5. Run BUSTED with Automatic Model Selection (Auto-K)
+# 5. Run BUSTED-MH (with Multi-Nucleotide Substitutions)
+hyphy3 busted --alignment benchmarks/data/adh.fna --tree benchmarks/data/adh.nwk --multiple-hits Double+Triple --threads 8
+
+# 6. Run BUSTED with Automatic Model Selection (Auto-K)
 hyphy3 busted --alignment benchmarks/data/adh.fna --tree benchmarks/data/adh.nwk --auto-k --threads 8
 
-# 6. Run aBSREL (lineage-specific selection)
+# 7. Run aBSREL (lineage-specific selection)
 hyphy3 absrel --alignment benchmarks/data/bglobin.nex --tree benchmarks/data/bglobin.nex --output bglobin.absrel.json --threads 8
 ```
 
@@ -215,14 +219,15 @@ for r in results:
     if r.p_value < 0.10 and r.beta > r.alpha:
         print(f"Positive selection at site {r.site + 1}: dN/dS = {r.beta/r.alpha:.2f}, p = {r.p_value:.4f}")
 
-# Run BUSTED-S (with SRV)
+# Run BUSTED-MH (with multiple hits)
 settings = hp.BUSTEDSettings()
-settings.srv = True  # Enable synonymous rate variation
+settings.multiple_hits = "Double+Triple"  # "None", "Double", or "Double+Triple"
 busted = hp.BUSTEDAnalyzer.create_and_fit(tree, aln)
 res = busted.run(settings)
 
 print(f"LRT = {res.lrt:.4f}, p-value = {res.p_value:.6e}")
-print(f"Synonymous rates: {res.unconstrained.test_distribution.syn_rates}")
+print(f"Delta (2-hit rate) = {res.unconstrained.delta:.4f}, fraction = {res.unconstrained.frac_delta*100:.2f}%")
+print(f"Psi (3-hit rate) = {res.unconstrained.psi:.4f}, fraction = {res.unconstrained.frac_psi*100:.2f}%")
 
 # Run aBSREL (adaptive branch-site selection)
 absrel = hp.ABSRELAnalyzer.create_and_fit(tree, aln)

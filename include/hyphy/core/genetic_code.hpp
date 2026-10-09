@@ -30,10 +30,14 @@ public:
 
     // Precomputed substitution graph properties between sense codons
     struct StepDiff {
-        int8_t pos = -1;       // 0, 1, or 2
+        int8_t pos = -1;       // 0, 1, or 2 (backwards-compatible for 1-step)
         int8_t nuc_from = -1;  // 0..3
         int8_t nuc_to = -1;    // 0..3
         bool synonymous = false;
+        int8_t num_diffs = 0;  // 0, 1, 2, or 3
+        int8_t diff_pos[3] = {-1, -1, -1};
+        int8_t diff_from[3] = {-1, -1, -1};
+        int8_t diff_to[3] = {-1, -1, -1};
     };
     std::vector<std::vector<StepDiff>> diff_matrix; // [S][S]
 
@@ -135,19 +139,21 @@ private:
                 if (u == v) continue;
                 const auto& s1 = sense_codons[u];
                 const auto& s2 = sense_codons[v];
-                int diffs = 0;
-                int diff_p = -1;
+                int8_t diffs = 0;
                 for (int p = 0; p < 3; ++p) {
                     if (s1[p] != s2[p]) {
+                        diff_matrix[u][v].diff_pos[diffs] = static_cast<int8_t>(p);
+                        diff_matrix[u][v].diff_from[diffs] = char_to_nuc(s1[p]);
+                        diff_matrix[u][v].diff_to[diffs] = char_to_nuc(s2[p]);
                         diffs++;
-                        diff_p = p;
                     }
                 }
+                diff_matrix[u][v].num_diffs = diffs;
+                diff_matrix[u][v].synonymous = (sense_codon_aa[u] == sense_codon_aa[v]);
                 if (diffs == 1) {
-                    diff_matrix[u][v].pos = diff_p;
-                    diff_matrix[u][v].nuc_from = char_to_nuc(s1[diff_p]);
-                    diff_matrix[u][v].nuc_to = char_to_nuc(s2[diff_p]);
-                    diff_matrix[u][v].synonymous = (sense_codon_aa[u] == sense_codon_aa[v]);
+                    diff_matrix[u][v].pos = diff_matrix[u][v].diff_pos[0];
+                    diff_matrix[u][v].nuc_from = diff_matrix[u][v].diff_from[0];
+                    diff_matrix[u][v].nuc_to = diff_matrix[u][v].diff_to[0];
                 }
             }
         }

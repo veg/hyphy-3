@@ -96,7 +96,9 @@ NB_MODULE(_hyphy3, m) {
         .def_rw("theta_AT", &MG94Parameters::theta_AT)
         .def_rw("theta_CG", &MG94Parameters::theta_CG)
         .def_rw("theta_CT", &MG94Parameters::theta_CT)
-        .def_rw("theta_GT", &MG94Parameters::theta_GT);
+        .def_rw("theta_GT", &MG94Parameters::theta_GT)
+        .def_rw("delta", &MG94Parameters::delta)
+        .def_rw("psi", &MG94Parameters::psi);
 
     // FEL Results & Analyzer
     nb::class_<SiteResult>(m, "FELSiteResult")
@@ -166,6 +168,7 @@ NB_MODULE(_hyphy3, m) {
         .def_rw("auto_select_k", &BUSTEDSettings::auto_select_k)
         .def_rw("max_k", &BUSTEDSettings::max_k)
         .def_rw("refine_branch_lengths", &BUSTEDSettings::refine_branch_lengths)
+        .def_rw("multiple_hits", &BUSTEDSettings::multiple_hits)
         .def_rw("p_value_threshold", &BUSTEDSettings::p_value_threshold);
 
     nb::class_<BUSTEDRateDistribution>(m, "BUSTEDRateDistribution")
@@ -181,7 +184,11 @@ NB_MODULE(_hyphy3, m) {
         .def_ro("tree_scale", &BUSTEDFit::tree_scale)
         .def_ro("num_rate_classes", &BUSTEDFit::num_rate_classes)
         .def_ro("test_distribution", &BUSTEDFit::test_distribution)
-        .def_ro("branch_lengths", &BUSTEDFit::branch_lengths);
+        .def_ro("branch_lengths", &BUSTEDFit::branch_lengths)
+        .def_ro("delta", &BUSTEDFit::delta)
+        .def_ro("psi", &BUSTEDFit::psi)
+        .def_ro("frac_delta", &BUSTEDFit::frac_delta)
+        .def_ro("frac_psi", &BUSTEDFit::frac_psi);
 
     nb::class_<BUSTEDResult>(m, "BUSTEDResult")
         .def_ro("optimal_k", &BUSTEDResult::optimal_k)
@@ -189,6 +196,7 @@ NB_MODULE(_hyphy3, m) {
         .def_ro("p_value", &BUSTEDResult::p_value)
         .def_ro("unconstrained", &BUSTEDResult::unconstrained)
         .def_ro("constrained", &BUSTEDResult::constrained)
+        .def_ro("settings", &BUSTEDResult::settings)
         .def_ro("evidence_ratios", &BUSTEDResult::evidence_ratios)
         .def_ro("runtime_seconds", &BUSTEDResult::runtime_seconds);
 

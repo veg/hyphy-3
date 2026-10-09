@@ -44,6 +44,7 @@ static void print_usage(const char* prog) {
               << "  --srv                Enable synonymous rate variation across sites (BUSTED-S)\n"
               << "  --syn-rates <N>      Number of synonymous rate categories (default: 3)\n"
               << "  --auto-k             Automatically select optimal K via AICc step-up\n"
+              << "  --multiple-hits <M>  Multi-nucleotide substitutions: None (default), Double, Double+Triple\n"
               << "  --no-branch-opt      Disable individual branch length refinement (use proportional scaling)\n"
               << "  --threads <N>        Number of OpenMP worker threads\n"
               << "  --output <file>      Path to output JSON file (default: <alignment>.BUSTED.json)\n"
@@ -78,6 +79,8 @@ int run_busted(int argc, char* argv[]) {
             settings.num_syn_rate_classes = std::stoul(argv[++i]);
         } else if (arg == "--auto-k") {
             settings.auto_select_k = true;
+        } else if (arg == "--multiple-hits" && i + 1 < argc) {
+            settings.multiple_hits = argv[++i];
         } else if (arg == "--no-branch-opt") {
             settings.refine_branch_lengths = false;
         } else if (arg == "--threads" && i + 1 < argc) {
@@ -204,6 +207,15 @@ int run_busted(int argc, char* argv[]) {
                       << " (p = " << std::setprecision(4) << res.unconstrained.test_distribution.syn_weights[m] << ")\n";
         }
     }
+    if (res.settings.multiple_hits != "None") {
+        std::cout << "  Multi-hit Substitutions:\n";
+        std::cout << "    delta (double-hit rate) : " << std::setprecision(4) << res.unconstrained.delta
+                  << " (fraction: " << std::setprecision(4) << res.unconstrained.frac_delta * 100.0 << "%)\n";
+        if (res.settings.multiple_hits == "Double+Triple") {
+            std::cout << "    psi (triple-hit rate)   : " << std::setprecision(4) << res.unconstrained.psi
+                      << " (fraction: " << std::setprecision(4) << res.unconstrained.frac_psi * 100.0 << "%)\n";
+        }
+    }
     std::cout << "\n";
 
     std::cout << "Constrained Null Model (omega_" << res.optimal_k << " = 1.0):\n"
@@ -216,6 +228,15 @@ int run_busted(int argc, char* argv[]) {
             std::cout << " [" << res.constrained.test_distribution.annotations[k] << "]";
         }
         std::cout << "\n";
+    }
+    if (res.settings.multiple_hits != "None") {
+        std::cout << "  Multi-hit Substitutions:\n";
+        std::cout << "    delta (double-hit rate) : " << std::setprecision(4) << res.constrained.delta
+                  << " (fraction: " << std::setprecision(4) << res.constrained.frac_delta * 100.0 << "%)\n";
+        if (res.settings.multiple_hits == "Double+Triple") {
+            std::cout << "    psi (triple-hit rate)   : " << std::setprecision(4) << res.constrained.psi
+                      << " (fraction: " << std::setprecision(4) << res.constrained.frac_psi * 100.0 << "%)\n";
+        }
     }
     std::cout << "\n";
 

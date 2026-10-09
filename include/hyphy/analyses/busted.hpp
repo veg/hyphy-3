@@ -45,6 +45,10 @@ struct BUSTEDFit {
     BUSTEDRateDistribution test_distribution;
     std::vector<Scalar> branch_lengths; // Branch lengths per node id
     std::vector<Scalar> site_log_likelihoods;
+    Scalar delta = 0.0;      // Double-hit rate parameter
+    Scalar psi = 0.0;        // Triple-hit rate parameter
+    Scalar frac_delta = 0.0;  // Fraction of 2-hit substitutions
+    Scalar frac_psi = 0.0;    // Fraction of 3-hit substitutions
 };
 
 struct BUSTEDSettings {
@@ -55,9 +59,11 @@ struct BUSTEDSettings {
     size_t max_k = 3;                  // Max K to test in auto_select_k
     bool refine_branch_lengths = true; // Re-optimize individual branch lengths
     Scalar p_value_threshold = 0.05;
+    std::string multiple_hits = "None"; // "None", "Double", "Double+Triple"
 };
 
 struct BUSTEDResult {
+    BUSTEDSettings settings;
     size_t optimal_k = 3;
     std::vector<BUSTEDFit> k_null_fits; // Null model fits for K=1, 2, ...
     Scalar lrt = 0.0;
@@ -164,7 +170,9 @@ public:
         const std::vector<Scalar>& syn_rates = {1.0},
         const std::vector<Scalar>& syn_weights = {1.0},
         const std::vector<Scalar>* custom_branch_lengths = nullptr,
-        std::vector<Scalar>* out_pattern_ll = nullptr
+        std::vector<Scalar>* out_pattern_ll = nullptr,
+        Scalar delta = 0.0,
+        Scalar psi = 0.0
     ) const {
         size_t num_nodes = tree.num_nodes();
         size_t num_patterns = aln.patterns.size();
@@ -178,6 +186,8 @@ public:
             MG94Parameters p = base_params;
             p.alpha = 1.0;
             p.beta = omegas[k];
+            p.delta = delta;
+            p.psi = psi;
             mg[k].update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
         }
 
@@ -261,7 +271,9 @@ public:
         const std::vector<Scalar>& weights,
         const std::vector<Scalar>& syn_rates = {1.0},
         const std::vector<Scalar>& syn_weights = {1.0},
-        const std::vector<Scalar>* custom_branch_lengths = nullptr
+        const std::vector<Scalar>* custom_branch_lengths = nullptr,
+        Scalar delta = 0.0,
+        Scalar psi = 0.0
     ) const {
         size_t K = omegas.size();
         if (K <= 1) return {1.0};
@@ -277,6 +289,8 @@ public:
             MG94Parameters p = base_params;
             p.alpha = 1.0;
             p.beta = omegas[k];
+            p.delta = delta;
+            p.psi = psi;
             MG94Matrix mg;
             mg.update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
             for (size_t m = 0; m < M; ++m) {
@@ -375,7 +389,9 @@ public:
         const std::vector<Scalar>& weights,
         const std::vector<Scalar>& syn_rates,
         const std::vector<Scalar>& syn_weights,
-        const std::vector<Scalar>* custom_branch_lengths = nullptr
+        const std::vector<Scalar>* custom_branch_lengths = nullptr,
+        Scalar delta = 0.0,
+        Scalar psi = 0.0
     ) const {
         size_t M = syn_rates.size();
         if (M <= 1) return {1.0};
@@ -390,6 +406,8 @@ public:
             MG94Parameters p = base_params;
             p.alpha = 1.0;
             p.beta = omegas[k];
+            p.delta = delta;
+            p.psi = psi;
             mg[k].update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
         }
 
@@ -496,7 +514,9 @@ public:
         const std::vector<Scalar>& omegas,
         const std::vector<Scalar>& weights,
         const std::vector<Scalar>& syn_rates = {1.0},
-        const std::vector<Scalar>& syn_weights = {1.0}
+        const std::vector<Scalar>& syn_weights = {1.0},
+        Scalar delta = 0.0,
+        Scalar psi = 0.0
     ) const {
         size_t num_nodes = tree.num_nodes();
         size_t num_patterns = aln.patterns.size();
@@ -510,6 +530,8 @@ public:
             MG94Parameters p = base_params;
             p.alpha = 1.0;
             p.beta = omegas[k];
+            p.delta = delta;
+            p.psi = psi;
             mg[k].update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
         }
 
@@ -598,6 +620,8 @@ public:
         const std::vector<Scalar>& weights,
         const std::vector<Scalar>& syn_rates = {1.0},
         const std::vector<Scalar>& syn_weights = {1.0},
+        Scalar delta = 0.0,
+        Scalar psi = 0.0,
         int max_iters = 10
     ) const {
         size_t num_nodes = tree.num_nodes();
@@ -614,7 +638,7 @@ public:
         std::vector<std::vector<Scalar>> y_hist;
         std::vector<Scalar> rho_hist;
 
-        auto [curr_ll, curr_grad] = compute_busted_branch_gradients(bl, omegas, weights, syn_rates, syn_weights);
+        auto [curr_ll, curr_grad] = compute_busted_branch_gradients(bl, omegas, weights, syn_rates, syn_weights, delta, psi);
 
         Scalar best_ll = curr_ll;
         std::vector<Scalar> best_bl = bl;
@@ -716,7 +740,7 @@ public:
                         new_bl[i] = 0.0;
                     }
                 }
-                auto [test_ll, test_grad] = compute_busted_branch_gradients(new_bl, omegas, weights, syn_rates, syn_weights);
+                auto [test_ll, test_grad] = compute_busted_branch_gradients(new_bl, omegas, weights, syn_rates, syn_weights, delta, psi);
                 if (test_ll > curr_ll + 1e-4 * step_size * dir_dot_grad) {
                     new_ll = test_ll;
                     new_grad = test_grad;
@@ -770,11 +794,17 @@ public:
         size_t K = 3,
         bool refine_branches = true,
         bool srv = false,
-        size_t num_syn_rates = 3
+        size_t num_syn_rates = 3,
+        const std::string& multiple_hits = "None"
     ) const {
         BUSTEDFit fit;
         fit.num_rate_classes = K;
         Scalar s = 1.0;
+
+        bool allow_double = (multiple_hits == "Double" || multiple_hits == "Double+Triple");
+        bool allow_triple = (multiple_hits == "Double+Triple");
+        Scalar delta = 0.0;
+        Scalar psi = 0.0;
 
         // Initialize rates and weights
         std::vector<Scalar> omegas(K);
@@ -811,23 +841,40 @@ public:
             syn_weights = {1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0};
         }
 
+        if (allow_double) {
+            Scalar best_grid_ll = -1e20;
+            std::vector<Scalar> d_cands = {0.0, 0.02, 0.08, 0.20};
+            std::vector<Scalar> p_cands = allow_triple ? std::vector<Scalar>{0.0, 0.02, 0.05} : std::vector<Scalar>{0.0};
+            for (Scalar d_c : d_cands) {
+                for (Scalar p_c : p_cands) {
+                    Scalar cand_ll = evaluate_log_l(s, omegas, weights, syn_rates, syn_weights, nullptr, nullptr, d_c, p_c);
+                    if (cand_ll > best_grid_ll) {
+                        best_grid_ll = cand_ll;
+                        delta = d_c;
+                        psi = p_c;
+                    }
+                }
+            }
+        }
+
         // ECM Optimization Loop
-        int max_ecm = (K == 1 && !srv) ? 1 : 6;
+        int max_ecm = (K == 1 && !srv && !allow_double) ? 1 : 6;
         for (int ecm_iter = 0; ecm_iter < max_ecm; ++ecm_iter) {
             // Block 1: SQUAREM acceleration for omega weights
             if (K == 2) {
                 for (int sq = 0; sq < 2; ++sq) {
                     auto w0 = weights;
-                    auto w1 = compute_expected_weights(s, omegas, w0, syn_rates, syn_weights);
-                    auto w2 = compute_expected_weights(s, omegas, w1, syn_rates, syn_weights);
+                    auto w1 = compute_expected_weights(s, omegas, w0, syn_rates, syn_weights, nullptr, delta, psi);
+                    auto w2 = compute_expected_weights(s, omegas, w1, syn_rates, syn_weights, nullptr, delta, psi);
                     Scalar r = w1[0] - w0[0];
                     Scalar v = (w2[0] - w1[0]) - r;
                     if (std::abs(v) > 1e-12) {
                         Scalar step = -std::abs(r) / std::abs(v);
                         Scalar p_acc = std::clamp(w0[0] - 2.0 * step * r + step * step * v, 1e-5, 1.0 - 1e-5);
                         std::vector<Scalar> w_acc = {p_acc, 1.0 - p_acc};
-                        auto w_stab = compute_expected_weights(s, omegas, w_acc, syn_rates, syn_weights);
-                        if (evaluate_log_l(s, omegas, w_stab, syn_rates, syn_weights) >= evaluate_log_l(s, omegas, w2, syn_rates, syn_weights)) {
+                        auto w_stab = compute_expected_weights(s, omegas, w_acc, syn_rates, syn_weights, nullptr, delta, psi);
+                        if (evaluate_log_l(s, omegas, w_stab, syn_rates, syn_weights, nullptr, nullptr, delta, psi) >=
+                            evaluate_log_l(s, omegas, w2, syn_rates, syn_weights, nullptr, nullptr, delta, psi)) {
                             weights = w_stab;
                         } else {
                             weights = w2;
@@ -839,8 +886,8 @@ public:
             } else if (K == 3) {
                 for (int sq = 0; sq < 2; ++sq) {
                     auto w0 = weights;
-                    auto w1 = compute_expected_weights(s, omegas, w0, syn_rates, syn_weights);
-                    auto w2 = compute_expected_weights(s, omegas, w1, syn_rates, syn_weights);
+                    auto w1 = compute_expected_weights(s, omegas, w0, syn_rates, syn_weights, nullptr, delta, psi);
+                    auto w2 = compute_expected_weights(s, omegas, w1, syn_rates, syn_weights, nullptr, delta, psi);
                     Scalar r0 = w1[0] - w0[0], r1 = w1[1] - w0[1];
                     Scalar v0 = (w2[0] - w1[0]) - r0, v1 = (w2[1] - w1[1]) - r1;
                     Scalar r2 = r0 * r0 + r1 * r1;
@@ -856,8 +903,9 @@ public:
                         }
                         Scalar p3_acc = 1.0 - p1_acc - p2_acc;
                         std::vector<Scalar> w_acc = {p1_acc, p2_acc, p3_acc};
-                        auto w_stab = compute_expected_weights(s, omegas, w_acc, syn_rates, syn_weights);
-                        if (evaluate_log_l(s, omegas, w_stab, syn_rates, syn_weights) >= evaluate_log_l(s, omegas, w2, syn_rates, syn_weights)) {
+                        auto w_stab = compute_expected_weights(s, omegas, w_acc, syn_rates, syn_weights, nullptr, delta, psi);
+                        if (evaluate_log_l(s, omegas, w_stab, syn_rates, syn_weights, nullptr, nullptr, delta, psi) >=
+                            evaluate_log_l(s, omegas, w2, syn_rates, syn_weights, nullptr, nullptr, delta, psi)) {
                             weights = w_stab;
                         } else {
                             weights = w2;
@@ -872,8 +920,8 @@ public:
             if (srv && M >= 2) {
                 for (int sq = 0; sq < 2; ++sq) {
                     auto q0 = syn_weights;
-                    auto q1 = compute_expected_syn_weights(s, omegas, weights, syn_rates, q0);
-                    auto q2 = compute_expected_syn_weights(s, omegas, weights, syn_rates, q1);
+                    auto q1 = compute_expected_syn_weights(s, omegas, weights, syn_rates, q0, nullptr, delta, psi);
+                    auto q2 = compute_expected_syn_weights(s, omegas, weights, syn_rates, q1, nullptr, delta, psi);
                     if (M == 2) {
                         Scalar r = q1[0] - q0[0];
                         Scalar v = (q2[0] - q1[0]) - r;
@@ -881,8 +929,9 @@ public:
                             Scalar step = -std::abs(r) / std::abs(v);
                             Scalar q_acc = std::clamp(q0[0] - 2.0 * step * r + step * step * v, 1e-5, 1.0 - 1e-5);
                             std::vector<Scalar> q_cand = {q_acc, 1.0 - q_acc};
-                            auto q_stab = compute_expected_syn_weights(s, omegas, weights, syn_rates, q_cand);
-                            if (evaluate_log_l(s, omegas, weights, syn_rates, q_stab) >= evaluate_log_l(s, omegas, weights, syn_rates, q2)) {
+                            auto q_stab = compute_expected_syn_weights(s, omegas, weights, syn_rates, q_cand, nullptr, delta, psi);
+                            if (evaluate_log_l(s, omegas, weights, syn_rates, q_stab, nullptr, nullptr, delta, psi) >=
+                                evaluate_log_l(s, omegas, weights, syn_rates, q2, nullptr, nullptr, delta, psi)) {
                                 syn_weights = q_stab;
                             } else {
                                 syn_weights = q2;
@@ -906,8 +955,9 @@ public:
                             }
                             Scalar q3_acc = 1.0 - q1_acc - q2_acc;
                             std::vector<Scalar> q_cand = {q1_acc, q2_acc, q3_acc};
-                            auto q_stab = compute_expected_syn_weights(s, omegas, weights, syn_rates, q_cand);
-                            if (evaluate_log_l(s, omegas, weights, syn_rates, q_stab) >= evaluate_log_l(s, omegas, weights, syn_rates, q2)) {
+                            auto q_stab = compute_expected_syn_weights(s, omegas, weights, syn_rates, q_cand, nullptr, delta, psi);
+                            if (evaluate_log_l(s, omegas, weights, syn_rates, q_stab, nullptr, nullptr, delta, psi) >=
+                                evaluate_log_l(s, omegas, weights, syn_rates, q2, nullptr, nullptr, delta, psi)) {
                                 syn_weights = q_stab;
                             } else {
                                 syn_weights = q2;
@@ -925,13 +975,13 @@ public:
             if (is_constrained) {
                 if (K == 1) {
                     auto opt = NelderMead2D::minimize([&](Scalar w1, Scalar s_c) {
-                        return -evaluate_log_l(s_c, {w1}, weights, syn_rates, syn_weights);
+                        return -evaluate_log_l(s_c, {w1}, weights, syn_rates, syn_weights, nullptr, nullptr, delta, psi);
                     }, omegas[0], s, 1e-4, 1.0, 1e-4, 40);
                     omegas[0] = opt.a;
                     s = opt.b;
                 } else if (K == 2) {
                     auto opt = NelderMead2D::minimize([&](Scalar w1, Scalar s_c) {
-                        return -evaluate_log_l(s_c, {w1, 1.0}, weights, syn_rates, syn_weights);
+                        return -evaluate_log_l(s_c, {w1, 1.0}, weights, syn_rates, syn_weights, nullptr, nullptr, delta, psi);
                     }, omegas[0], s, 1e-4, 1.0, 1e-4, 40);
                     omegas[0] = opt.a;
                     omegas[1] = 1.0;
@@ -939,7 +989,7 @@ public:
                 } else if (K == 3) {
                     auto opt = NelderMeadND<3>::minimize([&](const std::array<Scalar, 3>& x) {
                         if (x[1] > x[2]) return 1e20;
-                        return -evaluate_log_l(x[0], {x[1], x[2], 1.0}, weights, syn_rates, syn_weights);
+                        return -evaluate_log_l(x[0], {x[1], x[2], 1.0}, weights, syn_rates, syn_weights, nullptr, nullptr, delta, psi);
                     }, {s, omegas[0], omegas[1]}, {0.01, 1e-4, 1e-4}, {50.0, 1.0, 1.0}, 1e-4, 40);
                     s = opt.x[0];
                     omegas[0] = opt.x[1];
@@ -949,13 +999,13 @@ public:
             } else {
                 if (K == 1) {
                     auto opt = NelderMead2D::minimize([&](Scalar w1, Scalar s_c) {
-                        return -evaluate_log_l(s_c, {w1}, weights, syn_rates, syn_weights);
+                        return -evaluate_log_l(s_c, {w1}, weights, syn_rates, syn_weights, nullptr, nullptr, delta, psi);
                     }, omegas[0], s, 1e-4, 2000.0, 1e-4, 40);
                     omegas[0] = opt.a;
                     s = opt.b;
                 } else if (K == 2) {
                     auto opt = NelderMeadND<3>::minimize([&](const std::array<Scalar, 3>& x) {
-                        return -evaluate_log_l(x[0], {x[1], x[2]}, weights, syn_rates, syn_weights);
+                        return -evaluate_log_l(x[0], {x[1], x[2]}, weights, syn_rates, syn_weights, nullptr, nullptr, delta, psi);
                     }, {s, omegas[0], omegas[1]}, {0.01, 1e-4, 1.0}, {50.0, 1.0, 2000.0}, 1e-4, 50);
                     s = opt.x[0];
                     omegas[0] = opt.x[1];
@@ -963,7 +1013,7 @@ public:
                 } else if (K == 3) {
                     auto opt = NelderMeadND<4>::minimize([&](const std::array<Scalar, 4>& x) {
                         if (x[1] > x[2]) return 1e20;
-                        return -evaluate_log_l(x[0], {x[1], x[2], x[3]}, weights, syn_rates, syn_weights);
+                        return -evaluate_log_l(x[0], {x[1], x[2], x[3]}, weights, syn_rates, syn_weights, nullptr, nullptr, delta, psi);
                     }, {s, omegas[0], omegas[1], omegas[2]}, {0.01, 1e-4, 1e-4, 1.0}, {50.0, 1.0, 1.0, 2000.0}, 1e-4, 50);
                     s = opt.x[0];
                     omegas[0] = opt.x[1];
@@ -978,7 +1028,7 @@ public:
                     Scalar q1 = syn_weights[0], q2 = syn_weights[1], q3 = syn_weights[2];
                     Scalar a3 = (1.0 - q1 * a1 - q2 * a2) / q3;
                     if (a1 < 0.01 || a2 < a1 || a3 < a2 || a3 > 50.0) return 1e20;
-                    return -evaluate_log_l(s, omegas, weights, {a1, a2, a3}, syn_weights);
+                    return -evaluate_log_l(s, omegas, weights, {a1, a2, a3}, syn_weights, nullptr, nullptr, delta, psi);
                 }, syn_rates[0], syn_rates[1], 0.01, 5.0, 1e-3, 30);
 
                 Scalar a1 = syn_opt.a;
@@ -989,6 +1039,22 @@ public:
                     syn_rates[1] = a2;
                     syn_rates[2] = a3;
                 }
+            }
+
+            // Block 3: Multiple hits optimization
+            if (allow_triple) {
+                auto mh_opt = NelderMead2D::minimize([&](Scalar d, Scalar p) {
+                    if (d < 0.0 || d > 10.0 || p < 0.0 || p > 10.0) return 1e20;
+                    return -evaluate_log_l(s, omegas, weights, syn_rates, syn_weights, nullptr, nullptr, d, p);
+                }, delta, psi, 0.0, 10.0, 1e-4, 30);
+                delta = std::max(0.0, mh_opt.a);
+                psi = std::max(0.0, mh_opt.b);
+            } else if (allow_double) {
+                auto d_opt = NelderMead2D::minimize([&](Scalar d, Scalar /*unused*/) {
+                    if (d < 0.0 || d > 10.0) return 1e20;
+                    return -evaluate_log_l(s, omegas, weights, syn_rates, syn_weights, nullptr, nullptr, d, 0.0);
+                }, delta, 0.0, 0.0, 10.0, 1e-4, 25);
+                delta = std::max(0.0, d_opt.a);
             }
         }
 
@@ -1001,19 +1067,56 @@ public:
         }
 
         if (refine_branches) {
-            bl = refine_branch_lengths(bl, omegas, weights, syn_rates, syn_weights, 1);
+            bl = refine_branch_lengths(bl, omegas, weights, syn_rates, syn_weights, delta, psi, 1);
             if (K >= 2) {
-                weights = compute_expected_weights(1.0, omegas, weights, syn_rates, syn_weights, &bl);
+                weights = compute_expected_weights(1.0, omegas, weights, syn_rates, syn_weights, &bl, delta, psi);
             }
             if (srv && M >= 2) {
-                syn_weights = compute_expected_syn_weights(1.0, omegas, weights, syn_rates, syn_weights, &bl);
+                syn_weights = compute_expected_syn_weights(1.0, omegas, weights, syn_rates, syn_weights, &bl, delta, psi);
+            }
+            if (allow_triple) {
+                auto mh_polish = NelderMead2D::minimize([&](Scalar d, Scalar p) {
+                    if (d < 0.0 || d > 10.0 || p < 0.0 || p > 10.0) return 1e20;
+                    return -evaluate_log_l(1.0, omegas, weights, syn_rates, syn_weights, &bl, nullptr, d, p);
+                }, delta, psi, 0.0, 10.0, 1e-4, 25);
+                delta = std::max(0.0, mh_polish.a);
+                psi = std::max(0.0, mh_polish.b);
+            } else if (allow_double) {
+                auto d_polish = NelderMead2D::minimize([&](Scalar d, Scalar /*unused*/) {
+                    if (d < 0.0 || d > 10.0) return 1e20;
+                    return -evaluate_log_l(1.0, omegas, weights, syn_rates, syn_weights, &bl, nullptr, d, 0.0);
+                }, delta, 0.0, 0.0, 10.0, 1e-4, 25);
+                delta = std::max(0.0, d_polish.a);
             }
         }
 
-        Scalar best_lnL = evaluate_log_l(1.0, omegas, weights, syn_rates, syn_weights, &bl, &fit.site_log_likelihoods);
+        Scalar best_lnL = evaluate_log_l(1.0, omegas, weights, syn_rates, syn_weights, &bl, &fit.site_log_likelihoods, delta, psi);
         fit.log_likelihood = best_lnL;
         fit.tree_scale = s;
         fit.branch_lengths = bl;
+        fit.delta = delta;
+        fit.psi = psi;
+
+        // Compute substitution rates and fractions
+        Scalar total_rate = 0.0;
+        Scalar double_rate = 0.0;
+        Scalar triple_rate = 0.0;
+        for (size_t k = 0; k < K; ++k) {
+            MG94Parameters p = base_params;
+            p.alpha = 1.0;
+            p.beta = omegas[k];
+            p.delta = delta;
+            p.psi = psi;
+            MG94Matrix mat;
+            mat.update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            auto sr = mat.compute_substitution_rates(*code);
+            total_rate += weights[k] * sr.total_rate;
+            double_rate += weights[k] * sr.rate_double;
+            triple_rate += weights[k] * sr.rate_triple;
+        }
+        fit.frac_delta = (total_rate > 1e-12) ? (double_rate / total_rate) : 0.0;
+        fit.frac_psi = (total_rate > 1e-12) ? (triple_rate / total_rate) : 0.0;
+
         fit.test_distribution.omegas = omegas;
         fit.test_distribution.weights = weights;
         if (srv) {
@@ -1037,7 +1140,8 @@ public:
         size_t num_branches = tree.num_nodes() - 1;
         size_t num_mixture_params = (2 * K - 1) - (is_constrained ? 1 : 0);
         size_t num_syn_params = srv ? 2 * (M - 1) : 0;
-        size_t K_params = 5 + (refine_branches ? num_branches : 1) + num_mixture_params + num_syn_params;
+        size_t num_mh_params = (allow_double ? 1 : 0) + (allow_triple ? 1 : 0);
+        size_t K_params = 5 + (refine_branches ? num_branches : 1) + num_mixture_params + num_syn_params + num_mh_params;
         fit.aicc = -2.0 * fit.log_likelihood + 2.0 * K_params * N_codons / (N_codons - K_params - 1.0);
 
         return fit;
@@ -1048,12 +1152,13 @@ public:
         size_t max_k = 3,
         bool refine_branches = true,
         bool srv = false,
-        size_t num_syn_rates = 3
+        size_t num_syn_rates = 3,
+        const std::string& multiple_hits = "None"
     ) const {
         std::vector<BUSTEDFit> null_fits;
         null_fits.reserve(max_k);
         for (size_t k = 1; k <= max_k; ++k) {
-            null_fits.push_back(fit_model(true, k, refine_branches, srv, num_syn_rates));
+            null_fits.push_back(fit_model(true, k, refine_branches, srv, num_syn_rates, multiple_hits));
         }
 
         size_t optimal_k = 1;
@@ -1070,13 +1175,15 @@ public:
     BUSTEDResult run(BUSTEDSettings settings = {}) const {
         auto t0 = std::chrono::high_resolution_clock::now();
         BUSTEDResult res;
+        res.settings = settings;
 
         if (settings.auto_select_k) {
             auto [opt_k, null_fits] = select_optimal_k(
                 settings.max_k,
                 settings.refine_branch_lengths,
                 settings.srv,
-                settings.num_syn_rate_classes
+                settings.num_syn_rate_classes,
+                settings.multiple_hits
             );
             res.optimal_k = opt_k;
             res.k_null_fits = null_fits;
@@ -1086,7 +1193,8 @@ public:
                 opt_k,
                 settings.refine_branch_lengths,
                 settings.srv,
-                settings.num_syn_rate_classes
+                settings.num_syn_rate_classes,
+                settings.multiple_hits
             );
         } else {
             res.optimal_k = settings.num_rate_classes;
@@ -1095,14 +1203,16 @@ public:
                 settings.num_rate_classes,
                 settings.refine_branch_lengths,
                 settings.srv,
-                settings.num_syn_rate_classes
+                settings.num_syn_rate_classes,
+                settings.multiple_hits
             );
             res.constrained = fit_model(
                 true,
                 settings.num_rate_classes,
                 settings.refine_branch_lengths,
                 settings.srv,
-                settings.num_syn_rate_classes
+                settings.num_syn_rate_classes,
+                settings.multiple_hits
             );
         }
 
@@ -1154,7 +1264,7 @@ public:
             {"settings", {
                 {"error-sink", 0},
                 {"mss", "No"},
-                {"multiple-hit", "None"},
+                {"multiple-hit", res.settings.multiple_hits},
                 {"srv", (!res.unconstrained.test_distribution.syn_rates.empty() && res.unconstrained.test_distribution.syn_rates.size() > 1) ? "Yes" : "No"},
                 {"optimal_k", res.optimal_k}
             }}
@@ -1220,21 +1330,39 @@ public:
         if (!res.unconstrained.test_distribution.syn_rates.empty() && res.unconstrained.test_distribution.syn_rates.size() > 1) {
             unc_rates["Synonymous site-to-site rates"] = format_srv_distro(res.unconstrained.test_distribution);
         }
-        fits["Unconstrained model"] = {
+        nlohmann::json unc_fit = {
             {"AIC-c", res.unconstrained.aicc},
             {"Log Likelihood", res.unconstrained.log_likelihood},
             {"Rate Distributions", unc_rates}
         };
+        if (res.settings.multiple_hits != "None") {
+            unc_fit["rate at which 2 nucleotides are changed instantly within a single codon"] = res.unconstrained.delta;
+            unc_fit["Fraction of subs rate at which 2 nucleotides are changed instantly within a single codon"] = res.unconstrained.frac_delta;
+            if (res.settings.multiple_hits == "Double+Triple") {
+                unc_fit["rate at which 3 nucleotides are changed instantly within a single codon"] = res.unconstrained.psi;
+                unc_fit["Fraction of subs rate at which 3 nucleotides are changed instantly within a single codon"] = res.unconstrained.frac_psi;
+            }
+        }
+        fits["Unconstrained model"] = unc_fit;
 
         nlohmann::json con_rates = {{"Test", format_distro(res.constrained.test_distribution)}};
         if (!res.constrained.test_distribution.syn_rates.empty() && res.constrained.test_distribution.syn_rates.size() > 1) {
             con_rates["Synonymous site-to-site rates"] = format_srv_distro(res.constrained.test_distribution);
         }
-        fits["Constrained model"] = {
+        nlohmann::json con_fit = {
             {"AIC-c", res.constrained.aicc},
             {"Log Likelihood", res.constrained.log_likelihood},
             {"Rate Distributions", con_rates}
         };
+        if (res.settings.multiple_hits != "None") {
+            con_fit["rate at which 2 nucleotides are changed instantly within a single codon"] = res.constrained.delta;
+            con_fit["Fraction of subs rate at which 2 nucleotides are changed instantly within a single codon"] = res.constrained.frac_delta;
+            if (res.settings.multiple_hits == "Double+Triple") {
+                con_fit["rate at which 3 nucleotides are changed instantly within a single codon"] = res.constrained.psi;
+                con_fit["Fraction of subs rate at which 3 nucleotides are changed instantly within a single codon"] = res.constrained.frac_psi;
+            }
+        }
+        fits["Constrained model"] = con_fit;
 
         j["fits"] = fits;
 
@@ -1255,7 +1383,8 @@ public:
         j["branch attributes"] = {{"0", branch_attr}};
 
         j["Evidence Ratios"] = {
-            {"constrained", {res.evidence_ratios}}
+            {"constrained", {res.evidence_ratios}},
+            {"optimized null", {res.evidence_ratios}}
         };
 
         // Site Log Likelihood

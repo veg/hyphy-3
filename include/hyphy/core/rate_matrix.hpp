@@ -104,6 +104,8 @@ struct MG94Parameters {
     Scalar theta_CT = 1.0;
     Scalar theta_GT = 1.0;
     // theta_AG = 1.0 reference
+    Scalar delta = 0.0; // Double-hit rate parameter (default 0.0 = disabled)
+    Scalar psi = 0.0;   // Triple-hit rate parameter (default 0.0 = disabled)
 };
 
 class MG94Matrix {
@@ -118,6 +120,36 @@ public:
     Matrix inv_eigenvectors;
 
     Scalar scale_factor = 1.0;
+
+    struct SubstitutionRates {
+        Scalar rate_single = 0.0;
+        Scalar rate_double = 0.0;
+        Scalar rate_triple = 0.0;
+        Scalar total_rate = 0.0;
+        Scalar frac_double = 0.0;
+        Scalar frac_triple = 0.0;
+    };
+
+    SubstitutionRates compute_substitution_rates(const GeneticCode& code) const {
+        SubstitutionRates sr;
+        int S = code.num_sense_codons;
+        for (int i = 0; i < S; ++i) {
+            for (int j = 0; j < S; ++j) {
+                if (i == j) continue;
+                Scalar flux = pi(i) * Q(i, j);
+                int nd = code.diff_matrix[i][j].num_diffs;
+                if (nd == 1) sr.rate_single += flux;
+                else if (nd == 2) sr.rate_double += flux;
+                else if (nd == 3) sr.rate_triple += flux;
+            }
+        }
+        sr.total_rate = sr.rate_single + sr.rate_double + sr.rate_triple;
+        if (sr.total_rate > 1e-12) {
+            sr.frac_double = sr.rate_double / sr.total_rate;
+            sr.frac_triple = sr.rate_triple / sr.total_rate;
+        }
+        return sr;
+    }
 
     void update(
         const MG94Parameters& params,
@@ -148,11 +180,25 @@ public:
             for (int j = 0; j < S; ++j) {
                 if (i == j) continue;
                 const auto& diff = code.diff_matrix[i][j];
-                if (diff.pos >= 0) {
-                    Scalar nuc_rate = r_nuc[diff.nuc_from][diff.nuc_to];
-                    Scalar rate_modifier = diff.synonymous ? params.alpha : params.beta;
-                    Scalar target_nuc_freq = pos_nuc_freqs(diff.pos, diff.nuc_to);
+                Scalar rate_modifier = diff.synonymous ? params.alpha : params.beta;
+                if (diff.num_diffs == 1) {
+                    Scalar nuc_rate = r_nuc[diff.diff_from[0]][diff.diff_to[0]];
+                    Scalar target_nuc_freq = pos_nuc_freqs(diff.diff_pos[0], diff.diff_to[0]);
                     Q(i, j) = rate_modifier * nuc_rate * target_nuc_freq;
+                } else if (diff.num_diffs == 2 && params.delta > 0.0) {
+                    Scalar nuc_rate = r_nuc[diff.diff_from[0]][diff.diff_to[0]] *
+                                      r_nuc[diff.diff_from[1]][diff.diff_to[1]];
+                    Scalar target_nuc_freq = pos_nuc_freqs(diff.diff_pos[0], diff.diff_to[0]) *
+                                             pos_nuc_freqs(diff.diff_pos[1], diff.diff_to[1]);
+                    Q(i, j) = rate_modifier * params.delta * nuc_rate * target_nuc_freq;
+                } else if (diff.num_diffs == 3 && params.psi > 0.0) {
+                    Scalar nuc_rate = r_nuc[diff.diff_from[0]][diff.diff_to[0]] *
+                                      r_nuc[diff.diff_from[1]][diff.diff_to[1]] *
+                                      r_nuc[diff.diff_from[2]][diff.diff_to[2]];
+                    Scalar target_nuc_freq = pos_nuc_freqs(diff.diff_pos[0], diff.diff_to[0]) *
+                                             pos_nuc_freqs(diff.diff_pos[1], diff.diff_to[1]) *
+                                             pos_nuc_freqs(diff.diff_pos[2], diff.diff_to[2]);
+                    Q(i, j) = rate_modifier * params.psi * nuc_rate * target_nuc_freq;
                 }
             }
         }

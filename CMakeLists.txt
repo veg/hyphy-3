@@ -66,6 +66,10 @@ add_executable(hyphy_busted_test tests/test_busted.cpp)
 target_link_libraries(hyphy_busted_test PRIVATE hyphy3_core)
 add_test(NAME BUSTEDTest COMMAND hyphy_busted_test)
 
+add_executable(hyphy_busted_mh_test tests/test_busted_mh.cpp)
+target_link_libraries(hyphy_busted_mh_test PRIVATE hyphy3_core)
+add_test(NAME BUSTEDMHTest COMMAND hyphy_busted_mh_test)
+
 add_executable(hyphy_cpp_autograd_test tests/test_cpp_autograd.cpp)
 target_link_libraries(hyphy_cpp_autograd_test PRIVATE hyphy3_core)
 add_test(NAME CppAutogradTest COMMAND hyphy_cpp_autograd_test)
