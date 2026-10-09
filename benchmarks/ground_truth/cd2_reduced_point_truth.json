@@ -1,0 +1,17 @@
+{
+ "dataset":"cd2_reduced",
+ "nuc_freqs":{
+   "A":0.3805555555555555,
+   "C":0.1638888888888889,
+   "G":0.2527777777777778,
+   "T":0.2027777777777778
+  },
+ "point_gtr_logl":-90.8383219324723,
+ "point_mg94_logl":-92.77744887734814,
+ "sense_codons":  [
+["AAA", "AAC", "AAG", "AAT", "ACA", "ACC", "ACG", "ACT", "AGA", "AGC", "AGG", "AGT", "ATA", "ATC", "ATG", "ATT", "CAA", "CAC", "CAG", "CAT", "CCA", "CCC", "CCG", "CCT", "CGA", "CGC", "CGG", "CGT", "CTA", "CTC", "CTG", "CTT", "GAA", "GAC", "GAG", "GAT", "GCA", "GCC", "GCG", "GCT", "GGA", "GGC", "GGG", "GGT", "GTA", "GTC", "GTG", "GTT", "TAC", "TAT", "TCA", "TCC", "TCG", "TCT", "TGC", "TGG", "TGT", "TTA", "TTC", "TTG", "TTT"] 
+  ],
+ "sites_codon":6,
+ "sites_nuc":18,
+ "taxa":10
+}

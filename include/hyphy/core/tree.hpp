@@ -1,0 +1,190 @@
+#pragma once
+
+#include "hyphy/core/types.hpp"
+#include <string>
+#include <vector>
+#include <unordered_map>
+#include <stack>
+#include <sstream>
+#include <fstream>
+#include <stdexcept>
+#include <iostream>
+
+namespace hyphy::core {
+
+struct TreeNode {
+    int32_t id = INVALID_INDEX;
+    std::string name;
+    int32_t parent_id = INVALID_INDEX;
+    std::vector<int32_t> children;
+    Scalar branch_length = 0.0;
+    bool is_leaf = false;
+};
+
+class Tree {
+public:
+    std::vector<TreeNode> nodes;
+    int32_t root_id = INVALID_INDEX;
+    std::vector<int32_t> post_order;
+    std::unordered_map<std::string, int32_t> leaf_name_to_id;
+
+    static Tree from_newick_file(const std::string& filepath) {
+        std::ifstream file(filepath);
+        if (!file.is_open()) {
+            throw std::runtime_error("Could not open Newick file: " + filepath);
+        }
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        return from_newick(buffer.str());
+    }
+
+    static Tree from_newick(std::string_view newick_sv) {
+        Tree tree;
+        std::string newick(newick_sv);
+
+        // Strip trailing semicolon and whitespace
+        while (!newick.empty() && (newick.back() == ';' || newick.back() == ' ' || newick.back() == '\n' || newick.back() == '\r')) {
+            newick.pop_back();
+        }
+
+        // Clean any model tags like {PR} or comments [comment]
+        std::string clean;
+        bool in_tag = false;
+        bool in_comment = false;
+        for (char c : newick) {
+            if (c == '{') { in_tag = true; continue; }
+            if (c == '}') { in_tag = false; continue; }
+            if (c == '[') { in_comment = true; continue; }
+            if (c == ']') { in_comment = false; continue; }
+            if (!in_tag && !in_comment && c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                clean += c;
+            }
+        }
+
+        // Parse Newick
+        std::stack<int32_t> parent_stack;
+        std::string token;
+        int32_t current_id = INVALID_INDEX;
+
+        auto create_node = [&]() -> int32_t {
+            int32_t id = static_cast<int32_t>(tree.nodes.size());
+            TreeNode node;
+            node.id = id;
+            tree.nodes.push_back(std::move(node));
+            return id;
+        };
+
+        auto process_token = [&](int32_t target_node, const std::string& str) {
+            if (str.empty()) return;
+            auto colon = str.find(':');
+            std::string name;
+            Scalar length = 0.0;
+            if (colon != std::string::npos) {
+                name = str.substr(0, colon);
+                try {
+                    length = std::stod(str.substr(colon + 1));
+                } catch (...) {
+                    length = 0.0;
+                }
+            } else {
+                name = str;
+            }
+            tree.nodes[target_node].name = name;
+            tree.nodes[target_node].branch_length = length;
+        };
+
+        for (size_t i = 0; i < clean.size(); ++i) {
+            char c = clean[i];
+            if (c == '(') {
+                int32_t internal_id = create_node();
+                if (!parent_stack.empty()) {
+                    int32_t p = parent_stack.top();
+                    tree.nodes[p].children.push_back(internal_id);
+                    tree.nodes[internal_id].parent_id = p;
+                }
+                parent_stack.push(internal_id);
+            } else if (c == ',' || c == ')') {
+                if (!token.empty()) {
+                    int32_t leaf_id = create_node();
+                    tree.nodes[leaf_id].is_leaf = true;
+                    process_token(leaf_id, token);
+                    token.clear();
+                    if (!parent_stack.empty()) {
+                        int32_t p = parent_stack.top();
+                        tree.nodes[p].children.push_back(leaf_id);
+                        tree.nodes[leaf_id].parent_id = p;
+                    }
+                }
+                if (c == ')') {
+                    if (!parent_stack.empty()) {
+                        current_id = parent_stack.top();
+                        parent_stack.pop();
+                        // Peek forward for internal node name or branch length
+                        size_t j = i + 1;
+                        std::string int_token;
+                        while (j < clean.size() && clean[j] != ',' && clean[j] != ')' && clean[j] != ';') {
+                            int_token += clean[j];
+                            ++j;
+                        }
+                        if (!int_token.empty()) {
+                            process_token(current_id, int_token);
+                            i = j - 1; // Advance loop
+                        }
+                    }
+                }
+            } else {
+                token += c;
+            }
+        }
+
+        if (tree.nodes.empty()) {
+            throw std::runtime_error("Failed to parse Newick tree: empty tree");
+        }
+
+        // The root is the node with parent_id == INVALID_INDEX
+        int node_counter = 1;
+        for (auto& node : tree.nodes) {
+            if (node.parent_id == INVALID_INDEX) {
+                tree.root_id = node.id;
+            }
+            if (node.name.empty()) {
+                node.name = "Node" + std::to_string(node_counter++);
+            }
+        }
+
+        // Build leaf map and compute post-order traversal
+        tree.leaf_name_to_id.clear();
+        for (const auto& node : tree.nodes) {
+            if (node.is_leaf) {
+                tree.leaf_name_to_id[node.name] = node.id;
+            }
+        }
+
+        tree.compute_post_order();
+        return tree;
+    }
+
+    size_t num_leaves() const {
+        return leaf_name_to_id.size();
+    }
+
+    size_t num_nodes() const {
+        return nodes.size();
+    }
+
+private:
+    void compute_post_order() {
+        post_order.clear();
+        if (root_id == INVALID_INDEX) return;
+        traverse_post_order(root_id);
+    }
+
+    void traverse_post_order(int32_t node_id) {
+        for (int32_t child_id : nodes[node_id].children) {
+            traverse_post_order(child_id);
+        }
+        post_order.push_back(node_id);
+    }
+};
+
+} // namespace hyphy::core

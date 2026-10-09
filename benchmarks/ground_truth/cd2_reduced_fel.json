@@ -1,0 +1,304 @@
+{
+ "MLE":{
+   "content":{
+     "0":      [
+[0.007940398000196058, 8.34127547418926, 2.970483433556686, 1.2224669771295, 0.2688770496375218, 19.25903958103747],
+      [0, 0, 0, 0, 1, 0],
+      [0, 0, 0, 0, 1, 0],
+      [0.6516871838122842, 0.3636721301274052, 0.4356758935486248, 0.1608102360354344, 0.6884116452883207, 2.824691490809053],
+      [1.401080975422671, 0.6081205357669648, 0.7910271651796478, 0.6365463238121656, 0.424964197399014, 5.128600722620384],
+      [1.32077749734075, 0.6669240450914277, 0.8144881497428901, 0.3190685477456299, 0.572167952052026, 5.280709307105096] 
+      ]
+    },
+   "headers":    [
+["alpha", "Synonymous substitution rate at a site"],
+    ["beta", "Non-synonymous substitution rate at a site"],
+    ["alpha=beta", "The rate estimate under the neutral model"],
+    ["LRT", "Likelihood ratio test statistic for beta = alpha, versus beta &neq; alpha"],
+    ["p-value", "Asymptotic p-value for evidence of selection, i.e. beta &neq; alpha"],
+    ["Total branch length", "The total length of branches contributing to inference at this site, and used to scale dN-dS"] 
+    ]
+  },
+ "analysis":{
+   "authors":"Sergei L Kosakovsky Pond and Simon DW Frost",
+   "citation":"Not So Different After All: A Comparison of Methods for Detecting Amino Acid Sites Under Selection (2005). _Mol Biol Evol_ 22 (5): 1208-1222",
+   "contact":"spond@temple.edu",
+   "info":"FEL (Fixed Effects Likelihood)\n    estimates site-wise synonymous (&alpha;) and non-synonymous (&beta;) rates, and\n    uses a likelihood ratio test to determine if beta &neq; alpha at a site.\n    The estimates aggregate information over all branches,\n    so the signal is derived from\n    pervasive diversification or conservation. A subset of branches can be selected\n    for testing as well, in which case an additional (nuisance) parameter will be\n    inferred -- the non-synonymous rate on branches NOT selected for testing.\n    Multiple partitions within a NEXUS file are also supported\n    for recombination - aware analysis. Version 2.5 adds MH support. Version 2.6 adds substitution mapping.\n    ",
+   "requirements":"in-frame codon alignment and a phylogenetic tree",
+   "settings":{
+     "ci":0,
+     "multihit":"None",
+     "pvalue":0.1,
+     "resample":0,
+     "site-filter":{
+       "site-filter":null,
+       "site-save-filter":null
+      },
+     "srv":1
+    },
+   "version":"2.6"
+  },
+ "branch attributes":{
+   "0":{
+     "Baboon":{
+       "Global MG94xREV":0,
+       "Nucleotide GTR":1e-06,
+       "original name":"Baboon"
+      },
+     "Cat":{
+       "Global MG94xREV":1.197250478870998,
+       "Nucleotide GTR":1.215495243542456,
+       "original name":"Cat"
+      },
+     "Chimp":{
+       "Global MG94xREV":0.05545563815378509,
+       "Nucleotide GTR":0.0543395680779652,
+       "original name":"Chimp"
+      },
+     "Cow":{
+       "Global MG94xREV":0.5939647347629947,
+       "Nucleotide GTR":0.7724761763100909,
+       "original name":"Cow"
+      },
+     "Horse":{
+       "Global MG94xREV":0.95992364787302,
+       "Nucleotide GTR":0.8449081287158643,
+       "original name":"Horse"
+      },
+     "Human":{
+       "Global MG94xREV":0,
+       "Nucleotide GTR":1e-06,
+       "original name":"Human"
+      },
+     "Mouse":{
+       "Global MG94xREV":0.09748291588565174,
+       "Nucleotide GTR":0.1187613769912815,
+       "original name":"Mouse"
+      },
+     "Node12":{
+       "Global MG94xREV":0.1321590496511669,
+       "Nucleotide GTR":0.1237575469864798
+      },
+     "Node8":{
+       "Global MG94xREV":0.8462121433135308,
+       "Nucleotide GTR":0.8940506991491072
+      },
+     "Pig":{
+       "Global MG94xREV":0.4755389109237619,
+       "Nucleotide GTR":0.4448403390245648,
+       "original name":"Pig"
+      },
+     "Rat":{
+       "Global MG94xREV":0,
+       "Nucleotide GTR":1e-06,
+       "original name":"Rat"
+      },
+     "RhMonkey":{
+       "Global MG94xREV":0,
+       "Nucleotide GTR":1e-06,
+       "original name":"RhMonkey"
+      }
+    },
+   "attributes":{
+     "Global MG94xREV":{
+       "attribute type":"branch length",
+       "display order":1
+      },
+     "Nucleotide GTR":{
+       "attribute type":"branch length",
+       "display order":0
+      },
+     "original name":{
+       "attribute type":"node label",
+       "display order":-1
+      }
+    }
+  },
+ "data partitions":{
+   "0":{
+     "coverage":      [
+[0, 1, 2, 3, 4, 5] 
+      ],
+     "name":"fel.filter.default"
+    }
+  },
+ "fits":{
+   "Global MG94xREV":{
+     "AIC-c":222.2479123976283,
+     "Equilibrium frequencies":      [
+[0.06998104558824184],
+      [0.04373815349265116],
+      [0.07872867628677206],
+      [0.1399620911764837],
+      [0.02799241823529674],
+      [0.01749526139706046],
+      [0.03149147051470883],
+      [0.05598483647059349],
+      [0.02099431367647255],
+      [0.01312144604779535],
+      [0.02361860288603162],
+      [0.04198862735294512],
+      [0.01399620911764837],
+      [0.008747630698530235],
+      [0.01574573525735442],
+      [0.02799241823529676],
+      [1.162877560663617e-09],
+      [7.267984754147608e-10],
+      [1.308237255746569e-09],
+      [2.325755121327236e-09],
+      [4.65151024265447e-10],
+      [2.907193901659044e-10],
+      [5.232949022986278e-10],
+      [9.303020485308943e-10],
+      [3.488632681990852e-10],
+      [2.180395426244283e-10],
+      [3.924711767239709e-10],
+      [6.977265363981707e-10],
+      [2.325755121327236e-10],
+      [1.453596950829523e-10],
+      [2.61647451149314e-10],
+      [4.651510242654474e-10],
+      [0.04082227653829674],
+      [0.02551392283643546],
+      [0.04592506110558382],
+      [0.0816445530765935],
+      [0.01632891061531869],
+      [0.01020556913457418],
+      [0.01837002444223353],
+      [0.03265782123063739],
+      [0.01224668296148902],
+      [0.007654176850930638],
+      [0.01377751833167515],
+      [0.02449336592297805],
+      [0.008164455307659352],
+      [0.005102784567287095],
+      [0.00918501222111677],
+      [0.01632891061531871],
+      [6.925207655563481e-10],
+      [2.216066449780314e-09],
+      [4.432132899560628e-10],
+      [2.770083062225392e-10],
+      [4.986149512005707e-10],
+      [8.864265799121259e-10],
+      [2.077562296669044e-10],
+      [3.73961213400428e-10],
+      [6.648199349340944e-10],
+      [2.216066449780315e-10],
+      [1.385041531112697e-10],
+      [2.493074756002854e-10],
+      [4.432132899560632e-10] 
+      ],
+     "Log Likelihood":-60.49895619881413,
+     "Rate Distributions":{
+       "non-synonymous/synonymous rate ratio for *test*":        [
+[0.5817295780925678, 1] 
+        ]
+      },
+     "display order":1,
+     "estimated parameters":27
+    },
+   "Nucleotide GTR":{
+     "AIC-c":189.6619889540693,
+     "Equilibrium frequencies":      [
+[0.456140350877193],
+      [0.1140350877192982],
+      [0.2543859649122807],
+      [0.1754385964912281] 
+      ],
+     "Log Likelihood":-66.96002673509916,
+     "Rate Distributions":{
+       "Substitution rate from nucleotide A to nucleotide C":0,
+       "Substitution rate from nucleotide A to nucleotide G":1,
+       "Substitution rate from nucleotide A to nucleotide T":0,
+       "Substitution rate from nucleotide C to nucleotide G":1.939655100749999,
+       "Substitution rate from nucleotide C to nucleotide T":1.75182706350873,
+       "Substitution rate from nucleotide G to nucleotide T":0
+      },
+     "display order":0,
+     "estimated parameters":24
+    }
+  },
+ "input":{
+   "file name":"/Users/sergei/Development/hyphy/hyphy-next/benchmarks/data/cd2_reduced.fna",
+   "number of sequences":10,
+   "number of sites":6,
+   "partition count":1,
+   "trees":{
+     "0":"(Rat:0.050958,Mouse:0.09795,((Human:0.004349,Chimp:0.050958)Node12:0.09795,RhMonkey:0.004349,Baboon:0.050958)Node8:0.101856,Horse:0.165787,Cat:0.004349,Pig:0.147969,Cow:0.21343)"
+    }
+  },
+ "runtime":"2.5.101",
+ "substitutions":{
+   "0":{
+     "0":{
+       "Cat":"---",
+       "Chimp":"GAA",
+       "Cow":"---",
+       "Horse":"---",
+       "Mouse":"---",
+       "Pig":"---",
+       "Rat":"---",
+       "root":"AAA"
+      },
+     "1":null,
+     "2":null,
+     "3":{
+       "Cat":"GCA",
+       "Cow":"---",
+       "Horse":"---",
+       "Node12":"ACG",
+       "Node8":"AGG",
+       "Pig":"---",
+       "root":"AGA"
+      },
+     "4":{
+       "Cat":"AAT",
+       "Cow":"GAA",
+       "Horse":"AAG",
+       "Node8":"AAT",
+       "Pig":"---",
+       "root":"GAC"
+      },
+     "5":{
+       "Cat":"GAT",
+       "Cow":"AGC",
+       "Horse":"AAT",
+       "Mouse":"AAT",
+       "Node12":"GCC",
+       "Node8":"GCT",
+       "Pig":"ACT",
+       "root":"AGT"
+      }
+    }
+  },
+ "tested":{
+   "0":{
+     "Baboon":"test",
+     "Cat":"test",
+     "Chimp":"test",
+     "Cow":"test",
+     "Horse":"test",
+     "Human":"test",
+     "Mouse":"test",
+     "Node12":"test",
+     "Node8":"test",
+     "Pig":"test",
+     "Rat":"test",
+     "RhMonkey":"test"
+    }
+  },
+ "timers":{
+   "FEL analysis":{
+     "order":2,
+     "timer":0
+    },
+   "Model fitting":{
+     "order":1,
+     "timer":1
+    },
+   "Total time":{
+     "order":0,
+     "timer":1
+    }
+  }
+}

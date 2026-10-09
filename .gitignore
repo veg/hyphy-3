@@ -1,0 +1,39 @@
+# Build directories
+build/
+bin/
+lib/
+cmake-build-*/
+.cache/
+
+# Compiled libraries & binaries
+*.o
+*.obj
+*.so
+*.dylib
+*.a
+*.exe
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+.pytest_cache/
+
+# Test and benchmark temporary outputs
+Testing/
+*.json
+!benchmarks/data/*.json
+!benchmarks/ground_truth/*.json
+!tests/data/*.json
+scratch/
+*.trace/
+*.trace
+
+# IDE and OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
