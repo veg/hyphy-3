@@ -150,11 +150,17 @@ public:
             ? *custom_leaf_to_taxon
             : (local_map = build_leaf_to_taxon_map(tree, aln));
 
+        const double SCALER_THRESH = 1e-150;
+        const double SCALER_UP = 1e150;
+        const double LOG_SCALER = std::log(SCALER_UP);
+
         Scalar total_log_l = 0.0;
 
         #pragma omp parallel
         {
             std::vector<Vector> node_L(num_nodes, Vector::Zero(S));
+            std::vector<double> node_log_scale(num_nodes, 0.0);
+
             #pragma omp for reduction(+:total_log_l) schedule(dynamic)
             for (size_t p = 0; p < num_patterns; ++p) {
                 const auto& pattern = aln.patterns[p];
@@ -175,17 +181,29 @@ public:
                         } else {
                             node_L[node_id].setOnes();
                         }
+                        node_log_scale[node_id] = 0.0;
                     } else {
                         node_L[node_id].setOnes();
+                        double child_scale_sum = 0.0;
                         for (int32_t child_id : node.children) {
                             node_L[node_id].array() *= (P_branches[child_id] * node_L[child_id]).array();
+                            child_scale_sum += node_log_scale[child_id];
                         }
+
+                        double max_val = node_L[node_id].maxCoeff();
+                        int boost_count = 0;
+                        while (max_val < SCALER_THRESH && max_val > 0.0) {
+                            node_L[node_id] *= SCALER_UP;
+                            max_val *= SCALER_UP;
+                            boost_count++;
+                        }
+                        node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
                     }
                 }
 
                 Scalar pattern_likelihood = pi.dot(node_L[tree.root_id]);
                 if (pattern_likelihood > 0.0) {
-                    total_log_l += pattern.weight * std::log(pattern_likelihood);
+                    total_log_l += pattern.weight * (std::log(pattern_likelihood) + node_log_scale[tree.root_id]);
                 } else {
                     total_log_l += pattern.weight * (-1e20);
                 }
@@ -201,6 +219,7 @@ public:
         std::vector<Vector> D; // Downward subtree likelihoods D[node]
         std::vector<Vector> V; // Upward parent-sibling messages V[node]
         Scalar likelihood = 0.0;
+        Scalar log_likelihood = 0.0;
     };
 
     static InsideOutsideResult compute_inside_outside(
@@ -216,6 +235,12 @@ public:
         res.D.assign(num_nodes, Vector::Zero(S));
         res.V.assign(num_nodes, Vector::Zero(S));
         std::vector<Vector> P_D(num_nodes, Vector::Zero(S));
+        std::vector<double> B(num_nodes, 1.0);
+        std::vector<double> node_log_scale(num_nodes, 0.0);
+
+        const double SCALER_THRESH = 1e-150;
+        const double SCALER_UP = 1e150;
+        const double LOG_SCALER = std::log(SCALER_UP);
 
         // 1. Post-order (bottom-up) pass to compute D and cache P_D
         for (int32_t nid : tree.post_order) {
@@ -233,16 +258,37 @@ public:
                 } else {
                     res.D[nid].setOnes();
                 }
+                node_log_scale[nid] = 0.0;
+                B[nid] = 1.0;
             } else {
                 res.D[nid].setOnes();
+                double child_scale_sum = 0.0;
                 for (int32_t cid : node.children) {
                     P_D[cid] = P_branches[cid] * res.D[cid];
                     res.D[nid].array() *= P_D[cid].array();
+                    child_scale_sum += node_log_scale[cid];
                 }
+
+                double max_val = res.D[nid].maxCoeff();
+                int boost_count = 0;
+                double boost_mult = 1.0;
+                while (max_val < SCALER_THRESH && max_val > 0.0) {
+                    res.D[nid] *= SCALER_UP;
+                    max_val *= SCALER_UP;
+                    boost_mult *= SCALER_UP;
+                    boost_count++;
+                }
+                B[nid] = boost_mult;
+                node_log_scale[nid] = child_scale_sum - boost_count * LOG_SCALER;
             }
         }
 
         res.likelihood = res.D[tree.root_id].dot(pi);
+        if (res.likelihood > 0.0) {
+            res.log_likelihood = std::log(res.likelihood) + node_log_scale[tree.root_id];
+        } else {
+            res.log_likelihood = -1e20;
+        }
 
         // 2. Pre-order (top-down) pass to compute U and V reusing cached P_D
         std::vector<Vector> U(num_nodes, Vector::Zero(S));
@@ -262,6 +308,7 @@ public:
                         v_msg.array() *= P_D[node.children[j]].array();
                     }
                 }
+                v_msg *= B[uid];
                 res.V[vid] = v_msg;
                 U[vid] = P_branches[vid].transpose() * v_msg;
             }
@@ -375,7 +422,7 @@ public:
                 );
                 Scalar L = io.likelihood;
                 if (L > 0.0) {
-                    local_ll += pattern.weight * std::log(L);
+                    local_ll += pattern.weight * io.log_likelihood;
                     Scalar inv_L = pattern.weight / L;
                     for (const auto& node : tree.nodes) {
                         if (node.id != tree.root_id) {

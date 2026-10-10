@@ -123,16 +123,21 @@ public:
         }
     }
 
-    // Evaluate single pattern likelihood
-    static Scalar compute_pattern_likelihood(
+    // Evaluate single pattern log-likelihood with underflow protection
+    static Scalar compute_pattern_log_likelihood(
         const Tree& tree,
         const SitePattern& pattern,
         const std::vector<size_t>& leaf_to_taxon,
         const MG94Matrix& mg94_model,
         const std::vector<Matrix>& P_branches,
-        std::vector<Vector>& node_L
+        std::vector<Vector>& node_L,
+        std::vector<double>& node_log_scale
     ) {
         int S = mg94_model.pi.size();
+        const double SCALER_THRESH = 1e-150;
+        const double SCALER_UP = 1e150;
+        const double LOG_SCALER = std::log(SCALER_UP);
+
         for (int32_t node_id : tree.post_order) {
             const auto& node = tree.nodes[node_id];
 
@@ -149,15 +154,46 @@ public:
                 } else {
                     node_L[node_id].setOnes();
                 }
+                node_log_scale[node_id] = 0.0;
             } else {
                 node_L[node_id].setOnes();
+                double child_scale_sum = 0.0;
                 for (int32_t child_id : node.children) {
                     node_L[node_id].array() *= (P_branches[child_id] * node_L[child_id]).array();
+                    child_scale_sum += node_log_scale[child_id];
                 }
+
+                double max_val = node_L[node_id].maxCoeff();
+                int boost_count = 0;
+                while (max_val < SCALER_THRESH && max_val > 0.0) {
+                    node_L[node_id] *= SCALER_UP;
+                    max_val *= SCALER_UP;
+                    boost_count++;
+                }
+                node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
             }
         }
 
-        return mg94_model.pi.dot(node_L[tree.root_id]);
+        Scalar pat_l = mg94_model.pi.dot(node_L[tree.root_id]);
+        if (pat_l > 0.0) {
+            return std::log(pat_l) + node_log_scale[tree.root_id];
+        } else {
+            return -1e20;
+        }
+    }
+
+    // Backward-compatible unscaled pattern likelihood
+    static Scalar compute_pattern_likelihood(
+        const Tree& tree,
+        const SitePattern& pattern,
+        const std::vector<size_t>& leaf_to_taxon,
+        const MG94Matrix& mg94_model,
+        const std::vector<Matrix>& P_branches,
+        std::vector<Vector>& node_L
+    ) {
+        std::vector<double> node_log_scale(tree.num_nodes(), 0.0);
+        Scalar log_l = compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg94_model, P_branches, node_L, node_log_scale);
+        return (log_l > -1e10) ? std::exp(log_l) : 0.0;
     }
 
     // Optimize single pattern
@@ -194,6 +230,7 @@ public:
         }
 
         std::vector<Vector> thread_node_L(tree.num_nodes(), Vector::Zero(S));
+        std::vector<double> thread_node_scale(tree.num_nodes(), 0.0);
         std::vector<Matrix> P_branches(tree.num_nodes());
 
         auto eval_pattern_lnl = [&](Scalar a, Scalar b) -> Scalar {
@@ -210,8 +247,7 @@ public:
                 }
             }
 
-            Scalar L = compute_pattern_likelihood(tree, pattern, leaf_to_taxon, mg, P_branches, thread_node_L);
-            return (L > 0.0) ? std::log(L) : -1e20;
+            return compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg, P_branches, thread_node_L, thread_node_scale);
         };
 
         // 1. Starting grid search (matching HyPhy FEL start grid)

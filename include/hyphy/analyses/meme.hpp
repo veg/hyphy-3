@@ -187,6 +187,7 @@ public:
         }
 
         std::vector<Vector> thread_node_L(num_nodes, Vector::Zero(S));
+        std::vector<double> thread_node_scale(num_nodes, 0.0);
         std::vector<Matrix> P_branches(num_nodes);
 
         auto eval_pattern_meme_lnl = [&](Scalar a, Scalar w1, Scalar p1, Scalar b_plus) -> Scalar {
@@ -211,8 +212,7 @@ public:
                 }
             }
 
-            Scalar L = FELAnalyzer::compute_pattern_likelihood(tree, pattern, leaf_to_taxon, mg1, P_branches, thread_node_L);
-            return (L > 0.0) ? std::log(L) : -1e20;
+            return FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_branches, thread_node_L, thread_node_scale);
         };
 
         // Construct grid starting points matching HyPhy 2.5 MEME.bf
@@ -319,18 +319,18 @@ public:
                 if (node.id != tree.root_id) {
                     // Conditional on branch node.id being in class 1
                     P_temp[node.id] = P1[node.id];
-                    Scalar L1 = FELAnalyzer::compute_pattern_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L);
+                    Scalar log_L1 = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale);
 
                     // Conditional on branch node.id being in class +
                     P_temp[node.id] = P_plus[node.id];
-                    Scalar L_plus = FELAnalyzer::compute_pattern_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L);
+                    Scalar log_L_plus = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale);
 
                     P_temp[node.id] = P_mix[node.id]; // restore
 
                     Scalar ebf = 1.0;
-                    if (L1 > 1e-300 && L_plus > 1e-300) {
-                        ebf = L_plus / L1;
-                    } else if (L1 <= 1e-300 && L_plus > 1e-300) {
+                    if (log_L1 > -1e10 && log_L_plus > -1e10) {
+                        ebf = std::exp(std::clamp(log_L_plus - log_L1, -50.0, 50.0));
+                    } else if (log_L1 <= -1e10 && log_L_plus > -1e10) {
                         ebf = 1e6;
                     } else {
                         ebf = 0.0;
