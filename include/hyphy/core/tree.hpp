@@ -9,6 +9,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <iostream>
+#include <iomanip>
 
 namespace hyphy::core {
 
