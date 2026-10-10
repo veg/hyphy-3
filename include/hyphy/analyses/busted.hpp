@@ -12,6 +12,7 @@
 #include "hyphy/opt/nelder_mead.hpp"
 #include "hyphy/opt/squarem.hpp"
 #include "nlohmann/json.hpp"
+#include "hyphy/core/provenance.hpp"
 
 #include <vector>
 #include <array>
@@ -1309,7 +1310,7 @@ public:
         return res;
     }
 
-    nlohmann::json to_json(const BUSTEDResult& res) const {
+    nlohmann::json to_legacy_json(const BUSTEDResult& res) const {
         nlohmann::json j;
 
         j["analysis"] = {
@@ -1458,6 +1459,253 @@ public:
         j["runtime"] = res.runtime_seconds;
         return j;
     }
+
+    nlohmann::json to_modern_json(const BUSTEDResult& res, const Provenance& prov = {}) const {
+        nlohmann::json j;
+
+        j["$schema"] = "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/busted.v3.schema.json";
+        j["schema_version"] = "3.0.0";
+
+        // Analysis block
+        j["analysis"]["id"] = "busted";
+        j["analysis"]["name"] = "Branch-Site Unrestricted Statistical Test for Episodic Diversification";
+        j["analysis"]["version"] = "3.0.0";
+        j["analysis"]["category"] = "gene_selection";
+        j["analysis"]["description"] = "BUSTED uses a random effects likelihood approach to test whether a gene has experienced positive selection at any site on specified (or all) branches of a phylogeny.";
+        j["analysis"]["citations"] = nlohmann::json::array({
+            {
+                {"citation", "Murrell B, Weaver S, Smith MD, Wertheim JO, Murrell S, Aylward A, Eren K, Pollner T, Martin DP, Frost SDW, Kosakovsky Pond SL (2015). Gene-Wide Identification of Episodic Selection. Mol Biol Evol 32(5): 1365-1371."},
+                {"doi", "10.1093/molbev/msv035"},
+                {"pmid", "25701167"}
+            }
+        });
+
+        j["analysis"]["settings"]["rates"] = res.settings.num_rate_classes;
+        j["analysis"]["settings"]["srv"] = res.settings.srv;
+        j["analysis"]["settings"]["syn_rates"] = res.settings.num_syn_rate_classes;
+        j["analysis"]["settings"]["auto_k"] = res.settings.auto_select_k;
+        j["analysis"]["settings"]["multiple_hits"] = res.settings.multiple_hits;
+        j["analysis"]["settings"]["refine_branch_lengths"] = res.settings.refine_branch_lengths;
+        j["analysis"]["settings"]["pvalue_threshold"] = res.settings.p_value_threshold;
+        j["analysis"]["settings"]["optimal_k"] = res.optimal_k;
+
+        // Software block
+        j["software"]["name"] = "hyphy";
+        j["software"]["version"] = "3.0.0";
+        j["software"]["git_commit"] = "6e22db3";
+        j["software"]["build_type"] = "Release";
+        j["software"]["compiler"] = Provenance::detect_compiler();
+
+        // Provenance block
+        if (!prov.invocation.cli_command.empty() || !prov.inputs.empty()) {
+            j["provenance"] = prov.to_json();
+        } else {
+            Provenance auto_prov;
+            auto_prov.invocation.cli_command = "hyphy3 busted";
+            auto_prov.invocation.working_directory = Provenance::get_cwd();
+            auto_prov.execution.start_time = Provenance::current_iso8601();
+            auto_prov.execution.end_time = Provenance::current_iso8601();
+            auto_prov.execution.wall_time_seconds = res.runtime_seconds;
+            auto_prov.execution.cpu_threads = 1;
+            auto_prov.execution.hostname = Provenance::get_hostname();
+            auto_prov.execution.os = Provenance::detect_os();
+            auto_prov.execution.compiler = Provenance::detect_compiler();
+            j["provenance"] = auto_prov.to_json();
+        }
+
+        // Dataset block
+        j["dataset"]["taxa_count"] = aln.num_taxa;
+        j["dataset"]["codon_sites"] = aln.num_codons;
+        j["dataset"]["nucleotide_sites"] = aln.num_codons * 3;
+        j["dataset"]["unique_patterns"] = aln.patterns.size();
+        j["dataset"]["taxa"] = aln.taxon_names;
+
+        nlohmann::json gcode;
+        gcode["id"] = code ? code->name : "Universal";
+        gcode["name"] = code ? code->name : "Universal";
+        gcode["sense_codons"] = code ? static_cast<int>(code->sense_codons.size()) : 61;
+        if (code) {
+            gcode["stop_codons"] = code->stop_codons;
+        } else {
+            gcode["stop_codons"] = {"TAA", "TAG", "TGA"};
+        }
+        j["dataset"]["genetic_code"] = gcode;
+
+        j["dataset"]["partitions"] = nlohmann::json::array({
+            {
+                {"id", "default"},
+                {"name", "Full Alignment"},
+                {"span", nlohmann::json::array({nlohmann::json::array({1, aln.num_codons})})},
+                {"sites_count", aln.num_codons},
+                {"patterns_count", aln.patterns.size()}
+            }
+        });
+
+        // Phylogeny block
+        j["phylogeny"]["newick"] = tree.to_newick();
+        nlohmann::json nodes_json;
+        double sum_bl_unc = 0.0;
+        double sum_bl_con = 0.0;
+        for (const auto& node : tree.nodes) {
+            nlohmann::json node_entry;
+            node_entry["type"] = node.children.empty() ? "leaf" : "internal";
+
+            if (!res.unconstrained.branch_lengths.empty() && node.id >= 0 && static_cast<size_t>(node.id) < res.unconstrained.branch_lengths.size()) {
+                node_entry["branch_lengths"]["unconstrained"] = res.unconstrained.branch_lengths[node.id];
+                if (node.id != tree.root_id) sum_bl_unc += res.unconstrained.branch_lengths[node.id];
+            }
+            if (!res.constrained.branch_lengths.empty() && node.id >= 0 && static_cast<size_t>(node.id) < res.constrained.branch_lengths.size()) {
+                node_entry["branch_lengths"]["constrained"] = res.constrained.branch_lengths[node.id];
+                if (node.id != tree.root_id) sum_bl_con += res.constrained.branch_lengths[node.id];
+            }
+
+            nodes_json[node.name] = node_entry;
+        }
+        j["phylogeny"]["nodes"] = nodes_json;
+        j["phylogeny"]["tree_lengths"]["unconstrained"] = sum_bl_unc;
+        j["phylogeny"]["tree_lengths"]["constrained"] = sum_bl_con;
+
+        // Model fits block
+        auto format_fit_modern = [&](const BUSTEDFit& fit, const std::string& desc) {
+            nlohmann::json f;
+            f["description"] = desc;
+            f["log_likelihood"] = fit.log_likelihood;
+            f["aicc"] = fit.aicc;
+            f["tree_scale"] = fit.tree_scale;
+            f["rate_classes"] = fit.num_rate_classes;
+
+            nlohmann::json test_dist = nlohmann::json::array();
+            for (size_t k = 0; k < fit.test_distribution.omegas.size(); ++k) {
+                test_dist.push_back({
+                    {"class", static_cast<int>(k + 1)},
+                    {"omega", fit.test_distribution.omegas[k]},
+                    {"proportion", fit.test_distribution.weights[k]}
+                });
+            }
+            f["rate_distributions"]["test"] = test_dist;
+
+            if (!fit.test_distribution.syn_rates.empty() && fit.test_distribution.syn_rates.size() > 1) {
+                nlohmann::json syn_dist = nlohmann::json::array();
+                for (size_t m = 0; m < fit.test_distribution.syn_rates.size(); ++m) {
+                    syn_dist.push_back({
+                        {"class", static_cast<int>(m + 1)},
+                        {"rate", fit.test_distribution.syn_rates[m]},
+                        {"proportion", fit.test_distribution.syn_weights[m]}
+                    });
+                }
+                f["rate_distributions"]["synonymous"] = syn_dist;
+            }
+
+            if (res.settings.multiple_hits != "None") {
+                f["multiple_hits"]["double_hit_rate"] = fit.delta;
+                f["multiple_hits"]["double_hit_fraction"] = fit.frac_delta;
+                if (res.settings.multiple_hits == "Double+Triple") {
+                    f["multiple_hits"]["triple_hit_rate"] = fit.psi;
+                    f["multiple_hits"]["triple_hit_fraction"] = fit.frac_psi;
+                }
+            }
+            return f;
+        };
+
+        j["model_fits"]["unconstrained"] = format_fit_modern(res.unconstrained, "Unconstrained BUSTED mixture model allowing omega_k > 1");
+        j["model_fits"]["constrained"] = format_fit_modern(res.constrained, "Constrained null BUSTED model fixing omega_k <= 1");
+
+        if (has_gtr_fit) {
+            j["model_fits"]["nucleotide_gtr"]["description"] = "General Time Reversible nucleotide model with empirical frequencies";
+            j["model_fits"]["nucleotide_gtr"]["log_likelihood"] = gtr_log_l;
+            j["model_fits"]["nucleotide_gtr"]["aicc"] = gtr_aicc;
+            j["model_fits"]["nucleotide_gtr"]["equilibrium_frequencies"] = {
+                {"A", aln.nuc_frequencies(0)},
+                {"C", aln.nuc_frequencies(1)},
+                {"G", aln.nuc_frequencies(2)},
+                {"T", aln.nuc_frequencies(3)}
+            };
+            j["model_fits"]["nucleotide_gtr"]["substitution_rates"] = {
+                {"AC", gtr_rates.theta_AC},
+                {"AG", 1.0},
+                {"AT", gtr_rates.theta_AT},
+                {"CG", gtr_rates.theta_CG},
+                {"CT", gtr_rates.theta_CT},
+                {"GT", gtr_rates.theta_GT}
+            };
+        }
+
+        j["model_fits"]["codon_mg94"]["description"] = "Muse-Gaut 1994 x GTR codon model with shared global omega";
+        j["model_fits"]["codon_mg94"]["log_likelihood"] = mg94_log_l;
+        j["model_fits"]["codon_mg94"]["global_parameters"] = {
+            {"omega", mg94_omega}
+        };
+
+        // Statistical tests block
+        j["statistical_tests"]["gene_level"] = {
+            {"method", "Likelihood Ratio Test (LRT)"},
+            {"test_statistic", "LRT"},
+            {"statistic_value", res.lrt},
+            {"distribution", "0.5 * chi^2_0 + 0.5 * chi^2_2"},
+            {"degrees_of_freedom", 2},
+            {"null_hypothesis", "omega_k <= 1 for all k on test branches (Constrained model)"},
+            {"alternative_hypothesis", "omega_k > 1 for at least one k on test branches (Unconstrained model)"},
+            {"p_value", res.p_value},
+            {"decision", (res.p_value <= res.settings.p_value_threshold) ? "Episodic diversifying selection detected" : "No evidence of episodic diversifying selection"},
+            {"optimal_k", static_cast<int>(res.optimal_k)}
+        };
+
+        // Site results (Columnar format)
+        j["site_results"]["columns"] = {
+            {"site", {{"type", "integer"}, {"unit", "1-based codon position"}, {"description", "Alignment codon site index (1-based)"}}},
+            {"evidence_ratio", {{"type", "float"}, {"description", "Per-site Evidence Ratio (Bayes Factor) favoring positive selection (omega > 1)"}}},
+            {"unconstrained_log_l", {{"type", "float"}, {"description", "Site log-likelihood under unconstrained model"}}},
+            {"constrained_log_l", {{"type", "float"}, {"description", "Site log-likelihood under constrained null model"}}}
+        };
+
+        std::vector<int> col_site;
+        std::vector<double> col_er, col_unc_ll, col_con_ll;
+        col_site.reserve(aln.num_codons);
+        col_er.reserve(aln.num_codons);
+        col_unc_ll.reserve(aln.num_codons);
+        col_con_ll.reserve(aln.num_codons);
+
+        for (size_t s = 0; s < aln.num_codons; ++s) {
+            col_site.push_back(static_cast<int>(s + 1));
+            col_er.push_back(res.evidence_ratios[s]);
+            size_t p = aln.site_to_pattern[s];
+            col_unc_ll.push_back(res.unconstrained.site_log_likelihoods[p]);
+            col_con_ll.push_back(res.constrained.site_log_likelihoods[p]);
+        }
+
+        j["site_results"]["data"]["site"] = col_site;
+        j["site_results"]["data"]["evidence_ratio"] = col_er;
+        j["site_results"]["data"]["unconstrained_log_l"] = col_unc_ll;
+        j["site_results"]["data"]["constrained_log_l"] = col_con_ll;
+
+        return j;
+    }
+
+    nlohmann::json to_json(
+        const BUSTEDResult& res,
+        JSONFormat format = JSONFormat::ModernV3,
+        const Provenance& prov = {}
+    ) const {
+        if (format == JSONFormat::Legacy) {
+            return to_legacy_json(res);
+        }
+        return to_modern_json(res, prov);
+    }
+
+    void save_json(
+        const std::string& filepath,
+        const BUSTEDResult& res,
+        JSONFormat format = JSONFormat::ModernV3,
+        const Provenance& prov = {}
+    ) const {
+        std::ofstream out(filepath);
+        if (!out.is_open()) {
+            throw std::runtime_error("Could not open file for writing: " + filepath);
+        }
+        nlohmann::json j = to_json(res, format, prov);
+        out << j.dump(2) << "\n";
+    }
+
 };
 
 } // namespace hyphy::analyses

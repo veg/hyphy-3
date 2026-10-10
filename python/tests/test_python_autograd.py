@@ -101,9 +101,14 @@ class TestHyPhy3Python(unittest.TestCase):
         self.assertTrue(len(res.positive_branches) > 0)
         self.assertTrue(res.runtime_seconds > 0.0)
 
-        json_str = res.to_json(tree, aln)
-        self.assertIn("Baseline MG94xREV", json_str)
-        self.assertIn("Full adaptive model", json_str)
+        legacy_str = res.to_legacy_json(tree, aln)
+        self.assertIn("Baseline MG94xREV", legacy_str)
+        self.assertIn("Full adaptive model", legacy_str)
+
+        modern_str = res.to_modern_json(tree, aln)
+        self.assertIn("baseline_mg94", modern_str)
+        self.assertIn("full_adaptive", modern_str)
+        self.assertIn("branch_results", modern_str)
 
     @unittest.skipUnless(TORCH_AVAILABLE, "PyTorch required for autograd tests")
     def test_autograd_gradients_vs_finite_differences(self):

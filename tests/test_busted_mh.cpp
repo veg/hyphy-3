@@ -53,8 +53,8 @@ TEST_CASE("BUSTED-MH: ADH Dataset (Double+Triple Multi-Hit Substitutions)") {
     CHECK(res.p_value >= 0.0);
     CHECK(res.p_value <= 1.0);
 
-    // Validate JSON serialization
-    auto json_out = busted.to_json(res);
+    // Validate Legacy JSON serialization
+    auto json_out = busted.to_legacy_json(res);
     CHECK(json_out.contains("fits"));
     const auto& unc = json_out["fits"]["Unconstrained model"];
     CHECK(unc.contains("rate at which 2 nucleotides are changed instantly within a single codon"));
@@ -65,6 +65,13 @@ TEST_CASE("BUSTED-MH: ADH Dataset (Double+Triple Multi-Hit Substitutions)") {
     const auto& con = json_out["fits"]["Constrained model"];
     CHECK(con.contains("rate at which 2 nucleotides are changed instantly within a single codon"));
     CHECK(con.contains("rate at which 3 nucleotides are changed instantly within a single codon"));
+
+    // Validate Modern JSON serialization
+    auto mod_out = busted.to_modern_json(res);
+    CHECK(mod_out.contains("model_fits"));
+    CHECK(mod_out["model_fits"]["unconstrained"].contains("multiple_hits"));
+    CHECK(mod_out["model_fits"]["unconstrained"]["multiple_hits"].contains("double_hit_rate"));
+    CHECK(mod_out["model_fits"]["unconstrained"]["multiple_hits"].contains("triple_hit_rate"));
 }
 
 TEST_CASE("BUSTED-MH: CD2 Dataset (Double vs Double+Triple)") {

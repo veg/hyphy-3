@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/relax.v3.schema.json",
+  "title": "HyPhy 3 Relaxed Selection Analysis (RELAX) Schema v3.0",
+  "description": "Standardized output schema for HyPhy 3 RELAX comparative selection relaxation and intensification analyses.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema_version",
+    "analysis",
+    "software",
+    "provenance",
+    "dataset",
+    "phylogeny",
+    "model_fits",
+    "statistical_tests"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "format": "uri" },
+    "schema_version": { "type": "string", "pattern": "^3\\.[0-9]+\\.[0-9]+$" },
+    "analysis": {
+      "type": "object",
+      "required": ["id", "name", "version", "category", "description"],
+      "properties": {
+        "id": { "type": "string", "enum": ["relax"] },
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "citations": { "type": "array" },
+        "settings": { "type": "object" }
+      }
+    },
+    "software": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "git_commit": { "type": "string" },
+        "build_type": { "type": "string" },
+        "compiler": { "type": "string" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["invocation", "inputs", "execution"],
+      "properties": {
+        "invocation": { "type": "object" },
+        "inputs": { "type": "object" },
+        "execution": { "type": "object" }
+      }
+    },
+    "dataset": {
+      "type": "object",
+      "required": ["taxa_count", "codon_sites", "nucleotide_sites", "unique_patterns", "taxa", "genetic_code"],
+      "properties": {
+        "taxa_count": { "type": "integer" },
+        "codon_sites": { "type": "integer" },
+        "nucleotide_sites": { "type": "integer" },
+        "unique_patterns": { "type": "integer" },
+        "taxa": { "type": "array", "items": { "type": "string" } },
+        "genetic_code": { "type": "object" },
+        "partitions": { "type": "array" }
+      }
+    },
+    "phylogeny": {
+      "type": "object",
+      "required": ["newick", "nodes", "tree_lengths"],
+      "properties": {
+        "newick": { "type": "string" },
+        "nodes": { "type": "object" },
+        "tree_lengths": { "type": "object" }
+      }
+    },
+    "model_fits": {
+      "type": "object",
+      "required": ["alternative", "null"],
+      "properties": {
+        "nucleotide_gtr": { "type": "object" },
+        "codon_mg94": { "type": "object" },
+        "alternative": { "type": "object" },
+        "null": { "type": "object" }
+      }
+    },
+    "statistical_tests": {
+      "type": "object",
+      "required": ["hypothesis_test"],
+      "properties": {
+        "hypothesis_test": {
+          "type": "object",
+          "required": [
+            "method",
+            "test_statistic",
+            "statistic_value",
+            "distribution",
+            "degrees_of_freedom",
+            "null_hypothesis",
+            "alternative_hypothesis",
+            "p_value",
+            "k_parameter",
+            "decision"
+          ],
+          "properties": {
+            "method": { "type": "string" },
+            "test_statistic": { "type": "string" },
+            "statistic_value": { "type": "number" },
+            "distribution": { "type": "string" },
+            "degrees_of_freedom": { "type": "integer" },
+            "null_hypothesis": { "type": "string" },
+            "alternative_hypothesis": { "type": "string" },
+            "p_value": { "type": "number" },
+            "k_parameter": { "type": "number" },
+            "decision": { "type": "string" }
+          }
+        }
+      }
+    },
+    "site_results": {
+      "type": "object",
+      "properties": {
+        "columns": { "type": "object" },
+        "data": { "type": "object" }
+      }
+    }
+  }
+}

@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/busted.v3.schema.json",
+  "title": "HyPhy 3 BUSTED Analysis Schema v3.0",
+  "description": "Standardized output schema for HyPhy 3 BUSTED / BUSTED-S / BUSTED-MH gene-wide episodic diversifying selection analyses.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema_version",
+    "analysis",
+    "software",
+    "provenance",
+    "dataset",
+    "phylogeny",
+    "model_fits",
+    "statistical_tests",
+    "site_results"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "format": "uri" },
+    "schema_version": { "type": "string", "pattern": "^3\\.[0-9]+\\.[0-9]+$" },
+    "analysis": {
+      "type": "object",
+      "required": ["id", "name", "version", "category", "description"],
+      "properties": {
+        "id": { "type": "string", "enum": ["busted"] },
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "citations": { "type": "array" },
+        "settings": { "type": "object" }
+      }
+    },
+    "software": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "git_commit": { "type": "string" },
+        "build_type": { "type": "string" },
+        "compiler": { "type": "string" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["invocation", "inputs", "execution"],
+      "properties": {
+        "invocation": { "type": "object" },
+        "inputs": { "type": "object" },
+        "execution": { "type": "object" }
+      }
+    },
+    "dataset": {
+      "type": "object",
+      "required": ["taxa_count", "codon_sites", "nucleotide_sites", "unique_patterns", "taxa", "genetic_code"],
+      "properties": {
+        "taxa_count": { "type": "integer" },
+        "codon_sites": { "type": "integer" },
+        "nucleotide_sites": { "type": "integer" },
+        "unique_patterns": { "type": "integer" },
+        "taxa": { "type": "array", "items": { "type": "string" } },
+        "genetic_code": { "type": "object" },
+        "partitions": { "type": "array" }
+      }
+    },
+    "phylogeny": {
+      "type": "object",
+      "required": ["newick", "nodes", "tree_lengths"],
+      "properties": {
+        "newick": { "type": "string" },
+        "nodes": { "type": "object" },
+        "tree_lengths": { "type": "object" }
+      }
+    },
+    "model_fits": {
+      "type": "object",
+      "required": ["unconstrained", "constrained"],
+      "properties": {
+        "unconstrained": { "type": "object" },
+        "constrained": { "type": "object" },
+        "nucleotide_gtr": { "type": "object" },
+        "codon_mg94": { "type": "object" }
+      }
+    },
+    "statistical_tests": {
+      "type": "object",
+      "required": ["gene_level"],
+      "properties": {
+        "gene_level": {
+          "type": "object",
+          "required": [
+            "method",
+            "test_statistic",
+            "statistic_value",
+            "distribution",
+            "degrees_of_freedom",
+            "null_hypothesis",
+            "alternative_hypothesis",
+            "p_value",
+            "decision"
+          ],
+          "properties": {
+            "method": { "type": "string" },
+            "test_statistic": { "type": "string" },
+            "statistic_value": { "type": "number" },
+            "distribution": { "type": "string" },
+            "degrees_of_freedom": { "type": "integer" },
+            "null_hypothesis": { "type": "string" },
+            "alternative_hypothesis": { "type": "string" },
+            "p_value": { "type": "number" },
+            "decision": { "type": "string" },
+            "optimal_k": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "site_results": {
+      "type": "object",
+      "required": ["columns", "data"],
+      "properties": {
+        "columns": { "type": "object" },
+        "data": {
+          "type": "object",
+          "required": ["site", "evidence_ratio", "unconstrained_log_l", "constrained_log_l"],
+          "properties": {
+            "site": { "type": "array", "items": { "type": "integer" } },
+            "evidence_ratio": { "type": "array", "items": { "type": "number" } },
+            "unconstrained_log_l": { "type": "array", "items": { "type": "number" } },
+            "constrained_log_l": { "type": "array", "items": { "type": "number" } }
+          }
+        }
+      }
+    }
+  }
+}

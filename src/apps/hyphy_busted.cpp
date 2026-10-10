@@ -61,6 +61,7 @@ int run_busted(int argc, char* argv[]) {
     std::string output_file;
     std::string code_name = "Universal";
     int num_threads = 0;
+    JSONFormat json_format = JSONFormat::ModernV3;
     BUSTEDSettings settings;
     bool show_progress = ProgressBar::is_terminal();
     bool force_progress = false;
@@ -88,6 +89,17 @@ int run_busted(int argc, char* argv[]) {
             settings.refine_branch_lengths = false;
         } else if (arg == "--threads" && i + 1 < argc) {
             num_threads = std::stoi(argv[++i]);
+        } else if (arg == "--json-format" && i + 1 < argc) {
+            std::string fmt = argv[++i];
+            if (fmt == "legacy" || fmt == "datamonkey") {
+                json_format = JSONFormat::Legacy;
+            } else {
+                json_format = JSONFormat::ModernV3;
+            }
+        } else if (arg == "--legacy-json") {
+            json_format = JSONFormat::Legacy;
+        } else if (arg == "--modern-json") {
+            json_format = JSONFormat::ModernV3;
         } else if (arg == "--output" && i + 1 < argc) {
             output_file = argv[++i];
         } else if (arg == "--progress") {
@@ -125,6 +137,12 @@ int run_busted(int argc, char* argv[]) {
     print_banner();
 
     auto start_time = std::chrono::high_resolution_clock::now();
+    std::string start_iso = Provenance::current_iso8601();
+    std::string cli_cmd = argv[0];
+    for (int i = 1; i < argc; ++i) {
+        cli_cmd += " ";
+        cli_cmd += argv[i];
+    }
 
     // 1. Load Genetic Code
     std::shared_ptr<const GeneticCode> code;
@@ -264,29 +282,62 @@ int run_busted(int argc, char* argv[]) {
         conclusion = "No statistically significant evidence of episodic diversifying selection (p = " + p_ss.str() + " >= 0.05).";
     }
 
+    std::string json_desc = (json_format == JSONFormat::Legacy) ? " [Legacy]" : " [Modern v3.0]";
     std::vector<std::pair<std::string, std::string>> sum_items = {
         {"Likelihood Ratio Test (LRT)", lrt_ss.str()},
         {"p-value (mixture distribution)", p_ss.str() + " [threshold: 0.05]"},
         {"Unconstrained Model Fit", u_ss.str()},
         {"Constrained Null Model Fit", c_ss.str()},
         {"Optimal Model Selection", "K = " + std::to_string(res.optimal_k) + " rate classes"},
-        {"JSON Output File", output_file},
+        {"JSON Output File", output_file + json_desc},
         {"Total Execution Time", time_ss.str()}
     };
 
     Panel::print_summary_card("BUSTED Episodic Selection Analysis Summary", sum_items, conclusion, is_sig);
 
+    // Build Provenance
+    Provenance prov;
+    prov.invocation.cli_command = cli_cmd;
+    prov.invocation.working_directory = Provenance::get_cwd();
+    prov.invocation.arguments["alignment"] = alignment_file;
+    if (!tree_file.empty()) prov.invocation.arguments["tree"] = tree_file;
+    prov.invocation.arguments["code"] = code_name;
+    prov.invocation.arguments["rates"] = std::to_string(settings.num_rate_classes);
+    prov.invocation.arguments["srv"] = settings.srv ? "true" : "false";
+    prov.invocation.arguments["syn_rates"] = std::to_string(settings.num_syn_rate_classes);
+    prov.invocation.arguments["auto_k"] = settings.auto_select_k ? "true" : "false";
+    prov.invocation.arguments["multiple_hits"] = settings.multiple_hits;
+    prov.invocation.arguments["refine_branch_lengths"] = settings.refine_branch_lengths ? "true" : "false";
+    prov.invocation.arguments["json_format"] = (json_format == JSONFormat::Legacy) ? "legacy" : "modern_v3";
+
+    size_t aln_sz = 0;
+    std::string aln_hash = crypto::SHA256::hash_file(alignment_file, &aln_sz);
+    prov.inputs["alignment"] = {alignment_file, "FASTA/NEXUS", aln_hash, aln_sz};
+
+    if (!tree_file.empty()) {
+        size_t tree_sz = 0;
+        std::string tree_hash = crypto::SHA256::hash_file(tree_file, &tree_sz);
+        prov.inputs["tree"] = {tree_file, "Newick", tree_hash, tree_sz};
+    }
+
+    prov.execution.start_time = start_iso;
+    prov.execution.end_time = Provenance::current_iso8601();
+    prov.execution.wall_time_seconds = total_runtime;
+#ifdef _OPENMP
+    prov.execution.cpu_threads = (num_threads > 0) ? num_threads : omp_get_max_threads();
+#else
+    prov.execution.cpu_threads = 1;
+#endif
+    prov.execution.hostname = Provenance::get_hostname();
+    prov.execution.os = Provenance::detect_os();
+    prov.execution.compiler = Provenance::detect_compiler();
+
     // Save JSON output
     try {
-        auto j = analyzer.to_json(res);
-        std::ofstream out(output_file);
-        if (out.is_open()) {
-            out << j.dump(2) << "\n";
-            std::cout << Console::success("✔") << " " << Console::bold("Saved Datamonkey-compatible JSON report to: ")
-                      << Console::brand(output_file) << "\n\n";
-        } else {
-            std::cerr << Console::danger("Warning: Could not open output file ") << output_file << "\n";
-        }
+        analyzer.save_json(output_file, res, json_format, prov);
+        std::string fmt_desc = (json_format == JSONFormat::Legacy) ? "Legacy Datamonkey JSON" : "Modern HyPhy v3.0 JSON";
+        std::cout << Console::success("✔") << " " << Console::bold("Saved " + fmt_desc + " report to: ")
+                  << Console::brand(output_file) << "\n\n";
     } catch (const std::exception& e) {
         std::cerr << Console::danger("Warning: Failed to write JSON output: ") << e.what() << "\n";
     }

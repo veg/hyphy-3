@@ -54,6 +54,7 @@ int run_relax(int argc, char* argv[]) {
     std::string output_file;
     std::string code_name = "Universal";
     int num_threads = 0;
+    JSONFormat json_format = JSONFormat::ModernV3;
     RELAXSettings settings;
     bool show_progress = ProgressBar::is_terminal();
     bool force_progress = false;
@@ -72,6 +73,17 @@ int run_relax(int argc, char* argv[]) {
             settings.p_value_threshold = std::stod(argv[++i]);
         } else if (arg == "--threads" && i + 1 < argc) {
             num_threads = std::stoi(argv[++i]);
+        } else if (arg == "--json-format" && i + 1 < argc) {
+            std::string fmt = argv[++i];
+            if (fmt == "legacy" || fmt == "datamonkey") {
+                json_format = JSONFormat::Legacy;
+            } else {
+                json_format = JSONFormat::ModernV3;
+            }
+        } else if (arg == "--legacy-json") {
+            json_format = JSONFormat::Legacy;
+        } else if (arg == "--modern-json") {
+            json_format = JSONFormat::ModernV3;
         } else if (arg == "--output" && i + 1 < argc) {
             output_file = argv[++i];
         } else if (arg == "--no-branch-opt" || arg == "--no-refine-branches") {
@@ -109,6 +121,14 @@ int run_relax(int argc, char* argv[]) {
     }
 
     print_relax_banner();
+
+    auto start_time = std::chrono::high_resolution_clock::now();
+    std::string start_iso = Provenance::current_iso8601();
+    std::string cli_cmd = argv[0];
+    for (int i = 1; i < argc; ++i) {
+        cli_cmd += " ";
+        cli_cmd += argv[i];
+    }
 
     // 1. Load Genetic Code
     std::shared_ptr<const GeneticCode> code;
@@ -232,6 +252,7 @@ int run_relax(int argc, char* argv[]) {
         conclusion = "No significant evidence of relaxation or intensification (p = " + p_ss.str() + " > " + std::to_string(settings.p_value_threshold) + ")";
     }
 
+    std::string json_desc = (json_format == JSONFormat::Legacy) ? " [Legacy]" : " [Modern v3.0]";
     std::vector<std::pair<std::string, std::string>> sum_items = {
         {"Relaxation Parameter (K)", k_ss.str()},
         {"Likelihood Ratio Test (LRT)", lrt_ss.str()},
@@ -240,19 +261,57 @@ int run_relax(int argc, char* argv[]) {
         {"RELAX Null (K=1) Log-L", null_ss.str()},
         {"Nucleotide GTR Log-L", gtr_ss.str()},
         {"Separate Rates MG94xREV", mg_ss.str()},
+        {"JSON Output File", output_file + json_desc},
         {"Total Execution Time", time_ss.str()}
     };
 
     Panel::print_summary_card("RELAX Selection Relaxation Analysis Summary", sum_items, conclusion, res.is_significant);
 
+    // Build Provenance
+    Provenance prov;
+    prov.invocation.cli_command = cli_cmd;
+    prov.invocation.working_directory = Provenance::get_cwd();
+    prov.invocation.arguments["alignment"] = alignment_file;
+    if (!tree_file.empty()) prov.invocation.arguments["tree"] = tree_file;
+    prov.invocation.arguments["code"] = code_name;
+    prov.invocation.arguments["test"] = settings.test_branch_regex;
+    prov.invocation.arguments["pvalue"] = std::to_string(settings.p_value_threshold);
+    prov.invocation.arguments["refine_branch_lengths"] = settings.refine_branch_lengths ? "true" : "false";
+    prov.invocation.arguments["json_format"] = (json_format == JSONFormat::Legacy) ? "legacy" : "modern_v3";
+
+    size_t aln_sz = 0;
+    std::string aln_hash = crypto::SHA256::hash_file(alignment_file, &aln_sz);
+    prov.inputs["alignment"] = {alignment_file, "FASTA/NEXUS", aln_hash, aln_sz};
+
+    if (!tree_file.empty()) {
+        size_t tree_sz = 0;
+        std::string tree_hash = crypto::SHA256::hash_file(tree_file, &tree_sz);
+        prov.inputs["tree"] = {tree_file, "Newick", tree_hash, tree_sz};
+    }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    double total_runtime = std::chrono::duration<double>(end_time - start_time).count();
+
+    prov.execution.start_time = start_iso;
+    prov.execution.end_time = Provenance::current_iso8601();
+    prov.execution.wall_time_seconds = total_runtime;
+#ifdef _OPENMP
+    prov.execution.cpu_threads = (num_threads > 0) ? num_threads : omp_get_max_threads();
+#else
+    prov.execution.cpu_threads = 1;
+#endif
+    prov.execution.hostname = Provenance::get_hostname();
+    prov.execution.os = Provenance::detect_os();
+    prov.execution.compiler = Provenance::detect_compiler();
+
     // Save JSON
-    std::ofstream out(output_file);
-    if (!out) {
-        std::cerr << Console::danger("Warning: Could not open output file for writing: ") << output_file << "\n";
-    } else {
-        out << res.to_json(tree, aln).dump(2) << "\n";
-        std::cout << Console::success("✔") << " " << Console::bold("Saved Datamonkey-compatible JSON report to: ")
+    try {
+        res.save_json(output_file, tree, aln, json_format, prov);
+        std::string fmt_desc = (json_format == JSONFormat::Legacy) ? "Legacy Datamonkey JSON" : "Modern HyPhy v3.0 JSON";
+        std::cout << Console::success("✔") << " " << Console::bold("Saved " + fmt_desc + " report to: ")
                   << Console::brand(output_file) << "\n\n";
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Warning: Failed to write JSON output: ") << e.what() << "\n";
     }
 
     return 0;

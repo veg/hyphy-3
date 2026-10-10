@@ -160,8 +160,15 @@ NB_MODULE(_hyphy3, m) {
             return MEMEAnalyzer::create_and_fit(std::move(tree), std::move(aln), pvalue_threshold, nullptr, full_model);
         }, "tree"_a, "alignment"_a, "pvalue_threshold"_a = 0.1, "full_model"_a = true)
         .def("run", &MEMEAnalyzer::run, "show_progress"_a = false, "force_progress"_a = false)
-        .def("to_json", [](const MEMEAnalyzer& meme) {
-            return meme.to_json().dump();
+        .def("to_json", [](const MEMEAnalyzer& meme, const std::string& fmt) {
+            auto format = (fmt == "legacy") ? JSONFormat::Legacy : JSONFormat::ModernV3;
+            return meme.to_json(format).dump();
+        }, "format"_a = "modern")
+        .def("to_legacy_json", [](const MEMEAnalyzer& meme) {
+            return meme.to_legacy_json().dump();
+        })
+        .def("to_modern_json", [](const MEMEAnalyzer& meme) {
+            return meme.to_modern_json().dump();
         })
         .def_ro("global_log_l", &MEMEAnalyzer::global_log_l)
         .def_ro("global_aicc", &MEMEAnalyzer::global_aicc)
@@ -214,8 +221,15 @@ NB_MODULE(_hyphy3, m) {
         }, "tree"_a, "alignment"_a, "params"_a = MG94Parameters{})
         .def_static("create_and_fit", &BUSTEDAnalyzer::create_and_fit, "tree"_a, "alignment"_a)
         .def("run", &BUSTEDAnalyzer::run, "settings"_a = BUSTEDSettings{}, "show_progress"_a = false, "force_progress"_a = false)
-        .def("to_json", [](const BUSTEDAnalyzer& busted, const BUSTEDResult& res) {
-            return busted.to_json(res).dump();
+        .def("to_json", [](const BUSTEDAnalyzer& busted, const BUSTEDResult& res, const std::string& fmt) {
+            auto format = (fmt == "legacy") ? JSONFormat::Legacy : JSONFormat::ModernV3;
+            return busted.to_json(res, format).dump();
+        }, "res"_a, "format"_a = "modern")
+        .def("to_legacy_json", [](const BUSTEDAnalyzer& busted, const BUSTEDResult& res) {
+            return busted.to_legacy_json(res).dump();
+        })
+        .def("to_modern_json", [](const BUSTEDAnalyzer& busted, const BUSTEDResult& res) {
+            return busted.to_modern_json(res).dump();
         });
 
     // aBSREL Results & Analyzer
@@ -268,8 +282,15 @@ NB_MODULE(_hyphy3, m) {
         .def_ro("positive_branches", &ABSRELResult::positive_branches)
         .def_ro("p_threshold", &ABSRELResult::p_threshold)
         .def_ro("runtime_seconds", &ABSRELResult::runtime_seconds)
-        .def("to_json", [](const ABSRELResult& res, const Tree& tree, const Alignment& aln) {
-            return res.to_json(tree, aln).dump();
+        .def("to_json", [](const ABSRELResult& res, const Tree& tree, const Alignment& aln, const std::string& fmt) {
+            auto format = (fmt == "legacy") ? JSONFormat::Legacy : JSONFormat::ModernV3;
+            return res.to_json(tree, aln, format).dump();
+        }, "tree"_a, "alignment"_a, "format"_a = "modern")
+        .def("to_legacy_json", [](const ABSRELResult& res, const Tree& tree, const Alignment& aln) {
+            return res.to_legacy_json(tree, aln).dump();
+        }, "tree"_a, "alignment"_a)
+        .def("to_modern_json", [](const ABSRELResult& res, const Tree& tree, const Alignment& aln) {
+            return res.to_modern_json(tree, aln).dump();
         }, "tree"_a, "alignment"_a);
 
     nb::class_<ABSRELAnalyzer>(m, "ABSRELAnalyzer")
@@ -331,8 +352,15 @@ NB_MODULE(_hyphy3, m) {
         .def_ro("reference_branches", &RELAXResult::reference_branches)
         .def_ro("branch_class", &RELAXResult::branch_class)
         .def_ro("runtime_seconds", &RELAXResult::runtime_seconds)
-        .def("to_json", [](const RELAXResult& res, const Tree& tree, const Alignment& aln) {
-            return res.to_json(tree, aln).dump();
+        .def("to_json", [](const RELAXResult& res, const Tree& tree, const Alignment& aln, const std::string& fmt) {
+            auto format = (fmt == "legacy") ? JSONFormat::Legacy : JSONFormat::ModernV3;
+            return res.to_json(tree, aln, format).dump();
+        }, "tree"_a, "alignment"_a, "format"_a = "modern")
+        .def("to_legacy_json", [](const RELAXResult& res, const Tree& tree, const Alignment& aln) {
+            return res.to_legacy_json(tree, aln).dump();
+        }, "tree"_a, "alignment"_a)
+        .def("to_modern_json", [](const RELAXResult& res, const Tree& tree, const Alignment& aln) {
+            return res.to_modern_json(tree, aln).dump();
         }, "tree"_a, "alignment"_a);
 
     nb::class_<RELAXAnalyzer>(m, "RELAXAnalyzer")

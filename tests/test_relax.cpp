@@ -83,20 +83,30 @@ TEST_CASE("RELAX: Wertheim et al. 2015 Fig 4E Benchmark Parity (33 taxa, 286 cod
     CHECK(res.lrt > 100.0);
     CHECK(res.p_value < 1e-15);
 
-    // 4. Test JSON export
-    auto json_out = res.to_json(tree, aln);
-    CHECK(json_out.contains("analysis"));
-    CHECK(json_out.contains("fits"));
-    CHECK(json_out["fits"].contains("Nucleotide GTR"));
-    CHECK(json_out["fits"].contains("MG94xREV with separate rates for branch sets"));
-    CHECK(json_out["fits"].contains("RELAX alternative"));
-    CHECK(json_out["fits"].contains("RELAX null"));
-    CHECK(json_out.contains("test results"));
-    CHECK(json_out["test results"]["LRT"] == res.lrt);
-    CHECK(json_out["test results"]["p-value"] == res.p_value);
-    CHECK(json_out["test results"]["relaxation or intensification parameter"] == res.k);
-    CHECK(json_out.contains("tested"));
-    CHECK(json_out.contains("branch attributes"));
+    // 4. Test Legacy JSON export
+    auto legacy_out = res.to_legacy_json(tree, aln);
+    CHECK(legacy_out.contains("analysis"));
+    CHECK(legacy_out.contains("fits"));
+    CHECK(legacy_out["fits"].contains("Nucleotide GTR"));
+    CHECK(legacy_out["fits"].contains("MG94xREV with separate rates for branch sets"));
+    CHECK(legacy_out["fits"].contains("RELAX alternative"));
+    CHECK(legacy_out["fits"].contains("RELAX null"));
+    CHECK(legacy_out.contains("test results"));
+    CHECK(legacy_out["test results"]["LRT"] == res.lrt);
+    CHECK(legacy_out["test results"]["p-value"] == res.p_value);
+    CHECK(legacy_out["test results"]["relaxation or intensification parameter"] == res.k);
+    CHECK(legacy_out.contains("tested"));
+    CHECK(legacy_out.contains("branch attributes"));
+
+    // Test Modern JSON export
+    auto modern_out = res.to_modern_json(tree, aln);
+    CHECK(modern_out.contains("statistical_tests"));
+    CHECK(modern_out.contains("model_fits"));
+    CHECK(modern_out["model_fits"].contains("alternative"));
+    CHECK(modern_out["model_fits"].contains("null"));
+    CHECK(modern_out["statistical_tests"]["hypothesis_test"]["statistic_value"] == res.lrt);
+    CHECK(modern_out["statistical_tests"]["hypothesis_test"]["p_value"] == res.p_value);
+    CHECK(modern_out["statistical_tests"]["hypothesis_test"]["k_parameter"] == res.k);
 }
 
 TEST_CASE("RELAX: User-specified test branch regex") {

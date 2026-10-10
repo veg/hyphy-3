@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/absrel.v3.schema.json",
+  "title": "HyPhy 3 Adaptive Branch-Site Random Effects Likelihood (aBSREL) Schema v3.0",
+  "description": "Standardized output schema for HyPhy 3 aBSREL episodic diversifying lineage selection analyses.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema_version",
+    "analysis",
+    "software",
+    "provenance",
+    "dataset",
+    "phylogeny",
+    "model_fits",
+    "statistical_tests",
+    "branch_results"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "format": "uri" },
+    "schema_version": { "type": "string", "pattern": "^3\\.[0-9]+\\.[0-9]+$" },
+    "analysis": {
+      "type": "object",
+      "required": ["id", "name", "version", "category", "description"],
+      "properties": {
+        "id": { "type": "string", "enum": ["absrel"] },
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "citations": { "type": "array" },
+        "settings": { "type": "object" }
+      }
+    },
+    "software": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "git_commit": { "type": "string" },
+        "build_type": { "type": "string" },
+        "compiler": { "type": "string" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["invocation", "inputs", "execution"],
+      "properties": {
+        "invocation": { "type": "object" },
+        "inputs": { "type": "object" },
+        "execution": { "type": "object" }
+      }
+    },
+    "dataset": {
+      "type": "object",
+      "required": ["taxa_count", "codon_sites", "nucleotide_sites", "unique_patterns", "taxa", "genetic_code"],
+      "properties": {
+        "taxa_count": { "type": "integer" },
+        "codon_sites": { "type": "integer" },
+        "nucleotide_sites": { "type": "integer" },
+        "unique_patterns": { "type": "integer" },
+        "taxa": { "type": "array", "items": { "type": "string" } },
+        "genetic_code": { "type": "object" },
+        "partitions": { "type": "array" }
+      }
+    },
+    "phylogeny": {
+      "type": "object",
+      "required": ["newick", "nodes", "tree_lengths"],
+      "properties": {
+        "newick": { "type": "string" },
+        "nodes": { "type": "object" },
+        "tree_lengths": { "type": "object" }
+      }
+    },
+    "model_fits": {
+      "type": "object",
+      "required": ["baseline_mg94", "full_adaptive"],
+      "properties": {
+        "nucleotide_gtr": { "type": "object" },
+        "baseline_mg94": { "type": "object" },
+        "full_adaptive": { "type": "object" }
+      }
+    },
+    "statistical_tests": {
+      "type": "object",
+      "required": ["branch_level_summary"],
+      "properties": {
+        "branch_level_summary": {
+          "type": "object",
+          "required": [
+            "method",
+            "test_statistic",
+            "distribution",
+            "multiple_testing_correction",
+            "threshold",
+            "tested_branches_count",
+            "positive_branches_count",
+            "positive_branches"
+          ],
+          "properties": {
+            "method": { "type": "string" },
+            "test_statistic": { "type": "string" },
+            "distribution": { "type": "string" },
+            "multiple_testing_correction": { "type": "string" },
+            "threshold": { "type": "number" },
+            "tested_branches_count": { "type": "integer" },
+            "positive_branches_count": { "type": "integer" },
+            "positive_branches": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "branch_results": {
+      "type": "object",
+      "required": ["columns", "data"],
+      "properties": {
+        "columns": { "type": "object" },
+        "data": {
+          "type": "object",
+          "required": [
+            "branch",
+            "rate_classes",
+            "baseline_omega",
+            "full_branch_length",
+            "lrt",
+            "uncorrected_p_value",
+            "corrected_p_value",
+            "sites_ebf_100",
+            "positive"
+          ],
+          "properties": {
+            "branch": { "type": "array", "items": { "type": "string" } },
+            "rate_classes": { "type": "array", "items": { "type": "integer" } },
+            "baseline_omega": { "type": "array", "items": { "type": "number" } },
+            "full_branch_length": { "type": "array", "items": { "type": "number" } },
+            "lrt": { "type": "array", "items": { "type": "number" } },
+            "uncorrected_p_value": { "type": "array", "items": { "type": "number" } },
+            "corrected_p_value": { "type": "array", "items": { "type": "number" } },
+            "sites_ebf_100": { "type": "array", "items": { "type": "integer" } },
+            "positive": { "type": "array", "items": { "type": "boolean" } }
+          }
+        }
+      }
+    }
+  }
+}

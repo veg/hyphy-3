@@ -9,6 +9,7 @@
 #include "hyphy/opt/optimizer.hpp"
 #include "hyphy/core/progress_bar.hpp"
 #include "nlohmann/json.hpp"
+#include "hyphy/core/provenance.hpp"
 
 #include <vector>
 #include <string>
@@ -95,7 +96,7 @@ struct RELAXResult {
 
     double runtime_seconds = 0.0;
 
-    nlohmann::json to_json(const Tree& tree, const Alignment& aln) const {
+    nlohmann::json to_legacy_json(const Tree& tree, const Alignment& aln) const {
         nlohmann::json j;
 
         // 1. Analysis metadata
@@ -244,6 +245,223 @@ struct RELAXResult {
         j["runtime"] = "3.0.0";
         return j;
     }
+
+    nlohmann::json to_modern_json(const Tree& tree, const Alignment& aln, const Provenance& prov = {}) const {
+        nlohmann::json j;
+
+        j["$schema"] = "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/relax.v3.schema.json";
+        j["schema_version"] = "3.0.0";
+
+        // Analysis block
+        j["analysis"]["id"] = "relax";
+        j["analysis"]["name"] = "Relaxed Selection Analysis (RELAX)";
+        j["analysis"]["version"] = "3.0.0";
+        j["analysis"]["category"] = "comparative_selection";
+        j["analysis"]["description"] = "RELAX uses a random effects branch-site model framework to test whether a set of 'Test' branches evolves under relaxed selection relative to a set of 'Reference' branches, as measured by the selection intensity parameter K.";
+        j["analysis"]["citations"] = nlohmann::json::array({
+            {
+                {"citation", "Wertheim JO, Murrell B, Smith MD, Kosakovsky Pond SL, Scheffler K (2015). RELAX: Detecting Relaxed Selection in a Phylogenetic Framework. Mol Biol Evol 32(3): 820-832."},
+                {"doi", "10.1093/molbev/msu400"},
+                {"pmid", "25540451"}
+            }
+        });
+        j["analysis"]["settings"]["test_branches_count"] = test_branches.size();
+        j["analysis"]["settings"]["reference_branches_count"] = reference_branches.size();
+
+        // Software block
+        j["software"]["name"] = "hyphy";
+        j["software"]["version"] = "3.0.0";
+        j["software"]["git_commit"] = "6e22db3";
+        j["software"]["build_type"] = "Release";
+        j["software"]["compiler"] = Provenance::detect_compiler();
+
+        // Provenance block
+        if (!prov.invocation.cli_command.empty() || !prov.inputs.empty()) {
+            j["provenance"] = prov.to_json();
+        } else {
+            Provenance auto_prov;
+            auto_prov.invocation.cli_command = "hyphy3 relax";
+            auto_prov.invocation.working_directory = Provenance::get_cwd();
+            auto_prov.execution.start_time = Provenance::current_iso8601();
+            auto_prov.execution.end_time = Provenance::current_iso8601();
+            auto_prov.execution.wall_time_seconds = runtime_seconds;
+            auto_prov.execution.cpu_threads = 1;
+            auto_prov.execution.hostname = Provenance::get_hostname();
+            auto_prov.execution.os = Provenance::detect_os();
+            auto_prov.execution.compiler = Provenance::detect_compiler();
+            j["provenance"] = auto_prov.to_json();
+        }
+
+        // Dataset block
+        j["dataset"]["taxa_count"] = aln.num_taxa;
+        j["dataset"]["codon_sites"] = aln.num_codons;
+        j["dataset"]["nucleotide_sites"] = aln.num_codons * 3;
+        j["dataset"]["unique_patterns"] = aln.patterns.size();
+        j["dataset"]["taxa"] = aln.taxon_names;
+
+        nlohmann::json gcode;
+        gcode["id"] = aln.code ? aln.code->name : "Universal";
+        gcode["name"] = aln.code ? aln.code->name : "Universal";
+        gcode["sense_codons"] = aln.code ? static_cast<int>(aln.code->sense_codons.size()) : 61;
+        if (aln.code) {
+            gcode["stop_codons"] = aln.code->stop_codons;
+        } else {
+            gcode["stop_codons"] = {"TAA", "TAG", "TGA"};
+        }
+        j["dataset"]["genetic_code"] = gcode;
+
+        j["dataset"]["partitions"] = nlohmann::json::array({
+            {
+                {"id", "default"},
+                {"name", "Full Alignment"},
+                {"span", nlohmann::json::array({nlohmann::json::array({1, aln.num_codons})})},
+                {"sites_count", aln.num_codons},
+                {"patterns_count", aln.patterns.size()}
+            }
+        });
+
+        // Phylogeny block
+        j["phylogeny"]["newick"] = tree.to_newick();
+        nlohmann::json nodes_json;
+        double sum_bl_alt = 0.0;
+        double sum_bl_null = 0.0;
+
+        for (const auto& node : tree.nodes) {
+            nlohmann::json node_entry;
+            node_entry["type"] = node.children.empty() ? "leaf" : "internal";
+
+            auto it = branch_class.find(node.name);
+            if (it != branch_class.end()) {
+                node_entry["branch_class"] = it->second;
+            }
+
+            if (!alternative_fit.branch_lengths.empty() && node.id >= 0 && static_cast<size_t>(node.id) < alternative_fit.branch_lengths.size()) {
+                node_entry["branch_lengths"]["alternative"] = alternative_fit.branch_lengths[node.id];
+                if (node.id != tree.root_id) sum_bl_alt += alternative_fit.branch_lengths[node.id];
+            }
+            if (!null_fit.branch_lengths.empty() && node.id >= 0 && static_cast<size_t>(node.id) < null_fit.branch_lengths.size()) {
+                node_entry["branch_lengths"]["null"] = null_fit.branch_lengths[node.id];
+                if (node.id != tree.root_id) sum_bl_null += null_fit.branch_lengths[node.id];
+            }
+
+            nodes_json[node.name] = node_entry;
+        }
+
+        j["phylogeny"]["nodes"] = nodes_json;
+        j["phylogeny"]["tree_lengths"]["alternative"] = sum_bl_alt;
+        j["phylogeny"]["tree_lengths"]["null"] = sum_bl_null;
+
+        // Model fits block
+        auto format_distro_modern = [](const RELAXRateDistribution& ref_d, const RELAXRateDistribution& test_d) {
+            nlohmann::json d;
+            nlohmann::json ref_arr = nlohmann::json::array();
+            nlohmann::json test_arr = nlohmann::json::array();
+            for (size_t k = 0; k < ref_d.omegas.size(); ++k) {
+                ref_arr.push_back({
+                    {"class", static_cast<int>(k + 1)},
+                    {"omega", ref_d.omegas[k]},
+                    {"proportion", ref_d.weights[k]}
+                });
+                test_arr.push_back({
+                    {"class", static_cast<int>(k + 1)},
+                    {"omega", test_d.omegas[k]},
+                    {"proportion", test_d.weights[k]}
+                });
+            }
+            d["reference"] = ref_arr;
+            d["test"] = test_arr;
+            return d;
+        };
+
+        if (gtr_parameters > 0 || gtr_log_likelihood != 0.0) {
+            j["model_fits"]["nucleotide_gtr"] = {
+                {"description", "General Time Reversible nucleotide model with empirical frequencies"},
+                {"log_likelihood", gtr_log_likelihood},
+                {"parameters_count", gtr_parameters},
+                {"aicc", gtr_aicc}
+            };
+        }
+
+        j["model_fits"]["codon_mg94"] = {
+            {"description", "Muse-Gaut 1994 x GTR with separate rates for Reference and Test branches"},
+            {"log_likelihood", mg94_log_likelihood},
+            {"parameters_count", mg94_parameters},
+            {"aicc", mg94_aicc},
+            {"rate_distributions", {
+                {"omega_reference", mg94_omega_R},
+                {"omega_test", mg94_omega_T}
+            }}
+        };
+
+        j["model_fits"]["alternative"] = {
+            {"description", "RELAX alternative model with unconstrained relaxation parameter K"},
+            {"log_likelihood", alternative_fit.log_likelihood},
+            {"parameters_count", alternative_fit.parameters},
+            {"aicc", alternative_fit.aicc},
+            {"k_parameter", k},
+            {"rate_distributions", format_distro_modern(alternative_fit.reference_distribution, alternative_fit.test_distribution)}
+        };
+
+        j["model_fits"]["null"] = {
+            {"description", "RELAX null model fixing K = 1"},
+            {"log_likelihood", null_fit.log_likelihood},
+            {"parameters_count", null_fit.parameters},
+            {"aicc", null_fit.aicc},
+            {"k_parameter", 1.0},
+            {"rate_distributions", format_distro_modern(null_fit.reference_distribution, null_fit.test_distribution)}
+        };
+
+        // Statistical tests block
+        std::string decision_str;
+        if (p_value <= 0.05) {
+            decision_str = (k < 1.0) ? "Relaxed selection detected on test branches" : "Intensified selection detected on test branches";
+        } else {
+            decision_str = "No evidence of relaxed or intensified selection";
+        }
+
+        j["statistical_tests"]["hypothesis_test"] = {
+            {"method", "Likelihood Ratio Test (LRT)"},
+            {"test_statistic", "LRT"},
+            {"statistic_value", lrt},
+            {"distribution", "Asymptotic Chi-squared"},
+            {"degrees_of_freedom", 1},
+            {"null_hypothesis", "K = 1 (Selection intensity is equal between Test and Reference)"},
+            {"alternative_hypothesis", "K != 1 (Selection is relaxed K < 1 or intensified K > 1)"},
+            {"p_value", p_value},
+            {"k_parameter", k},
+            {"decision", decision_str}
+        };
+
+        return j;
+    }
+
+    nlohmann::json to_json(
+        const Tree& tree,
+        const Alignment& aln,
+        JSONFormat format = JSONFormat::ModernV3,
+        const Provenance& prov = {}
+    ) const {
+        if (format == JSONFormat::Legacy) {
+            return to_legacy_json(tree, aln);
+        }
+        return to_modern_json(tree, aln, prov);
+    }
+
+    void save_json(
+        const std::string& filepath,
+        const Tree& tree,
+        const Alignment& aln,
+        JSONFormat format = JSONFormat::ModernV3,
+        const Provenance& prov = {}
+    ) const {
+        std::ofstream out(filepath);
+        if (!out.is_open()) {
+            throw std::runtime_error("Could not open file for writing: " + filepath);
+        }
+        nlohmann::json j = to_json(tree, aln, format, prov);
+        out << j.dump(2) << "\n";
+    }
+
 };
 
 class RELAXAnalyzer {

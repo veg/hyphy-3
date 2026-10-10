@@ -78,13 +78,22 @@ TEST_CASE("aBSREL: Beta-globin Benchmark Parity (17 taxa, 144 codons)") {
     // Parity check: Node15, Node18, and SHEEP are expected positive branches
     CHECK(res.positive_branches.size() > 0);
 
-    // Test JSON export
-    auto json_out = res.to_json(tree, aln);
-    CHECK(json_out.contains("fits"));
-    CHECK(json_out["fits"].contains("Baseline MG94xREV"));
-    CHECK(json_out["fits"].contains("Full adaptive model"));
-    CHECK(json_out.contains("branch attributes"));
-    CHECK(json_out["branch attributes"].contains("0"));
-    CHECK(json_out.contains("test results"));
-    CHECK(json_out["test results"]["positive test results"] == res.positive_branches.size());
+    // Test Legacy JSON export
+    auto legacy_out = res.to_legacy_json(tree, aln);
+    CHECK(legacy_out.contains("fits"));
+    CHECK(legacy_out["fits"].contains("Baseline MG94xREV"));
+    CHECK(legacy_out["fits"].contains("Full adaptive model"));
+    CHECK(legacy_out.contains("branch attributes"));
+    CHECK(legacy_out["branch attributes"].contains("0"));
+    CHECK(legacy_out.contains("test results"));
+    CHECK(legacy_out["test results"]["positive test results"] == res.positive_branches.size());
+
+    // Test Modern JSON export
+    auto modern_out = res.to_modern_json(tree, aln);
+    CHECK(modern_out.contains("statistical_tests"));
+    CHECK(modern_out.contains("model_fits"));
+    CHECK(modern_out["model_fits"].contains("baseline_mg94"));
+    CHECK(modern_out["model_fits"].contains("full_adaptive"));
+    CHECK(modern_out.contains("branch_results"));
+    CHECK(modern_out["statistical_tests"]["branch_level_summary"]["positive_branches_count"] == res.positive_branches.size());
 }

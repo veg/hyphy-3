@@ -44,12 +44,20 @@ TEST_CASE("BUSTED: CD2 Dataset (10 taxa, 187 codons)") {
     CHECK(res.constrained.test_distribution.omegas[2] == 1.0);
     CHECK(res.evidence_ratios.size() == 187);
 
-    // Test JSON export
-    auto json_out = busted.to_json(res);
-    CHECK(json_out.contains("test results"));
-    CHECK(json_out.contains("fits"));
-    CHECK(json_out["fits"].contains("Unconstrained model"));
-    CHECK(json_out["fits"].contains("Constrained model"));
+    // Test Legacy JSON export
+    auto legacy_out = busted.to_legacy_json(res);
+    CHECK(legacy_out.contains("test results"));
+    CHECK(legacy_out.contains("fits"));
+    CHECK(legacy_out["fits"].contains("Unconstrained model"));
+    CHECK(legacy_out["fits"].contains("Constrained model"));
+
+    // Test Modern JSON export
+    auto modern_out = busted.to_modern_json(res);
+    CHECK(modern_out.contains("statistical_tests"));
+    CHECK(modern_out.contains("model_fits"));
+    CHECK(modern_out["model_fits"].contains("unconstrained"));
+    CHECK(modern_out["model_fits"].contains("constrained"));
+    CHECK(modern_out.contains("site_results"));
 }
 
 TEST_CASE("BUSTED: ADH Dataset (23 taxa, 254 codons)") {
@@ -156,8 +164,12 @@ TEST_CASE("BUSTED-S: Synonymous Rate Variation (SRV) on ADH") {
     }
     CHECK(std::abs(mean_syn - 1.0) < 0.05);
 
-    auto j = busted.to_json(res);
+    auto j = busted.to_legacy_json(res);
     CHECK(j["analysis"]["settings"]["srv"] == "Yes");
     CHECK(j["fits"]["Unconstrained model"]["Rate Distributions"].contains("Synonymous site-to-site rates"));
+
+    auto j_mod = busted.to_modern_json(res);
+    CHECK(j_mod["analysis"]["settings"]["srv"] == true);
+    CHECK(j_mod["model_fits"]["unconstrained"]["rate_distributions"].contains("synonymous"));
 }
 

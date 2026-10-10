@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/meme.v3.schema.json",
+  "title": "HyPhy 3 Mixed Effects Model of Evolution (MEME) Analysis Schema v3.0",
+  "description": "Standardized output schema for HyPhy 3 MEME episodic diversifying site selection analyses.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema_version",
+    "analysis",
+    "software",
+    "provenance",
+    "dataset",
+    "phylogeny",
+    "model_fits",
+    "statistical_tests",
+    "site_results"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "format": "uri" },
+    "schema_version": { "type": "string", "pattern": "^3\\.[0-9]+\\.[0-9]+$" },
+    "analysis": {
+      "type": "object",
+      "required": ["id", "name", "version", "category", "description"],
+      "properties": {
+        "id": { "type": "string", "enum": ["meme"] },
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "citations": { "type": "array" },
+        "settings": { "type": "object" }
+      }
+    },
+    "software": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "git_commit": { "type": "string" },
+        "build_type": { "type": "string" },
+        "compiler": { "type": "string" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["invocation", "inputs", "execution"],
+      "properties": {
+        "invocation": { "type": "object" },
+        "inputs": { "type": "object" },
+        "execution": { "type": "object" }
+      }
+    },
+    "dataset": {
+      "type": "object",
+      "required": ["taxa_count", "codon_sites", "nucleotide_sites", "unique_patterns", "taxa", "genetic_code"],
+      "properties": {
+        "taxa_count": { "type": "integer" },
+        "codon_sites": { "type": "integer" },
+        "nucleotide_sites": { "type": "integer" },
+        "unique_patterns": { "type": "integer" },
+        "taxa": { "type": "array", "items": { "type": "string" } },
+        "genetic_code": { "type": "object" },
+        "partitions": { "type": "array" }
+      }
+    },
+    "phylogeny": {
+      "type": "object",
+      "required": ["newick", "nodes", "tree_lengths"],
+      "properties": {
+        "newick": { "type": "string" },
+        "nodes": { "type": "object" },
+        "tree_lengths": { "type": "object" }
+      }
+    },
+    "model_fits": { "type": "object" },
+    "statistical_tests": {
+      "type": "object",
+      "required": ["site_level_summary"],
+      "properties": {
+        "site_level_summary": {
+          "type": "object",
+          "required": [
+            "method",
+            "test_statistic",
+            "distribution",
+            "degrees_of_freedom",
+            "null_hypothesis",
+            "alternative_hypothesis",
+            "threshold",
+            "total_sites",
+            "diversifying_count"
+          ],
+          "properties": {
+            "method": { "type": "string" },
+            "test_statistic": { "type": "string" },
+            "distribution": { "type": "string" },
+            "degrees_of_freedom": { "type": "integer" },
+            "null_hypothesis": { "type": "string" },
+            "alternative_hypothesis": { "type": "string" },
+            "threshold": { "type": "number" },
+            "total_sites": { "type": "integer" },
+            "diversifying_count": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "site_results": {
+      "type": "object",
+      "required": ["columns", "data"],
+      "properties": {
+        "columns": { "type": "object" },
+        "data": {
+          "type": "object",
+          "required": ["site", "alpha", "beta1", "p1", "beta_plus", "p_plus", "lrt", "p_value", "branches_under_selection", "classification"],
+          "properties": {
+            "site": { "type": "array", "items": { "type": "integer" } },
+            "alpha": { "type": "array", "items": { "type": "number" } },
+            "beta1": { "type": "array", "items": { "type": "number" } },
+            "p1": { "type": "array", "items": { "type": "number" } },
+            "beta_plus": { "type": "array", "items": { "type": "number" } },
+            "p_plus": { "type": "array", "items": { "type": "number" } },
+            "lrt": { "type": "array", "items": { "type": "number" } },
+            "p_value": { "type": "array", "items": { "type": "number" } },
+            "branches_under_selection": { "type": "array", "items": { "type": "integer" } },
+            "total_branch_length": { "type": "array", "items": { "type": "number" } },
+            "log_l_meme": { "type": "array", "items": { "type": "number" } },
+            "log_l_fel": { "type": "array", "items": { "type": "number" } },
+            "classification": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    }
+  }
+}
