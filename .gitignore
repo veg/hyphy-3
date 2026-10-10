@@ -4,6 +4,16 @@ bin/
 lib/
 cmake-build-*/
 .cache/
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+Makefile
+cmake_install.cmake
+_deps/
+hyphy3
+hyphy3-*
+hyphy_*test
+hyphy_test
 
 # Compiled libraries & binaries
 *.o

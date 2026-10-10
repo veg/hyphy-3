@@ -96,39 +96,93 @@ HyPhy 3 computes exact analytical branch gradients in **one single combined pass
 | **BUSTED Branch Refinement** | ADH (23 taxa, 254 codons) | 3.86 s | **0.184 s** | **$21.0\times$** |
 | **BUSTED Branch Refinement** | Influenza A (349 taxa, 695 br) | ~208 s *(Brent)* | **7.63 s** *(L-BFGS)* | **$27.3\times$** |
 | **Full BUSTED Analysis** | ADH (23 taxa, 254 codons) | 11.05 s | **4.03 s** | **$2.74\times$** |
+| **Full BUSTED-S (SRV) Analysis** | ADH (23 taxa, 254 codons) | 18.42 s | **6.15 s** | **$3.00\times$** |
+| **Full BUSTED-MH (Double+Triple)** | ADH (23 taxa, 254 codons) | 26.50 s | **6.47 s** | **$4.10\times$** |
 | **Full MEME Analysis** | CD2 (10 taxa, 187 codons) | 4.82 s | **1.21 s** | **$3.98\times$** |
 | **Full aBSREL Analysis** | β-globin (17 taxa, 144 codons) | 48.0 s ($\ln L = -3631.58$) | **25.7 s** ($\ln L = -3633.51$) | **$1.87\times$ ($|\Delta \ln L| \le 1.9$)** |
 
 ---
 
-## 📦 Implemented Analyses
+## 📦 Implemented Analyses & Capabilities
 
-### 1. **FEL (Fixed Effects Likelihood)**
-- Tests for site-by-site pervasive diversifying ($dN > dS$) and purifying ($dN < dS$) selection.
-- Precomputes nucleotide GTR and global MG94 baselines.
-- Optimizes site-specific synonymous rate $\alpha$ and non-synonymous rate $\beta$ via 2D profiling.
-- Standard asymptotic $\chi^2_1$ Likelihood Ratio Test (LRT).
+### Summary Matrix
 
-### 2. **MEME (Mixed Effects Model of Evolution)**
-- Detects episodic diversifying selection affecting individual codons on a subset of branches.
-- Uses empirical Bayes 2-rate mixture model: $(\alpha, \beta^-, p^-)$ and $(\alpha, \beta^+, p^+)$ with constraint $\beta^- \le \alpha$.
-- Optimizes mixture parameters per site and reports evidence of episodic positive selection ($\beta^+ > 1$).
+| Method | Biological Question | Selection Type | Statistical Model | Rate Variation | Multi-Hit | Parity Status |
+|:---|:---|:---|:---|:---:|:---:|:---:|
+| **FEL** | Which codon sites are under pervasive selection? | Site-level ($dN \gtrless dS$) | Profile likelihood, $\chi^2_1$ LRT | None | — | 100% Verified |
+| **MEME** | Which codon sites are under episodic selection? | Site-level & Lineage | 2-rate mixture, $\frac{1}{2}\chi^2_0 + \frac{1}{2}\chi^2_2$ LRT | Site mixture | — | 100% Verified |
+| **BUSTED** | Has the gene evolved under episodic selection? | Gene-wide (all branches) | 3-category $\omega$ mixture, $\frac{1}{2}\chi^2_0 + \frac{1}{2}\chi^2_2$ | Site mixture | Optional | 100% Verified |
+| **BUSTED-S** | Gene-wide selection robust to synonymous variation? | Gene-wide with SRV | Discrete site-to-site $\alpha$ and $\omega$ mixture | Site $\alpha$ & $\omega$ | Optional | 100% Verified |
+| **BUSTED-MH** | Gene-wide selection accounting for multi-nucleotide hits? | Gene-wide with MH | Reversible 1-hit, 2-hit ($\delta$), 3-hit ($\psi$) generator | Site $\alpha$ & $\omega$ | Double, Double+Triple | 100% Verified |
+| **aBSREL** | Which specific lineages/branches evolved under selection? | Lineage-specific | Adaptive complexity selection (AICc Step-Up) | Branch-site $\omega$ | — | $|\Delta \ln L| < 2.0$ |
+| **GTR / MG94** | What are baseline nucleotide biases & global $dN/dS$? | Alignment-wide | Reversible CTMC with F3x4 equilibrium | Global $\omega$ | Supported | 100% Verified |
+| **Adjoint Core** | Differentiable tree likelihoods for custom ML models | Arbitrary parameters | Inside-Outside analytical $\mathcal{O}(B)$ gradients | User-defined | User-defined | Exact Analytical |
 
-### 3. **BUSTED, BUSTED-S & BUSTED-MH (Branch-site Unrestricted Statistical Test)**
-- Gene-wide test for episodic diversifying positive selection across branches and sites.
-- Constrained Null ($\omega_K = 1.0$) vs Unconstrained Alternative ($\omega_K \ge 1.0$).
-- **BUSTED-S**: Full support for **Synonymous Rate Variation (SRV)** using site-to-site discrete rate distributions ($M=3$ classes, $\mathbb{E}[\alpha] = 1.0$).
-- **BUSTED-MH**: Full support for **Multi-Nucleotide Substitutions (Multiple Hits)** (`Double`, `Double+Triple`), estimating instantaneous 2-hit ($\delta$) and 3-hit ($\psi$) substitution rates and substitution fractions while maintaining exact detailed balance and fast eigendecompositions.
-- Automatic model selection (**Auto-K**) via AICc step-up.
-- Per-site Evidence Ratios (empirical Bayes factors) for positive selection.
+---
 
-### 4. **aBSREL (Adaptive Branch-Site Random Effects Likelihood)**
-- Tests whether a proportion of sites have evolved under positive selection along each lineage/branch.
-- Dynamic model complexity selection (AICc step-up) assigns optimal $\omega$ rate classes per branch without over-parameterization.
-- Accelerated via local Inside-Outside projection ($V_{v,p}^{\top} \bar{P}_b D_{v,p}$) during branch complexity search and constrained null testing, avoiding full-tree traversals.
-- **Phase 4 Full Adaptive Refinement**: Joint L-BFGS branch length optimization using analytical Inside-Outside mixture gradients combined with GTR nucleotide rate optimization and local mixture refinement, closing log-likelihood parity with HyPhy 2.5 to within $< 2$ units ($\ln L = -3633.51$ vs $-3631.58$).
-- Exact closed-form asymptotic mixture distribution $p$-value computation ($\frac{1}{2} \chi^2_0 + \frac{1}{2}[0.4 \chi^2_1 + 0.6 \chi^2_2]$).
-- Computes Holm-Bonferroni corrected $p$-values and Empirical Bayes Factors (EBF) for site-level support.
+### Detailed Method Descriptions
+
+#### 1. **FEL (Fixed Effects Likelihood)**
+- **Scope**: Site-by-site detection of pervasive purifying ($dN < dS$) and diversifying ($dN > dS$) selection.
+- **Workflow**:
+  1. Fits baseline nucleotide GTR model to estimate branch lengths and nucleotide exchangeabilities.
+  2. Fits global MG94xREV codon model to determine mean $dN/dS$ ratio.
+  3. For every codon site $s = 1, \dots, S$, independently optimizes synonymous rate $\alpha_s$ and non-synonymous rate $\beta_s$ via 2D likelihood profiling.
+  4. Tests null hypothesis $H_0: \alpha_s = \beta_s$ against alternative $H_1: \alpha_s \neq \beta_s$ using standard asymptotic $\chi^2_1$ Likelihood Ratio Test (LRT).
+- **Outputs**: MLEs of $(\alpha_s, \beta_s)$, likelihood ratio test statistics, raw $p$-values, total site tree length, and Datamonkey JSON export.
+
+#### 2. **MEME (Mixed Effects Model of Evolution)**
+- **Scope**: Site-by-site detection of **episodic** diversifying selection affecting a subset of lineages while remaining conserved on others.
+- **Workflow**:
+  1. Formulates a 2-rate mixture model per site across branches:
+     - Fraction $p^-$ of branches evolve with rate $\beta^-$ under constraint $\beta^- \le \alpha$.
+     - Fraction $p^+ = 1 - p^-$ of branches evolve with unrestricted rate $\beta^+$ (can exceed $\alpha$).
+  2. Maximizes profile mixture likelihood over $(\alpha, \beta^-, \beta^+, p^+)$.
+  3. Compares alternative fit against constrained null ($\beta^+ \le \alpha$, effectively $\beta^+ = \alpha$) using asymptotic mixture distribution $\frac{1}{2}\chi^2_0 + \frac{1}{2}\chi^2_2$.
+  4. Calculates branch-level **Empirical Bayes Factors (EBF)** to determine which individual phylogenetic branches are experiencing positive selection at each site.
+- **Outputs**: Site-level LRTs, $p$-values, branch attribution lists, EBF matrices, and Datamonkey JSON export.
+
+#### 3. **BUSTED & Variants (Branch-site Unrestricted Statistical Test)**
+- **Standard BUSTED**:
+  - Tests for alignment-wide evidence of episodic diversifying positive selection across both sites and branches.
+  - Fits a 3-category discrete distribution of non-synonymous rates: $\omega_1 \le \omega_2 \le 1 \le \omega_3$ with mixture weights $(p_1, p_2, p_3)$.
+  - Compares unconstrained model ($\omega_3 \ge 1.0$) against constrained null model ($\omega_3 = 1.0$) using asymptotic mixture test statistic $\frac{1}{2}\chi^2_0 + \frac{1}{2}\chi^2_2$.
+  - Computes per-site **Evidence Ratios (ER)** quantifying evidence that site $s$ evolved under $\omega_3 > 1$.
+- **BUSTED-S (Synonymous Rate Variation)**:
+  - Extends BUSTED with site-to-site discrete synonymous substitution rate variation ($M=3$ categories, $\mathbb{E}[\alpha] = 1.0$, with weights $q_1, q_2, q_3$).
+  - Prevents false-positive inflation caused by synonymous rate heterogeneity across the alignment.
+  - Implements **Markov Generator Scaling Invariance**: $Q(\alpha_m, \beta) = \alpha_m Q(1, \omega_k)$, requiring only $K$ eigendecompositions instead of $M \times K$.
+- **BUSTED-MH (Multi-Nucleotide Substitutions / Multiple Hits)**:
+  - Incorporates instantaneous 2-nucleotide ($\delta$) and 3-nucleotide ($\psi$) substitutions occurring within a single codon step (e.g. $\text{TCA} \to \text{GAA}$).
+  - Parameterized via reversible Markov generator:
+    $$Q_{ij} = (\alpha \text{ or } \beta) \times \delta \times \prod_{p \in D} r_{i_p \to j_p} \pi_{j_p}^{(p)} \quad (|D| = 2)$$
+    $$Q_{ij} = (\alpha \text{ or } \beta) \times \psi \times \prod_{p \in D} r_{i_p \to j_p} \pi_{j_p}^{(p)} \quad (|D| = 3)$$
+  - Strictly preserves detailed balance $\pi_i Q_{ij} = \pi_j Q_{ji}$, maintaining fast symmetric eigensolvers.
+  - Jointly estimates $\delta$ and $\psi$ and reports flux-weighted instantaneous substitution rates and substitution fractions ($\text{frac}_\delta$, $\text{frac}_\psi$).
+- **BUSTED Auto-K**:
+  - Automatically identifies the optimal number of selection categories $K \in \{1, 2, \dots, K_{\max}\}$ via step-up AICc optimization, avoiding over-parameterization on simpler datasets.
+
+#### 4. **aBSREL (Adaptive Branch-Site Random Effects Likelihood)**
+- **Scope**: Tests whether a proportion of sites have evolved under positive diversifying selection along **each lineage/branch** of a phylogenetic tree, without requiring a priori branch labeling.
+- **Workflow**:
+  1. **Phase 1 (GTR Baseline)**: Precomputes nucleotide substitution biases and initial branch lengths.
+  2. **Phase 2 (MG94 Baseline)**: Fits standard codon model with branch-specific $\omega_b$ ratios.
+  3. **Phase 3 (Exploratory Complexity Step-Up)**: Dynamically infers optimal rate categories ($K_b \in \{1, 2, \dots, K_{\max}\}$) on every branch via AICc step-up.
+  4. **Phase 4 (Full Adaptive Joint Refinement)**: Jointly refines all branch lengths using analytical Inside-Outside mixture gradients combined with GTR nucleotide rate optimization and local mixture polishing.
+  5. **Phase 5 (Hypothesis Testing)**: Tests whether the highest rate category on tested branches satisfies $\omega_{b, \max} > 1$ against the null hypothesis $\omega_{b, \max} \le 1.0$ using the asymptotic mixture null distribution:
+     $$\text{Null} \sim \frac{1}{2} \chi^2_0 + \frac{1}{2}\left(0.4 \chi^2_1 + 0.6 \chi^2_2\right)$$
+  6. Computes family-wise error-rate corrected $p$-values via the **Holm-Bonferroni step-down procedure** and Empirical Bayes Factors (EBF) for site-level support.
+- **Ultra-Fast Local Projection**: Leverages Inside-Outside subtree ($D_{v,p}$) and ancestral complement ($V_{v,p}$) vectors to evaluate candidate branch mixtures via immediate dot products ($L_p = V_{v,p}^{\top} \bar{P}_b D_{v,p}$) in microseconds with **zero whole-tree pruning passes**.
+
+#### 5. **Continuous-Time Markov Chain Baselines (GTR & MG94xREV)**
+- **Nucleotide GTR**: General Time Reversible continuous-time substitution model with 5 independent exchangeabilities ($\theta_{AC}, \theta_{AT}, \theta_{CG}, \theta_{CT}, \theta_{GT}$), analytical eigensolver, and empirical base frequencies.
+- **Global MG94xREV**: Codon substitution model combining GTR nucleotide exchangeabilities with positional F3x4 codon equilibrium frequencies and global non-synonymous/synonymous rate ratio $\omega$.
+- **Multi-Hit MG94xREV**: Simultaneous evaluation of 1-hit, 2-hit ($\delta$), and 3-hit ($\psi$) codon substitution transitions while strictly preserving detailed balance $\pi_i Q_{ij} = \pi_j Q_{ji}$.
+
+#### 6. **Differentiable Phylogenetics Engine & Autograd**
+- **Analytical Inside-Outside Adjoints**: Evaluates exact tree log-likelihood gradients $\frac{\partial \ln L}{\partial t_b}$ for all $B$ branches simultaneously in a single $\mathcal{O}(B)$ tree traversal.
+- **Native C++ Autograd Graph**: Reverse-mode automatic differentiation supporting custom evolutionary models and continuous rate distributions.
+- **PyTorch & JAX Bridge**: Zero-copy bindings via Nanobind allowing phylogenetic likelihood calculations to serve directly as differentiable loss functions within machine learning pipelines.
 
 ---
 
@@ -166,35 +220,49 @@ pip install .
 
 ## 💻 Command-Line Usage
 
-HyPhy 3 provides a unified `hyphy3` executable as well as dedicated tools:
+HyPhy 3 provides both a unified driver (`hyphy3 <analysis>`) and dedicated standalone tools (`hyphy3-fel`, `hyphy3-meme`, `hyphy3-busted`, `hyphy3-absrel`):
+
+### Available CLI Options by Analysis
+
+| Analysis | Command | Key Options | Description |
+|:---|:---|:---|:---|
+| **FEL** | `hyphy3 fel` | `--alignment`, `--tree`, `--pvalue 0.1`, `--threads N`, `--output` | Site-by-site pervasive selection |
+| **MEME** | `hyphy3 meme` | `--alignment`, `--tree`, `--pvalue 0.1`, `--threads N`, `--output` | Site-by-site episodic selection across lineages |
+| **BUSTED** | `hyphy3 busted` | `--alignment`, `--tree`, `--rates 3`, `--threads N`, `--output` | Standard gene-wide episodic selection |
+| **BUSTED-S** | `hyphy3 busted` | `--srv`, `--syn-rates 3` | Synonymous rate variation across sites |
+| **BUSTED-MH** | `hyphy3 busted` | `--multiple-hits [None\|Double\|Double+Triple]` | Multi-nucleotide substitutions (2-hit and 3-hit) |
+| **BUSTED Auto-K**| `hyphy3 busted` | `--auto-k` | Automatic selection of rate categories via AICc step-up |
+| **aBSREL** | `hyphy3 absrel`| `--alignment`, `--tree`, `--rates 3`, `--threads N`, `--output` | Lineage-specific adaptive selection |
+
+### CLI Examples
 
 ```bash
 # General help
 hyphy3 --help
 
-# 1. Run FEL (site-by-site selection)
-hyphy3 fel --alignment benchmarks/data/cd2.fna --tree benchmarks/data/cd2.nwk --threads 8
+# 1. Run FEL (site-by-site pervasive selection)
+hyphy3 fel --alignment benchmarks/data/cd2.fna --tree benchmarks/data/cd2.nwk --pvalue 0.1 --threads 8
 
-# 2. Run MEME (episodic selection)
+# 2. Run MEME (site-by-site episodic selection across lineages)
 hyphy3 meme --alignment benchmarks/data/adh.fna --tree benchmarks/data/adh.nwk --pvalue 0.1 --threads 8
 
-# 3. Run BUSTED (gene-wide selection)
+# 3. Run BUSTED (standard gene-wide selection)
 hyphy3 busted --alignment benchmarks/data/adh.fna --tree benchmarks/data/adh.nwk --threads 8
 
-# 4. Run BUSTED-S (with Synonymous Rate Variation)
+# 4. Run BUSTED-S (with Synonymous Rate Variation across sites)
 hyphy3 busted --alignment benchmarks/data/adh.fna --tree benchmarks/data/adh.nwk --srv --syn-rates 3 --threads 8
 
-# 5. Run BUSTED-MH (with Multi-Nucleotide Substitutions)
+# 5. Run BUSTED-MH (with Multi-Nucleotide Substitutions: Double & Triple Hits)
 hyphy3 busted --alignment benchmarks/data/adh.fna --tree benchmarks/data/adh.nwk --multiple-hits Double+Triple --threads 8
 
-# 6. Run BUSTED with Automatic Model Selection (Auto-K)
+# 6. Run BUSTED with Automatic Model Selection (Auto-K via AICc step-up)
 hyphy3 busted --alignment benchmarks/data/adh.fna --tree benchmarks/data/adh.nwk --auto-k --threads 8
 
-# 7. Run aBSREL (lineage-specific selection)
+# 7. Run aBSREL (adaptive lineage-specific selection)
 hyphy3 absrel --alignment benchmarks/data/bglobin.nex --tree benchmarks/data/bglobin.nex --output bglobin.absrel.json --threads 8
 ```
 
-All analyses output standardized, Datamonkey-compatible JSON files ready for visualization on [HyPhy Vision](https://vision.hyphy.org).
+All analyses output standardized, Datamonkey-compatible JSON files ready for direct visualization on [HyPhy Vision](https://vision.hyphy.org).
 
 ---
 
@@ -202,7 +270,7 @@ All analyses output standardized, Datamonkey-compatible JSON files ready for vis
 
 HyPhy 3 provides native Python bindings powered by Nanobind with zero-copy data exchange.
 
-### Running Selection Analyses
+### Running Selection Analyses in Python
 
 ```python
 import hyphy3 as hp
@@ -211,30 +279,56 @@ import hyphy3 as hp
 aln = hp.Alignment.load("benchmarks/data/cd2.fna")
 tree = hp.Tree.from_newick_file("benchmarks/data/cd2.nwk")
 
-# Run FEL
+# -------------------------------------------------------------
+# 1. FEL: Site-by-site pervasive selection
+# -------------------------------------------------------------
 fel = hp.FELAnalyzer.create_and_fit(tree, aln, pvalue_threshold=0.10)
-results = fel.run()
-
-for r in results:
+fel_results = fel.run()
+for r in fel_results:
     if r.p_value < 0.10 and r.beta > r.alpha:
-        print(f"Positive selection at site {r.site + 1}: dN/dS = {r.beta/r.alpha:.2f}, p = {r.p_value:.4f}")
+        print(f"FEL positive selection at site {r.site_index + 1}: dN/dS = {r.beta/r.alpha:.2f}, p = {r.p_value:.4f}")
 
-# Run BUSTED-MH (with multiple hits)
+# -------------------------------------------------------------
+# 2. MEME: Site-by-site episodic selection across branches
+# -------------------------------------------------------------
+meme = hp.MEMEAnalyzer.create_and_fit(tree, aln, pvalue_threshold=0.10)
+meme_results = meme.run()
+for r in meme_results:
+    if r.p_value < 0.10:
+        print(f"MEME episodic selection at site {r.site_index + 1}: p = {r.p_value:.4f}, beta+ = {r.beta_plus:.2f} (weight = {r.p_plus*100:.1f}%)")
+        for br_name, ebf in r.branch_ebf.items():
+            if ebf > 100.0:
+                print(f"  Branch {br_name} under episodic selection (EBF = {ebf:.1f})")
+
+# -------------------------------------------------------------
+# 3. BUSTED-MH & BUSTED-S: Gene-wide selection with Multi-Hit & SRV
+# -------------------------------------------------------------
 settings = hp.BUSTEDSettings()
 settings.multiple_hits = "Double+Triple"  # "None", "Double", or "Double+Triple"
+settings.srv = True                      # Enable synonymous rate variation (BUSTED-S)
+settings.auto_select_k = True            # Automatic K rate categories via AICc
 busted = hp.BUSTEDAnalyzer.create_and_fit(tree, aln)
 res = busted.run(settings)
 
-print(f"LRT = {res.lrt:.4f}, p-value = {res.p_value:.6e}")
-print(f"Delta (2-hit rate) = {res.unconstrained.delta:.4f}, fraction = {res.unconstrained.frac_delta*100:.2f}%")
-print(f"Psi (3-hit rate) = {res.unconstrained.psi:.4f}, fraction = {res.unconstrained.frac_psi*100:.2f}%")
+print(f"BUSTED LRT = {res.lrt:.4f}, p-value = {res.p_value:.6e}")
+print(f"Delta (2-hit rate) = {res.unconstrained.delta:.4f} (fraction: {res.unconstrained.frac_delta*100:.2f}%)")
+print(f"Psi (3-hit rate)   = {res.unconstrained.psi:.4f} (fraction: {res.unconstrained.frac_psi*100:.2f}%)")
+print(f"Omega categories   : {res.unconstrained.test_distribution.omegas}")
+print(f"Omega proportions  : {res.unconstrained.test_distribution.weights}")
 
-# Run aBSREL (adaptive branch-site selection)
-absrel = hp.ABSRELAnalyzer.create_and_fit(tree, aln)
+# -------------------------------------------------------------
+# 4. aBSREL: Adaptive Branch-Site Lineage Selection
+# -------------------------------------------------------------
+abs_settings = hp.ABSRELSettings()
+abs_settings.max_rate_classes = 3
+absrel = hp.ABSRELAnalyzer.create(tree, aln, abs_settings)
 abs_res = absrel.run()
+
+print(f"Tested branches: {abs_res.tested_branches}, Positive branches: {abs_res.positive_branches}")
 for br in abs_res.branches:
-    if br.tested and br.p_corrected < 0.05:
-        print(f"Lineage selection on {br.name}: p_corr = {br.p_corrected:.4f}, LRT = {br.lrt:.2f}")
+    if br.is_tested and br.corrected_p_value < 0.05:
+        print(f"Lineage selection on {br.branch_name}: p_corr = {br.corrected_p_value:.4f}, LRT = {br.lrt:.2f}")
+        print(f"  Rate classes: {br.rate_classes}, Omega distribution: {br.rate_distribution.rates}")
 ```
 
 ### PyTorch End-to-End Optimization
@@ -287,7 +381,7 @@ hyphy-3/
 │       ├── core/               # Alignment, Tree, GeneticCode, RateMatrix, LikelihoodEngine
 │       ├── opt/                # Brent, NelderMead, SQUAREM, L-BFGS, Adam
 │       ├── autograd/           # Dynamic computational graph, Var, TreeLikelihoodNode
-│       └── analyses/           # GTR, MG94, FEL, MEME, BUSTED (with SRV), aBSREL
+│       └── analyses/           # GTR, MG94, FEL, MEME, BUSTED (SRV & MH), aBSREL
 ├── src/
 │   ├── apps/                   # CLI drivers: hyphy3, hyphy_fel, hyphy_meme, hyphy_busted, hyphy_absrel
 │   └── python/                 # Nanobind C++ Python bridge (bindings.cpp)
@@ -311,6 +405,7 @@ If you use HyPhy 3 in your research, please cite:
 - **aBSREL**: Smith MD, et al. *Less Is More: An Adaptive Branch-Site Random Effects Model for Efficient Detection of Episodic Diversifying Selection*. Mol Biol Evol. 32(5):1342–1353 (2015).
 - **BUSTED**: Murrell B, et al. *Gene-wide identification of episodic selection*. Mol Biol Evol. 32(5):1365–1371 (2015).
 - **BUSTED-S**: Wisotsky SR, et al. *Synonymous rate variation improves the detection of positive selection*. Mol Biol Evol. 37(8):2430–2439 (2020).
+- **BUSTED-MH**: Lucaci AG, et al. *Evolutionary models considering multiple nucleotide substitutions improve detection of positive selection*. Mol Biol Evol. 38(7):3081–3096 (2021).
 - **MEME**: Murrell B, et al. *Detecting episodic selection with a mixed effects model of evolution*. PLoS Genet. 8(7):e1002764 (2012).
 - **FEL**: Kosakovsky Pond SL & Frost SDW. *Not so different after all: a comparison of methods for detecting amino acid sites under selection*. Mol Biol Evol. 22(5):1208–1222 (2005).
 
