@@ -5,6 +5,7 @@
 #include "hyphy/core/tree.hpp"
 #include "hyphy/core/rate_matrix.hpp"
 #include "hyphy/core/likelihood.hpp"
+#include "hyphy/core/progress_bar.hpp"
 #include "LBFGSB.h"
 #include "hyphy/opt/nelder_mead.hpp"
 #include "hyphy/opt/optimizer.hpp"
@@ -14,6 +15,7 @@
 #include <iostream>
 #include <fstream>
 #include <algorithm>
+#include <memory>
 
 namespace hyphy::analyses {
 
@@ -270,7 +272,7 @@ public:
         return res;
     }
 
-    std::vector<SiteResult> run() {
+    std::vector<SiteResult> run(bool show_progress = false, bool force_progress = false) {
         std::vector<size_t> leaf_to_taxon(tree.num_nodes(), static_cast<size_t>(-1));
         for (const auto& node : tree.nodes) {
             if (node.is_leaf) {
@@ -281,9 +283,50 @@ public:
         size_t num_patterns = aln.patterns.size();
         std::vector<SiteResult> pattern_results(num_patterns);
 
+        std::unique_ptr<ProgressBar> pbar;
+        std::atomic<size_t> num_positive{0};
+        std::atomic<size_t> num_negative{0};
+
+        if (show_progress && (force_progress || ProgressBar::is_terminal())) {
+            pbar = std::make_unique<ProgressBar>(
+                num_patterns,
+                "[FEL] Patterns",
+                "patterns",
+                force_progress,
+                ProgressBar::Style::SmoothBlocks
+            );
+        }
+
         #pragma omp parallel for schedule(dynamic)
         for (size_t p = 0; p < num_patterns; ++p) {
             pattern_results[p] = analyze_pattern(p, leaf_to_taxon);
+            if (pbar) {
+                const auto& r = pattern_results[p];
+                size_t w = aln.patterns[p].weight;
+                if (r.p_value <= p_value_threshold) {
+                    if (r.beta > r.alpha) {
+                        num_positive.fetch_add(w, std::memory_order_relaxed);
+                    } else if (r.alpha > r.beta) {
+                        num_negative.fetch_add(w, std::memory_order_relaxed);
+                    }
+                }
+                size_t pos = num_positive.load(std::memory_order_relaxed);
+                size_t neg = num_negative.load(std::memory_order_relaxed);
+                if (pos > 0 || neg > 0) {
+                    std::string stat = "\033[1;32m+" + std::to_string(pos) + "\033[0m \033[1;31m-" + std::to_string(neg) + "\033[0m sites";
+                    pbar->set_status(stat);
+                }
+                pbar->tick();
+            }
+        }
+
+        if (pbar) {
+            size_t pos = num_positive.load();
+            size_t neg = num_negative.load();
+            std::ostringstream summary;
+            summary << "\033[1;32m" << pos << " positive\033[0m, \033[1;31m" << neg << " negative\033[0m sites (p ≤ "
+                    << std::fixed << std::setprecision(2) << p_value_threshold << ")";
+            pbar->finish(summary.str());
         }
 
         site_results.resize(aln.num_codons);

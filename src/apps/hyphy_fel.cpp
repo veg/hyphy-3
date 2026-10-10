@@ -39,6 +39,8 @@ static void print_usage(const char* prog) {
               << "  --threads <N>        Number of OpenMP worker threads\n"
               << "  --output <file>      Path to output JSON file (default: <alignment>.FEL.json)\n"
               << "  --pvalue <float>     P-value significance threshold (default: 0.1)\n"
+              << "  --progress           Force interactive progress bar\n"
+              << "  --no-progress        Disable progress bar\n"
               << "  --help, -h           Show this help message\n\n"
               << "Examples:\n"
               << "  " << prog << " --alignment data/cd2.fna --tree data/cd2.nwk --output cd2.FEL.json\n"
@@ -52,6 +54,8 @@ int run_fel(int argc, char* argv[]) {
     std::string code_name = "Universal";
     int num_threads = 0;
     Scalar pvalue_threshold = 0.1;
+    bool show_progress = ProgressBar::is_terminal();
+    bool force_progress = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -67,6 +71,12 @@ int run_fel(int argc, char* argv[]) {
             output_file = argv[++i];
         } else if (arg == "--pvalue" && i + 1 < argc) {
             pvalue_threshold = std::stod(argv[++i]);
+        } else if (arg == "--progress") {
+            show_progress = true;
+            force_progress = true;
+        } else if (arg == "--no-progress") {
+            show_progress = false;
+            force_progress = false;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
@@ -200,7 +210,7 @@ int run_fel(int argc, char* argv[]) {
         }
     }
 
-    auto site_results = fel.run();
+    auto site_results = fel.run(show_progress, force_progress);
 
     std::cout << "\n--------------------------------------------------------------------------------\n"
               << " Codon |   alpha   |   beta    | alpha=beta |    LRT    |  p-value  | Selection \n"

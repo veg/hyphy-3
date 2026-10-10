@@ -119,7 +119,7 @@ NB_MODULE(_hyphy3, m) {
         .def_static("create_and_fit", [](Tree tree, Alignment aln, Scalar pvalue_threshold) {
             return FELAnalyzer::create_and_fit(std::move(tree), std::move(aln), pvalue_threshold);
         }, "tree"_a, "alignment"_a, "pvalue_threshold"_a = 0.1)
-        .def("run", &FELAnalyzer::run)
+        .def("run", &FELAnalyzer::run, "show_progress"_a = false, "force_progress"_a = false)
         .def("to_json", [](const FELAnalyzer& fel) {
             return fel.to_json().dump();
         })
