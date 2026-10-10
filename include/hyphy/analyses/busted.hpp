@@ -86,6 +86,7 @@ public:
     // Relative branch lengths tau_b (normalized from MG94 baseline)
     std::vector<Scalar> branch_tau;
     std::vector<bool> is_test_branch;
+    std::vector<size_t> leaf_to_taxon;
     size_t num_test_branches = 0;
 
     // GTR baseline results
@@ -110,6 +111,7 @@ public:
         branch_tau.assign(num_nodes, 0.0);
         is_test_branch.assign(num_nodes, true); // Default: all branches are Test
         num_test_branches = num_nodes - 1; // Non-root branches
+        leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(tree, aln);
         prepare_baseline_lengths();
     }
 
@@ -205,13 +207,6 @@ public:
                         P_mix[m][node.id] += weights[k] * mg[k].transition_matrix(alpha_m * bl);
                     }
                 }
-            }
-        }
-
-        std::vector<size_t> leaf_to_taxon(num_nodes, static_cast<size_t>(-1));
-        for (const auto& node : tree.nodes) {
-            if (node.is_leaf) {
-                leaf_to_taxon[node.id] = LikelihoodEngine::find_taxon_index(aln, node.name);
             }
         }
 
@@ -317,13 +312,6 @@ public:
             }
         }
 
-        std::vector<size_t> leaf_to_taxon(num_nodes, static_cast<size_t>(-1));
-        for (const auto& node : tree.nodes) {
-            if (node.is_leaf) {
-                leaf_to_taxon[node.id] = LikelihoodEngine::find_taxon_index(aln, node.name);
-            }
-        }
-
         Vector weight_accum = Vector::Zero(K);
         Scalar total_pattern_weight = 0.0;
 
@@ -424,13 +412,6 @@ public:
                         P_mix[m][node.id] += weights[k] * mg[k].transition_matrix(alpha_m * bl);
                     }
                 }
-            }
-        }
-
-        std::vector<size_t> leaf_to_taxon(num_nodes, static_cast<size_t>(-1));
-        for (const auto& node : tree.nodes) {
-            if (node.is_leaf) {
-                leaf_to_taxon[node.id] = LikelihoodEngine::find_taxon_index(aln, node.name);
             }
         }
 
@@ -557,13 +538,7 @@ public:
             }
         }
 
-        // 3. Leaf mapping
-        std::vector<size_t> leaf_to_taxon(num_nodes, static_cast<size_t>(-1));
-        for (const auto& node : tree.nodes) {
-            if (node.is_leaf) {
-                leaf_to_taxon[node.id] = LikelihoodEngine::find_taxon_index(aln, node.name);
-            }
-        }
+        // 3. Parallel inside-outside traversal
 
         // 4. Parallel inside-outside traversal
         Scalar total_log_l = 0.0;

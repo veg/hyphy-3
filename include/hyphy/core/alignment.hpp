@@ -31,6 +31,7 @@ class Alignment {
 public:
     std::vector<std::string> taxon_names;
     std::unordered_map<std::string, size_t> taxon_to_index;
+    std::unordered_map<std::string, size_t> lower_taxon_to_index;
     std::vector<Sequence> sequences;
     size_t num_taxa = 0;
     size_t num_codons = 0;
@@ -265,6 +266,9 @@ public:
         s.name = name;
         s.raw_seq = seq;
         taxon_to_index[name] = taxon_names.size();
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
+        lower_taxon_to_index[lower] = taxon_names.size();
         taxon_names.push_back(name);
         sequences.push_back(std::move(s));
     }
@@ -312,6 +316,7 @@ public:
         Alignment nuc_aln;
         nuc_aln.taxon_names = taxon_names;
         nuc_aln.taxon_to_index = taxon_to_index;
+        nuc_aln.lower_taxon_to_index = lower_taxon_to_index;
         nuc_aln.num_taxa = num_taxa;
         nuc_aln.num_nucleotides = num_nucleotides;
         nuc_aln.num_codons = 0;

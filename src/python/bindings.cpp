@@ -282,6 +282,7 @@ NB_MODULE(_hyphy3, m) {
         .def_rw("test_branch_names", &RELAXSettings::test_branch_names)
         .def_rw("reference_branch_regex", &RELAXSettings::reference_branch_regex)
         .def_rw("reference_branch_names", &RELAXSettings::reference_branch_names)
+        .def_rw("refine_branch_lengths", &RELAXSettings::refine_branch_lengths)
         .def_rw("verbose", &RELAXSettings::verbose);
 
     nb::class_<RELAXRateDistribution>(m, "RELAXRateDistribution")

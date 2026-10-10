@@ -30,6 +30,8 @@ public:
     Vector4 eigenvalues = Vector4::Zero();
     Matrix4 eigenvectors = Matrix4::Zero(); // V
     Matrix4 inv_eigenvectors = Matrix4::Zero(); // V^T
+    Matrix4 U_pi = Matrix4::Zero();
+    Matrix4 V_pi = Matrix4::Zero();
 
     Scalar scale_factor = 1.0;
 
@@ -86,11 +88,13 @@ public:
         eigenvalues = solver.eigenvalues();
         eigenvectors = solver.eigenvectors(); // V
         inv_eigenvectors = eigenvectors.transpose(); // V^T
+        U_pi = inv_sqrt_pi.asDiagonal() * eigenvectors;
+        V_pi = inv_eigenvectors * sqrt_pi.asDiagonal();
     }
 
     Matrix4 transition_matrix(Scalar branch_length) const {
         Vector4 exp_lambda = (eigenvalues * branch_length).array().exp();
-        Matrix4 P = inv_sqrt_pi.asDiagonal() * eigenvectors * exp_lambda.asDiagonal() * inv_eigenvectors * sqrt_pi.asDiagonal();
+        Matrix4 P = (U_pi * exp_lambda.asDiagonal()) * V_pi;
         return P;
     }
 };
@@ -118,6 +122,8 @@ public:
     Vector eigenvalues;
     Matrix eigenvectors;
     Matrix inv_eigenvectors;
+    Matrix U_pi;
+    Matrix V_pi;
 
     Scalar scale_factor = 1.0;
 
@@ -227,11 +233,13 @@ public:
         eigenvalues = solver.eigenvalues().cwiseMin(0.0);
         eigenvectors = solver.eigenvectors();
         inv_eigenvectors = eigenvectors.transpose();
+        U_pi = inv_sqrt_pi.asDiagonal() * eigenvectors;
+        V_pi = inv_eigenvectors * sqrt_pi.asDiagonal();
     }
 
     Matrix transition_matrix(Scalar branch_length) const {
         Vector exp_lambda = (eigenvalues * branch_length).array().exp();
-        Matrix P = inv_sqrt_pi.asDiagonal() * eigenvectors * exp_lambda.asDiagonal() * inv_eigenvectors * sqrt_pi.asDiagonal();
+        Matrix P = (U_pi * exp_lambda.asDiagonal()) * V_pi;
         return P;
     }
 };

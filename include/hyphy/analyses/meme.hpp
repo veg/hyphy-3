@@ -187,6 +187,7 @@ public:
         }
 
         std::vector<Vector> thread_node_L(num_nodes, Vector::Zero(S));
+        std::vector<Matrix> P_branches(num_nodes);
 
         auto eval_pattern_meme_lnl = [&](Scalar a, Scalar w1, Scalar p1, Scalar b_plus) -> Scalar {
             Scalar b1 = a * w1;
@@ -202,7 +203,6 @@ public:
             mg1.update(p_1, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
             mg_plus.update(p_p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
 
-            std::vector<Matrix> P_branches(num_nodes);
             Scalar p_plus_wt = 1.0 - p1;
             for (const auto& node : tree.nodes) {
                 if (node.id != tree.root_id) {

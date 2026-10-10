@@ -2,6 +2,7 @@
 #include "hyphy/core/genetic_code.hpp"
 #include "hyphy/core/alignment.hpp"
 #include "hyphy/core/tree.hpp"
+#include "hyphy/core/console.hpp"
 #include "hyphy/analyses/absrel.hpp"
 
 #include <iostream>
@@ -18,34 +19,31 @@ using namespace hyphy::core;
 using namespace hyphy::analyses;
 
 static void print_absrel_banner() {
-    std::cout << "\n=======================================================\n"
-              << "   HYPHY 3: Adaptive Branch-Site Random Effects        \n"
-              << "            Likelihood (aBSREL)                        \n"
-              << "=======================================================\n"
-              << " Citation: Less Is More: An Adaptive Branch-Site        \n"
-              << "           Random Effects Model for Efficient          \n"
-              << "           Detection of Episodic Diversifying Selection\n"
-              << "           (2015), Mol Biol Evol. 32(5): 1342-1353     \n"
-              << " Version:  3.0.0 (Modern C++20 Core)                   \n"
-              << "=======================================================\n\n";
+    Panel::print_banner(
+        "aBSREL",
+        "Adaptive Branch-Site Random Effects Likelihood",
+        "Lineage-specific test for episodic diversifying selection",
+        "Citation: Mol Biol Evol. 32(5): 1342-1353 (2015) • v3.0.0"
+    );
 }
 
 static void print_absrel_usage(const char* prog) {
-    std::cout << "Usage: " << prog << " [OPTIONS]\n\n"
-              << "Required arguments:\n"
-              << "  --alignment <file>   Path to codon alignment (FASTA or NEXUS)\n\n"
-              << "Optional arguments:\n"
-              << "  --tree <file>        Path to Newick tree file (optional if embedded in NEXUS)\n"
-              << "  --code <name>        Genetic code (default: Universal)\n"
-              << "  --branches <set>     Branches to test: All, Internal, Leaves (default: All)\n"
-              << "  --pvalue <threshold> Holm-Bonferroni p-value threshold (default: 0.05)\n"
-              << "  --max-rates <N>      Maximum rate classes per branch (default: 3)\n"
-              << "  --threads <N>        Number of OpenMP worker threads\n"
-              << "  --output <file>      Path to output JSON file (default: <alignment>.ABSREL.json)\n"
-              << "  --progress           Force interactive progress bar\n"
-              << "  --no-progress        Disable progress bar\n"
-              << "  --help, -h           Show this help message\n\n"
-              << "Examples:\n"
+    print_absrel_banner();
+    std::cout << Console::bold("Usage:") << " " << prog << " [OPTIONS]\n\n"
+              << Console::bold("Required arguments:") << "\n"
+              << "  " << Console::brand("--alignment") << " <file>   Path to codon alignment (FASTA or NEXUS)\n\n"
+              << Console::bold("Optional arguments:") << "\n"
+              << "  " << Console::brand("--tree") << " <file>        Path to Newick tree file (optional if embedded in NEXUS)\n"
+              << "  " << Console::brand("--code") << " <name>        Genetic code (default: Universal)\n"
+              << "  " << Console::brand("--branches") << " <set>     Branches to test: All, Internal, Leaves (default: All)\n"
+              << "  " << Console::brand("--pvalue") << " <threshold> Holm-Bonferroni p-value threshold (default: 0.05)\n"
+              << "  " << Console::brand("--max-rates") << " <N>      Maximum rate classes per branch (default: 3)\n"
+              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.ABSREL.json)\n"
+              << "  " << Console::brand("--progress") << "           Force interactive progress bar\n"
+              << "  " << Console::brand("--no-progress") << "        Disable progress bar\n"
+              << "  " << Console::brand("--help, -h") << "           Show this help message\n\n"
+              << Console::bold("Examples:") << "\n"
               << "  " << prog << " --alignment data/bglobin.nex\n"
               << "  " << prog << " --alignment data/cd2.fna --tree data/cd2.nwk --branches Internal --threads 8\n\n";
 }
@@ -117,113 +115,146 @@ int run_absrel(int argc, char* argv[]) {
     try {
         code = GeneticCode::from_name(code_name);
     } catch (const std::exception& e) {
-        std::cerr << "Error: Unknown genetic code '" << code_name << "'.\n";
+        std::cerr << Console::danger("Error: Unknown genetic code '") << code_name << "'.\n";
         return 1;
     }
 
     // 2. Load Alignment
-    std::cout << "[1/4] Loading alignment from: " << alignment_file << "\n";
     Alignment aln;
     try {
         aln = Alignment::load(alignment_file, code);
     } catch (const std::exception& e) {
-        std::cerr << "Error loading alignment: " << e.what() << "\n";
+        std::cerr << Console::danger("Error loading alignment: ") << e.what() << "\n";
         return 1;
     }
-    std::cout << "      Taxa: " << aln.num_taxa << ", Codons: " << aln.num_codons
-              << ", Unique Patterns: " << aln.patterns.size() << "\n";
 
     // 3. Load Tree
-    std::cout << "[2/4] Resolving phylogeny...\n";
     Tree tree;
     if (!tree_file.empty()) {
         try {
             tree = Tree::from_newick_file(tree_file);
         } catch (const std::exception& e) {
-            std::cerr << "Error loading tree from file: " << e.what() << "\n";
+            std::cerr << Console::danger("Error loading tree from file: ") << e.what() << "\n";
             return 1;
         }
     } else if (!aln.embedded_tree_newick.empty()) {
         try {
             tree = Tree::from_newick(aln.embedded_tree_newick);
         } catch (const std::exception& e) {
-            std::cerr << "Error parsing embedded tree: " << e.what() << "\n";
+            std::cerr << Console::danger("Error parsing embedded tree: ") << e.what() << "\n";
             return 1;
         }
     } else {
-        std::cerr << "Error: No tree provided and no tree embedded in alignment.\n";
+        std::cerr << Console::danger("Error: No tree provided and no tree embedded in alignment.\n");
         return 1;
     }
-    std::cout << "      Nodes: " << tree.num_nodes() << ", Leaves: " << tree.num_leaves() << "\n";
 
     // 4. Initialize and Run aBSREL
-    std::cout << "[3/4] Running aBSREL model inference...\n";
     auto absrel = ABSRELAnalyzer::create(tree, aln, settings);
+
+    Panel::print_card("Dataset & Lineage Testing", {
+        {"Alignment File", alignment_file},
+        {"Sequences / Taxa", std::to_string(aln.num_taxa)},
+        {"Codon Sites", std::to_string(aln.num_codons) + " (" + std::to_string(aln.num_codons * 3) + " nt)"},
+        {"Unique Patterns", std::to_string(aln.patterns.size())},
+        {"Tree", std::to_string(tree.num_nodes()) + " nodes (" + std::to_string(tree.num_leaves()) + " leaves)"},
+        {"Tested Branches", settings.test_branches},
+        {"Max Rate Classes", std::to_string(settings.max_rate_classes)},
+        {"Genetic Code", code->name}
+    });
+
+    Panel::print_step(1, 2, "Fitting Baseline GTR & MG94xREV Models", "Exchangeability rates & branch lengths");
 
     std::function<void(const std::string&, double)> progress_cb = nullptr;
     if (!show_progress && !force_progress) {
         progress_cb = [](const std::string& stage, double frac) {
-            std::cout << "      [" << std::setw(3) << static_cast<int>(frac * 100) << "%] " << stage << std::endl;
+            std::cout << "  " << Console::muted("↳ [") << std::setw(3) << static_cast<int>(frac * 100) 
+                      << Console::muted("%] ") << stage << std::endl;
         };
     }
 
+    Panel::print_step(2, 2, "Running Adaptive Model Selection & Lineage Testing", "OpenMP parallel");
     auto res = absrel.run(progress_cb, show_progress, force_progress);
 
-    // 5. Display Summary
-    std::cout << "\n=======================================================\n"
-              << "   aBSREL Model Fitting Summary                        \n"
-              << "=======================================================\n"
-              << "  Nucleotide GTR Log-L    : " << std::fixed << std::setprecision(2) << res.gtr_fit.log_likelihood
-              << " (AICc: " << res.gtr_fit.aicc << ")\n"
-              << "  Baseline MG94xREV Log-L : " << res.baseline_fit.log_likelihood
-              << " (AICc: " << res.baseline_fit.aicc << ")\n"
-              << "  Full Adaptive Log-L     : " << res.full_adaptive_fit.log_likelihood
-              << " (AICc: " << res.full_adaptive_fit.aicc << ")\n"
-              << "  Tested Branches         : " << res.tested_branches.size() << "\n"
-              << "  Positive Branches       : " << res.positive_branches.size() << "\n"
-              << "  Execution Time          : " << std::setprecision(2) << res.runtime_seconds << "s\n"
-              << "=======================================================\n\n";
-
     // Branch table
-    std::cout << "### Tested Branches Summary\n\n";
-    std::cout << "| Branch | Rates | Full Length | Test LRT | Uncorrected p | Corrected p | Sites @ EBF>=100 | Selected? |\n";
-    std::cout << "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n";
+    Table branch_table;
+    branch_table.add_column("Branch", Table::Align::Left, 16);
+    branch_table.add_column("Rates", Table::Align::Center, 5);
+    branch_table.add_column("Full Length", Table::Align::Right, 11);
+    branch_table.add_column("Test LRT", Table::Align::Right, 8);
+    branch_table.add_column("Uncorrected p", Table::Align::Right, 13);
+    branch_table.add_column("Corrected p", Table::Align::Right, 12);
+    branch_table.add_column("EBF>=100", Table::Align::Right, 9);
+    branch_table.add_column("Selection", Table::Align::Left, 14);
 
     for (const auto& bname : res.tested_branches) {
         const auto& bres = res.branches.at(bname);
-        std::cout << "| " << std::left << std::setw(15) << bname
-                  << " | " << std::setw(5) << bres.rate_classes
-                  << " | " << std::fixed << std::setprecision(4) << std::setw(11) << bres.full_branch_length
-                  << " | " << std::setprecision(2) << std::setw(8) << bres.lrt
-                  << " | " << std::scientific << std::setprecision(2) << std::setw(13) << bres.uncorrected_p_value
-                  << " | " << std::setw(11) << bres.corrected_p_value
-                  << " | " << std::defaultfloat << std::setw(16) << bres.sites_ebf_100
-                  << " | " << (bres.is_positive ? "**Yes**" : "No") << " |\n";
-    }
+        std::ostringstream len_ss, lrt_ss, un_p_ss, corr_p_ss;
+        len_ss << std::fixed << std::setprecision(4) << bres.full_branch_length;
+        lrt_ss << std::fixed << std::setprecision(2) << bres.lrt;
+        un_p_ss << std::scientific << std::setprecision(2) << bres.uncorrected_p_value;
+        corr_p_ss << std::scientific << std::setprecision(2) << bres.corrected_p_value;
 
-    if (!res.positive_branches.empty()) {
-        std::cout << "\n**Positive selection detected** on " << res.positive_branches.size()
-                  << " branches at Holm-Bonferroni p <= " << settings.p_threshold << ":\n";
-        for (const auto& bname : res.positive_branches) {
-            const auto& bres = res.branches.at(bname);
-            std::cout << "  - **" << bname << "**: p_adj = " << std::scientific << std::setprecision(3)
-                      << bres.corrected_p_value << " (LRT = " << std::fixed << std::setprecision(2)
-                      << bres.lrt << ", " << bres.rate_classes << " rate classes, "
-                      << bres.sites_ebf_100 << " sites with EBF >= 100)\n";
+        std::string sel_label = Console::muted("-");
+        std::string row_color = "";
+        if (bres.is_positive) {
+            sel_label = Console::success("▲ Positive");
+            row_color = "\033[38;5;48m";
         }
-    } else {
-        std::cout << "\nNo branches were detected to be under positive selection at p <= "
-                  << settings.p_threshold << ".\n";
+
+        branch_table.add_row({
+            bname,
+            std::to_string(bres.rate_classes),
+            len_ss.str(),
+            lrt_ss.str(),
+            un_p_ss.str(),
+            corr_p_ss.str(),
+            std::to_string(bres.sites_ebf_100),
+            sel_label
+        }, row_color);
     }
 
-    // 6. Write JSON
-    std::cout << "\n[4/4] Writing JSON results to: " << output_file << "\n";
+    std::cout << "\n" << Console::bold("  Tested Branches Summary:") << "\n\n";
+    branch_table.print();
+    std::cout << "\n";
+
+    std::ostringstream gtr_ss, base_ss, full_ss, time_ss;
+    gtr_ss << std::fixed << std::setprecision(2) << res.gtr_fit.log_likelihood << " (AICc: " << res.gtr_fit.aicc << ")";
+    base_ss << std::fixed << std::setprecision(2) << res.baseline_fit.log_likelihood << " (AICc: " << res.baseline_fit.aicc << ")";
+    full_ss << std::fixed << std::setprecision(2) << res.full_adaptive_fit.log_likelihood << " (AICc: " << res.full_adaptive_fit.aicc << ")";
+    time_ss << std::fixed << std::setprecision(2) << res.runtime_seconds << " s";
+
+    std::string conclusion;
+    bool is_sig = !res.positive_branches.empty();
+    if (is_sig) {
+        conclusion = "EPISODIC DIVERSIFYING SELECTION detected on " + std::to_string(res.positive_branches.size()) + 
+                     " branch(es) at Holm-Bonferroni p <= " + std::to_string(settings.p_threshold) + "!";
+    } else {
+        conclusion = "No branches detected to be under positive selection at Holm-Bonferroni p <= " + std::to_string(settings.p_threshold) + ".";
+    }
+
+    std::vector<std::pair<std::string, std::string>> sum_items = {
+        {"Tested Branches", std::to_string(res.tested_branches.size()) + " (" + settings.test_branches + ")"},
+        {"Positively Selected Branches", 
+         (is_sig ? Console::success(std::to_string(res.positive_branches.size())) : "0") + 
+         " [Holm-Bonferroni p <= " + std::to_string(settings.p_threshold) + "]"},
+        {"Baseline MG94xREV Log-L", base_ss.str()},
+        {"Full Adaptive aBSREL Log-L", full_ss.str()},
+        {"Nucleotide GTR Log-L", gtr_ss.str()},
+        {"JSON Output File", output_file},
+        {"Total Execution Time", time_ss.str()}
+    };
+
+    Panel::print_summary_card("aBSREL Lineage Selection Analysis Summary", sum_items, conclusion, is_sig);
+
+    // Save JSON
     std::ofstream out(output_file);
     if (!out) {
-        std::cerr << "Warning: Could not open output file for writing: " << output_file << "\n";
+        std::cerr << Console::danger("Warning: Could not open output file for writing: ") << output_file << "\n";
     } else {
         out << res.to_json(tree, aln).dump(2) << "\n";
-        std::cout << "      Saved successfully.\n";
+        std::cout << Console::success("✔") << " " << Console::bold("Saved Datamonkey-compatible JSON report to: ")
+                  << Console::brand(output_file) << "\n\n";
     }
 
     return 0;

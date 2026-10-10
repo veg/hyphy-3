@@ -2,6 +2,7 @@
 #include "hyphy/core/genetic_code.hpp"
 #include "hyphy/core/alignment.hpp"
 #include "hyphy/core/tree.hpp"
+#include "hyphy/core/console.hpp"
 #include "hyphy/analyses/relax.hpp"
 
 #include <iostream>
@@ -18,31 +19,31 @@ using namespace hyphy::core;
 using namespace hyphy::analyses;
 
 static void print_relax_banner() {
-    std::cout << "\n=======================================================\n"
-              << "   HYPHY 3: RELAX (Test for Selection Relaxation)       \n"
-              << "=======================================================\n"
-              << " Citation: RELAX: Detecting Relaxed Selection in a      \n"
-              << "           Phylogenetic Framework                       \n"
-              << "           (2015), Mol Biol Evol. 32(3): 820-832        \n"
-              << " Version:  3.0.0 (Modern C++20 Core)                   \n"
-              << "=======================================================\n\n";
+    Panel::print_banner(
+        "RELAX",
+        "Test for Selection Relaxation",
+        "Detecting relaxed or intensified selection in a phylogenetic framework",
+        "Citation: Mol Biol Evol. 32(3): 820-832 (2015) • v3.0.0"
+    );
 }
 
 static void print_relax_usage(const char* prog) {
-    std::cout << "Usage: " << prog << " [OPTIONS]\n\n"
-              << "Required arguments:\n"
-              << "  --alignment <file>   Path to codon alignment (FASTA or NEXUS)\n\n"
-              << "Optional arguments:\n"
-              << "  --tree <file>        Path to Newick tree file (optional if embedded in NEXUS)\n"
-              << "  --code <name>        Genetic code (default: Universal)\n"
-              << "  --test <regex|names> Branch names or regex to mark as Test set (default: use {T} tags)\n"
-              << "  --pvalue <threshold> Significance threshold for LRT (default: 0.05)\n"
-              << "  --threads <N>        Number of OpenMP worker threads\n"
-              << "  --output <file>      Path to output JSON file (default: <alignment>.RELAX.json)\n"
-              << "  --progress           Force interactive progress bar\n"
-              << "  --no-progress        Disable progress bar\n"
-              << "  --help, -h           Show this help message\n\n"
-              << "Examples:\n"
+    print_relax_banner();
+    std::cout << Console::bold("Usage:") << " " << prog << " [OPTIONS]\n\n"
+              << Console::bold("Required arguments:") << "\n"
+              << "  " << Console::brand("--alignment") << " <file>   Path to codon alignment (FASTA or NEXUS)\n\n"
+              << Console::bold("Optional arguments:") << "\n"
+              << "  " << Console::brand("--tree") << " <file>        Path to Newick tree file (optional if embedded in NEXUS)\n"
+              << "  " << Console::brand("--code") << " <name>        Genetic code (default: Universal)\n"
+              << "  " << Console::brand("--test") << " <regex|names> Branch names or regex to mark as Test set (default: use {T} tags)\n"
+              << "  " << Console::brand("--pvalue") << " <threshold> Significance threshold for LRT (default: 0.05)\n"
+              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.RELAX.json)\n"
+              << "  " << Console::brand("--no-branch-opt") << "      Disable individual branch length refinement (use proportional scaling)\n"
+              << "  " << Console::brand("--progress") << "           Force interactive progress bar\n"
+              << "  " << Console::brand("--no-progress") << "        Disable progress bar\n"
+              << "  " << Console::brand("--help, -h") << "           Show this help message\n\n"
+              << Console::bold("Examples:") << "\n"
               << "  " << prog << " --alignment data/Fig4E.nex\n"
               << "  " << prog << " --alignment data/gene.fna --tree data/gene.nwk --test \".*PSEUDOGENE.*\" --threads 8\n\n";
 }
@@ -73,6 +74,8 @@ int run_relax(int argc, char* argv[]) {
             num_threads = std::stoi(argv[++i]);
         } else if (arg == "--output" && i + 1 < argc) {
             output_file = argv[++i];
+        } else if (arg == "--no-branch-opt" || arg == "--no-refine-branches") {
+            settings.refine_branch_lengths = false;
         } else if (arg == "--progress") {
             show_progress = true;
             force_progress = true;
@@ -112,130 +115,144 @@ int run_relax(int argc, char* argv[]) {
     try {
         code = GeneticCode::from_name(code_name);
     } catch (const std::exception& e) {
-        std::cerr << "Error: Unknown genetic code '" << code_name << "'.\n";
+        std::cerr << Console::danger("Error: Unknown genetic code '") << code_name << "'.\n";
         return 1;
     }
 
     // 2. Load Alignment
-    std::cout << "[1/4] Loading alignment from: " << alignment_file << "\n";
     Alignment aln;
     try {
         aln = Alignment::load(alignment_file, code);
     } catch (const std::exception& e) {
-        std::cerr << "Error loading alignment: " << e.what() << "\n";
+        std::cerr << Console::danger("Error loading alignment: ") << e.what() << "\n";
         return 1;
     }
-    std::cout << "      Taxa: " << aln.num_taxa << ", Codons: " << aln.num_codons
-              << ", Unique Patterns: " << aln.patterns.size() << "\n";
 
     // 3. Load Tree
-    std::cout << "[2/4] Resolving phylogeny and branch annotations...\n";
     Tree tree;
     if (!tree_file.empty()) {
         try {
             tree = Tree::from_newick_file(tree_file);
         } catch (const std::exception& e) {
-            std::cerr << "Error loading tree from file: " << e.what() << "\n";
+            std::cerr << Console::danger("Error loading tree from file: ") << e.what() << "\n";
             return 1;
         }
     } else if (!aln.embedded_tree_newick.empty()) {
         try {
             tree = Tree::from_newick(aln.embedded_tree_newick);
         } catch (const std::exception& e) {
-            std::cerr << "Error parsing embedded tree: " << e.what() << "\n";
+            std::cerr << Console::danger("Error parsing embedded tree: ") << e.what() << "\n";
             return 1;
         }
     } else {
-        std::cerr << "Error: No tree provided and no tree embedded in alignment.\n";
+        std::cerr << Console::danger("Error: No tree provided and no tree embedded in alignment.\n");
         return 1;
     }
 
     // 4. Initialize and Run RELAX
     auto relax = RELAXAnalyzer::create(tree, aln, settings);
-    std::cout << "      Nodes: " << tree.num_nodes() << ", Leaves: " << tree.num_leaves() << "\n";
-    std::cout << "      Test branches: " << relax.test_branch_names.size()
-              << ", Reference branches: " << relax.ref_branch_names.size() << "\n";
 
     if (relax.test_branch_names.empty()) {
-        std::cerr << "Error: No Test branches found! Annotate branches with {T} in Newick or pass --test <regex>.\n";
+        std::cerr << Console::danger("Error: No Test branches found! Annotate branches with {T} in Newick or pass --test <regex>.\n");
         return 1;
     }
 
-    std::cout << "[3/4] Running RELAX model inference pipeline...\n";
+    Panel::print_card("Dataset & Phylogeny", {
+        {"Alignment File", alignment_file},
+        {"Sequences / Taxa", std::to_string(aln.num_taxa)},
+        {"Codon Sites", std::to_string(aln.num_codons) + " (" + std::to_string(aln.num_codons * 3) + " nt)"},
+        {"Unique Patterns", std::to_string(aln.patterns.size())},
+        {"Tree", std::to_string(tree.num_nodes()) + " nodes (" + std::to_string(tree.num_leaves()) + " leaves)"},
+        {"Test Branches", std::to_string(relax.test_branch_names.size()) + " branches"},
+        {"Reference Branches", std::to_string(relax.ref_branch_names.size()) + " branches"},
+        {"Genetic Code", code->name}
+    });
+
+    Panel::print_step(1, 3, "Fitting Baseline & Separate-Rates Codon Models", "GTR & MG94xREV");
 
     std::function<void(const std::string&, double)> progress_cb = nullptr;
     if (!show_progress && !force_progress) {
         progress_cb = [](const std::string& stage, double frac) {
-            std::cout << "      [" << std::setw(3) << static_cast<int>(frac * 100) << "%] " << stage << std::endl;
+            std::cout << "  " << Console::muted("↳ [") << std::setw(3) << static_cast<int>(frac * 100) 
+                      << Console::muted("%] ") << stage << std::endl;
         };
     }
 
+    Panel::print_step(2, 3, "Running RELAX Inference Pipeline", 
+                      settings.refine_branch_lengths ? "Two-loop L-BFGS branch refinement enabled" : "Proportional branch scaling");
+
     auto res = relax.run(progress_cb, show_progress, force_progress);
 
-    // 5. Display Summary
-    std::cout << "\n=======================================================\n"
-              << "   RELAX Model Fitting Summary                         \n"
-              << "=======================================================\n";
-    std::cout << std::fixed << std::setprecision(2);
-    std::cout << "  Nucleotide GTR Log-L    : " << std::setw(9) << res.gtr_log_likelihood
-              << " (AICc: " << res.gtr_aicc << ", params: " << res.gtr_parameters << ")\n";
-    std::cout << "  MG94xREV Sep Rates Log-L: " << std::setw(9) << res.mg94_log_likelihood
-              << " (AICc: " << res.mg94_aicc << ", params: " << res.mg94_parameters << ")\n";
-    std::cout << "    omega (Reference)     : " << std::setprecision(4) << res.mg94_omega_R << "\n";
-    std::cout << "    omega (Test)          : " << std::setprecision(4) << res.mg94_omega_T << "\n";
-    std::cout << "  RELAX Alternative Log-L : " << std::setprecision(2) << std::setw(9) << res.alternative_fit.log_likelihood
-              << " (AICc: " << res.alternative_fit.aicc << ", params: " << res.alternative_fit.parameters << ")\n";
-    std::cout << "  RELAX Null (K=1) Log-L  : " << std::setprecision(2) << std::setw(9) << res.null_fit.log_likelihood
-              << " (AICc: " << res.null_fit.aicc << ", params: " << res.null_fit.parameters << ")\n";
-    std::cout << "=======================================================\n\n";
-
     // Rate distributions
-    std::cout << "### Inferred Rate Distributions (Alternative Model)\n\n";
-    std::cout << "| Class | Reference omega | Reference Prop | Test omega | Test Prop |\n";
-    std::cout << "| :---: | :---: | :---: | :---: | :---: |\n";
+    Table rate_table;
+    rate_table.add_column("Class", Table::Align::Center, 5);
+    rate_table.add_column("Ref omega", Table::Align::Right, 12);
+    rate_table.add_column("Ref Proportion", Table::Align::Right, 14);
+    rate_table.add_column("Test omega", Table::Align::Right, 12);
+    rate_table.add_column("Test Proportion", Table::Align::Right, 15);
+
     for (size_t c = 0; c < res.alternative_fit.reference_distribution.omegas.size(); ++c) {
-        std::cout << "| " << c
-                  << " | " << std::fixed << std::setprecision(4) << std::setw(15) << res.alternative_fit.reference_distribution.omegas[c]
-                  << " | " << std::fixed << std::setprecision(4) << std::setw(14) << res.alternative_fit.reference_distribution.weights[c]
-                  << " | " << std::fixed << std::setprecision(4) << std::setw(10) << res.alternative_fit.test_distribution.omegas[c]
-                  << " | " << std::fixed << std::setprecision(4) << std::setw(9) << res.alternative_fit.test_distribution.weights[c]
-                  << " |\n";
+        std::ostringstream w_r_ss, p_r_ss, w_t_ss, p_t_ss;
+        w_r_ss << std::fixed << std::setprecision(4) << res.alternative_fit.reference_distribution.omegas[c];
+        p_r_ss << std::fixed << std::setprecision(4) << res.alternative_fit.reference_distribution.weights[c];
+        w_t_ss << std::fixed << std::setprecision(4) << res.alternative_fit.test_distribution.omegas[c];
+        p_t_ss << std::fixed << std::setprecision(4) << res.alternative_fit.test_distribution.weights[c];
+
+        rate_table.add_row({
+            std::to_string(c),
+            w_r_ss.str(),
+            p_r_ss.str(),
+            w_t_ss.str(),
+            p_t_ss.str()
+        });
     }
 
-    std::cout << "\n### Hypothesis Test for Selection Relaxation\n\n";
-    std::cout << "  Relaxation parameter (K) : " << std::fixed << std::setprecision(4) << res.k << "\n";
-    std::cout << "  Likelihood Ratio Test    : " << std::fixed << std::setprecision(2) << res.lrt << "\n";
-    std::cout << "  Asymptotic p-value       : " << std::scientific << std::setprecision(4) << res.p_value << "\n";
-    std::cout << "  Significance threshold   : " << std::fixed << std::setprecision(2) << settings.p_value_threshold << "\n\n";
+    std::cout << "\n" << Console::bold("  Inferred Rate Distributions (Alternative Model):") << "\n\n";
+    rate_table.print();
+    std::cout << "\n";
 
+    std::ostringstream k_ss, lrt_ss, p_ss, gtr_ss, mg_ss, alt_ss, null_ss, time_ss;
+    k_ss << std::fixed << std::setprecision(4) << res.k;
+    lrt_ss << std::fixed << std::setprecision(2) << res.lrt;
+    p_ss << std::scientific << std::setprecision(4) << res.p_value;
+    gtr_ss << std::fixed << std::setprecision(2) << res.gtr_log_likelihood << " (AICc: " << res.gtr_aicc << ")";
+    mg_ss << std::fixed << std::setprecision(2) << res.mg94_log_likelihood << " (AICc: " << res.mg94_aicc << ")";
+    alt_ss << std::fixed << std::setprecision(2) << res.alternative_fit.log_likelihood << " (AICc: " << res.alternative_fit.aicc << ")";
+    null_ss << std::fixed << std::setprecision(2) << res.null_fit.log_likelihood << " (AICc: " << res.null_fit.aicc << ")";
+    time_ss << std::fixed << std::setprecision(2) << res.runtime_seconds << " s";
+
+    std::string conclusion;
     if (res.is_significant) {
         if (res.is_relaxed) {
-            std::cout << "  **Result: Significant RELAXATION of selection on Test branches** (K = "
-                      << std::fixed << std::setprecision(4) << res.k << " < 1, p = "
-                      << std::scientific << std::setprecision(3) << res.p_value << " <= "
-                      << std::fixed << std::setprecision(2) << settings.p_value_threshold << ").\n";
+            conclusion = "SIGNIFICANT RELAXATION of selection on Test branches (K = " + k_ss.str() + " < 1, p = " + p_ss.str() + ")";
         } else {
-            std::cout << "  **Result: Significant INTENSIFICATION of selection on Test branches** (K = "
-                      << std::fixed << std::setprecision(4) << res.k << " > 1, p = "
-                      << std::scientific << std::setprecision(3) << res.p_value << " <= "
-                      << std::fixed << std::setprecision(2) << settings.p_value_threshold << ").\n";
+            conclusion = "SIGNIFICANT INTENSIFICATION of selection on Test branches (K = " + k_ss.str() + " > 1, p = " + p_ss.str() + ")";
         }
     } else {
-        std::cout << "  **Result: No significant evidence of relaxation or intensification** (p = "
-                  << std::scientific << std::setprecision(3) << res.p_value << " > "
-                  << std::fixed << std::setprecision(2) << settings.p_value_threshold << ").\n";
+        conclusion = "No significant evidence of relaxation or intensification (p = " + p_ss.str() + " > " + std::to_string(settings.p_value_threshold) + ")";
     }
 
-    std::cout << "  Total execution time     : " << std::fixed << std::setprecision(2) << res.runtime_seconds << "s\n\n";
+    std::vector<std::pair<std::string, std::string>> sum_items = {
+        {"Relaxation Parameter (K)", k_ss.str()},
+        {"Likelihood Ratio Test (LRT)", lrt_ss.str()},
+        {"p-value (asymptotic)", p_ss.str() + " [threshold: " + std::to_string(settings.p_value_threshold) + "]"},
+        {"RELAX Alternative Log-L", alt_ss.str()},
+        {"RELAX Null (K=1) Log-L", null_ss.str()},
+        {"Nucleotide GTR Log-L", gtr_ss.str()},
+        {"Separate Rates MG94xREV", mg_ss.str()},
+        {"Total Execution Time", time_ss.str()}
+    };
 
-    // 6. Write JSON
-    std::cout << "[4/4] Writing JSON results to: " << output_file << "\n";
+    Panel::print_summary_card("RELAX Selection Relaxation Analysis Summary", sum_items, conclusion, res.is_significant);
+
+    // Save JSON
     std::ofstream out(output_file);
     if (!out) {
-        std::cerr << "Warning: Could not open output file for writing: " << output_file << "\n";
+        std::cerr << Console::danger("Warning: Could not open output file for writing: ") << output_file << "\n";
     } else {
         out << res.to_json(tree, aln).dump(2) << "\n";
-        std::cout << "      Saved successfully.\n";
+        std::cout << Console::success("✔") << " " << Console::bold("Saved Datamonkey-compatible JSON report to: ")
+                  << Console::brand(output_file) << "\n\n";
     }
 
     return 0;

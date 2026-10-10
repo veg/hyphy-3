@@ -4,6 +4,7 @@
 #include "hyphy/core/tree.hpp"
 #include "hyphy/core/rate_matrix.hpp"
 #include "hyphy/core/likelihood.hpp"
+#include "hyphy/core/console.hpp"
 #include "hyphy/opt/optimizer.hpp"
 #include "hyphy/analyses/busted.hpp"
 
@@ -22,36 +23,34 @@ using namespace hyphy::analyses;
 using namespace hyphy::opt;
 
 static void print_banner() {
-    std::cout << "\n=======================================================\n"
-              << "   HYPHY 3: Branch-site Unrestricted Statistical       \n"
-              << "            Test for Episodic Diversification          \n"
-              << "            (BUSTED)                                   \n"
-              << "=======================================================\n"
-              << " Citation: Gene-wide identification of episodic         \n"
-              << "           selection (2015), Mol Biol Evol. 32: 1365-71\n"
-              << " Version:  3.0.0 (Modern C++20 Core)                   \n"
-              << "=======================================================\n\n";
+    Panel::print_banner(
+        "BUSTED",
+        "Branch-site Unrestricted Statistical Test",
+        "Gene-wide identification of episodic diversifying positive selection",
+        "Citation: Mol Biol Evol. 32: 1365-1371 (2015) • v3.0.0"
+    );
 }
 
 static void print_usage(const char* prog) {
-    std::cout << "Usage: " << prog << " [OPTIONS]\n\n"
-              << "Required arguments:\n"
-              << "  --alignment <file>   Path to codon alignment (FASTA or NEXUS)\n\n"
-              << "Optional arguments:\n"
-              << "  --tree <file>        Path to Newick tree file (optional if embedded in NEXUS)\n"
-              << "  --code <name>        Genetic code (default: Universal)\n"
-              << "  --rates <N>          Number of omega rate categories (default: 3)\n"
-              << "  --srv                Enable synonymous rate variation across sites (BUSTED-S)\n"
-              << "  --syn-rates <N>      Number of synonymous rate categories (default: 3)\n"
-              << "  --auto-k             Automatically select optimal K via AICc step-up\n"
-              << "  --multiple-hits <M>  Multi-nucleotide substitutions: None (default), Double, Double+Triple\n"
-              << "  --no-branch-opt      Disable individual branch length refinement (use proportional scaling)\n"
-              << "  --threads <N>        Number of OpenMP worker threads\n"
-              << "  --output <file>      Path to output JSON file (default: <alignment>.BUSTED.json)\n"
-              << "  --progress           Force interactive progress bar\n"
-              << "  --no-progress        Disable progress bar\n"
-              << "  --help, -h           Show this help message\n\n"
-              << "Examples:\n"
+    print_banner();
+    std::cout << Console::bold("Usage:") << " " << prog << " [OPTIONS]\n\n"
+              << Console::bold("Required arguments:") << "\n"
+              << "  " << Console::brand("--alignment") << " <file>   Path to codon alignment (FASTA or NEXUS)\n\n"
+              << Console::bold("Optional arguments:") << "\n"
+              << "  " << Console::brand("--tree") << " <file>        Path to Newick tree file (optional if embedded in NEXUS)\n"
+              << "  " << Console::brand("--code") << " <name>        Genetic code (default: Universal)\n"
+              << "  " << Console::brand("--rates") << " <N>          Number of omega rate categories (default: 3)\n"
+              << "  " << Console::brand("--srv") << "                Enable synonymous rate variation across sites (BUSTED-S)\n"
+              << "  " << Console::brand("--syn-rates") << " <N>      Number of synonymous rate categories (default: 3)\n"
+              << "  " << Console::brand("--auto-k") << "             Automatically select optimal K via AICc step-up\n"
+              << "  " << Console::brand("--multiple-hits") << " <M>  Multi-nucleotide substitutions: None (default), Double, Double+Triple\n"
+              << "  " << Console::brand("--no-branch-opt") << "      Disable individual branch length refinement (use proportional scaling)\n"
+              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.BUSTED.json)\n"
+              << "  " << Console::brand("--progress") << "           Force interactive progress bar\n"
+              << "  " << Console::brand("--no-progress") << "        Disable progress bar\n"
+              << "  " << Console::brand("--help, -h") << "           Show this help message\n\n"
+              << Console::bold("Examples:") << "\n"
               << "  " << prog << " --alignment data/cd2.fna --tree data/cd2.nwk\n"
               << "  " << prog << " --alignment tests/data/adh.nex --auto-k --threads 8\n\n";
 }
@@ -132,136 +131,150 @@ int run_busted(int argc, char* argv[]) {
     try {
         code = GeneticCode::from_name(code_name);
     } catch (const std::exception& e) {
-        std::cerr << "Error loading genetic code '" << code_name << "': " << e.what() << "\n";
+        std::cerr << Console::danger("Error loading genetic code '") << code_name << "': " << e.what() << "\n";
         return 1;
     }
 
     // 2. Load Alignment
-    std::cout << "[1/4] Loading alignment from: " << alignment_file << "\n";
     Alignment aln;
     try {
         aln = Alignment::load(alignment_file, code);
     } catch (const std::exception& e) {
-        std::cerr << "Error loading alignment: " << e.what() << "\n";
+        std::cerr << Console::danger("Error loading alignment: ") << e.what() << "\n";
         return 1;
     }
-    std::cout << "      Sequences: " << aln.num_taxa
-              << " | Sites: " << aln.num_codons
-              << " | Unique Patterns: " << aln.patterns.size() << "\n";
 
     // 3. Load Tree
     Tree tree;
     if (!tree_file.empty()) {
-        std::cout << "[2/4] Loading tree from: " << tree_file << "\n";
         try {
             tree = Tree::from_newick_file(tree_file);
         } catch (const std::exception& e) {
-            std::cerr << "Error loading tree: " << e.what() << "\n";
+            std::cerr << Console::danger("Error loading tree: ") << e.what() << "\n";
             return 1;
         }
     } else if (!aln.embedded_tree_newick.empty()) {
-        std::cout << "[2/4] Using embedded tree from alignment file\n";
         try {
             tree = Tree::from_newick(aln.embedded_tree_newick);
         } catch (const std::exception& e) {
-            std::cerr << "Error parsing embedded tree: " << e.what() << "\n";
+            std::cerr << Console::danger("Error parsing embedded tree: ") << e.what() << "\n";
             return 1;
         }
     } else {
-        std::cerr << "Error: No tree specified and no embedded tree found in alignment.\n";
+        std::cerr << Console::danger("Error: No tree specified and no embedded tree found in alignment.\n");
         return 1;
     }
-    std::cout << "      Taxa: " << tree.num_leaves()
-              << " | Internal nodes: " << (tree.num_nodes() - tree.num_leaves()) << "\n";
+
+    Panel::print_card("Dataset & Model Settings", {
+        {"Alignment File", alignment_file},
+        {"Sequences / Taxa", std::to_string(aln.num_taxa)},
+        {"Codon Sites", std::to_string(aln.num_codons) + " (" + std::to_string(aln.num_codons * 3) + " nt)"},
+        {"Unique Patterns", std::to_string(aln.patterns.size())},
+        {"Tree", std::to_string(tree.num_nodes()) + " nodes (" + std::to_string(tree.num_leaves()) + " leaves)"},
+        {"Rate Classes (K)", std::to_string(settings.num_rate_classes) + (settings.auto_select_k ? " (Auto-K enabled)" : "")},
+        {"Synonymous Variation", settings.srv ? "Enabled (" + std::to_string(settings.num_syn_rate_classes) + " classes)" : "Disabled"},
+        {"Multiple Hits", settings.multiple_hits},
+        {"Genetic Code", code->name}
+    });
 
     // 4. Initialize and run BUSTED
-    std::cout << "[3/4] Fitting baseline Nucleotide GTR and Global MG94...\n";
+    Panel::print_step(1, 2, "Fitting Baseline GTR & Global MG94 Models", "Exchangeability rates & branch lengths");
     BUSTEDAnalyzer analyzer = BUSTEDAnalyzer::create_and_fit(tree, aln);
 
-    std::cout << "      GTR Log-Likelihood : " << std::fixed << std::setprecision(2) << analyzer.gtr_log_l << "\n";
-    std::cout << "      MG94 Log-Likelihood: " << std::fixed << std::setprecision(2) << analyzer.mg94_log_l
-              << " (omega = " << std::setprecision(4) << analyzer.mg94_omega << ")\n";
+    std::cout << "  " << Console::muted("Nucleotide GTR Log-L : ") << Console::bold(std::to_string(analyzer.gtr_log_l)) << "\n"
+              << "  " << Console::muted("Global MG94 Log-L    : ") << Console::bold(std::to_string(analyzer.mg94_log_l))
+              << Console::muted("  |  omega = ") << Console::brand(std::to_string(analyzer.mg94_omega)) << "\n\n";
 
-    std::cout << "[4/4] Running BUSTED mixture models (ECM + SQUAREM)...\n";
+    Panel::print_step(2, 2, "Running BUSTED Mixture Models", "ECM + SQUAREM acceleration");
     if (settings.auto_select_k) {
-        std::cout << "      Automatic model selection enabled (testing K = 1.." << settings.max_k << ")...\n";
+        std::cout << "  " << Console::muted("↳ Automatic model selection enabled (testing K = 1.." + std::to_string(settings.max_k) + ")...\n");
     }
     BUSTEDResult res = analyzer.run(settings, show_progress, force_progress);
 
     auto end_time = std::chrono::high_resolution_clock::now();
     double total_runtime = std::chrono::duration<double>(end_time - start_time).count();
 
-    // Summary output
-    std::cout << "\n=======================================================\n"
-              << "                   BUSTED RESULTS                      \n"
-              << "=======================================================\n";
-    if (settings.auto_select_k) {
-        std::cout << "Selected Model: K = " << res.optimal_k << " rate categories (via AICc step-up)\n\n";
-    }
-    std::cout << "Unconstrained Model (K = " << res.optimal_k << "):\n"
-              << "  Log-Likelihood : " << std::setprecision(2) << res.unconstrained.log_likelihood << "\n"
-              << "  AIC-c          : " << res.unconstrained.aicc << "\n"
-              << "  Tree Scale     : " << std::setprecision(4) << res.unconstrained.tree_scale << "\n";
-    for (size_t k = 0; k < res.unconstrained.test_distribution.omegas.size(); ++k) {
-        std::cout << "  omega_" << (k + 1) << " = " << std::setprecision(4) << res.unconstrained.test_distribution.omegas[k]
-                  << " (p = " << std::setprecision(4) << res.unconstrained.test_distribution.weights[k] << ")";
-        if (k < res.unconstrained.test_distribution.annotations.size() && !res.unconstrained.test_distribution.annotations[k].empty()) {
-            std::cout << " [" << res.unconstrained.test_distribution.annotations[k] << "]";
+    // Summary table
+    Table rate_table;
+    rate_table.add_column("Category", Table::Align::Center, 8);
+    rate_table.add_column("Unconstrained omega", Table::Align::Right, 20);
+    rate_table.add_column("Unconstrained Weight", Table::Align::Right, 20);
+    rate_table.add_column("Constrained omega", Table::Align::Right, 18);
+    rate_table.add_column("Constrained Weight", Table::Align::Right, 18);
+
+    size_t num_k = res.unconstrained.test_distribution.omegas.size();
+    for (size_t k = 0; k < num_k; ++k) {
+        std::ostringstream u_w_ss, u_p_ss, c_w_ss, c_p_ss;
+        u_w_ss << std::fixed << std::setprecision(4) << res.unconstrained.test_distribution.omegas[k];
+        u_p_ss << std::fixed << std::setprecision(4) << res.unconstrained.test_distribution.weights[k];
+        c_w_ss << std::fixed << std::setprecision(4) << res.constrained.test_distribution.omegas[k];
+        c_p_ss << std::fixed << std::setprecision(4) << res.constrained.test_distribution.weights[k];
+
+        std::string row_color = "";
+        if (k + 1 == num_k && res.unconstrained.test_distribution.omegas[k] > 1.0) {
+            row_color = "\033[38;5;48m"; // Highlight positive selection class in emerald
         }
-        std::cout << "\n";
+
+        rate_table.add_row({
+            "omega_" + std::to_string(k + 1),
+            u_w_ss.str(),
+            u_p_ss.str(),
+            c_w_ss.str(),
+            c_p_ss.str()
+        }, row_color);
     }
+
+    std::cout << "\n" << Console::bold("  Inferred Rate Distributions:") << "\n\n";
+    rate_table.print();
+    std::cout << "\n";
+
     if (!res.unconstrained.test_distribution.syn_rates.empty() && res.unconstrained.test_distribution.syn_rates.size() > 1) {
-        std::cout << "  Synonymous Site-to-Site Rates (SRV):\n";
+        std::cout << Console::bold("  Synonymous Site-to-Site Rates (SRV):") << "\n";
         for (size_t m = 0; m < res.unconstrained.test_distribution.syn_rates.size(); ++m) {
-            std::cout << "    alpha_" << (m + 1) << " = " << std::setprecision(4) << res.unconstrained.test_distribution.syn_rates[m]
-                      << " (p = " << std::setprecision(4) << res.unconstrained.test_distribution.syn_weights[m] << ")\n";
-        }
-    }
-    if (res.settings.multiple_hits != "None") {
-        std::cout << "  Multi-hit Substitutions:\n";
-        std::cout << "    delta (double-hit rate) : " << std::setprecision(4) << res.unconstrained.delta
-                  << " (fraction: " << std::setprecision(4) << res.unconstrained.frac_delta * 100.0 << "%)\n";
-        if (res.settings.multiple_hits == "Double+Triple") {
-            std::cout << "    psi (triple-hit rate)   : " << std::setprecision(4) << res.unconstrained.psi
-                      << " (fraction: " << std::setprecision(4) << res.unconstrained.frac_psi * 100.0 << "%)\n";
-        }
-    }
-    std::cout << "\n";
-
-    std::cout << "Constrained Null Model (omega_" << res.optimal_k << " = 1.0):\n"
-              << "  Log-Likelihood : " << std::setprecision(2) << res.constrained.log_likelihood << "\n"
-              << "  AIC-c          : " << res.constrained.aicc << "\n";
-    for (size_t k = 0; k < res.constrained.test_distribution.omegas.size(); ++k) {
-        std::cout << "  omega_" << (k + 1) << " = " << std::setprecision(4) << res.constrained.test_distribution.omegas[k]
-                  << " (p = " << std::setprecision(4) << res.constrained.test_distribution.weights[k] << ")";
-        if (k < res.constrained.test_distribution.annotations.size() && !res.constrained.test_distribution.annotations[k].empty()) {
-            std::cout << " [" << res.constrained.test_distribution.annotations[k] << "]";
+            std::cout << "    alpha_" << (m + 1) << " = " << std::fixed << std::setprecision(4)
+                      << res.unconstrained.test_distribution.syn_rates[m]
+                      << " (weight = " << res.unconstrained.test_distribution.syn_weights[m] << ")\n";
         }
         std::cout << "\n";
     }
+
     if (res.settings.multiple_hits != "None") {
-        std::cout << "  Multi-hit Substitutions:\n";
-        std::cout << "    delta (double-hit rate) : " << std::setprecision(4) << res.constrained.delta
-                  << " (fraction: " << std::setprecision(4) << res.constrained.frac_delta * 100.0 << "%)\n";
+        std::cout << Console::bold("  Multi-hit Substitution Rates:") << "\n";
+        std::cout << "    delta (double-hit rate) : " << std::fixed << std::setprecision(4) << res.unconstrained.delta
+                  << " (fraction: " << res.unconstrained.frac_delta * 100.0 << "%)\n";
         if (res.settings.multiple_hits == "Double+Triple") {
-            std::cout << "    psi (triple-hit rate)   : " << std::setprecision(4) << res.constrained.psi
-                      << " (fraction: " << std::setprecision(4) << res.constrained.frac_psi * 100.0 << "%)\n";
+            std::cout << "    psi (triple-hit rate)   : " << std::fixed << std::setprecision(4) << res.unconstrained.psi
+                      << " (fraction: " << res.unconstrained.frac_psi * 100.0 << "%)\n";
         }
+        std::cout << "\n";
     }
-    std::cout << "\n";
 
-    std::cout << "Hypothesis Test for Episodic Diversifying Positive Selection:\n"
-              << "  Likelihood Ratio Test (LRT) = " << std::setprecision(4) << res.lrt << "\n"
-              << "  p-value                     = " << std::setprecision(6) << res.p_value << "\n";
+    std::ostringstream lrt_ss, p_ss, u_ss, c_ss, time_ss;
+    lrt_ss << std::fixed << std::setprecision(4) << res.lrt;
+    p_ss << std::scientific << std::setprecision(6) << res.p_value;
+    u_ss << std::fixed << std::setprecision(2) << res.unconstrained.log_likelihood << " (AICc: " << res.unconstrained.aicc << ", K = " << res.optimal_k << ")";
+    c_ss << std::fixed << std::setprecision(2) << res.constrained.log_likelihood << " (AICc: " << res.constrained.aicc << ", omega_" << res.optimal_k << " = 1.0)";
+    time_ss << std::fixed << std::setprecision(2) << total_runtime << " s";
 
-    if (res.p_value < 0.05) {
-        std::cout << "  Conclusion: Statistically significant evidence of episodic selection (p < 0.05)!\n";
+    std::string conclusion;
+    bool is_sig = (res.p_value < 0.05);
+    if (is_sig) {
+        conclusion = "STATISTICALLY SIGNIFICANT evidence of episodic diversifying selection (LRT = " + lrt_ss.str() + ", p = " + p_ss.str() + " < 0.05)!";
     } else {
-        std::cout << "  Conclusion: No statistically significant evidence of episodic selection.\n";
+        conclusion = "No statistically significant evidence of episodic diversifying selection (p = " + p_ss.str() + " >= 0.05).";
     }
 
-    std::cout << "\nTotal runtime: " << std::setprecision(2) << total_runtime << " s\n"
-              << "=======================================================\n\n";
+    std::vector<std::pair<std::string, std::string>> sum_items = {
+        {"Likelihood Ratio Test (LRT)", lrt_ss.str()},
+        {"p-value (mixture distribution)", p_ss.str() + " [threshold: 0.05]"},
+        {"Unconstrained Model Fit", u_ss.str()},
+        {"Constrained Null Model Fit", c_ss.str()},
+        {"Optimal Model Selection", "K = " + std::to_string(res.optimal_k) + " rate classes"},
+        {"JSON Output File", output_file},
+        {"Total Execution Time", time_ss.str()}
+    };
+
+    Panel::print_summary_card("BUSTED Episodic Selection Analysis Summary", sum_items, conclusion, is_sig);
 
     // Save JSON output
     try {
@@ -269,12 +282,13 @@ int run_busted(int argc, char* argv[]) {
         std::ofstream out(output_file);
         if (out.is_open()) {
             out << j.dump(2) << "\n";
-            std::cout << "Saved Datamonkey JSON to: " << output_file << "\n";
+            std::cout << Console::success("✔") << " " << Console::bold("Saved Datamonkey-compatible JSON report to: ")
+                      << Console::brand(output_file) << "\n\n";
         } else {
-            std::cerr << "Warning: Could not open output file " << output_file << "\n";
+            std::cerr << Console::danger("Warning: Could not open output file ") << output_file << "\n";
         }
     } catch (const std::exception& e) {
-        std::cerr << "Warning: Failed to write JSON output: " << e.what() << "\n";
+        std::cerr << Console::danger("Warning: Failed to write JSON output: ") << e.what() << "\n";
     }
 
     return 0;

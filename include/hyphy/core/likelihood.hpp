@@ -20,23 +20,33 @@ public:
     static size_t find_taxon_index(const Alignment& aln, const std::string& name) {
         auto it = aln.taxon_to_index.find(name);
         if (it != aln.taxon_to_index.end()) return it->second;
-        // Fallback: case-insensitive match
-        for (const auto& [tname, tidx] : aln.taxon_to_index) {
-            if (tname.size() == name.size() &&
-                std::equal(tname.begin(), tname.end(), name.begin(), [](char a, char b) {
-                    return std::toupper(static_cast<unsigned char>(a)) == std::toupper(static_cast<unsigned char>(b));
-                })) {
-                return tidx;
+
+        // Fast O(1) case-insensitive lookup
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
+        auto it_lower = aln.lower_taxon_to_index.find(lower);
+        if (it_lower != aln.lower_taxon_to_index.end()) return it_lower->second;
+
+        return static_cast<size_t>(-1);
+    }
+
+    static std::vector<size_t> build_leaf_to_taxon_map(const Tree& tree, const Alignment& aln) {
+        size_t num_nodes = tree.num_nodes();
+        std::vector<size_t> leaf_to_taxon(num_nodes, static_cast<size_t>(-1));
+        for (const auto& node : tree.nodes) {
+            if (node.is_leaf) {
+                leaf_to_taxon[node.id] = find_taxon_index(aln, node.name);
             }
         }
-        return static_cast<size_t>(-1);
+        return leaf_to_taxon;
     }
 
     // Nucleotide GTR Tree Likelihood
     static Scalar compute_gtr_log_likelihood(
         const Tree& tree,
         const Alignment& aln,
-        const GTRMatrix& gtr_model
+        const GTRMatrix& gtr_model,
+        const std::vector<size_t>* custom_leaf_to_taxon = nullptr
     ) {
         size_t num_nodes = tree.num_nodes();
         size_t num_patterns = aln.patterns.size();
@@ -49,13 +59,10 @@ public:
             }
         }
 
-        // Precompute leaf-to-taxon map for fast direct indexing
-        std::vector<size_t> leaf_to_taxon(num_nodes, static_cast<size_t>(-1));
-        for (const auto& node : tree.nodes) {
-            if (node.is_leaf) {
-                leaf_to_taxon[node.id] = find_taxon_index(aln, node.name);
-            }
-        }
+        std::vector<size_t> local_map;
+        const std::vector<size_t>& leaf_to_taxon = custom_leaf_to_taxon
+            ? *custom_leaf_to_taxon
+            : (local_map = build_leaf_to_taxon_map(tree, aln));
 
         Scalar total_log_l = 0.0;
 
@@ -107,27 +114,41 @@ public:
     static Scalar compute_mg94_log_likelihood(
         const Tree& tree,
         const Alignment& aln,
-        const MG94Matrix& mg94_model
+        const MG94Matrix& mg94_model,
+        const std::vector<size_t>* custom_leaf_to_taxon = nullptr,
+        Scalar branch_scale = 1.0
     ) {
         size_t num_nodes = tree.num_nodes();
-        size_t num_patterns = aln.patterns.size();
         int S = mg94_model.pi.size();
 
         // Precompute transition matrices for all branches
         std::vector<Matrix> P_branches(num_nodes);
         for (const auto& node : tree.nodes) {
             if (node.id != tree.root_id) {
-                P_branches[node.id] = mg94_model.transition_matrix(node.branch_length);
+                P_branches[node.id] = mg94_model.transition_matrix(node.branch_length * branch_scale);
             }
         }
 
-        // Precompute leaf-to-taxon map
-        std::vector<size_t> leaf_to_taxon(num_nodes, static_cast<size_t>(-1));
-        for (const auto& node : tree.nodes) {
-            if (node.is_leaf) {
-                leaf_to_taxon[node.id] = find_taxon_index(aln, node.name);
-            }
-        }
+        return compute_tree_log_likelihood_from_P(tree, aln, P_branches, mg94_model.pi, S, custom_leaf_to_taxon);
+    }
+
+    // Fast single-pass codon tree likelihood from precomputed transition matrices P_branches
+    // Eliminates pre-order traversal and intermediate heap allocations
+    static Scalar compute_tree_log_likelihood_from_P(
+        const Tree& tree,
+        const Alignment& aln,
+        const std::vector<Matrix>& P_branches,
+        const Vector& pi,
+        int S,
+        const std::vector<size_t>* custom_leaf_to_taxon = nullptr
+    ) {
+        size_t num_nodes = tree.num_nodes();
+        size_t num_patterns = aln.patterns.size();
+
+        std::vector<size_t> local_map;
+        const std::vector<size_t>& leaf_to_taxon = custom_leaf_to_taxon
+            ? *custom_leaf_to_taxon
+            : (local_map = build_leaf_to_taxon_map(tree, aln));
 
         Scalar total_log_l = 0.0;
 
@@ -157,13 +178,12 @@ public:
                     } else {
                         node_L[node_id].setOnes();
                         for (int32_t child_id : node.children) {
-                            Vector child_msg = P_branches[child_id] * node_L[child_id];
-                            node_L[node_id] = node_L[node_id].cwiseProduct(child_msg);
+                            node_L[node_id].array() *= (P_branches[child_id] * node_L[child_id]).array();
                         }
                     }
                 }
 
-                Scalar pattern_likelihood = mg94_model.pi.dot(node_L[tree.root_id]);
+                Scalar pattern_likelihood = pi.dot(node_L[tree.root_id]);
                 if (pattern_likelihood > 0.0) {
                     total_log_l += pattern.weight * std::log(pattern_likelihood);
                 } else {
@@ -195,8 +215,9 @@ public:
         InsideOutsideResult res;
         res.D.assign(num_nodes, Vector::Zero(S));
         res.V.assign(num_nodes, Vector::Zero(S));
+        std::vector<Vector> P_D(num_nodes, Vector::Zero(S));
 
-        // 1. Post-order (bottom-up) pass to compute D
+        // 1. Post-order (bottom-up) pass to compute D and cache P_D
         for (int32_t nid : tree.post_order) {
             const auto& node = tree.nodes[nid];
             if (node.is_leaf) {
@@ -215,15 +236,15 @@ public:
             } else {
                 res.D[nid].setOnes();
                 for (int32_t cid : node.children) {
-                    Vector child_msg = P_branches[cid] * res.D[cid];
-                    res.D[nid] = res.D[nid].cwiseProduct(child_msg);
+                    P_D[cid] = P_branches[cid] * res.D[cid];
+                    res.D[nid].array() *= P_D[cid].array();
                 }
             }
         }
 
         res.likelihood = res.D[tree.root_id].dot(pi);
 
-        // 2. Pre-order (top-down) pass to compute U and V
+        // 2. Pre-order (top-down) pass to compute U and V reusing cached P_D
         std::vector<Vector> U(num_nodes, Vector::Zero(S));
         U[tree.root_id] = pi;
 
@@ -233,18 +254,12 @@ public:
             if (node.is_leaf) continue;
 
             size_t num_children = node.children.size();
-            std::vector<Vector> child_branch_L(num_children);
-            for (size_t i = 0; i < num_children; ++i) {
-                int32_t cid = node.children[i];
-                child_branch_L[i] = P_branches[cid] * res.D[cid];
-            }
-
             for (size_t i = 0; i < num_children; ++i) {
                 int32_t vid = node.children[i];
                 Vector v_msg = U[uid];
                 for (size_t j = 0; j < num_children; ++j) {
                     if (i != j) {
-                        v_msg = v_msg.cwiseProduct(child_branch_L[j]);
+                        v_msg.array() *= P_D[node.children[j]].array();
                     }
                 }
                 res.V[vid] = v_msg;
@@ -316,7 +331,8 @@ public:
         const Tree& tree,
         const Alignment& aln,
         const MG94Parameters& params,
-        const std::vector<Scalar>& branch_lengths = {}
+        const std::vector<Scalar>& branch_lengths = {},
+        const std::vector<size_t>* custom_leaf_to_taxon = nullptr
     ) {
         const auto& gcode = *(aln.code ? aln.code : GeneticCode::universal());
         int S = gcode.num_sense_codons;
@@ -328,20 +344,20 @@ public:
 
         bool use_custom_bl = !branch_lengths.empty();
         std::vector<Matrix> P_branches(num_nodes);
+        std::vector<Matrix> dP_branches(num_nodes);
         for (const auto& node : tree.nodes) {
             if (node.id != tree.root_id) {
                 Scalar bl = (use_custom_bl && static_cast<size_t>(node.id) < branch_lengths.size())
                     ? branch_lengths[node.id] : node.branch_length;
                 P_branches[node.id] = mg.transition_matrix(bl);
+                dP_branches[node.id] = mg.Q * P_branches[node.id];
             }
         }
 
-        std::vector<size_t> leaf_to_taxon(num_nodes, static_cast<size_t>(-1));
-        for (const auto& node : tree.nodes) {
-            if (node.is_leaf) {
-                leaf_to_taxon[node.id] = find_taxon_index(aln, node.name);
-            }
-        }
+        std::vector<size_t> local_map;
+        const std::vector<size_t>& leaf_to_taxon = custom_leaf_to_taxon
+            ? *custom_leaf_to_taxon
+            : (local_map = build_leaf_to_taxon_map(tree, aln));
 
         Scalar total_log_l = 0.0;
         std::vector<Scalar> grad_b(num_nodes, 0.0);
@@ -364,8 +380,7 @@ public:
                     for (const auto& node : tree.nodes) {
                         if (node.id != tree.root_id) {
                             int32_t vid = node.id;
-                            Matrix dP = mg.Q * P_branches[vid];
-                            Scalar dL_dt = io.V[vid].dot(dP * io.D[vid]);
+                            Scalar dL_dt = io.V[vid].dot(dP_branches[vid] * io.D[vid]);
                             local_grad[vid] += inv_L * dL_dt;
                         }
                     }

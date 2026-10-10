@@ -289,22 +289,9 @@ public:
     // Compute full tree log-likelihood
     Scalar compute_tree_log_likelihood(const std::vector<Matrix>& P_branches) const {
         int S = gcode->num_sense_codons;
-        size_t num_patterns = aln.patterns.size();
-        Scalar total_log_l = 0.0;
-
-        #pragma omp parallel for reduction(+:total_log_l) schedule(dynamic)
-        for (size_t p = 0; p < num_patterns; ++p) {
-            const auto& pattern = aln.patterns[p];
-            auto io = LikelihoodEngine::compute_inside_outside(
-                tree, pattern, leaf_to_taxon, P_branches, codon_freqs, S
-            );
-            if (io.likelihood > 0.0) {
-                total_log_l += pattern.weight * std::log(io.likelihood);
-            } else {
-                total_log_l += pattern.weight * (-1e20);
-            }
-        }
-        return total_log_l;
+        return LikelihoodEngine::compute_tree_log_likelihood_from_P(
+            tree, aln, P_branches, codon_freqs, S, &leaf_to_taxon
+        );
     }
 
     // Compute expected branch length (substitutions per nucleotide site) for branch node_id

@@ -152,8 +152,7 @@ public:
             } else {
                 node_L[node_id].setOnes();
                 for (int32_t child_id : node.children) {
-                    Vector child_msg = P_branches[child_id] * node_L[child_id];
-                    node_L[node_id] = node_L[node_id].cwiseProduct(child_msg);
+                    node_L[node_id].array() *= (P_branches[child_id] * node_L[child_id]).array();
                 }
             }
         }
@@ -195,6 +194,7 @@ public:
         }
 
         std::vector<Vector> thread_node_L(tree.num_nodes(), Vector::Zero(S));
+        std::vector<Matrix> P_branches(tree.num_nodes());
 
         auto eval_pattern_lnl = [&](Scalar a, Scalar b) -> Scalar {
             MG94Parameters p = base_params;
@@ -204,7 +204,6 @@ public:
             MG94Matrix mg;
             mg.update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
 
-            std::vector<Matrix> P_branches(tree.num_nodes());
             for (const auto& node : tree.nodes) {
                 if (node.id != tree.root_id) {
                     P_branches[node.id] = mg.transition_matrix(node.branch_length);

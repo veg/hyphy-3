@@ -63,10 +63,13 @@ public:
             }
         }
 
+        // Precompute leaf-to-taxon map ONCE for the entire GTR fit
+        std::vector<size_t> leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(curr_tree, nuc_aln);
+
         auto eval_tree_lnl = [&](const Tree& t, const GTRParameters& p) -> Scalar {
             GTRMatrix gtr;
             gtr.update(p, nuc_aln.nuc_frequencies);
-            return LikelihoodEngine::compute_gtr_log_likelihood(t, nuc_aln, gtr);
+            return LikelihoodEngine::compute_gtr_log_likelihood(t, nuc_aln, gtr, &leaf_to_taxon);
         };
 
         // Stage 1: Optimize global tree scale factor s
@@ -316,18 +319,13 @@ public:
         p.beta = init_res.x_opt(0);
 
         const auto& gcode = *(aln.code ? aln.code : GeneticCode::universal());
+        std::vector<size_t> leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(cur_tree, aln);
 
         auto eval_lnl = [&](const Tree& t, const MG94Parameters& params) -> Scalar {
             MG94Matrix mg;
             mg.update(params, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
             Scalar conv = (mg.scale_factor > 1e-12) ? (3.0 / mg.scale_factor) : 1.0;
-            Tree t_eval = t;
-            for (auto& node : t_eval.nodes) {
-                if (node.id != t_eval.root_id) {
-                    node.branch_length *= conv;
-                }
-            }
-            return LikelihoodEngine::compute_mg94_log_likelihood(t_eval, aln, mg);
+            return LikelihoodEngine::compute_mg94_log_likelihood(t, aln, mg, &leaf_to_taxon, conv);
         };
 
         // Collect non-root branches
@@ -361,13 +359,14 @@ public:
                 const std::vector<int32_t>& nodes;
                 size_t num_nodes;
                 Scalar conv;
+                const std::vector<size_t>& leaf_map;
 
                 Scalar operator()(const Vector& y, Vector& grad) {
                     std::vector<Scalar> bls(num_nodes, 0.0);
                     for (size_t i = 0; i < nodes.size(); ++i) {
                         bls[nodes[i]] = std::clamp(std::exp(y(i)) * conv, 1e-6, 50.0);
                     }
-                    auto [ll, dL_dt] = LikelihoodEngine::compute_branch_length_gradients(tree, aln, params, bls);
+                    auto [ll, dL_dt] = LikelihoodEngine::compute_branch_length_gradients(tree, aln, params, bls, &leaf_map);
                     grad.resize(nodes.size());
                     for (size_t i = 0; i < nodes.size(); ++i) {
                         int32_t nid = nodes[i];
@@ -377,7 +376,7 @@ public:
                 }
             };
 
-            BranchObj b_obj{cur_tree, aln, p, branch_node_ids, num_nodes, conv};
+            BranchObj b_obj{cur_tree, aln, p, branch_node_ids, num_nodes, conv, leaf_to_taxon};
             Vector y(num_branches), lb(num_branches), ub(num_branches);
             for (size_t i = 0; i < num_branches; ++i) {
                 y(i) = std::log(std::clamp(cur_tree.nodes[branch_node_ids[i]].branch_length, 1e-5, 10.0));

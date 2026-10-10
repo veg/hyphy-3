@@ -1,7 +1,10 @@
+#include "hyphy/core/console.hpp"
 #include <iostream>
 #include <string>
 #include <vector>
 #include <cstring>
+
+using namespace hyphy::core;
 
 // Subcommand entry points
 int run_fel(int argc, char* argv[]);
@@ -11,31 +14,36 @@ int run_absrel(int argc, char* argv[]);
 int run_relax(int argc, char* argv[]);
 
 void print_hyphy3_banner() {
-    std::cout << "\n=======================================================\n"
-              << "       HYPHY 3: Next-Generation Phylogenetics          \n"
-              << "=======================================================\n"
-              << " Authors:  Sergei L. Kosakovsky Pond & HyPhy Team       \n"
-              << " Version:  3.0.0 (Modern C++20 Core)                   \n"
-              << " Web:      https://hyphy.org | https://datamonkey.org  \n"
-              << "=======================================================\n\n";
+    Panel::print_banner(
+        "HYPHY 3",
+        "Modern C++20 Phylogenetics Engine",
+        "Next-generation molecular evolution, selection detection & hypothesis testing",
+        "Authors: Sergei L. Kosakovsky Pond & HyPhy Team • https://hyphy.org • v3.0.0"
+    );
 }
 
 void print_hyphy3_usage(const char* prog) {
     print_hyphy3_banner();
-    std::cout << "Usage: " << prog << " <analysis> [OPTIONS]\n\n"
-              << "Available Analyses:\n"
-              << "  fel         Fixed Effects Likelihood (site-by-site selection)\n"
-              << "  meme        Mixed Effects Model of Evolution (episodic selection)\n"
-              << "  busted      Branch-site Unrestricted Statistical Test (gene-wide selection)\n"
-              << "  absrel      Adaptive Branch-Site Random Effects Likelihood (lineage selection)\n"
-              << "  relax       Test for Selection Relaxation (branch set contrast)\n\n"
-              << "General Options:\n"
-              << "  --help, -h       Show this help message\n"
-              << "  --version, -v    Show version information\n\n"
-              << "Examples:\n"
+    std::cout << Console::bold("Usage:") << " " << prog << " " 
+              << Console::accent("<analysis>") << " "
+              << Console::muted("[OPTIONS]") << "\n\n";
+
+    std::cout << Console::bold("Available Analyses:") << "\n"
+              << "  " << Console::brand("fel     ") << "  Fixed Effects Likelihood (site-by-site selection)\n"
+              << "  " << Console::brand("meme    ") << "  Mixed Effects Model of Evolution (episodic selection)\n"
+              << "  " << Console::brand("busted  ") << "  Branch-site Unrestricted Statistical Test (gene-wide selection)\n"
+              << "  " << Console::brand("absrel  ") << "  Adaptive Branch-Site Random Effects Likelihood (lineage selection)\n"
+              << "  " << Console::brand("relax   ") << "  Test for Selection Relaxation (branch set contrast)\n\n";
+
+    std::cout << Console::bold("General Options:") << "\n"
+              << "  " << Console::brand("--help, -h   ") << "  Show this help message\n"
+              << "  " << Console::brand("--version, -v") << "  Show version information\n\n";
+
+    std::cout << Console::bold("Examples:") << "\n"
               << "  " << prog << " fel --alignment data/cd2.fna --tree data/cd2.nwk\n"
               << "  " << prog << " meme --alignment tests/data/adh.nex --threads 8\n"
               << "  " << prog << " busted --alignment tests/data/adh.nex --auto-k --threads 8\n"
+              << "  " << prog << " absrel --alignment tests/data/adh.nex --threads 8\n"
               << "  " << prog << " relax --alignment tests/data/Fig4E.nex\n\n";
 }
 
