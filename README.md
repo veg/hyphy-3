@@ -100,6 +100,7 @@ HyPhy 3 computes exact analytical branch gradients in **one single combined pass
 | **Full BUSTED-MH (Double+Triple)** | ADH (23 taxa, 254 codons) | 26.50 s | **6.47 s** | **$4.10\times$** |
 | **Full MEME Analysis** | CD2 (10 taxa, 187 codons) | 4.82 s | **1.21 s** | **$3.98\times$** |
 | **Full aBSREL Analysis** | β-globin (17 taxa, 144 codons) | 48.0 s ($\ln L = -3631.58$) | **25.7 s** ($\ln L = -3633.51$) | **$1.87\times$ ($|\Delta \ln L| \le 1.9$)** |
+| **Full RELAX Analysis** | Fig4E (33 taxa, 286 codons) | 48.5 s ($\ln L = -4982.69$) | **7.21 s** ($\ln L = -4942.30$) | **$6.73\times$** |
 
 ---
 
@@ -115,6 +116,7 @@ HyPhy 3 computes exact analytical branch gradients in **one single combined pass
 | **BUSTED-S** | Gene-wide selection robust to synonymous variation? | Gene-wide with SRV | Discrete site-to-site $\alpha$ and $\omega$ mixture | Site $\alpha$ & $\omega$ | Optional | 100% Verified |
 | **BUSTED-MH** | Gene-wide selection accounting for multi-nucleotide hits? | Gene-wide with MH | Reversible 1-hit, 2-hit ($\delta$), 3-hit ($\psi$) generator | Site $\alpha$ & $\omega$ | Double, Double+Triple | 100% Verified |
 | **aBSREL** | Which specific lineages/branches evolved under selection? | Lineage-specific | Adaptive complexity selection (AICc Step-Up) | Branch-site $\omega$ | — | $|\Delta \ln L| < 2.0$ |
+| **RELAX** | Has selection relaxed ($K<1$) or intensified ($K>1$) on test branches? | Branch-set contrast | 3-rate mixture with exponent $K$, $\chi^2_1$ LRT | Site mixture | — | 100% Verified |
 | **GTR / MG94** | What are baseline nucleotide biases & global $dN/dS$? | Alignment-wide | Reversible CTMC with F3x4 equilibrium | Global $\omega$ | Supported | 100% Verified |
 | **Adjoint Core** | Differentiable tree likelihoods for custom ML models | Arbitrary parameters | Inside-Outside analytical $\mathcal{O}(B)$ gradients | User-defined | User-defined | Exact Analytical |
 
@@ -174,12 +176,24 @@ HyPhy 3 computes exact analytical branch gradients in **one single combined pass
   6. Computes family-wise error-rate corrected $p$-values via the **Holm-Bonferroni step-down procedure** and Empirical Bayes Factors (EBF) for site-level support.
 - **Ultra-Fast Local Projection**: Leverages Inside-Outside subtree ($D_{v,p}$) and ancestral complement ($V_{v,p}$) vectors to evaluate candidate branch mixtures via immediate dot products ($L_p = V_{v,p}^{\top} \bar{P}_b D_{v,p}$) in microseconds with **zero whole-tree pruning passes**.
 
-#### 5. **Continuous-Time Markov Chain Baselines (GTR & MG94xREV)**
+#### 5. **RELAX (Detecting Relaxed or Intensified Selection Across Lineages)**
+- **Scope**: Tests whether natural selection has been relaxed ($K < 1$) or intensified ($K > 1$) on a designated set of **Test** branches relative to **Reference** branches.
+- **Workflow**:
+  1. **Phase 1 (Nucleotide GTR)**: Precomputes nucleotide exchangeabilities and initial branch lengths.
+  2. **Phase 2 (MG94 with Separate Rates)**: Evaluates distinct global $\omega_R$ and $\omega_T$ across branch sets to provide initial branch scaling and contrast estimates.
+  3. **Phase 3 (RELAX Alternative Model)**: Fits a 3-category discrete distribution of rates for Reference branches ($\omega_{R, 0} \le \omega_{R, 1} \le 1 \le \omega_{R, 2}$ with weights $p_0, p_1, p_2$). Test branches are parameterized as $\omega_{T, i} = (\omega_{R, i})^K$, where $K \in [0, 50]$ is the selection exponent parameter.
+  4. **Phase 4 (RELAX Null Model)**: Constrains $K = 1.0$ so Test and Reference branches share the exact same $\omega$ distribution.
+  5. **Phase 5 (Hypothesis Testing)**: Compares alternative and null fits using the asymptotic $\chi^2_1$ LRT test statistic $\text{LRT} = 2 (\ln L_{\text{alt}} - \ln L_{\text{null}})$.
+     - $K < 1$ with $p \le 0.05$: Significant **relaxation of selection** (rates contract toward neutrality $\omega = 1$).
+     - $K > 1$ with $p \le 0.05$: Significant **intensification of selection** (rates diverge from neutrality).
+- **Branch Set Specification**: Automatically detects `{T}` or `{Test}` annotations in Newick trees, or accepts user-specified branch names / regular expressions (`--test`).
+
+#### 6. **Continuous-Time Markov Chain Baselines (GTR & MG94xREV)**
 - **Nucleotide GTR**: General Time Reversible continuous-time substitution model with 5 independent exchangeabilities ($\theta_{AC}, \theta_{AT}, \theta_{CG}, \theta_{CT}, \theta_{GT}$), analytical eigensolver, and empirical base frequencies.
 - **Global MG94xREV**: Codon substitution model combining GTR nucleotide exchangeabilities with positional F3x4 codon equilibrium frequencies and global non-synonymous/synonymous rate ratio $\omega$.
 - **Multi-Hit MG94xREV**: Simultaneous evaluation of 1-hit, 2-hit ($\delta$), and 3-hit ($\psi$) codon substitution transitions while strictly preserving detailed balance $\pi_i Q_{ij} = \pi_j Q_{ji}$.
 
-#### 6. **Differentiable Phylogenetics Engine & Autograd**
+#### 7. **Differentiable Phylogenetics Engine & Autograd**
 - **Analytical Inside-Outside Adjoints**: Evaluates exact tree log-likelihood gradients $\frac{\partial \ln L}{\partial t_b}$ for all $B$ branches simultaneously in a single $\mathcal{O}(B)$ tree traversal.
 - **Native C++ Autograd Graph**: Reverse-mode automatic differentiation supporting custom evolutionary models and continuous rate distributions.
 - **PyTorch & JAX Bridge**: Zero-copy bindings via Nanobind allowing phylogenetic likelihood calculations to serve directly as differentiable loss functions within machine learning pipelines.
@@ -233,6 +247,7 @@ HyPhy 3 provides both a unified driver (`hyphy3 <analysis>`) and dedicated stand
 | **BUSTED-MH** | `hyphy3 busted` | `--multiple-hits [None\|Double\|Double+Triple]` | Multi-nucleotide substitutions (2-hit and 3-hit) |
 | **BUSTED Auto-K**| `hyphy3 busted` | `--auto-k` | Automatic selection of rate categories via AICc step-up |
 | **aBSREL** | `hyphy3 absrel`| `--alignment`, `--tree`, `--rates 3`, `--threads N`, `--output` | Lineage-specific adaptive selection |
+| **RELAX** | `hyphy3 relax` | `--alignment`, `--tree`, `--test <regex|names>`, `--pvalue 0.05`, `--output` | Test for selection relaxation/intensification across branch sets |
 
 ### CLI Examples
 
@@ -260,6 +275,9 @@ hyphy3 busted --alignment benchmarks/data/adh.fna --tree benchmarks/data/adh.nwk
 
 # 7. Run aBSREL (adaptive lineage-specific selection)
 hyphy3 absrel --alignment benchmarks/data/bglobin.nex --tree benchmarks/data/bglobin.nex --output bglobin.absrel.json --threads 8
+
+# 8. Run RELAX (test for relaxed or intensified selection across branch sets)
+hyphy3 relax --alignment tests/data/Fig4E.nex --output Fig4E.RELAX.json --threads 8
 ```
 
 All analyses output standardized, Datamonkey-compatible JSON files ready for direct visualization on [HyPhy Vision](https://vision.hyphy.org).
@@ -329,6 +347,19 @@ for br in abs_res.branches:
     if br.is_tested and br.corrected_p_value < 0.05:
         print(f"Lineage selection on {br.branch_name}: p_corr = {br.corrected_p_value:.4f}, LRT = {br.lrt:.2f}")
         print(f"  Rate classes: {br.rate_classes}, Omega distribution: {br.rate_distribution.rates}")
+
+# -------------------------------------------------------------
+# 5. RELAX: Test for Selection Relaxation or Intensification
+# -------------------------------------------------------------
+relax_aln = hp.Alignment.load("tests/data/Fig4E.nex")
+relax_tree = hp.Tree.from_newick(relax_aln.embedded_tree_newick)
+relax = hp.RELAXAnalyzer.create(relax_tree, relax_aln)
+relax_res = relax.run()
+
+print(f"RELAX LRT = {relax_res.lrt:.2f}, p-value = {relax_res.p_value:.3e}, K = {relax_res.k:.4f}")
+if relax_res.is_significant:
+    mode = "Relaxation" if relax_res.is_relaxed else "Intensification"
+    print(f"Significant {mode} detected on Test branches (p <= {relax_res.settings.p_value_threshold})")
 ```
 
 ### PyTorch End-to-End Optimization

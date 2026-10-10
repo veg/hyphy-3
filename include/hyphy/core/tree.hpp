@@ -19,6 +19,7 @@ struct TreeNode {
     std::vector<int32_t> children;
     Scalar branch_length = 0.0;
     bool is_leaf = false;
+    std::string model_tag;
 };
 
 class Tree {
@@ -47,16 +48,13 @@ public:
             newick.pop_back();
         }
 
-        // Clean any model tags like {PR} or comments [comment]
+        // Clean comments [comment], keep model tags {Tag}
         std::string clean;
-        bool in_tag = false;
         bool in_comment = false;
         for (char c : newick) {
-            if (c == '{') { in_tag = true; continue; }
-            if (c == '}') { in_tag = false; continue; }
             if (c == '[') { in_comment = true; continue; }
             if (c == ']') { in_comment = false; continue; }
-            if (!in_tag && !in_comment && c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+            if (!in_comment && c != ' ' && c != '\t' && c != '\n' && c != '\r') {
                 clean += c;
             }
         }
@@ -74,8 +72,15 @@ public:
             return id;
         };
 
-        auto process_token = [&](int32_t target_node, const std::string& str) {
+        auto process_token = [&](int32_t target_node, std::string str) {
             if (str.empty()) return;
+            std::string tag;
+            auto open_brace = str.find('{');
+            auto close_brace = str.find('}');
+            if (open_brace != std::string::npos && close_brace != std::string::npos && close_brace > open_brace) {
+                tag = str.substr(open_brace + 1, close_brace - open_brace - 1);
+                str.erase(open_brace, close_brace - open_brace + 1);
+            }
             auto colon = str.find(':');
             std::string name;
             Scalar length = 0.0;
@@ -91,6 +96,7 @@ public:
             }
             tree.nodes[target_node].name = name;
             tree.nodes[target_node].branch_length = length;
+            tree.nodes[target_node].model_tag = tag;
         };
 
         for (size_t i = 0; i < clean.size(); ++i) {
