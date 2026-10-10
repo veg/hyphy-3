@@ -49,10 +49,16 @@ class TestHyPhy3Python(unittest.TestCase):
         aln = hyphy3.Alignment.load(self.adh_path)
         tree = hyphy3.Tree.from_newick(aln.embedded_tree_newick)
 
+        # Full unconstrained MG94 fit (default, matching HyPhy 2.5 standard fit)
         fel = hyphy3.FELAnalyzer.create_and_fit(tree, aln, 0.1)
         fel.run()
-        self.assertAlmostEqual(fel.global_log_l, -4769.79, delta=5.0)
+        self.assertAlmostEqual(fel.global_log_l, -4686.73, delta=5.0)
         self.assertEqual(len(fel.site_results), 254)
+
+        # Quick scaled MG94 fit (full_model=False)
+        tree2 = hyphy3.Tree.from_newick(aln.embedded_tree_newick)
+        fel_quick = hyphy3.FELAnalyzer.create_and_fit(tree2, aln, 0.1, full_model=False)
+        self.assertAlmostEqual(fel_quick.global_log_l, -4769.79, delta=5.0)
 
     def test_busted_analyzer(self):
         aln = hyphy3.Alignment.load(self.adh_path)

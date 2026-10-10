@@ -8,6 +8,7 @@
 #include "hyphy/core/likelihood.hpp"
 #include "hyphy/opt/optimizer.hpp"
 #include "hyphy/analyses/fel.hpp"
+#include "hyphy/core/progress_bar.hpp"
 #include "hyphy/opt/nelder_mead.hpp"
 #include "hyphy/opt/squarem.hpp"
 #include "nlohmann/json.hpp"
@@ -20,6 +21,7 @@
 #include <chrono>
 #include <iomanip>
 #include <algorithm>
+#include <memory>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -795,7 +797,9 @@ public:
         bool refine_branches = true,
         bool srv = false,
         size_t num_syn_rates = 3,
-        const std::string& multiple_hits = "None"
+        const std::string& multiple_hits = "None",
+        ProgressBar* pbar = nullptr,
+        const std::string& model_desc = ""
     ) const {
         BUSTEDFit fit;
         fit.num_rate_classes = K;
@@ -1056,6 +1060,17 @@ public:
                 }, delta, 0.0, 0.0, 10.0, 1e-4, 25);
                 delta = std::max(0.0, d_opt.a);
             }
+
+            if (pbar) {
+                std::ostringstream ss;
+                ss << model_desc << " (ECM " << (ecm_iter + 1) << "/" << max_ecm << "): lnL = "
+                   << std::fixed << std::setprecision(2) << evaluate_log_l(s, omegas, weights, syn_rates, syn_weights, nullptr, nullptr, delta, psi);
+                if (!is_constrained && !omegas.empty()) {
+                    ss << ", ω" << K << " = " << std::setprecision(2) << omegas.back();
+                }
+                pbar->set_status(ss.str());
+                pbar->tick();
+            }
         }
 
         // Branch length initialization and refinement
@@ -1068,6 +1083,12 @@ public:
 
         if (refine_branches) {
             bl = refine_branch_lengths(bl, omegas, weights, syn_rates, syn_weights, delta, psi, 1);
+            if (pbar) {
+                std::ostringstream ss;
+                ss << model_desc << ": Branch lengths refined";
+                pbar->set_status(ss.str());
+                pbar->tick();
+            }
             if (K >= 2) {
                 weights = compute_expected_weights(1.0, omegas, weights, syn_rates, syn_weights, &bl, delta, psi);
             }
@@ -1087,6 +1108,12 @@ public:
                     return -evaluate_log_l(1.0, omegas, weights, syn_rates, syn_weights, &bl, nullptr, d, 0.0);
                 }, delta, 0.0, 0.0, 10.0, 1e-4, 25);
                 delta = std::max(0.0, d_polish.a);
+            }
+            if (allow_double && pbar) {
+                std::ostringstream ss;
+                ss << model_desc << ": Multiple hits refined (δ=" << std::fixed << std::setprecision(3) << delta << ")";
+                pbar->set_status(ss.str());
+                pbar->tick();
             }
         }
 
@@ -1153,12 +1180,14 @@ public:
         bool refine_branches = true,
         bool srv = false,
         size_t num_syn_rates = 3,
-        const std::string& multiple_hits = "None"
+        const std::string& multiple_hits = "None",
+        ProgressBar* pbar = nullptr
     ) const {
         std::vector<BUSTEDFit> null_fits;
         null_fits.reserve(max_k);
         for (size_t k = 1; k <= max_k; ++k) {
-            null_fits.push_back(fit_model(true, k, refine_branches, srv, num_syn_rates, multiple_hits));
+            std::string desc = "Null K=" + std::to_string(k);
+            null_fits.push_back(fit_model(true, k, refine_branches, srv, num_syn_rates, multiple_hits, pbar, desc));
         }
 
         size_t optimal_k = 1;
@@ -1172,10 +1201,41 @@ public:
     }
 
     // Run complete BUSTED analysis with options
-    BUSTEDResult run(BUSTEDSettings settings = {}) const {
+    BUSTEDResult run(
+        BUSTEDSettings settings = {},
+        bool show_progress = false,
+        bool force_progress = false
+    ) const {
         auto t0 = std::chrono::high_resolution_clock::now();
         BUSTEDResult res;
         res.settings = settings;
+
+        bool allow_double = (settings.multiple_hits == "Double" || settings.multiple_hits == "Double+Triple");
+        auto count_steps = [&](size_t K) -> size_t {
+            size_t max_ecm = (K == 1 && !settings.srv && !allow_double) ? 1 : 6;
+            return max_ecm + (settings.refine_branch_lengths ? 1 : 0) + ((settings.refine_branch_lengths && allow_double) ? 1 : 0);
+        };
+
+        size_t total_steps = 0;
+        if (settings.auto_select_k) {
+            for (size_t k = 1; k <= settings.max_k; ++k) {
+                total_steps += count_steps(k);
+            }
+            total_steps += count_steps(settings.max_k);
+        } else {
+            total_steps = count_steps(settings.num_rate_classes) * 2;
+        }
+
+        std::unique_ptr<ProgressBar> pbar;
+        if (show_progress && (force_progress || ProgressBar::is_terminal())) {
+            pbar = std::make_unique<ProgressBar>(
+                total_steps,
+                "[BUSTED] Mixture Models",
+                "steps",
+                force_progress,
+                ProgressBar::Style::SmoothBlocks
+            );
+        }
 
         if (settings.auto_select_k) {
             auto [opt_k, null_fits] = select_optimal_k(
@@ -1183,7 +1243,8 @@ public:
                 settings.refine_branch_lengths,
                 settings.srv,
                 settings.num_syn_rate_classes,
-                settings.multiple_hits
+                settings.multiple_hits,
+                pbar.get()
             );
             res.optimal_k = opt_k;
             res.k_null_fits = null_fits;
@@ -1194,7 +1255,9 @@ public:
                 settings.refine_branch_lengths,
                 settings.srv,
                 settings.num_syn_rate_classes,
-                settings.multiple_hits
+                settings.multiple_hits,
+                pbar.get(),
+                "Unconstrained K=" + std::to_string(opt_k)
             );
         } else {
             res.optimal_k = settings.num_rate_classes;
@@ -1204,7 +1267,9 @@ public:
                 settings.refine_branch_lengths,
                 settings.srv,
                 settings.num_syn_rate_classes,
-                settings.multiple_hits
+                settings.multiple_hits,
+                pbar.get(),
+                "Unconstrained K=" + std::to_string(settings.num_rate_classes)
             );
             res.constrained = fit_model(
                 true,
@@ -1212,7 +1277,9 @@ public:
                 settings.refine_branch_lengths,
                 settings.srv,
                 settings.num_syn_rate_classes,
-                settings.multiple_hits
+                settings.multiple_hits,
+                pbar.get(),
+                "Constrained K=" + std::to_string(settings.num_rate_classes)
             );
         }
 
@@ -1225,6 +1292,20 @@ public:
             res.lrt = 2.0 * (res.unconstrained.log_likelihood - res.constrained.log_likelihood);
             // Asymptotic null: 0.5 * chi^2_0 + 0.5 * chi^2_2
             res.p_value = 0.5 * std::exp(-res.lrt / 2.0);
+        }
+
+        if (pbar) {
+            std::ostringstream summary;
+            if (res.p_value <= settings.p_value_threshold) {
+                summary << "\033[1;32mEvidence of episodic diversifying selection\033[0m: LRT = "
+                        << std::fixed << std::setprecision(2) << res.lrt
+                        << ", p = " << std::setprecision(4) << res.p_value;
+            } else {
+                summary << "No evidence of diversifying selection: LRT = "
+                        << std::fixed << std::setprecision(2) << res.lrt
+                        << ", p = " << std::setprecision(4) << res.p_value;
+            }
+            pbar->finish(summary.str());
         }
 
         // Compute per-site Evidence Ratios (Bayes Factors for positive selection)

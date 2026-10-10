@@ -66,7 +66,7 @@ inline double spearman_correlation(const std::vector<double>& x, const std::vect
 TEST_CASE("MEME Parity: CD2 (Universal Code, 10 taxa, 187 codons)") {
     auto aln = Alignment::load("/Users/sergei/Development/hyphy/hyphy-next/benchmarks/data/cd2.fna");
     auto tree = Tree::from_newick_file("/Users/sergei/Development/hyphy/hyphy-next/benchmarks/data/cd2.nwk");
-    auto meme = MEMEAnalyzer::create_and_fit(tree, aln, 0.1);
+    auto meme = MEMEAnalyzer::create_and_fit(tree, aln, 0.1, nullptr, false);
     auto results = meme.run();
 
     std::ifstream gt_file("/Users/sergei/Development/hyphy/hyphy-next/benchmarks/ground_truth/cd2_meme_rel.json");
@@ -106,7 +106,7 @@ TEST_CASE("MEME Parity: ADH (Universal Code, 23 taxa, 254 codons)") {
     auto aln = Alignment::load("/Users/sergei/Development/hyphy/tests/data/adh.nex");
     REQUIRE(!aln.embedded_tree_newick.empty());
     auto tree = Tree::from_newick(aln.embedded_tree_newick);
-    auto meme = MEMEAnalyzer::create_and_fit(tree, aln, 0.1);
+    auto meme = MEMEAnalyzer::create_and_fit(tree, aln, 0.1, nullptr, false);
     auto results = meme.run();
 
     std::ifstream gt_file("/Users/sergei/Development/hyphy/hyphy-next/benchmarks/ground_truth/adh_meme_rel.json");
@@ -140,4 +140,21 @@ TEST_CASE("MEME Parity: ADH (Universal Code, 23 taxa, 254 codons)") {
     CHECK(rho_lrt >= 0.92);
     CHECK(r_pv >= 0.95);
     CHECK(rho_pv >= 0.95);
+}
+
+TEST_CASE("MEME Full Unconstrained MG94 Fit Parity: ADH") {
+    auto aln = Alignment::load("/Users/sergei/Development/hyphy/tests/data/adh.nex");
+    REQUIRE(!aln.embedded_tree_newick.empty());
+    auto tree = Tree::from_newick(aln.embedded_tree_newick);
+    
+    // Default full_model = true runs full branch length + GTR + omega optimization
+    auto meme = MEMEAnalyzer::create_and_fit(tree, aln, 0.1, nullptr, true);
+
+    std::cout << "\n[MEME Full MG94 Fit ADH]\n"
+              << "  Optimized Log-Likelihood: " << meme.global_log_l << " (HyPhy 2.5 ground truth: -4686.18)\n"
+              << "  Fitted global omega      : " << meme.base_params.beta << " (HyPhy 2.5 ground truth: 0.0941)\n";
+
+    // HyPhy 2.5 adh.nex.MEME.json has Global MG94 Log Likelihood = -4686.1823
+    CHECK(meme.global_log_l >= -4687.5);
+    CHECK(std::abs(meme.base_params.beta - 0.0941) < 0.01);
 }

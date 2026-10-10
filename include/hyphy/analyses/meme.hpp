@@ -8,6 +8,7 @@
 #include "hyphy/opt/nelder_mead.hpp"
 #include "hyphy/opt/optimizer.hpp"
 #include "hyphy/analyses/fel.hpp"
+#include "hyphy/core/progress_bar.hpp"
 #include "nlohmann/json.hpp"
 
 #include <vector>
@@ -16,6 +17,8 @@
 #include <fstream>
 #include <algorithm>
 #include <unordered_map>
+#include <memory>
+#include <atomic>
 
 namespace hyphy::analyses {
 
@@ -74,7 +77,8 @@ public:
         Tree input_tree,
         Alignment aln,
         Scalar pvalue_threshold = 0.1,
-        std::function<void(const std::string&, double)> progress_cb = nullptr
+        std::function<void(const std::string&, double)> progress_cb = nullptr,
+        bool full_model = true
     ) {
         if (progress_cb) progress_cb("Phase 1: Fitting Nucleotide GTR Model", 0.1);
         GTRFitter gtr_fitter(input_tree, aln);
@@ -89,9 +93,15 @@ public:
         base_p.theta_GT = gtr_res.params.theta_GT;
 
         MG94Fitter mg_fitter(gtr_res.tree, aln);
-        auto mg_res = mg_fitter.fit_omega_and_scale(1.0, base_p);
-        base_p.alpha = 1.0;
-        base_p.beta = mg_res.x_opt(0);
+        FitResult mg_res;
+        if (full_model) {
+            mg_res = mg_fitter.fit_full_model(1.0, base_p, progress_cb);
+            base_p = mg_res.params;
+        } else {
+            mg_res = mg_fitter.fit_omega_and_scale(1.0, base_p);
+            base_p.alpha = 1.0;
+            base_p.beta = mg_res.x_opt(0);
+        }
 
         MEMEAnalyzer analyzer(mg_res.tree, std::move(aln), base_p);
         analyzer.p_value_threshold = pvalue_threshold;
@@ -350,7 +360,7 @@ public:
         return res;
     }
 
-    std::vector<MEMESiteResult> run() {
+    std::vector<MEMESiteResult> run(bool show_progress = false, bool force_progress = false) {
         std::vector<size_t> leaf_to_taxon(tree.num_nodes(), static_cast<size_t>(-1));
         for (const auto& node : tree.nodes) {
             if (node.is_leaf) {
@@ -361,9 +371,43 @@ public:
         size_t num_patterns = aln.patterns.size();
         std::vector<MEMESiteResult> pattern_results(num_patterns);
 
+        std::unique_ptr<ProgressBar> pbar;
+        std::atomic<size_t> num_episodic{0};
+
+        if (show_progress && (force_progress || ProgressBar::is_terminal())) {
+            pbar = std::make_unique<ProgressBar>(
+                num_patterns,
+                "[MEME] Patterns",
+                "patterns",
+                force_progress,
+                ProgressBar::Style::SmoothBlocks
+            );
+        }
+
         #pragma omp parallel for schedule(dynamic)
         for (size_t p = 0; p < num_patterns; ++p) {
             pattern_results[p] = analyze_pattern(p, leaf_to_taxon);
+            if (pbar) {
+                const auto& r = pattern_results[p];
+                size_t w = aln.patterns[p].weight;
+                if (r.p_value <= p_value_threshold && r.beta_plus > r.alpha) {
+                    num_episodic.fetch_add(w, std::memory_order_relaxed);
+                }
+                size_t epi = num_episodic.load(std::memory_order_relaxed);
+                if (epi > 0) {
+                    std::string stat = "\033[1;32m+" + std::to_string(epi) + "\033[0m episodic sites";
+                    pbar->set_status(stat);
+                }
+                pbar->tick();
+            }
+        }
+
+        if (pbar) {
+            size_t epi = num_episodic.load();
+            std::ostringstream summary;
+            summary << "\033[1;32m" << epi << " site(s) under episodic diversifying selection\033[0m (p ≤ "
+                    << std::fixed << std::setprecision(2) << p_value_threshold << ")";
+            pbar->finish(summary.str());
         }
 
         site_results.resize(aln.num_codons);

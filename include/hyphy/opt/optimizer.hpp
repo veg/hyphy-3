@@ -13,6 +13,7 @@
 #include <string>
 #include <cmath>
 #include <algorithm>
+#include <functional>
 
 namespace hyphy::opt {
 
@@ -146,6 +147,7 @@ struct FitResult {
     int iterations = 0;
     bool converged = false;
     Tree tree;
+    MG94Parameters params;
 };
 
 // Fits global parameters (e.g. omega, transition rates) on a fixed tree
@@ -289,6 +291,166 @@ public:
                 node.branch_length *= opt_pt.b;
             }
         }
+        res.params = base_params;
+        res.params.alpha = 1.0;
+        res.params.beta = opt_pt.a;
+        return res;
+    }
+
+    // Jointly fits branch lengths (via analytical Inside-Outside gradients & L-BFGS),
+    // global omega, and GTR exchangeability rates under unconstrained MG94
+    FitResult fit_full_model(
+        Scalar init_omega = 1.0,
+        MG94Parameters base_params = MG94Parameters{},
+        std::function<void(const std::string&, double)> progress_cb = nullptr,
+        int max_cycles = 5,
+        Scalar tolerance = 0.02
+    ) {
+        if (progress_cb) progress_cb("Phase 2: Initializing branch lengths and omega", 0.30);
+
+        // 1. Initial quick fit of omega & global branch scale
+        auto init_res = fit_omega_and_scale(init_omega, base_params);
+        Tree cur_tree = init_res.tree;
+        MG94Parameters p = base_params;
+        p.alpha = 1.0;
+        p.beta = init_res.x_opt(0);
+
+        const auto& gcode = *(aln.code ? aln.code : GeneticCode::universal());
+
+        auto eval_lnl = [&](const Tree& t, const MG94Parameters& params) -> Scalar {
+            MG94Matrix mg;
+            mg.update(params, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+            Scalar conv = (mg.scale_factor > 1e-12) ? (3.0 / mg.scale_factor) : 1.0;
+            Tree t_eval = t;
+            for (auto& node : t_eval.nodes) {
+                if (node.id != t_eval.root_id) {
+                    node.branch_length *= conv;
+                }
+            }
+            return LikelihoodEngine::compute_mg94_log_likelihood(t_eval, aln, mg);
+        };
+
+        // Collect non-root branches
+        std::vector<int32_t> branch_node_ids;
+        for (const auto& node : cur_tree.nodes) {
+            if (node.id != cur_tree.root_id) {
+                branch_node_ids.push_back(node.id);
+            }
+        }
+        size_t num_branches = branch_node_ids.size();
+        size_t num_nodes = cur_tree.num_nodes();
+
+        Scalar prev_ll = init_res.log_likelihood;
+        int total_bfgs_iters = 0;
+
+        for (int cycle = 0; cycle < max_cycles; ++cycle) {
+            double cycle_frac = 0.30 + 0.15 * (static_cast<double>(cycle) / max_cycles);
+            if (progress_cb) {
+                progress_cb("Phase 2: Full MG94 re-optimization (cycle " + std::to_string(cycle + 1) + ")", cycle_frac);
+            }
+
+            // A. Joint branch length optimization using analytical Inside-Outside gradients
+            MG94Matrix mg;
+            mg.update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+            Scalar conv = (mg.scale_factor > 1e-12) ? (3.0 / mg.scale_factor) : 1.0;
+
+            struct BranchObj {
+                const Tree& tree;
+                const Alignment& aln;
+                const MG94Parameters& params;
+                const std::vector<int32_t>& nodes;
+                size_t num_nodes;
+                Scalar conv;
+
+                Scalar operator()(const Vector& y, Vector& grad) {
+                    std::vector<Scalar> bls(num_nodes, 0.0);
+                    for (size_t i = 0; i < nodes.size(); ++i) {
+                        bls[nodes[i]] = std::clamp(std::exp(y(i)) * conv, 1e-6, 50.0);
+                    }
+                    auto [ll, dL_dt] = LikelihoodEngine::compute_branch_length_gradients(tree, aln, params, bls);
+                    grad.resize(nodes.size());
+                    for (size_t i = 0; i < nodes.size(); ++i) {
+                        int32_t nid = nodes[i];
+                        grad(i) = -bls[nid] * dL_dt[nid];
+                    }
+                    return -ll;
+                }
+            };
+
+            BranchObj b_obj{cur_tree, aln, p, branch_node_ids, num_nodes, conv};
+            Vector y(num_branches), lb(num_branches), ub(num_branches);
+            for (size_t i = 0; i < num_branches; ++i) {
+                y(i) = std::log(std::clamp(cur_tree.nodes[branch_node_ids[i]].branch_length, 1e-5, 10.0));
+                lb(i) = -12.0;
+                ub(i) = 3.0;
+            }
+
+            LBFGSpp::LBFGSBParam<Scalar> opt_param;
+            opt_param.m = 6;
+            opt_param.epsilon = 1e-4;
+            opt_param.max_iterations = 25;
+            LBFGSpp::LBFGSBSolver<Scalar> solver(opt_param);
+            Scalar fx = 0.0;
+            try {
+                int iters = solver.minimize(b_obj, y, fx, lb, ub);
+                total_bfgs_iters += iters;
+                for (size_t i = 0; i < num_branches; ++i) {
+                    cur_tree.nodes[branch_node_ids[i]].branch_length = std::exp(y(i));
+                }
+            } catch (...) {}
+
+            // B. Global omega Brent 1D optimization
+            auto omega_obj = [&](Scalar w) -> Scalar {
+                Scalar old_w = p.beta;
+                p.beta = w;
+                Scalar lnl = eval_lnl(cur_tree, p);
+                p.beta = old_w;
+                return -lnl;
+            };
+            auto [best_w, _] = Brent1D::minimize(omega_obj, 1e-4, p.beta, 50.0, 1e-4, 20);
+            p.beta = best_w;
+
+            // C. GTR exchangeability rates Brent 1D optimization
+            auto opt_rate = [&](Scalar& r_ref) {
+                auto rate_obj = [&](Scalar val) -> Scalar {
+                    Scalar old_val = r_ref;
+                    r_ref = val;
+                    Scalar lnl = eval_lnl(cur_tree, p);
+                    r_ref = old_val;
+                    return -lnl;
+                };
+                auto [best_r, _] = Brent1D::minimize(rate_obj, 1e-4, r_ref, 20.0, 1e-3, 15);
+                r_ref = best_r;
+            };
+
+            opt_rate(p.theta_AC);
+            opt_rate(p.theta_AT);
+            opt_rate(p.theta_CG);
+            opt_rate(p.theta_CT);
+            opt_rate(p.theta_GT);
+
+            Scalar cur_ll = eval_lnl(cur_tree, p);
+            if (std::abs(cur_ll - prev_ll) < tolerance && cycle >= 1) {
+                prev_ll = cur_ll;
+                break;
+            }
+            prev_ll = cur_ll;
+        }
+
+        FitResult res;
+        res.log_likelihood = prev_ll;
+        res.x_opt.resize(6);
+        res.x_opt(0) = p.beta;
+        res.x_opt(1) = p.theta_AC;
+        res.x_opt(2) = p.theta_AT;
+        res.x_opt(3) = p.theta_CG;
+        res.x_opt(4) = p.theta_CT;
+        res.x_opt(5) = p.theta_GT;
+        res.param_names = {"omega", "theta_AC", "theta_AT", "theta_CG", "theta_CT", "theta_GT"};
+        res.iterations = total_bfgs_iters;
+        res.converged = true;
+        res.tree = cur_tree;
+        res.params = p;
         return res;
     }
 };

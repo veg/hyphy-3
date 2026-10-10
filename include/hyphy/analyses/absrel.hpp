@@ -7,6 +7,7 @@
 #include "hyphy/core/likelihood.hpp"
 #include "hyphy/opt/nelder_mead.hpp"
 #include "hyphy/opt/optimizer.hpp"
+#include "hyphy/core/progress_bar.hpp"
 #include "nlohmann/json.hpp"
 
 #include <vector>
@@ -19,6 +20,7 @@
 #include <chrono>
 #include <iomanip>
 #include <numeric>
+#include <memory>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -673,7 +675,11 @@ public:
     }
 
     // Run complete aBSREL analysis
-    ABSRELResult run(std::function<void(const std::string&, double)> progress_cb = nullptr) {
+    ABSRELResult run(
+        std::function<void(const std::string&, double)> progress_cb = nullptr,
+        bool show_progress = false,
+        bool force_progress = false
+    ) {
         auto t_start = std::chrono::high_resolution_clock::now();
         ABSRELResult result;
         result.p_threshold = settings.p_threshold;
@@ -724,6 +730,17 @@ public:
 
         std::vector<Matrix> P_branches = compute_all_branch_transition_matrices();
 
+        std::unique_ptr<ProgressBar> pbar_p3;
+        if (show_progress && (force_progress || ProgressBar::is_terminal())) {
+            pbar_p3 = std::make_unique<ProgressBar>(
+                sorted_branches.size(),
+                "[aBSREL] Complexity Selection",
+                "branches",
+                force_progress,
+                ProgressBar::Style::SmoothBlocks
+            );
+        }
+
         for (size_t b_idx = 0; b_idx < sorted_branches.size(); ++b_idx) {
             int32_t bid = sorted_branches[b_idx];
             const std::string& bname = tree.nodes[bid].name;
@@ -771,6 +788,22 @@ public:
                 result.branches[bname].rate_distribution.rates = best_fit.omegas;
                 result.branches[bname].rate_distribution.weights = best_fit.weights;
             }
+
+            if (pbar_p3) {
+                std::string stat = bname + ": " + std::to_string(current_classes) + " rate class(es)";
+                pbar_p3->set_status(stat);
+                pbar_p3->tick();
+            }
+        }
+
+        if (pbar_p3) {
+            size_t multi_rate_count = 0;
+            for (const auto& pair : result.branches) {
+                if (pair.second.rate_classes > 1) multi_rate_count++;
+            }
+            std::ostringstream summary;
+            summary << "Model selection complete (" << multi_rate_count << " branch(es) with >1 rate class)";
+            pbar_p3->finish(summary.str());
         }
 
         // Phase 4: Full Adaptive Model Fitting
@@ -938,6 +971,17 @@ public:
 
         Scalar prev_full_ll = compute_tree_log_likelihood(P_branches);
         const int max_joint_passes = 6;
+        std::unique_ptr<ProgressBar> pbar_p4;
+        if (show_progress && (force_progress || ProgressBar::is_terminal())) {
+            pbar_p4 = std::make_unique<ProgressBar>(
+                max_joint_passes,
+                "[aBSREL] Full Model Refinement",
+                "passes",
+                force_progress,
+                ProgressBar::Style::SmoothBlocks
+            );
+        }
+
         for (int iter = 0; iter < max_joint_passes; ++iter) {
             run_joint_branch_length_lbfgs();
             run_gtr_optimization();
@@ -945,6 +989,13 @@ public:
 
             if (settings.verbose) {
                 std::cout << "  [Phase 4 Joint Pass " << iter << "] Log(L) = " << cur_full_ll << " (delta = " << cur_full_ll - prev_full_ll << ")\n";
+            }
+            if (pbar_p4) {
+                std::ostringstream stat;
+                stat << "Pass " << (iter + 1) << "/" << max_joint_passes << ": lnL = "
+                     << std::fixed << std::setprecision(2) << cur_full_ll;
+                pbar_p4->set_status(stat.str());
+                pbar_p4->tick();
             }
             if (std::abs(cur_full_ll - prev_full_ll) < 0.05) {
                 break;
@@ -956,6 +1007,13 @@ public:
         Scalar full_ll = compute_tree_log_likelihood(P_branches);
         Scalar full_aicc = compute_aicc(full_ll, current_params);
         result.full_adaptive_fit = {full_ll, current_params, full_aicc};
+
+        if (pbar_p4) {
+            std::ostringstream summary;
+            summary << "Refinement complete: lnL = " << std::fixed << std::setprecision(2) << full_ll
+                    << " (AICc = " << full_aicc << ")";
+            pbar_p4->finish(summary.str());
+        }
 
         for (const auto& node : tree.nodes) {
             if (node.id == tree.root_id) continue;
@@ -983,6 +1041,18 @@ public:
         }
         result.tested_branches = to_test;
 
+        std::unique_ptr<ProgressBar> pbar_p5;
+        std::atomic<size_t> cand_pos_count{0};
+        if (show_progress && (force_progress || ProgressBar::is_terminal())) {
+            pbar_p5 = std::make_unique<ProgressBar>(
+                to_test.size(),
+                "[aBSREL] Selection Testing",
+                "branches",
+                force_progress,
+                ProgressBar::Style::SmoothBlocks
+            );
+        }
+
         for (const std::string& bname : to_test) {
             auto& bres = result.branches[bname];
             int32_t bid = bres.node_id;
@@ -992,6 +1062,9 @@ public:
                 bres.lrt = 0.0;
                 bres.uncorrected_p_value = 1.0;
                 bres.sites_ebf_100 = 0;
+                if (pbar_p5) {
+                    pbar_p5->tick();
+                }
                 continue;
             }
 
@@ -1064,6 +1137,17 @@ public:
                 }
             }
             bres.sites_ebf_100 = sites_ebf_count;
+
+            if (bres.uncorrected_p_value <= settings.p_threshold) {
+                cand_pos_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (pbar_p5) {
+                size_t cpos = cand_pos_count.load(std::memory_order_relaxed);
+                if (cpos > 0) {
+                    pbar_p5->set_status("\033[1;32m+" + std::to_string(cpos) + "\033[0m candidate positive");
+                }
+                pbar_p5->tick();
+            }
         }
 
         // Phase 6: Holm-Bonferroni correction
@@ -1089,6 +1173,14 @@ public:
                 result.branches[bname].is_positive = true;
                 result.positive_branches.push_back(bname);
             }
+        }
+
+        if (pbar_p5) {
+            std::ostringstream summary;
+            summary << "\033[1;32m" << result.positive_branches.size()
+                    << " branch(es) under episodic diversifying selection\033[0m (p ≤ "
+                    << std::fixed << std::setprecision(2) << settings.p_threshold << ")";
+            pbar_p5->finish(summary.str());
         }
 
         auto t_end = std::chrono::high_resolution_clock::now();

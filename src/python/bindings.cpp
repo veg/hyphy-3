@@ -116,9 +116,9 @@ NB_MODULE(_hyphy3, m) {
         .def("__init__", [](FELAnalyzer* self, Tree tree, Alignment aln, const MG94Parameters& params) {
             new (self) FELAnalyzer(std::move(tree), std::move(aln), params);
         }, "tree"_a, "alignment"_a, "params"_a = MG94Parameters{})
-        .def_static("create_and_fit", [](Tree tree, Alignment aln, Scalar pvalue_threshold) {
-            return FELAnalyzer::create_and_fit(std::move(tree), std::move(aln), pvalue_threshold);
-        }, "tree"_a, "alignment"_a, "pvalue_threshold"_a = 0.1)
+        .def_static("create_and_fit", [](Tree tree, Alignment aln, Scalar pvalue_threshold, bool full_model) {
+            return FELAnalyzer::create_and_fit(std::move(tree), std::move(aln), pvalue_threshold, nullptr, full_model);
+        }, "tree"_a, "alignment"_a, "pvalue_threshold"_a = 0.1, "full_model"_a = true)
         .def("run", &FELAnalyzer::run, "show_progress"_a = false, "force_progress"_a = false)
         .def("to_json", [](const FELAnalyzer& fel) {
             return fel.to_json().dump();
@@ -148,10 +148,10 @@ NB_MODULE(_hyphy3, m) {
         .def("__init__", [](MEMEAnalyzer* self, Tree tree, Alignment aln, const MG94Parameters& params) {
             new (self) MEMEAnalyzer(std::move(tree), std::move(aln), params);
         }, "tree"_a, "alignment"_a, "params"_a = MG94Parameters{})
-        .def_static("create_and_fit", [](Tree tree, Alignment aln, Scalar pvalue_threshold) {
-            return MEMEAnalyzer::create_and_fit(std::move(tree), std::move(aln), pvalue_threshold);
-        }, "tree"_a, "alignment"_a, "pvalue_threshold"_a = 0.1)
-        .def("run", &MEMEAnalyzer::run)
+        .def_static("create_and_fit", [](Tree tree, Alignment aln, Scalar pvalue_threshold, bool full_model) {
+            return MEMEAnalyzer::create_and_fit(std::move(tree), std::move(aln), pvalue_threshold, nullptr, full_model);
+        }, "tree"_a, "alignment"_a, "pvalue_threshold"_a = 0.1, "full_model"_a = true)
+        .def("run", &MEMEAnalyzer::run, "show_progress"_a = false, "force_progress"_a = false)
         .def("to_json", [](const MEMEAnalyzer& meme) {
             return meme.to_json().dump();
         })
@@ -205,7 +205,7 @@ NB_MODULE(_hyphy3, m) {
             new (self) BUSTEDAnalyzer(std::move(tree), std::move(aln), params);
         }, "tree"_a, "alignment"_a, "params"_a = MG94Parameters{})
         .def_static("create_and_fit", &BUSTEDAnalyzer::create_and_fit, "tree"_a, "alignment"_a)
-        .def("run", &BUSTEDAnalyzer::run, "settings"_a = BUSTEDSettings{})
+        .def("run", &BUSTEDAnalyzer::run, "settings"_a = BUSTEDSettings{}, "show_progress"_a = false, "force_progress"_a = false)
         .def("to_json", [](const BUSTEDAnalyzer& busted, const BUSTEDResult& res) {
             return busted.to_json(res).dump();
         });
@@ -269,9 +269,9 @@ NB_MODULE(_hyphy3, m) {
             new (self) ABSRELAnalyzer(std::move(tree), std::move(aln), settings);
         }, "tree"_a, "alignment"_a, "settings"_a = ABSRELSettings{})
         .def_static("create", &ABSRELAnalyzer::create, "tree"_a, "alignment"_a, "settings"_a = ABSRELSettings{})
-        .def("run", [](ABSRELAnalyzer& absrel) {
-            return absrel.run();
-        });
+        .def("run", [](ABSRELAnalyzer& absrel, bool show_progress, bool force_progress) {
+            return absrel.run(nullptr, show_progress, force_progress);
+        }, "show_progress"_a = false, "force_progress"_a = false);
 
     // Differentiable Engine: Inside-Outside Likelihood and Analytical Adjoint Gradients!
     m.def("compute_branch_length_gradients", [](

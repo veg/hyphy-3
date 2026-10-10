@@ -63,7 +63,8 @@ public:
         Tree input_tree,
         Alignment aln,
         Scalar pvalue_threshold = 0.1,
-        std::function<void(const std::string&, double)> progress_cb = nullptr
+        std::function<void(const std::string&, double)> progress_cb = nullptr,
+        bool full_model = true
     ) {
         if (progress_cb) progress_cb("Phase 1: Fitting Nucleotide GTR Model", 0.1);
         GTRFitter gtr_fitter(input_tree, aln);
@@ -78,9 +79,15 @@ public:
         base_p.theta_GT = gtr_res.params.theta_GT;
 
         MG94Fitter mg_fitter(gtr_res.tree, aln);
-        auto mg_res = mg_fitter.fit_omega_and_scale(1.0, base_p);
-        base_p.alpha = 1.0;
-        base_p.beta = mg_res.x_opt(0);
+        FitResult mg_res;
+        if (full_model) {
+            mg_res = mg_fitter.fit_full_model(1.0, base_p, progress_cb);
+            base_p = mg_res.params;
+        } else {
+            mg_res = mg_fitter.fit_omega_and_scale(1.0, base_p);
+            base_p.alpha = 1.0;
+            base_p.beta = mg_res.x_opt(0);
+        }
 
         FELAnalyzer analyzer(mg_res.tree, std::move(aln), base_p);
         analyzer.p_value_threshold = pvalue_threshold;

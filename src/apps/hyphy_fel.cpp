@@ -39,6 +39,8 @@ static void print_usage(const char* prog) {
               << "  --threads <N>        Number of OpenMP worker threads\n"
               << "  --output <file>      Path to output JSON file (default: <alignment>.FEL.json)\n"
               << "  --pvalue <float>     P-value significance threshold (default: 0.1)\n"
+              << "  --full-model         Perform branch length re-optimization under full codon model (default)\n"
+              << "  --quick              Disable full branch re-optimization (proportional branch scaling)\n"
               << "  --progress           Force interactive progress bar\n"
               << "  --no-progress        Disable progress bar\n"
               << "  --help, -h           Show this help message\n\n"
@@ -56,6 +58,7 @@ int run_fel(int argc, char* argv[]) {
     Scalar pvalue_threshold = 0.1;
     bool show_progress = ProgressBar::is_terminal();
     bool force_progress = false;
+    bool full_model = true;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -71,6 +74,10 @@ int run_fel(int argc, char* argv[]) {
             output_file = argv[++i];
         } else if (arg == "--pvalue" && i + 1 < argc) {
             pvalue_threshold = std::stod(argv[++i]);
+        } else if (arg == "--full-model") {
+            full_model = true;
+        } else if (arg == "--no-full-model" || arg == "--quick") {
+            full_model = false;
         } else if (arg == "--progress") {
             show_progress = true;
             force_progress = true;
@@ -171,7 +178,8 @@ int run_fel(int argc, char* argv[]) {
               << "    GT: " << gtr_res.params.theta_GT << "\n\n";
 
     // Phase 3B: Global MG94xREV Model
-    std::cout << "### Phase 2: Refining under Global MG94xREV Model...\n";
+    std::cout << "### Phase 2: Refining under Global MG94xREV Model"
+              << (full_model ? " (Full branch length re-optimization)...\n" : " (Proportional branch scaling)...\n");
     MG94Parameters base_p;
     base_p.theta_AC = gtr_res.params.theta_AC;
     base_p.theta_AT = gtr_res.params.theta_AT;
@@ -180,16 +188,24 @@ int run_fel(int argc, char* argv[]) {
     base_p.theta_GT = gtr_res.params.theta_GT;
 
     MG94Fitter mg_fitter(gtr_res.tree, aln);
-    auto mg_res = mg_fitter.fit_omega_and_scale(1.0, base_p);
-
-    Scalar global_omega = mg_res.x_opt(0);
-    Scalar tree_scale = mg_res.x_opt(1);
-    base_p.alpha = 1.0;
-    base_p.beta = global_omega;
+    FitResult mg_res;
+    if (full_model) {
+        std::function<void(const std::string&, double)> mg_cb = nullptr;
+        if (!show_progress && !force_progress) {
+            mg_cb = [](const std::string& msg, double) {
+                std::cout << "  > " << msg << "...\n";
+            };
+        }
+        mg_res = mg_fitter.fit_full_model(1.0, base_p, mg_cb);
+        base_p = mg_res.params;
+    } else {
+        mg_res = mg_fitter.fit_omega_and_scale(1.0, base_p);
+        base_p.alpha = 1.0;
+        base_p.beta = mg_res.x_opt(0);
+    }
 
     std::cout << "  MG94 Log-Likelihood: " << std::fixed << std::setprecision(4) << mg_res.log_likelihood << "\n"
-              << "  Global omega (dN/dS): " << global_omega << "\n"
-              << "  Tree scale factor: " << tree_scale << "\n\n";
+              << "  Global omega (dN/dS): " << base_p.beta << "\n\n";
 
     // 4. Site-by-Site Testing Phase
     std::cout << "### Phase 3: Testing " << aln.num_codons << " codon sites for selection (OpenMP accelerated)...\n";

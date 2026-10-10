@@ -95,7 +95,7 @@ TEST_CASE("Parity 2: ADH (Universal Code, 23 taxa, 254 codons)") {
     auto aln = Alignment::load("/Users/sergei/Development/hyphy/tests/data/adh.nex");
     REQUIRE(!aln.embedded_tree_newick.empty());
     auto tree = Tree::from_newick(aln.embedded_tree_newick);
-    auto fel = FELAnalyzer::create_and_fit(tree, aln, 0.1);
+    auto fel = FELAnalyzer::create_and_fit(tree, aln, 0.1, nullptr, false);
     auto results = fel.run();
 
     std::ifstream gt_file("/Users/sergei/Development/hyphy/hyphy-next/benchmarks/ground_truth/adh_fel_rel.json");
@@ -124,7 +124,7 @@ TEST_CASE("Parity 3: BGLOBIN (Universal Code, 17 taxa, 144 codons)") {
     auto aln = Alignment::load("/Users/sergei/Development/hyphy/tests/data/bglobin.nex");
     REQUIRE(!aln.embedded_tree_newick.empty());
     auto tree = Tree::from_newick(aln.embedded_tree_newick);
-    auto fel = FELAnalyzer::create_and_fit(tree, aln, 0.1);
+    auto fel = FELAnalyzer::create_and_fit(tree, aln, 0.1, nullptr, false);
     auto results = fel.run();
 
     std::ifstream gt_file("/Users/sergei/Development/hyphy/hyphy-next/benchmarks/ground_truth/bglobin_fel_rel.json");
@@ -158,7 +158,7 @@ TEST_CASE("Parity 4: COXI (Vertebrate-mtDNA Non-Universal Code, 21 taxa, 510 cod
     REQUIRE(!aln.embedded_tree_newick.empty());
 
     auto tree = Tree::from_newick(aln.embedded_tree_newick);
-    auto fel = FELAnalyzer::create_and_fit(tree, aln, 0.1);
+    auto fel = FELAnalyzer::create_and_fit(tree, aln, 0.1, nullptr, false);
     auto results = fel.run();
 
     std::ifstream gt_file("/Users/sergei/Development/hyphy/hyphy-next/benchmarks/ground_truth/coxi_fel_rel.json");

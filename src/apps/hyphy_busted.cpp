@@ -48,6 +48,8 @@ static void print_usage(const char* prog) {
               << "  --no-branch-opt      Disable individual branch length refinement (use proportional scaling)\n"
               << "  --threads <N>        Number of OpenMP worker threads\n"
               << "  --output <file>      Path to output JSON file (default: <alignment>.BUSTED.json)\n"
+              << "  --progress           Force interactive progress bar\n"
+              << "  --no-progress        Disable progress bar\n"
               << "  --help, -h           Show this help message\n\n"
               << "Examples:\n"
               << "  " << prog << " --alignment data/cd2.fna --tree data/cd2.nwk\n"
@@ -61,6 +63,8 @@ int run_busted(int argc, char* argv[]) {
     std::string code_name = "Universal";
     int num_threads = 0;
     BUSTEDSettings settings;
+    bool show_progress = ProgressBar::is_terminal();
+    bool force_progress = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -87,6 +91,12 @@ int run_busted(int argc, char* argv[]) {
             num_threads = std::stoi(argv[++i]);
         } else if (arg == "--output" && i + 1 < argc) {
             output_file = argv[++i];
+        } else if (arg == "--progress") {
+            show_progress = true;
+            force_progress = true;
+        } else if (arg == "--no-progress") {
+            show_progress = false;
+            force_progress = false;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
@@ -176,7 +186,7 @@ int run_busted(int argc, char* argv[]) {
     if (settings.auto_select_k) {
         std::cout << "      Automatic model selection enabled (testing K = 1.." << settings.max_k << ")...\n";
     }
-    BUSTEDResult res = analyzer.run(settings);
+    BUSTEDResult res = analyzer.run(settings, show_progress, force_progress);
 
     auto end_time = std::chrono::high_resolution_clock::now();
     double total_runtime = std::chrono::duration<double>(end_time - start_time).count();
