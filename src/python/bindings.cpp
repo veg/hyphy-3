@@ -121,8 +121,15 @@ NB_MODULE(_hyphy3, m) {
             return FELAnalyzer::create_and_fit(std::move(tree), std::move(aln), pvalue_threshold, nullptr, full_model);
         }, "tree"_a, "alignment"_a, "pvalue_threshold"_a = 0.1, "full_model"_a = true)
         .def("run", &FELAnalyzer::run, "show_progress"_a = false, "force_progress"_a = false)
-        .def("to_json", [](const FELAnalyzer& fel) {
-            return fel.to_json().dump();
+        .def("to_json", [](const FELAnalyzer& fel, const std::string& fmt) {
+            auto format = (fmt == "legacy") ? JSONFormat::Legacy : JSONFormat::ModernV3;
+            return fel.to_json("", "", format).dump();
+        }, "format"_a = "modern")
+        .def("to_legacy_json", [](const FELAnalyzer& fel) {
+            return fel.to_legacy_json().dump();
+        })
+        .def("to_modern_json", [](const FELAnalyzer& fel) {
+            return fel.to_modern_json().dump();
         })
         .def_ro("global_log_l", &FELAnalyzer::global_log_l)
         .def_ro("global_aicc", &FELAnalyzer::global_aicc)

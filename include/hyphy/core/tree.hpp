@@ -178,6 +178,33 @@ public:
         return nodes.size();
     }
 
+    std::string to_newick(bool include_branch_lengths = true) const {
+        if (root_id == INVALID_INDEX || nodes.empty()) return "";
+        auto write_node = [&](auto& self, int32_t nid) -> std::string {
+            const auto& node = nodes[nid];
+            std::string res;
+            if (!node.children.empty()) {
+                res += "(";
+                for (size_t i = 0; i < node.children.size(); ++i) {
+                    if (i > 0) res += ",";
+                    res += self(self, node.children[i]);
+                }
+                res += ")";
+            }
+            res += node.name;
+            if (!node.model_tag.empty()) {
+                res += "{" + node.model_tag + "}";
+            }
+            if (include_branch_lengths && nid != root_id) {
+                std::ostringstream ss;
+                ss << ":" << std::setprecision(8) << node.branch_length;
+                res += ss.str();
+            }
+            return res;
+        };
+        return write_node(write_node, root_id) + ";";
+    }
+
 private:
     void compute_post_order() {
         post_order.clear();

@@ -42,6 +42,9 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
               << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.FEL.json)\n"
               << "  " << Console::brand("--pvalue") << " <float>     P-value significance threshold (default: 0.1)\n"
+              << "  " << Console::brand("--json-format") << " <type> Output JSON schema format: 'modern' (v3.0, default) or 'legacy' (Datamonkey 2.5)\n"
+              << "  " << Console::brand("--legacy-json") << "        Emit legacy Datamonkey/HyPhy 2.5 JSON schema\n"
+              << "  " << Console::brand("--modern-json") << "        Emit modern HyPhy 3.0 JSON schema with provenance and columnar data\n"
               << "  " << Console::brand("--full-model") << "         Perform branch length re-optimization under full codon model (default)\n"
               << "  " << Console::brand("--quick") << "              Disable full branch re-optimization (proportional branch scaling)\n"
               << "  " << Console::brand("--all-sites") << "          Display all codon sites in console table (default: significant only)\n"
@@ -50,7 +53,7 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--help, -h") << "           Show this help message\n\n"
               << Console::bold("Examples:") << "\n"
               << "  " << prog << " --alignment data/cd2.fna --tree data/cd2.nwk --output cd2.FEL.json\n"
-              << "  " << prog << " --alignment tests/data/COXI.nex --code Vertebrate-mtDNA\n\n";
+              << "  " << prog << " --alignment tests/data/COXI.nex --code Vertebrate-mtDNA --legacy-json\n\n";
 }
 
 int run_fel(int argc, char* argv[]) {
@@ -64,6 +67,7 @@ int run_fel(int argc, char* argv[]) {
     bool force_progress = false;
     bool full_model = true;
     bool all_sites = false;
+    JSONFormat json_format = JSONFormat::ModernV3;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -79,6 +83,12 @@ int run_fel(int argc, char* argv[]) {
             output_file = argv[++i];
         } else if (arg == "--pvalue" && i + 1 < argc) {
             pvalue_threshold = std::stod(argv[++i]);
+        } else if (arg == "--json-format" && i + 1 < argc) {
+            json_format = parse_json_format(argv[++i]);
+        } else if (arg == "--legacy-json") {
+            json_format = JSONFormat::Legacy;
+        } else if (arg == "--modern-json") {
+            json_format = JSONFormat::ModernV3;
         } else if (arg == "--full-model") {
             full_model = true;
         } else if (arg == "--no-full-model" || arg == "--quick") {
@@ -120,6 +130,12 @@ int run_fel(int argc, char* argv[]) {
     print_banner();
 
     auto start_time = std::chrono::high_resolution_clock::now();
+    std::string start_iso = Provenance::current_iso8601();
+    std::string cli_cmd = argv[0];
+    for (int i = 1; i < argc; ++i) {
+        cli_cmd += " ";
+        cli_cmd += argv[i];
+    }
 
     // 0. Genetic Code
     std::shared_ptr<const GeneticCode> gcode;
@@ -342,6 +358,7 @@ int run_fel(int argc, char* argv[]) {
     time_ss << std::fixed << std::setprecision(2) << total_sec << " s";
     omega_ss << std::fixed << std::setprecision(4) << base_p.beta;
 
+    std::string json_desc = (json_format == JSONFormat::Legacy) ? " [Legacy]" : " [Modern v3.0]";
     std::vector<std::pair<std::string, std::string>> sum_items = {
         {"Tested Codon Sites", std::to_string(summary.tested_sites)},
         {"Diversifying Selection (Positive)", 
@@ -353,7 +370,7 @@ int run_fel(int argc, char* argv[]) {
         {"Global dN/dS (beta/alpha)", omega_ss.str()},
         {"Nucleotide GTR Fit", gtr_ss.str()},
         {"Global MG94xREV Fit", mg_ss.str()},
-        {"JSON Output File", output_file},
+        {"JSON Output File", output_file + json_desc},
         {"Total Execution Time", time_ss.str()}
     };
 
@@ -363,10 +380,44 @@ int run_fel(int argc, char* argv[]) {
 
     Panel::print_summary_card("FEL Selection Analysis Summary", sum_items, conclusion, true);
 
+    // Build Provenance
+    Provenance prov;
+    prov.invocation.cli_command = cli_cmd;
+    prov.invocation.working_directory = Provenance::get_cwd();
+    prov.invocation.arguments["alignment"] = alignment_file;
+    if (!tree_file.empty()) prov.invocation.arguments["tree"] = tree_file;
+    prov.invocation.arguments["code"] = code_name;
+    prov.invocation.arguments["pvalue_threshold"] = std::to_string(pvalue_threshold);
+    prov.invocation.arguments["full_model"] = full_model ? "true" : "false";
+    prov.invocation.arguments["json_format"] = (json_format == JSONFormat::Legacy) ? "legacy" : "modern_v3";
+
+    size_t aln_sz = 0;
+    std::string aln_hash = crypto::SHA256::hash_file(alignment_file, &aln_sz);
+    prov.inputs["alignment"] = {alignment_file, "FASTA/NEXUS", aln_hash, aln_sz};
+
+    if (!tree_file.empty()) {
+        size_t tree_sz = 0;
+        std::string tree_hash = crypto::SHA256::hash_file(tree_file, &tree_sz);
+        prov.inputs["tree"] = {tree_file, "Newick", tree_hash, tree_sz};
+    }
+
+    prov.execution.start_time = start_iso;
+    prov.execution.end_time = Provenance::current_iso8601();
+    prov.execution.wall_time_seconds = total_sec;
+#ifdef _OPENMP
+    prov.execution.cpu_threads = (num_threads > 0) ? num_threads : omp_get_max_threads();
+#else
+    prov.execution.cpu_threads = 1;
+#endif
+    prov.execution.hostname = Provenance::get_hostname();
+    prov.execution.os = Provenance::detect_os();
+    prov.execution.compiler = Provenance::detect_compiler();
+
     // Save JSON
     try {
-        fel.save_json(output_file, alignment_file);
-        std::cout << Console::success("✔") << " " << Console::bold("Saved Datamonkey-compatible JSON report to: ")
+        fel.save_json(output_file, alignment_file, "", json_format, prov);
+        std::string fmt_desc = (json_format == JSONFormat::Legacy) ? "Legacy Datamonkey JSON" : "Modern HyPhy v3.0 JSON";
+        std::cout << Console::success("✔") << " " << Console::bold("Saved " + fmt_desc + " report to: ")
                   << Console::brand(output_file) << "\n\n";
     } catch (const std::exception& e) {
         std::cerr << Console::danger("Error writing JSON: ") << e.what() << "\n";

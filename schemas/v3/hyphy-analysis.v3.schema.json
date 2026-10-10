@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/hyphy-analysis.v3.schema.json",
+  "title": "HyPhy 3 General Analysis Output Schema v3.0",
+  "description": "Standardized top-level metadata, provenance, dataset, phylogeny, and results schema for all HyPhy 3 evolutionary analyses.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema_version",
+    "analysis",
+    "software",
+    "provenance",
+    "dataset",
+    "phylogeny",
+    "model_fits",
+    "statistical_tests"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri"
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^3\\.[0-9]+\\.[0-9]+$"
+    },
+    "analysis": {
+      "type": "object",
+      "required": ["id", "name", "version", "category", "description"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "citations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["citation"],
+            "properties": {
+              "citation": { "type": "string" },
+              "doi": { "type": "string" },
+              "pmid": { "type": "string" }
+            }
+          }
+        },
+        "settings": {
+          "type": "object"
+        }
+      }
+    },
+    "software": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "git_commit": { "type": "string" },
+        "build_type": { "type": "string" },
+        "compiler": { "type": "string" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["invocation", "inputs", "execution"],
+      "properties": {
+        "invocation": {
+          "type": "object",
+          "required": ["cli_command"],
+          "properties": {
+            "cli_command": { "type": "string" },
+            "working_directory": { "type": "string" },
+            "arguments": { "type": "object" }
+          }
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["path", "sha256"],
+            "properties": {
+              "path": { "type": "string" },
+              "format": { "type": "string" },
+              "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "size_bytes": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "execution": {
+          "type": "object",
+          "required": ["start_time", "end_time", "wall_time_seconds", "cpu_threads"],
+          "properties": {
+            "start_time": { "type": "string" },
+            "end_time": { "type": "string" },
+            "wall_time_seconds": { "type": "number", "minimum": 0 },
+            "cpu_threads": { "type": "integer", "minimum": 1 },
+            "hostname": { "type": "string" },
+            "os": { "type": "string" },
+            "compiler": { "type": "string" }
+          }
+        }
+      }
+    },
+    "dataset": {
+      "type": "object",
+      "required": ["taxa_count", "taxa", "genetic_code"],
+      "properties": {
+        "taxa_count": { "type": "integer", "minimum": 1 },
+        "codon_sites": { "type": "integer", "minimum": 1 },
+        "nucleotide_sites": { "type": "integer", "minimum": 1 },
+        "unique_patterns": { "type": "integer", "minimum": 1 },
+        "taxa": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "genetic_code": {
+          "type": "object",
+          "required": ["id", "name"],
+          "properties": {
+            "id": { "type": "string" },
+            "name": { "type": "string" },
+            "sense_codons": { "type": "integer" },
+            "stop_codons": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "partitions": {
+          "type": "array"
+        }
+      }
+    },
+    "phylogeny": {
+      "type": "object",
+      "required": ["newick", "nodes"],
+      "properties": {
+        "newick": { "type": "string" },
+        "nodes": {
+          "type": "object"
+        },
+        "tree_lengths": { "type": "object" }
+      }
+    },
+    "model_fits": {
+      "type": "object"
+    },
+    "statistical_tests": {
+      "type": "object"
+    },
+    "site_results": {
+      "type": "object",
+      "properties": {
+        "columns": { "type": "object" },
+        "data": { "type": "object" }
+      }
+    }
+  }
+}

@@ -146,6 +146,14 @@ if(Python_FOUND)
             set_tests_properties(PythonAutogradTest PROPERTIES
                 ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/python;KMP_DUPLICATE_LIB_OK=TRUE"
             )
+
+            add_test(NAME JSONSchemaTest
+                COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_json_schema.py"
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            )
+            set_tests_properties(JSONSchemaTest PROPERTIES
+                ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/python;KMP_DUPLICATE_LIB_OK=TRUE"
+            )
         endif()
     endif()
 endif()

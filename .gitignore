@@ -37,6 +37,7 @@ Testing/
 !benchmarks/data/*.json
 !benchmarks/ground_truth/*.json
 !tests/data/*.json
+!schemas/**/*.json
 scratch/
 *.trace/
 *.trace
