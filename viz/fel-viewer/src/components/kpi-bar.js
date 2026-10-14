@@ -1,17 +1,84 @@
 // KPI Summary Bar & Reactive Threshold Controller
 // Dieter Rams / Braun Industrial aesthetic: clean cards, tactile presets, reactive slider
+//
+// A method config describes the bar as data:
+//   cards: [{ id, label, value(stats, view), sub(stats, view), tone, widget?, ... }]
+//     view is { data, threshold }; stats is data.getStats(threshold).
+//     tone colours the value: 'accent' | 'purifying' | 'ink' | 'muted'.
+//     widget(el, stats, view) draws into a slot below the sub line.
+//     Optional: placeholder (the sub line before any data), comment (the HTML
+//     comment above the card), cardClass, and valueId/subId to override the
+//     default kpi-val-<id>/kpi-sub-<id> element ids.
+//   blank: the cards drawn before data arrives, one per card (defaults to cards).
+//     Only their markup is used; label and tone switch to the cards' on setData.
+//   controller: { title, statistic, direction: 'le' | 'ge', min, max, step,
+//     presets, seed, format(t) }; seed is the starting cutoff.
 
-import { formatThreshold, formatOmegaInf } from '../core/format.js';
+const KPI_TONE_CLASSES = {
+  accent: 'kpi-value kpi-text-orange',
+  purifying: 'kpi-value kpi-text-blue',
+  ink: 'kpi-value',
+  muted: 'kpi-value kpi-text-muted'
+};
+
+function kpiCardMarkup(card, index) {
+  const cardClass = card.cardClass ? `kpi-card ${card.cardClass}` : 'kpi-card';
+  const widget = card.widget ? `
+          <div class="kpi-widget"></div>` : '';
+  return `
+        <!-- ${index + 1}. ${card.comment || `${card.label} Card`} -->
+        <div class="${cardClass}" id="kpi-${card.id}">
+          <div class="kpi-label"></div>
+          <div class="${KPI_TONE_CLASSES[card.tone || 'ink']}" id="kpi-val-${card.valueId || card.id}">—</div>
+          <div class="kpi-sub" id="kpi-sub-${card.subId || card.id}">${card.placeholder || '—'}</div>${widget}
+        </div>
+`;
+}
+
+function thresholdControllerMarkup(controller, threshold, index) {
+  const { format } = controller;
+  const pill = (p) => {
+    const active = Math.abs(p - threshold) < 0.002 ? ' active' : '';
+    return `
+            <button type="button" class="preset-pill${active}" data-p="${format(p)}">${thresholdLabel(controller, p)}</button>`;
+  };
+  return `
+        <!-- ${index + 1}. Interactive Threshold Controller -->
+        <div class="kpi-card kpi-card-control" id="kpi-controller">
+          <div class="kpi-control-header">
+            <span class="kpi-label">${controller.title}</span>
+            <span class="kpi-thresh-display" id="kpi-thresh-display">${thresholdLabel(controller, threshold)}</span>
+          </div>
+          <div class="kpi-slider-row">
+            <input type="range" class="kpi-slider" id="kpi-thresh-slider" min="${format(controller.min)}" max="${format(controller.max)}" step="${format(controller.step)}" value="${format(threshold)}" />
+          </div>
+          <div class="kpi-presets-row">${controller.presets.map(pill).join('')}
+          </div>
+        </div>
+      `;
+}
+
+// 'p ≤ 0.05', 'PP ≥ 0.90': the cutoff as the controller and its presets show it
+export function thresholdLabel(controller, t) {
+  const op = controller.direction === 'ge' ? '≥' : '≤';
+  return `${controller.statistic} ${op} ${controller.format(t)}`;
+}
 
 export class KpiBar {
   constructor(container, options = {}) {
     this.container = container;
     this.options = Object.assign({
-      threshold: 0.1,
+      cards: [],
+      blank: null,
+      controller: null,
+      threshold: null, // the controller's seed when unset
       onThresholdChange: null
     }, options);
 
-    this.threshold = this.options.threshold;
+    this.cards = this.options.cards;
+    this.blank = this.options.blank || this.cards;
+    this.controller = this.options.controller;
+    this.threshold = this.options.threshold ?? this.controller.seed;
     this.data = null;
     this.initDOM();
   }
@@ -20,54 +87,23 @@ export class KpiBar {
     this.el = document.createElement('div');
     this.el.className = 'hyphy-kpi-bar';
     this.el.innerHTML = `
-      <div class="kpi-cards-grid">
-        <!-- 1. Alignment Card -->
-        <div class="kpi-card" id="kpi-alignment">
-          <div class="kpi-label">Alignment</div>
-          <div class="kpi-value" id="kpi-val-sites">—</div>
-          <div class="kpi-sub" id="kpi-sub-taxa">— Taxa</div>
-        </div>
-
-        <!-- 2. Global Mean dN/dS Card -->
-        <div class="kpi-card" id="kpi-omega">
-          <div class="kpi-label">Global Mean dN/dS (ω)</div>
-          <div class="kpi-value" id="kpi-val-omega">—</div>
-          <div class="kpi-sub" id="kpi-sub-omega">Gene-wide Pressure</div>
-        </div>
-
-        <!-- 3. Diversifying Sites (Adaptive) Card -->
-        <div class="kpi-card kpi-card-div" id="kpi-div">
-          <div class="kpi-label">Diversifying (Positive)</div>
-          <div class="kpi-value kpi-text-orange" id="kpi-val-div">—</div>
-          <div class="kpi-sub" id="kpi-sub-div">Sites (β > α)</div>
-        </div>
-
-        <!-- 4. Purifying Sites (Negative) Card -->
-        <div class="kpi-card kpi-card-pur" id="kpi-pur">
-          <div class="kpi-label">Purifying (Constraint)</div>
-          <div class="kpi-value kpi-text-blue" id="kpi-val-pur">—</div>
-          <div class="kpi-sub" id="kpi-sub-pur">Sites (α > β)</div>
-        </div>
-
-        <!-- 5. Interactive Threshold Controller -->
-        <div class="kpi-card kpi-card-control" id="kpi-controller">
-          <div class="kpi-control-header">
-            <span class="kpi-label">Significance Cutoff</span>
-            <span class="kpi-thresh-display" id="kpi-thresh-display">p ≤ 0.10</span>
-          </div>
-          <div class="kpi-slider-row">
-            <input type="range" class="kpi-slider" id="kpi-thresh-slider" min="0.001" max="0.20" step="0.005" value="0.10" />
-          </div>
-          <div class="kpi-presets-row">
-            <button type="button" class="preset-pill active" data-p="0.10">p ≤ 0.10</button>
-            <button type="button" class="preset-pill" data-p="0.05">p ≤ 0.05</button>
-            <button type="button" class="preset-pill" data-p="0.01">p ≤ 0.01</button>
-          </div>
-        </div>
-      </div>
+      <div class="kpi-cards-grid">${this.blank.map(kpiCardMarkup).join('')}${
+        thresholdControllerMarkup(this.controller, this.threshold, this.blank.length)}</div>
     `;
 
     this.container.appendChild(this.el);
+
+    this.cardEls = this.blank.map(card => {
+      const el = this.el.querySelector(`#kpi-${card.id}`);
+      const label = el.querySelector('.kpi-label');
+      label.textContent = card.label;
+      return {
+        label,
+        value: el.querySelector('.kpi-value'),
+        sub: el.querySelector('.kpi-sub'),
+        widget: el.querySelector('.kpi-widget')
+      };
+    });
 
     // Bind slider & preset listeners
     this.slider = this.el.querySelector('#kpi-thresh-slider');
@@ -90,7 +126,7 @@ export class KpiBar {
 
   setThreshold(p, triggerCallback = false) {
     this.threshold = p;
-    this.display.textContent = `p ≤ ${formatThreshold(p)}`;
+    this.display.textContent = thresholdLabel(this.controller, p);
 
     // Update active preset button highlight
     this.presetBtns.forEach(btn => {
@@ -111,72 +147,23 @@ export class KpiBar {
 
   setData(data) {
     this.data = data;
-    this.renderInitial();
+    this.cards.forEach((card, i) => {
+      this.cardEls[i].label.textContent = card.label;
+      this.cardEls[i].value.className = KPI_TONE_CLASSES[card.tone || 'ink'];
+    });
     this.updateStats();
-  }
-
-  renderInitial() {
-    if (!this.data) return;
-    const sitesVal = this.el.querySelector('#kpi-val-sites');
-    const taxaSub = this.el.querySelector('#kpi-sub-taxa');
-    const omegaVal = this.el.querySelector('#kpi-val-omega');
-    const omegaSub = this.el.querySelector('#kpi-sub-omega');
-
-    sitesVal.textContent = `${this.data.numSites.toLocaleString()} Codons`;
-    taxaSub.textContent = `${this.data.numTaxa} Taxa`;
-
-    const omega = this.data.globalOmega;
-    if (this.data.isMEME) {
-      const omegaLabel = this.el.querySelector('#kpi-omega .kpi-label');
-      omegaLabel.textContent = 'Analysis Model';
-      omegaVal.textContent = 'MEME';
-      omegaSub.textContent = 'Episodic Diversifying';
-
-      const divLabel = this.el.querySelector('#kpi-div .kpi-label');
-      divLabel.textContent = 'Episodically Diversifying';
-
-      const purLabel = this.el.querySelector('#kpi-pur .kpi-label');
-      purLabel.textContent = 'Neutral / Pervasive';
-    } else {
-      omegaVal.textContent = formatOmegaInf(omega);
-      if (omega < 0.2) {
-        omegaSub.textContent = 'Strong Purifying Constraint';
-      } else if (omega < 0.7) {
-        omegaSub.textContent = 'Pervasive Purifying Selection';
-      } else if (omega <= 1.2) {
-        omegaSub.textContent = 'Nearly Neutral Evolution';
-      } else {
-        omegaSub.textContent = 'Diversifying Selection';
-      }
-    }
   }
 
   updateStats() {
     if (!this.data) return;
     const stats = this.data.getStats(this.threshold);
+    const view = { data: this.data, threshold: this.threshold };
 
-    const divVal = this.el.querySelector('#kpi-val-div');
-    const divSub = this.el.querySelector('#kpi-sub-div');
-    const purVal = this.el.querySelector('#kpi-val-pur');
-    const purSub = this.el.querySelector('#kpi-sub-pur');
-
-    const pctDiv = ((stats.diversifying / Math.max(1, stats.totalSites)) * 100).toFixed(1);
-    const pctPur = ((stats.purifying / Math.max(1, stats.totalSites)) * 100).toFixed(1);
-
-    if (this.data.isMEME) {
-      divVal.textContent = `▲ ${stats.diversifying}`;
-      divSub.textContent = `${pctDiv}% of sites (p ≤ ${formatThreshold(this.threshold)})`;
-
-      purVal.textContent = `${stats.neutral}`;
-      purVal.className = 'kpi-value';
-      purSub.textContent = `Conserved or Neutral sites`;
-    } else {
-      divVal.textContent = `▲ ${stats.diversifying}`;
-      divSub.textContent = `${pctDiv}% of sites (β > α)`;
-
-      purVal.textContent = `▼ ${stats.purifying}`;
-      purVal.className = 'kpi-value kpi-text-blue';
-      purSub.textContent = `${pctPur}% of sites (α > β)`;
-    }
+    this.cards.forEach((card, i) => {
+      const els = this.cardEls[i];
+      els.value.textContent = card.value(stats, view);
+      els.sub.textContent = card.sub(stats, view);
+      if (card.widget) card.widget(els.widget, stats, view);
+    });
   }
 }

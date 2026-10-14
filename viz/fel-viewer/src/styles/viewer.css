@@ -130,6 +130,10 @@
   color: var(--purifying);
 }
 
+.kpi-text-muted {
+  color: var(--stone);
+}
+
 .kpi-sub {
   font-size: 11px;
   color: var(--stone);
