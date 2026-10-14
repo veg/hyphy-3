@@ -9,8 +9,9 @@
 //                            e.g. aBSREL omega classes weighted by their proportions
 //   label                    text centred above the branch midpoint
 //   labelColor               defaults to the stroke
-// node is the parsed Newick node ({ name, tag, children, parent }) and meta is
-// nodeMeta[node.name]. Unset fields fall back to a plain ink branch.
+// node is the parsed Newick node ({ name, tag, children, parent }), meta is
+// nodeMeta[node.name] and colors the palette in use (the page's themed tokens on the
+// canvas, PALETTE in the export). Unset fields fall back to a plain ink branch.
 //
 // The hovered branch and the selected branch both draw in the hover colour. Hover follows
 // the pointer (or highlight(name) from a linked view); the selection is set by a click or
@@ -20,6 +21,7 @@
 import { PALETTE } from '../data/palette.js';
 import { parseNewick, lengthFrom } from '../core/newick.js';
 import { downloadPNG, downloadSVG, escapeSvgText } from '../core/export.js';
+import { trackColors } from './site-track.js';
 
 const BRANCH_TREE_FONT = '-apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif';
 
@@ -71,6 +73,11 @@ export function branchTreeLayout(root, options = {}) {
   return { root, nodes, leaves, maxDepth, cladogram: byEdges };
 }
 
+// The corners of a diamond marker of half-diagonal r, clockwise from the top
+export function diamondPoints({ x, y, r }) {
+  return [[x, y - r], [x + r, y], [x, y + r], [x - r, y]];
+}
+
 export class BranchTree {
   constructor(container, options = {}) {
     this.container = container;
@@ -78,6 +85,7 @@ export class BranchTree {
       lengthKey: null,          // nodeMeta[name].branch_lengths key; null uses the Newick lengths
       style: null,              // (node, meta) => branch style, see the top of this file
       hoverColor: PALETTE.accent,
+      rootShape: 'dot',         // 'dot' | 'diamond' (a root the method placed itself)
       mini: false,              // compact rows and type, for drawers
       ladderize: true,
       cladogram: false,
@@ -194,7 +202,7 @@ export class BranchTree {
 
   // Lines, texts and dots for the current width, hover and selection. Also refreshes the
   // hit-test edges: one per branch, reaching past the leaf label for leaves.
-  scene() {
+  scene(colors = PALETTE) {
     const { nodes, leaves, maxDepth, root } = this.layout;
     const { rowHeight, font, labelFont, width: baseWidth, scale, padX, padY, rootRadius } = this.size;
     const hover = this.options.hoverColor;
@@ -207,7 +215,8 @@ export class BranchTree {
 
     const lines = [];
     const texts = [];
-    const dots = [{ x: x(0), y: y(root.row), r: rootRadius, fill: PALETTE.ink }];
+    const rootR = this.options.rootShape === 'diamond' ? rootRadius + 2 : rootRadius;
+    const dots = [{ x: x(0), y: y(root.row), r: rootR, fill: colors.ink, shape: this.options.rootShape }];
     this.edges = [];
 
     for (const node of nodes) {
@@ -216,8 +225,8 @@ export class BranchTree {
       const nx = x(node.depth);
 
       if (node.parent) {
-        const st = (this.options.style && this.options.style(node, this.nodeMeta[node.name])) || {};
-        const stroke = hovered ? hover : (st.stroke || PALETTE.ink);
+        const st = (this.options.style && this.options.style(node, this.nodeMeta[node.name], colors)) || {};
+        const stroke = hovered ? hover : (st.stroke || colors.ink);
         const width = (st.width ? st.width * scale : baseWidth) + (hovered ? 1.25 : 0);
         const px = x(node.parent.depth);
         if (st.segments?.length && !hovered) {
@@ -239,14 +248,14 @@ export class BranchTree {
 
       if (node.children.length) {
         lines.push({ x1: nx, y1: y(node.children[0].row), x2: nx, y2: y(node.children[node.children.length - 1].row),
-                     stroke: hovered ? hover : PALETTE.ink, width: baseWidth + (hovered ? 1.25 : 0) });
+                     stroke: hovered ? hover : colors.ink, width: baseWidth + (hovered ? 1.25 : 0) });
         if (this.options.internalLabels && node.name && node.parent) {
           texts.push({ x: nx + 3, y: ny - 2, text: node.name, size: labelFont, bold: hovered,
-                       fill: hovered ? hover : PALETTE.stone, align: 'left', baseline: 'bottom' });
+                       fill: hovered ? hover : colors.stone, align: 'left', baseline: 'bottom' });
         }
       } else {
         texts.push({ x: nx + 6, y: ny, text: this.leafLabel(node), size: font, bold: hovered,
-                     fill: hovered ? hover : PALETTE.ink, align: 'left', baseline: 'middle' });
+                     fill: hovered ? hover : colors.ink, align: 'left', baseline: 'middle' });
       }
     }
     return { lines, texts, dots };
@@ -256,11 +265,12 @@ export class BranchTree {
     if (!this.ctx || !this.width) return;
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.width, this.height);
-    ctx.fillStyle = PALETTE.panel;
+    const colors = trackColors(this.canvas);
+    ctx.fillStyle = colors.panel;
     ctx.fillRect(0, 0, this.width, this.height);
     if (!this.layout) return;
 
-    const { lines, texts, dots } = this.scene();
+    const { lines, texts, dots } = this.scene(colors);
     ctx.lineCap = 'butt';
     for (const line of lines) {
       ctx.strokeStyle = line.stroke;
@@ -275,7 +285,12 @@ export class BranchTree {
     for (const dot of dots) {
       ctx.fillStyle = dot.fill;
       ctx.beginPath();
-      ctx.arc(dot.x, dot.y, dot.r, 0, Math.PI * 2);
+      if (dot.shape === 'diamond') {
+        diamondPoints(dot).forEach(([px, py], i) => (i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)));
+        ctx.closePath();
+      } else {
+        ctx.arc(dot.x, dot.y, dot.r, 0, Math.PI * 2);
+      }
       ctx.fill();
     }
     for (const text of texts) {
@@ -299,7 +314,9 @@ export class BranchTree {
         svg += `  <line x1="${line.x1}" y1="${line.y1}" x2="${line.x2}" y2="${line.y2}" stroke="${line.stroke}" stroke-width="${line.width}"${dash}/>\n`;
       }
       for (const dot of dots) {
-        svg += `  <circle cx="${dot.x}" cy="${dot.y}" r="${dot.r}" fill="${dot.fill}"/>\n`;
+        svg += dot.shape === 'diamond'
+          ? `  <polygon points="${diamondPoints(dot).map(p => p.join(',')).join(' ')}" fill="${dot.fill}"/>\n`
+          : `  <circle cx="${dot.x}" cy="${dot.y}" r="${dot.r}" fill="${dot.fill}"/>\n`;
       }
       for (const text of texts) {
         const anchor = text.align === 'center' ? 'middle' : 'start';

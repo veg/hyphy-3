@@ -30,6 +30,7 @@ inline const std::vector<ReportViewer>& report_viewers() {
         {"meme", "MEME &bull; Episodic Selection", "hyphy-meme-viewer"},
         {"fubar", "FUBAR &bull; Bayesian Pervasive Selection", "hyphy-viewer"},
         {"slac", "SLAC &bull; Ancestral Counting", "hyphy-viewer"},
+        {"dfel", "dFEL &bull; Directional Selection", "hyphy-viewer"},
     };
     return viewers;
 }

@@ -1,5 +1,6 @@
 #include "hyphy/analyses/directional_fel.hpp"
 #include "hyphy/core/console.hpp"
+#include "hyphy/report/html_report.hpp"
 #include <iostream>
 #include <iomanip>
 #include <chrono>
@@ -36,6 +37,7 @@ void print_dfel_usage(const char* prog) {
 
     std::cout << Console::bold("Output & Performance Options:") << "\n"
               << "  " << Console::brand("--output, -o     ") << "  Output JSON filepath (default: <alignment>.dFEL.json)\n"
+              << "  " << Console::brand("--html           ") << "  Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--modern-json    ") << "  Export HyPhy 3.0 Modern JSON schema (default)\n"
               << "  " << Console::brand("--legacy-json    ") << "  Export backward-compatible HyPhy 2.5 legacy JSON format\n"
               << "  " << Console::brand("--threads, -T    ") << "  Number of OpenMP worker threads (default: system auto)\n"
@@ -80,6 +82,7 @@ int run_dfel(int argc, char* argv[]) {
     std::string alignment_file;
     std::string tree_file;
     std::string output_file;
+    std::string html_file;
     std::string code_name = "Universal";
     std::string root_strategy = "auto";
     std::string regimes_opt = "auto";
@@ -110,6 +113,8 @@ int run_dfel(int argc, char* argv[]) {
             num_threads = std::stoi(argv[++i]);
         } else if ((arg == "--output" || arg == "-o") && i + 1 < argc) {
             output_file = argv[++i];
+        } else if (arg == "--html" && i + 1 < argc) {
+            html_file = argv[++i];
         } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
             pvalue_threshold = std::stod(argv[++i]);
         } else if (arg == "--legacy-json") {
@@ -435,6 +440,17 @@ int run_dfel(int argc, char* argv[]) {
     } catch (const std::exception& e) {
         std::cerr << Console::danger("Error exporting JSON: ") << e.what() << "\n";
         return 1;
+    }
+
+    if (!html_file.empty()) {
+        try {
+            hyphy::report::write_html_report(output_file, html_file);
+            std::cout << Console::success("✔") << " " << Console::bold("Saved HTML report to: ")
+                      << Console::brand(html_file) << "\n\n";
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error writing HTML report: ") << e.what() << "\n";
+            return 1;
+        }
     }
 
     return 0;

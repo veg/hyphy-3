@@ -52,7 +52,14 @@ check_report("${WORK_DIR}/slac.html" hyphy-viewer)
 run("${HYPHY3}" report slac.json --html slac.report.html)
 check_report("${WORK_DIR}/slac.report.html" hyphy-viewer)
 
-# 5. Analyses without a viewer are refused with a clear error rather than mis-rendered
+# 5. dFEL reports mount the neutral viewer element, from a run and from its result file
+run("${HYPHY3}" dfel --alignment "${DATA_DIR}/cd2_reduced.fna" --tree "${DATA_DIR}/cd2_reduced.nwk"
+    --no-progress --output dfel.json --html dfel.html)
+check_report("${WORK_DIR}/dfel.html" hyphy-viewer)
+run("${HYPHY3}" report dfel.json --html dfel.report.html)
+check_report("${WORK_DIR}/dfel.report.html" hyphy-viewer)
+
+# 6. Analyses without a viewer are refused with a clear error rather than mis-rendered
 file(WRITE "${WORK_DIR}/busted.json" "{\"analysis\": {\"id\": \"busted\"}}")
 execute_process(COMMAND "${HYPHY3}" report busted.json --html busted.html WORKING_DIRECTORY "${WORK_DIR}"
                 RESULT_VARIABLE rc ERROR_VARIABLE err OUTPUT_QUIET)

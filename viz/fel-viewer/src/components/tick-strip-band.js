@@ -42,10 +42,12 @@ export class TickStripBand {
     })).filter(m => m.up > 0 || m.down > 0 || m.flag);
   }
 
+  // Drawn in the track's themed colours, so the strip follows the dark theme
   draw(ctx, frame, track) {
+    const colors = track.colors ?? PALETTE;
     const mid = frame.top + frame.height / 2;
     ctx.save();
-    ctx.strokeStyle = PALETTE.gridLine;
+    ctx.strokeStyle = colors.gridLine;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(frame.left, mid);
@@ -53,7 +55,7 @@ export class TickStripBand {
     ctx.stroke();
 
     if (this.options.label) {
-      ctx.fillStyle = PALETTE.stone;
+      ctx.fillStyle = colors.stone;
       ctx.font = '9px "SF Mono", Monaco, monospace';
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
@@ -77,7 +79,7 @@ export class TickStripBand {
         ctx.stroke();
       }
       if (m.flag) {
-        ctx.fillStyle = PALETTE.ink;
+        ctx.fillStyle = colors.ink;
         ctx.beginPath();
         ctx.arc(m.x, mid, 1.5, 0, Math.PI * 2);
         ctx.fill();

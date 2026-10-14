@@ -23,7 +23,9 @@
     select its site), &gard=<GARD v3 JSON> (SegmentBand: click a segment) and
     &slac=<SLAC v3 JSON> (mirrored EvidenceBand: the series under the pointer is picked by y;
     the same file also drives an OverviewTrack with the SLAC preset, its brush shown from 60
-    codons so it zooms even a short alignment).
+    codons so it zooms even a short alignment) and &dfel=<dFEL v3 JSON> (the dFEL hero: its
+    GC/AT TickStripBand sits behind a stack toggle, on by default only when K > 1; under it
+    the DirectionalModelCard, opened: composition screen, GC strip, regime tree, root bars).
     RateGridHeatmap loads &fubar=<FUBAR JSON, v3 or legacy>: the estimated grid weights and
     the posterior of the site with the highest P[β>α], its mode outlined and mean marked.
     The hidden tab holds a BranchTree built while display:none; showing the tab draws it. Clicking a branch in the full tree selects it in the mini tree.
@@ -160,6 +162,12 @@
   </div>
 
   <div class="gallery-card">
+    <div class="gallery-card-head"><span>dFEL · EvidencePlot with a toggled GC/AT TickStripBand, DirectionalModelCard</span></div>
+    <div id="track-dfel"></div>
+    <div class="gallery-note" id="dfel-note"></div>
+  </div>
+
+  <div class="gallery-card">
     <div class="gallery-card-head"><span>OverviewBrush</span></div>
     <div id="brush"></div>
     <div class="gallery-note" id="brush-note"></div>
@@ -227,6 +235,8 @@
     import { FUBARData } from './src/data/fubar-data.js';
     import { SLACData } from './src/data/slac-data.js';
     import { slacTrackModes, SLAC_BRUSH } from './src/methods/slac.js';
+    import { DFELData } from './src/data/dfel-data.js';
+    import { dfelHero, DirectionalModelCard } from './src/methods/dfel.js';
     import { PALETTE } from './src/data/palette.js';
     import { formatPValue, formatThreshold } from './src/core/format.js';
 
@@ -539,6 +549,19 @@
       });
       view.setData(new SLACData(json));
       note.textContent = `${view.track.numSites} codons, window ${view.span}`;
+    }
+
+    // The dFEL hero and model card outside the shell; the card is opened whatever K is
+    function showDfelTrack(json) {
+      const note = document.getElementById('dfel-note');
+      const host = document.getElementById('track-dfel');
+      const data = new DFELData(json);
+      const hero = dfelHero(host, { threshold: 0.1, onSiteSelect: (site) => { note.textContent = `site-select: ${site}`; } });
+      hero.setData(data);
+      const card = new DirectionalModelCard(host);
+      card.setData(data);
+      card.setExpanded(true);
+      note.textContent = `K = ${data.K}, strip ${hero.stackShown ? 'shown' : 'hidden'} by default`;
     }
 
     function showBrush(json) {
@@ -980,7 +1003,7 @@
       else document.getElementById('dark-note').textContent = 'pass &dark=<FEL or MEME JSON> to draw a dark report';
       if (params.get('fubar')) showRateGrid(await fetchJSON(params.get('fubar')));
       else document.getElementById('fubar-note').textContent = 'pass &fubar=<FUBAR JSON> to draw the rate grid';
-      const tracks = { prime: showPrimeTrack, contrast: showContrastTrack, gard: showGardTrack, slac: showSlacTrack };
+      const tracks = { prime: showPrimeTrack, contrast: showContrastTrack, gard: showGardTrack, slac: showSlacTrack, dfel: showDfelTrack };
       for (const [param, show] of Object.entries(tracks)) {
         if (params.get(param)) show(await fetchJSON(params.get(param)));
         else document.getElementById(`${param}-note`).textContent = `pass &${param}=<v3 JSON> to draw this track`;

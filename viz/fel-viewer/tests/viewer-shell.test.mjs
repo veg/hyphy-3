@@ -216,3 +216,30 @@ test('a diagnostics panel is drawn once per load, not on every threshold change'
   assert.doesNotMatch(plain.diagWrapper.innerHTML, /diag-panel/);
   assert.match(plain.diagWrapper.innerHTML, /<span>Model Fits &amp; Phylogeny Diagnostics<\/span>/);
 });
+
+test('a secondary view mounts under the table, before diagnostics, and shares data and state', () => {
+  const order = [];
+  const log = [];
+  const view = (name) => ({
+    setData: (data) => log.push([name, 'data', data.branches.length]),
+    setThreshold: (t) => log.push([name, 'threshold', t]),
+    destroy: () => log.push([name, 'destroy'])
+  });
+  const config = Object.assign(branchConfig(GE_CONTROLLER), {
+    table: () => { order.push('table'); return view('table'); },
+    secondary: (parent) => { order.push(parent); return view('secondary'); }
+  });
+  const shell = shellWith(config);
+  assert.deepEqual(order, ['table', shell.layout]);
+  assert.ok(shell.views.includes(shell.secondary));
+  assert.equal(shell.layout.children[shell.layout.children.length - 1], shell.diagWrapper);
+  shell.load({ branches });
+  shell.setThreshold(0.95);
+  assert.deepEqual(log.filter(([name]) => name === 'secondary'), [['secondary', 'data', 2], ['secondary', 'threshold', 0.95]]);
+  shell.unmount();
+  assert.deepEqual(log[log.length - 1], ['secondary', 'destroy']);
+  assert.equal(shell.secondary, null);
+
+  // Configs without one mount exactly the four views they always did
+  assert.equal(shellWith(branchConfig(GE_CONTROLLER)).views.length, 4);
+});

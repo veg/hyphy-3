@@ -1,6 +1,6 @@
 // ViewerShell: the layout every method shares, filled in by a method config
-// KPI bar, hero, results table and collapsed diagnostics stack in the layout; the
-// drawer slides over it. The shell keeps the threshold, the statistic it applies to
+// KPI bar, hero, results table, an optional secondary view and collapsed diagnostics
+// stack in the layout; the drawer slides over it. The shell keeps the threshold, the statistic it applies to
 // ('p' | 'q') and the focused row, fans them out to the mounted views, and handles
 // loading and drag & drop.
 
@@ -98,15 +98,18 @@ export class ViewerShell {
     this.kpiBar = config.kpis(this.layout, hooks);
     this.hero = config.hero(this.layout, hooks);
     this.table = config.table(this.layout, hooks);
+    // config.secondary(parent, hooks): a method's own view under the table (dFEL's
+    // directional model card); it gets data and the shared state like the others
+    this.secondary = config.secondary ? config.secondary(this.layout, hooks) : null;
     this.initDiagnosticsSection();
     this.drawer = config.drawer(this.container, hooks);
-    this.views = [this.kpiBar, this.hero, this.table, this.drawer];
+    this.views = [this.kpiBar, this.hero, this.table, this.secondary, this.drawer].filter(Boolean);
   }
 
   unmount() {
     this.views.forEach(view => view.destroy?.());
     this.views = [];
-    this.kpiBar = this.hero = this.table = this.drawer = null;
+    this.kpiBar = this.hero = this.table = this.secondary = this.drawer = null;
     this.diagPanel = null;
     this.layout.replaceChildren();
     this.state.focus = null;

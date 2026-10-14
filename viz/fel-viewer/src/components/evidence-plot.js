@@ -1,7 +1,8 @@
 // Evidence Plot: the site track preset for alpha/beta site methods (Manhattan -log10 p,
 // signed evidence and rate difference modes, ▲/▼ glyphs by direction at the live threshold).
 // The method config supplies the wording and the per-site values through a preset:
-// { tone(r, track), badges: { div, pur }, rows(r), signed(r), diff(r), subtitles: { manhattan, signed, diff } }
+// { tone(r, track), badges: { div, pur }, rows(r), signed(r), diff(r), subtitles: { manhattan, signed, diff },
+//   hint? } where hint replaces the tooltip's closing line for a method with no site tree
 
 import { formatPValue } from '../core/format.js';
 import { SiteTrackCanvas } from './site-track.js';
@@ -40,7 +41,7 @@ function evidenceTooltip(preset, r, track) {
         ${statsRows}
       </div>
       ${subStr}
-      <div class="tip-hint">Click point to inspect site tree &amp; branches</div>
+      <div class="tip-hint">${preset.hint ?? 'Click point to inspect site tree &amp; branches'}</div>
     `;
 }
 

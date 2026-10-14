@@ -37,3 +37,21 @@ export function downloadCSV(headers, rows, filename) {
 export function csvQuote(text) {
   return `"${(text || '').replace(/"/g, '""')}"`;
 }
+
+// An SVG figure as a PNG at the screen's pixel density, for figures drawn as SVG markup
+export function downloadSVGAsPNG(svg, width, height, filename) {
+  const scale = window.devicePixelRatio || 1;
+  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
+  const image = new Image();
+  image.onload = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = width * scale;
+    canvas.height = height * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(scale, scale);
+    ctx.drawImage(image, 0, 0, width, height);
+    URL.revokeObjectURL(url);
+    downloadPNG(canvas, filename);
+  };
+  image.src = url;
+}

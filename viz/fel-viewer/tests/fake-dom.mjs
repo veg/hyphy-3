@@ -22,6 +22,8 @@ export class FakeElement {
   remove() { this.removed = true; }
   replaceChildren() { this.children = []; }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+  setAttribute(name, value) { (this.attributes ||= {})[name] = String(value); }
+  getAttribute(name) { return this.attributes?.[name] ?? null; }
   dispatchEvent(e) { this.events.push(e); }
   fire(type, event = {}) { (this.listeners[type] || []).forEach(fn => fn(event)); }
   querySelector(selector) {

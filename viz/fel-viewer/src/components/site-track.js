@@ -23,6 +23,11 @@
 //
 // setViewport(start, end) narrows the x-scale to sites start..end (1-based, inclusive),
 // for an overview brush to zoom the track; the main band's marks are clipped to it.
+//
+// stackToggle ({ label, title, shown(data), note(data), available(data)? }) puts a toggle
+// for the stacked bands in the header: shown(data) picks whether they start shown on each
+// load, note(data) is a muted line under the canvas while they are (their legend), and
+// available(data) false hides the bands and the toggle for a result without their data.
 
 import { PALETTE } from '../data/palette.js';
 import { downloadPNG, downloadSVG } from '../core/export.js';
@@ -152,6 +157,12 @@ function trackModeMarkup(modes) {
   return `<div class="segmented-control plot-mode-control">\n${buttons.join('\n')}\n          </div>\n          `;
 }
 
+function stackToggleMarkup(toggle) {
+  if (!toggle) return '';
+  return `<button type="button" class="plot-tool-btn plot-stack-toggle" id="btn-stack-toggle" title="${toggle.title || ''}" aria-pressed="true">${toggle.label}</button>
+          `;
+}
+
 export class SiteTrackCanvas {
   constructor(container, options = {}) {
     this.container = container;
@@ -161,6 +172,7 @@ export class SiteTrackCanvas {
       modes: [],         // [{ id, label, subtitle(data), band }]; the active mode picks the main band
       band: null,        // the main band when there are no modes
       stack: [],         // bands drawn under the main one, on the same x-scale
+      stackToggle: null, // { label, title, shown(data), note(data), available(data)? }
       threshold: 0.1,
       sites: (data) => data.siteResults,
       siteCount: (data) => data.numSites,
@@ -176,6 +188,7 @@ export class SiteTrackCanvas {
     this.modes = this.options.modes;
     this.mode = this.modes[0]?.id ?? null;
     this.stack = this.options.stack;
+    this.stackShown = true;
     this.data = null;
     this.selectedSite = null;
     this.selectedSeries = null; // which series of a mirrored band the selection came from
@@ -190,6 +203,11 @@ export class SiteTrackCanvas {
     this.initDOM();
     this.initEvents();
     this.initResizeObserver();
+  }
+
+  // The stacked bands in the layout: all of them, or none while toggled off
+  get activeStack() {
+    return this.stackShown ? this.stack : [];
   }
 
   get band() {
@@ -214,7 +232,7 @@ export class SiteTrackCanvas {
           <span class="plot-subtitle" id="plot-sub-label">${this.options.subtitle}</span>
         </div>
         <div class="plot-actions">
-          ${trackModeMarkup(this.modes)}<div class="plot-export-group">
+          ${trackModeMarkup(this.modes)}${stackToggleMarkup(this.options.stackToggle)}<div class="plot-export-group">
             <button type="button" class="plot-tool-btn" id="btn-export-png" title="Export High-Res PNG">PNG</button>
             <button type="button" class="plot-tool-btn" id="btn-export-svg" title="Export Vector SVG">SVG</button>
           </div>
@@ -223,7 +241,8 @@ export class SiteTrackCanvas {
       <div class="evidence-canvas-container" id="canvas-container">
         <canvas class="evidence-canvas" id="plot-canvas"></canvas>
         <div class="plot-tooltip" id="plot-tooltip"></div>
-      </div>
+      </div>${this.options.stackToggle ? `
+      <div class="plot-stack-note" id="plot-stack-note"></div>` : ''}
     `;
 
     this.container.appendChild(this.wrapper);
@@ -243,6 +262,9 @@ export class SiteTrackCanvas {
         this.setMode(btn.dataset.mode);
       });
     });
+
+    this.stackButton = this.wrapper.querySelector('#btn-stack-toggle');
+    this.stackButton?.addEventListener('click', () => this.setStackShown(!this.stackShown));
 
     // Bind export buttons
     this.wrapper.querySelector('#btn-export-png').addEventListener('click', () => this.exportPNG());
@@ -281,7 +303,31 @@ export class SiteTrackCanvas {
 
   setData(data) {
     this.data = data;
+    const toggle = this.options.stackToggle;
+    if (toggle) {
+      const available = toggle.available?.(data) ?? true;
+      this.stackButton.style.display = available ? '' : 'none';
+      this.stackShown = available && Boolean(toggle.shown(data));
+      this.updateStackToggle();
+    }
     this.resize();
+  }
+
+  // Show or hide the stacked bands; the main band takes the room they leave
+  setStackShown(shown) {
+    this.stackShown = shown;
+    this.updateStackToggle();
+    this.render();
+  }
+
+  updateStackToggle() {
+    const toggle = this.options.stackToggle;
+    if (!toggle) return;
+    this.stackButton.classList.toggle('active', this.stackShown);
+    this.stackButton.setAttribute('aria-pressed', String(this.stackShown));
+    const note = this.wrapper.querySelector('#plot-stack-note');
+    note.innerHTML = this.stackShown && this.data && toggle.note ? toggle.note(this.data) : '';
+    note.style.display = note.innerHTML ? '' : 'none';
   }
 
   setThreshold(p) {
@@ -434,8 +480,9 @@ export class SiteTrackCanvas {
   // Frames for the current size, each with the shared codon x-scale
   layout() {
     const [from, to] = this.siteRange();
-    this.stack.forEach(b => b.measure?.(this));
-    return stackBandFrames(this.width, this.height, this.stack, this.options.gutter).map(frame => Object.assign(frame, {
+    const stack = this.activeStack;
+    stack.forEach(b => b.measure?.(this));
+    return stackBandFrames(this.width, this.height, stack, this.options.gutter).map(frame => Object.assign(frame, {
       scaleX: (site) => frame.left + ((site - from) / Math.max(1, to - from)) * frame.width
     }));
   }
@@ -495,7 +542,7 @@ export class SiteTrackCanvas {
     }
     this.regions = [];
     this.hitFrames = [];
-    this.stack.forEach((b, i) => {
+    this.activeStack.forEach((b, i) => {
       const regions = b.draw(ctx, stacked[i], this);
       if (!Array.isArray(regions)) return;
       this.hitFrames.push(stacked[i]);
@@ -541,7 +588,7 @@ export class SiteTrackCanvas {
     } else {
       svg += this.band.svg(main, this);
     }
-    this.stack.forEach((b, i) => { svg += b.svg(stacked[i], this); });
+    this.activeStack.forEach((b, i) => { svg += b.svg(stacked[i], this); });
     svg += `</svg>`;
     downloadSVG(svg, `${this.options.exportName}.svg`);
   }

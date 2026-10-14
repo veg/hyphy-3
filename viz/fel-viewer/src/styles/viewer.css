@@ -1851,3 +1851,242 @@
   letter-spacing: 0.6px;
   color: var(--stone);
 }
+
+/* Site track: a toggle for the stacked bands, and their legend under the canvas */
+.plot-stack-toggle.active {
+  background-color: var(--ink-fill);
+  color: var(--on-ink-fill);
+  border-color: var(--ink-fill);
+}
+
+.plot-stack-note {
+  padding: 6px 18px 10px 18px;
+  font-size: 10px;
+  color: var(--stone);
+  border-top: 1px solid var(--grid-line);
+}
+
+/* dFEL table: rate balance with omega, the GC/AT count bar, muted synonymous suffixes */
+.dfel-omega-cell,
+.gcat-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dfel-omega-cell .micro-balance-bar {
+  width: 56px;
+}
+
+.gcat-cell > span:first-child {
+  min-width: 40px;
+}
+
+.gcat-bar {
+  display: inline-flex;
+  width: 48px;
+  height: 6px;
+  background-color: var(--grid-line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.gcat-gc {
+  background-color: var(--ink);
+}
+
+.gcat-at {
+  background-color: var(--slate-light);
+}
+
+.dfel-muted {
+  color: var(--stone);
+}
+
+/* dFEL drawer: one chip per non-synonymous change, its GC direction in greyscale */
+.dfel-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dfel-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background-color: var(--inset);
+  border: 1px solid var(--hairline);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 11px;
+  color: var(--ink);
+}
+
+.dfel-dir {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 0 3px;
+  border-radius: 2px;
+}
+
+.dfel-dir-gc {
+  background-color: var(--ink-fill);
+  color: var(--on-ink-fill);
+}
+
+.dfel-dir-at {
+  border: 1px solid var(--slate-light);
+  color: var(--stone);
+}
+
+.dfel-syn-line {
+  font-size: 11px;
+}
+
+.dfel-drift-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink);
+  border-left: 3px solid var(--hairline);
+  padding-left: 10px;
+}
+
+/* dFEL directional model card: the screen, GC by taxon, the regime tree and root support */
+.hyphy-dfel-model-card {
+  background-color: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.dfel-model-toggle {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 12px 18px;
+  background-color: var(--panel-header);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink);
+}
+
+.dfel-model-toggle:disabled {
+  cursor: default;
+}
+
+.dfel-model-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.dfel-model-summary {
+  flex: 1;
+  font-size: 11px;
+  font-family: "SF Mono", Monaco, monospace;
+  color: var(--stone);
+}
+
+.dfel-model-icon {
+  font-size: 11px;
+  color: var(--stone);
+}
+
+.dfel-model-body {
+  border-top: 1px solid var(--grid-line);
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.dfel-model-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.dfel-panel {
+  flex: 1 1 300px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dfel-panel-wide {
+  flex: 2 1 420px;
+}
+
+.dfel-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.dfel-panel-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--stone);
+}
+
+.dfel-figure {
+  width: 100%;
+}
+
+.dfel-figure > svg {
+  display: block;
+}
+
+.dfel-caption {
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--stone);
+}
+
+.dfel-tree-host {
+  width: 100%;
+}
+
+.dfel-root-more {
+  align-self: flex-start;
+}
+
+/* A branch's soft regime weights: AT | Neutral | GC */
+.regime-weights-bar {
+  display: inline-flex;
+  width: 60px;
+  height: 6px;
+  margin: 0 6px;
+  vertical-align: middle;
+  background-color: var(--grid-line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.regime-w-0 {
+  background-color: var(--slate-light);
+}
+
+.regime-w-1 {
+  background-color: var(--hairline);
+}
+
+.regime-w-2 {
+  background-color: var(--ink);
+}
+
+/* A KPI card whose value is a short phrase rather than a count */
+.kpi-card-text .kpi-value {
+  font-size: 18px;
+  letter-spacing: 0;
+  margin: 10px 0 6px 0;
+}
