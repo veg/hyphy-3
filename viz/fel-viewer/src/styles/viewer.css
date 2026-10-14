@@ -178,6 +178,19 @@
   gap: 6px;
 }
 
+.kpi-control-caption {
+  font-size: 10px;
+  color: var(--stone);
+  margin: -2px 0 6px 0;
+  line-height: 1.4;
+}
+
+.kpi-stat-toggle .seg-btn {
+  padding: 1px 8px;
+  font-size: 10px;
+  font-family: "SF Mono", Monaco, monospace;
+}
+
 .preset-pill {
   background-color: var(--panel);
   border: 1px solid var(--hairline);

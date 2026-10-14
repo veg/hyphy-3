@@ -29,6 +29,7 @@ globalThis.window = { addEventListener() {}, removeEventListener() {} };
 class RecordingView {
   constructor(hooks, log) {
     this.log = log;
+    this.hooks = hooks;
     log.push(['mount', hooks.threshold, hooks.statistic]);
   }
   setData() {}
@@ -134,6 +135,17 @@ test('the statistic is shared state fanned out to the views that use it', () => 
   assert.equal(shell.statistic, 'q');
   assert.deepEqual(log.at(-1), ['statistic', 'q']);
   assert.equal(shellWith(branchConfig(Q_CONTROLLER), { statistic: 'q' }).statistic, 'q');
+});
+
+test('a statistic switch in the KPI bar reaches the shell, its views and its host', () => {
+  const log = [];
+  const shell = shellWith(branchConfig(Q_CONTROLLER, log));
+  shell.kpiBar.hooks.onStatisticChange('q');
+  assert.equal(shell.statistic, 'q');
+  assert.deepEqual(log.at(-1), ['statistic', 'q']);
+  const event = shell.container.events.at(-1);
+  assert.equal(event.type, 'statistic-change');
+  assert.deepEqual(event.detail, { statistic: 'q' });
 });
 
 test('selection events carry the row from the config lookup, so branch keys work', () => {

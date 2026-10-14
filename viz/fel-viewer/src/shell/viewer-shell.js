@@ -87,6 +87,7 @@ export class ViewerShell {
       statistic: this.state.statistic,
       filterType: this.options.filterType || config.defaultFilter,
       onThresholdChange: (p) => this.setThreshold(p),
+      onStatisticChange: (statistic) => this.setStatistic(statistic),
       onSiteSelect: (site, tab) => this.selectSite(site, tab),
       onClose: () => this.setState({ focus: null })
     };
@@ -275,6 +276,12 @@ export class ViewerShell {
   // Which statistic the cutoff applies to, for methods that report both p and q
   setStatistic(statistic) {
     this.setState({ statistic });
+
+    this.container.dispatchEvent(new CustomEvent('statistic-change', {
+      bubbles: true,
+      composed: true,
+      detail: { statistic }
+    }));
   }
 
   // Row Selection & Drawer Inspector API: the key is a site, branch or segment,

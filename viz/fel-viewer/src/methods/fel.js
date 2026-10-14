@@ -558,7 +558,7 @@ export function siteResultsTable(parent, hooks, table) {
 // controller seeds the shell's threshold and statistic when neither the caller nor the
 // run sets them; row(data, key) looks up the row an event or the drawer reports.
 // Each factory gets the shell's hooks: { threshold, statistic, filterType,
-// onThresholdChange(p), onSiteSelect(key, tab), onClose() }
+// onThresholdChange(p), onStatisticChange(statistic), onSiteSelect(key, tab), onClose() }
 export const FEL_CONFIG = {
   id: 'fel',
   Parser: FELData,
@@ -570,7 +570,8 @@ export const FEL_CONFIG = {
     controller: SITE_P_THRESHOLD,
     threshold: hooks.threshold,
     statistic: hooks.statistic,
-    onThresholdChange: hooks.onThresholdChange
+    onThresholdChange: hooks.onThresholdChange,
+    onStatisticChange: hooks.onStatisticChange
   }),
   hero: (parent, hooks) => new EvidencePlot(parent, {
     threshold: hooks.threshold,

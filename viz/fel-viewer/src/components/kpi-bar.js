@@ -9,11 +9,19 @@
 //     Optional: placeholder (the sub line before any data), comment (the HTML
 //     comment above the card), cardClass, and valueId/subId to override the
 //     default kpi-val-<id>/kpi-sub-<id> element ids.
-//   blank: the cards drawn before data arrives, one per card (defaults to cards).
-//     Only their markup is used; label and tone switch to the cards' on setData.
+//   blank: the cards drawn before data arrives (defaults to cards). When their ids
+//     match the cards' one for one, setData relabels them in place; otherwise it
+//     replaces them with the cards' own markup.
 //   controller: { title, statistic, direction: 'le' | 'ge', min, max, step,
-//     presets, seed, format(t) }; seed is the starting cutoff, and statistic the
-//     one the cutoff applies to until the shell switches it (options.statistic).
+//     presets, seed, format(t), caption?, toggle?, scale? }
+//     seed is the starting cutoff, and statistic the one the cutoff applies to until
+//     the shell switches it (options.statistic). format(t) prints a cutoff for labels.
+//     caption: a muted line under the slider, a string or caption({ threshold,
+//       statistic }) for one that follows the cutoff.
+//     toggle: { statistics: ['p', 'q'] } adds a switch that reports the chosen
+//       statistic through options.onStatisticChange.
+//     scale: 'linear' (default) or 'log'. On a log scale min and max are still
+//       cutoffs, step is in decades, and slider position x is the cutoff 10^x.
 
 const KPI_TONE_CLASSES = {
   accent: 'kpi-value kpi-text-orange',
@@ -36,23 +44,89 @@ function kpiCardMarkup(card, index) {
 `;
 }
 
-function thresholdControllerMarkup(controller, threshold, statistic, index) {
-  const { format } = controller;
-  const pill = (p) => {
-    const active = Math.abs(p - threshold) < 0.002 ? ' active' : '';
-    return `
-            <button type="button" class="preset-pill${active}" data-p="${format(p)}">${thresholdLabel(controller, p, statistic)}</button>`;
+// Slider position of a cutoff: the cutoff itself, or its log10 on a log scale
+export function sliderPosition(controller, t) {
+  return controller.scale === 'log' ? Math.log10(t) : t;
+}
+
+// The cutoff at a slider position; a log scale keeps three significant digits
+export function sliderThreshold(controller, x) {
+  return controller.scale === 'log' ? Number((10 ** x).toPrecision(3)) : x;
+}
+
+// A cutoff as an attribute value: the label's form when it reads back as the same
+// number (0.20 for 0.2), else the full number (0.999, which the label rounds to 1.00)
+export function cutoffAttribute(controller, t) {
+  const shown = controller.format(t);
+  return parseFloat(shown) === t ? shown : String(t);
+}
+
+// The slider's min, max, step and value attributes for a cutoff t
+export function sliderAttributes(controller, t) {
+  if (controller.scale === 'log') {
+    return {
+      min: String(Math.log10(controller.min)),
+      max: String(Math.log10(controller.max)),
+      step: String(controller.step),
+      value: String(Math.log10(t))
+    };
+  }
+  return {
+    min: cutoffAttribute(controller, controller.min),
+    max: cutoffAttribute(controller, controller.max),
+    step: cutoffAttribute(controller, controller.step),
+    value: cutoffAttribute(controller, t)
   };
+}
+
+// Whether preset p is the cutoff t, to within the slider's resolution
+export function presetActive(controller, p, t) {
+  return Math.abs(sliderPosition(controller, p) - sliderPosition(controller, t)) < 0.002;
+}
+
+// Whether a value passes the cutoff in the controller's direction
+export function thresholdPasses(controller, value, t) {
+  return controller.direction === 'ge' ? value >= t : value <= t;
+}
+
+// The direction in words, for captions and sub lines: 'at most' or 'at least'
+export function thresholdRelation(controller) {
+  return controller.direction === 'ge' ? 'at least' : 'at most';
+}
+
+// The caption line's text for a cutoff, or null for a controller without one
+export function thresholdCaption(controller, threshold, statistic) {
+  const { caption } = controller;
+  if (caption == null) return null;
+  return typeof caption === 'function' ? caption({ threshold, statistic }) : caption;
+}
+
+function statisticToggleMarkup(controller, statistic) {
+  if (!controller.toggle) return '';
+  const button = (s) => `<button type="button" class="seg-btn${s === statistic ? ' active' : ''}" data-statistic="${s}">${s}</button>`;
+  return `
+            <span class="segmented-control kpi-stat-toggle">${controller.toggle.statistics.map(button).join('')}</span>`;
+}
+
+export function thresholdControllerMarkup(controller, threshold, statistic, index) {
+  const pill = (p) => {
+    const active = presetActive(controller, p, threshold) ? ' active' : '';
+    return `
+            <button type="button" class="preset-pill${active}" data-p="${cutoffAttribute(controller, p)}">${thresholdLabel(controller, p, statistic)}</button>`;
+  };
+  const slider = sliderAttributes(controller, threshold);
+  const caption = controller.caption == null ? '' : `
+          <div class="kpi-control-caption" id="kpi-control-caption"></div>`;
   return `
         <!-- ${index + 1}. Interactive Threshold Controller -->
         <div class="kpi-card kpi-card-control" id="kpi-controller">
           <div class="kpi-control-header">
-            <span class="kpi-label">${controller.title}</span>
+            <span class="kpi-label">${controller.title}</span>${statisticToggleMarkup(controller, statistic)}
             <span class="kpi-thresh-display" id="kpi-thresh-display">${thresholdLabel(controller, threshold, statistic)}</span>
           </div>
           <div class="kpi-slider-row">
-            <input type="range" class="kpi-slider" id="kpi-thresh-slider" min="${format(controller.min)}" max="${format(controller.max)}" step="${format(controller.step)}" value="${format(threshold)}" />
-          </div>
+            <input type="range" class="kpi-slider" id="kpi-thresh-slider" min="${slider.min}" max="${slider.max}" step="${slider.step}" value="${slider.value}" />
+          </div>${caption}
           <div class="kpi-presets-row">${controller.presets.map(pill).join('')}
           </div>
         </div>
@@ -65,6 +139,11 @@ export function thresholdLabel(controller, t, statistic = controller.statistic) 
   return `${statistic} ${op} ${controller.format(t)}`;
 }
 
+// Whether the cards can take over the blank cards' markup: the same ids in order
+export function cardsFitBlank(cards, blank) {
+  return cards.length === blank.length && cards.every((card, i) => card.id === blank[i].id);
+}
+
 export class KpiBar {
   constructor(container, options = {}) {
     this.container = container;
@@ -74,7 +153,8 @@ export class KpiBar {
       controller: null,
       threshold: null, // the controller's seed when unset
       statistic: null, // the controller's statistic when unset
-      onThresholdChange: null
+      onThresholdChange: null,
+      onStatisticChange: null
     }, options);
 
     this.cards = this.options.cards;
@@ -96,49 +176,83 @@ export class KpiBar {
 
     this.container.appendChild(this.el);
 
-    this.cardEls = this.blank.map(card => {
-      const el = this.el.querySelector(`#kpi-${card.id}`);
-      const label = el.querySelector('.kpi-label');
-      label.textContent = card.label;
-      return {
-        label,
-        value: el.querySelector('.kpi-value'),
-        sub: el.querySelector('.kpi-sub'),
-        widget: el.querySelector('.kpi-widget')
-      };
-    });
+    this.controlEl = this.el.querySelector('#kpi-controller');
+    this.cardEls = this.bindCards(this.blank);
 
     // Bind slider & preset listeners
     this.slider = this.el.querySelector('#kpi-thresh-slider');
     this.display = this.el.querySelector('#kpi-thresh-display');
+    this.caption = this.el.querySelector('#kpi-control-caption');
     this.presetBtns = this.el.querySelectorAll('.preset-pill');
+    this.statisticBtns = this.el.querySelectorAll('.kpi-stat-toggle .seg-btn');
+    this.updateCaption();
 
     this.slider.addEventListener('input', (e) => {
-      const val = parseFloat(e.target.value);
+      const val = sliderThreshold(this.controller, parseFloat(e.target.value));
       this.setThreshold(val, true);
     });
 
     this.presetBtns.forEach(btn => {
       btn.addEventListener('click', () => {
-        const val = parseFloat(btn.dataset.p);
-        this.slider.value = val;
-        this.setThreshold(val, true);
+        this.setThreshold(parseFloat(btn.dataset.p), true);
       });
     });
+
+    this.statisticBtns.forEach(btn => {
+      btn.addEventListener('click', () => this.setStatistic(btn.dataset.statistic, true));
+    });
+  }
+
+  // The label, value, sub line and widget slot of each card drawn for list
+  bindCards(list) {
+    return list.map(card => {
+      const root = this.el.querySelector(`#kpi-${card.id}`);
+      const label = root.querySelector('.kpi-label');
+      label.textContent = card.label;
+      return {
+        root,
+        label,
+        value: root.querySelector('.kpi-value'),
+        sub: root.querySelector('.kpi-sub'),
+        widget: root.querySelector('.kpi-widget')
+      };
+    });
+  }
+
+  // Swap the blank cards for the real ones: relabelled in place when the ids match,
+  // else redrawn from the cards' own markup; every card with a widget gets a slot
+  fillCards() {
+    if (!cardsFitBlank(this.cards, this.blank)) {
+      this.cardEls.forEach(els => els.root.remove());
+      this.controlEl.insertAdjacentHTML('beforebegin', this.cards.map(kpiCardMarkup).join(''));
+      this.blank = this.cards;
+      this.cardEls = this.bindCards(this.cards);
+    }
+    this.cards.forEach((card, i) => {
+      const els = this.cardEls[i];
+      els.label.textContent = card.label;
+      els.value.className = KPI_TONE_CLASSES[card.tone || 'ink'];
+      if (card.widget && !els.widget) {
+        els.widget = document.createElement('div');
+        els.widget.className = 'kpi-widget';
+        els.root.appendChild(els.widget);
+      }
+    });
+  }
+
+  updateCaption() {
+    if (this.caption) this.caption.textContent = thresholdCaption(this.controller, this.threshold, this.statistic);
   }
 
   setThreshold(p, triggerCallback = false) {
     this.threshold = p;
+    this.slider.value = sliderPosition(this.controller, p);
     this.display.textContent = thresholdLabel(this.controller, p, this.statistic);
+    this.updateCaption();
 
     // Update active preset button highlight
     this.presetBtns.forEach(btn => {
-      const btnP = parseFloat(btn.dataset.p);
-      if (Math.abs(btnP - p) < 0.002) {
-        btn.classList.add('active');
-      } else {
-        btn.classList.remove('active');
-      }
+      btn.classList.toggle('active', presetActive(this.controller, parseFloat(btn.dataset.p), p));
     });
 
     this.updateStats();
@@ -149,21 +263,26 @@ export class KpiBar {
   }
 
   // Relabel the cutoff and its presets for the statistic it now applies to
-  setStatistic(statistic) {
+  setStatistic(statistic, triggerCallback = false) {
     this.statistic = statistic;
     this.display.textContent = thresholdLabel(this.controller, this.threshold, statistic);
     this.presetBtns.forEach(btn => {
       btn.textContent = thresholdLabel(this.controller, parseFloat(btn.dataset.p), statistic);
     });
+    this.statisticBtns.forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.statistic === statistic);
+    });
+    this.updateCaption();
     this.updateStats();
+
+    if (triggerCallback && typeof this.options.onStatisticChange === 'function') {
+      this.options.onStatisticChange(statistic);
+    }
   }
 
   setData(data) {
     this.data = data;
-    this.cards.forEach((card, i) => {
-      this.cardEls[i].label.textContent = card.label;
-      this.cardEls[i].value.className = KPI_TONE_CLASSES[card.tone || 'ink'];
-    });
+    this.fillCards();
     this.updateStats();
   }
 

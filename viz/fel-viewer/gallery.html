@@ -11,7 +11,9 @@
     Paths are relative to this page. sites defaults to the fixture; length defaults to the
     first branch_lengths key found in phylogeny.nodes. The unsupported-method notice loads
     &unsupported=<result JSON of a method without a viewer>, or a synthetic BUSTED result.
-    The branch-keyed shell runs a gallery-local config over synthetic branch rows.
+    The branch-keyed shell runs a gallery-local config over synthetic branch rows, with a
+    log-scale controller whose p/q toggle drives the shell's statistic. The posterior
+    controller runs a standalone KpiBar over synthetic posteriors.
   -->
   <link rel="stylesheet" href="src/styles/viewer.css" />
   <style>
@@ -115,19 +117,21 @@
 
   <div class="gallery-card">
     <div class="gallery-card-head">
-      <span>ViewerShell · branch rows, run threshold, p/q statistic</span>
-      <span class="segmented-control" id="branch-statistic">
-        <button type="button" class="seg-btn active" data-statistic="p">p</button>
-        <button type="button" class="seg-btn" data-statistic="q">q</button>
-      </span>
+      <span>ViewerShell · branch rows, run threshold, log-scale cutoff with p/q toggle</span>
     </div>
     <div id="shell-branches"></div>
     <div class="gallery-note" id="branch-note"></div>
   </div>
 
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>KpiBar · posterior cutoff (≥), cards replacing differently keyed blanks</span></div>
+    <div id="kpi-posterior"></div>
+    <div class="gallery-note" id="posterior-note"></div>
+  </div>
+
   <script type="module">
     import { ViewerShell } from './src/shell/viewer-shell.js';
-    import { KpiBar } from './src/components/kpi-bar.js';
+    import { KpiBar, thresholdPasses, thresholdRelation } from './src/components/kpi-bar.js';
     import { ResultsTable } from './src/components/results-table.js';
     import { Drawer } from './src/components/drawer.js';
     import { BranchTree } from './src/components/branch-tree.js';
@@ -262,12 +266,17 @@
       title: 'Significance Cutoff',
       statistic: 'p',
       direction: 'le',
+      scale: 'log',
       min: 0.001,
-      max: 0.2,
-      step: 0.005,
+      max: 1,
+      step: 0.01,
       presets: [0.1, 0.05, 0.01],
       seed: 0.1,
-      format: formatThreshold
+      format: formatThreshold,
+      caption: ({ statistic }) => statistic === 'q'
+        ? 'q: Benjamini-Hochberg over the tested branches'
+        : 'p: uncorrected, one test per branch',
+      toggle: { statistics: ['p', 'q'] }
     };
     const statCell = (stat) => (r, view) =>
       `<td class="font-mono pval-cell ${view.statistic === stat && r[stat] <= view.threshold ? 'pval-sig font-bold' : ''}">${formatPValue(r[stat])}</td>`;
@@ -287,7 +296,8 @@
         controller: BRANCH_CONTROLLER,
         threshold: hooks.threshold,
         statistic: hooks.statistic,
-        onThresholdChange: hooks.onThresholdChange
+        onThresholdChange: hooks.onThresholdChange,
+        onStatisticChange: hooks.onStatisticChange
       }),
       hero: () => ({ setData() {} }),
       table: (parent, hooks) => new ResultsTable(parent, {
@@ -342,18 +352,60 @@
       });
       shell.load({ branches: BRANCH_ROWS, analysis: { settings: { pvalue_threshold: 0.05 } } });
       note.textContent = `threshold seeded from the run: ${shell.threshold} (controller seed ${BRANCH_CONTROLLER.seed})`;
-      const toggle = document.getElementById('branch-statistic');
-      toggle.addEventListener('click', e => {
-        const statistic = e.target.dataset?.statistic;
-        if (!statistic) return;
-        toggle.querySelectorAll('.seg-btn').forEach(btn => btn.classList.toggle('active', btn === e.target));
-        shell.setStatistic(statistic);
+      mount.addEventListener('statistic-change', e => {
+        note.textContent = `statistic-change: ${e.detail.statistic}`;
       });
+      mount.addEventListener('threshold-change', e => {
+        note.textContent = `threshold-change: ${e.detail.threshold}`;
+      });
+    }
+
+    // A 'ge' cutoff on posterior probabilities, FUBAR-style. The blank card is keyed
+    // differently from the real ones, so setData redraws the cards from their own
+    // markup, and the second card's widget gets its slot.
+    const POSTERIOR_CONTROLLER = {
+      title: 'Posterior Cutoff',
+      statistic: 'PP',
+      direction: 'ge',
+      min: 0.5,
+      max: 1,
+      step: 0.01,
+      presets: [0.9, 0.95, 0.99],
+      seed: 0.9,
+      format: formatThreshold
+    };
+    const POSTERIORS = [0.999, 0.993, 0.97, 0.955, 0.93, 0.91, 0.82, 0.64, 0.41, 0.12, 0.08, 0.03];
+
+    function showPosteriorBar() {
+      const note = document.getElementById('posterior-note');
+      const positive = t => POSTERIORS.filter(pp => thresholdPasses(POSTERIOR_CONTROLLER, pp, t)).length;
+      const bar = new KpiBar(document.getElementById('kpi-posterior'), {
+        blank: [{ id: 'pending', label: 'Posterior Sites', placeholder: 'waiting for data' }],
+        cards: [
+          { id: 'sites', label: 'Sites', value: () => String(POSTERIORS.length), sub: () => 'with a posterior', tone: 'ink' },
+          { id: 'positive', label: 'Pervasive Positive', tone: 'accent',
+            value: (stats, view) => `▲ ${positive(view.threshold)}`,
+            sub: (stats, view) => `PP(β > α) ${thresholdRelation(POSTERIOR_CONTROLLER)} ${formatThreshold(view.threshold)}`,
+            widget: (el, stats, view) => {
+              el.style.cssText = 'display:flex;gap:2px;margin-top:8px;height:10px';
+              el.innerHTML = POSTERIORS.map(pp => {
+                const on = thresholdPasses(POSTERIOR_CONTROLLER, pp, view.threshold);
+                return `<span title="PP ${pp}" style="flex:1;background:${on ? PALETTE.accent : PALETTE.branchGrey};opacity:${on ? 1 : 0.35}"></span>`;
+              }).join('');
+            } }
+        ],
+        controller: POSTERIOR_CONTROLLER,
+        onThresholdChange: t => { note.textContent = `onThresholdChange: ${t}`; }
+      });
+      bar.setData({ getStats: () => ({}) });
+      note.textContent = `seeded at ${bar.threshold}; cards: ${[...bar.el.querySelectorAll('.kpi-card:not(.kpi-card-control)')].map(c => c.id).join(', ')}`;
+      return bar;
     }
 
     async function main() {
       await showUnsupported();
       showBranchShell();
+      showPosteriorBar();
       const fixture = params.get('fixture');
       if (!fixture) return;
       const sites = params.get('sites') || fixture;

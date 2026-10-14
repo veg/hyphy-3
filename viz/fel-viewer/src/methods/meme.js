@@ -287,7 +287,8 @@ export const MEME_CONFIG = Object.assign({}, FEL_CONFIG, {
     controller: SITE_P_THRESHOLD,
     threshold: hooks.threshold,
     statistic: hooks.statistic,
-    onThresholdChange: hooks.onThresholdChange
+    onThresholdChange: hooks.onThresholdChange,
+    onStatisticChange: hooks.onStatisticChange
   }),
   table: (parent, hooks) => siteResultsTable(parent, hooks, MEME_TABLE),
   drawer: (container, hooks) => siteDrawer(container, hooks, MEME_DRAWER),
