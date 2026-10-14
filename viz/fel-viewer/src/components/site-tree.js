@@ -5,6 +5,7 @@ import { translateCodon, SELECTION_COLORS } from '../data/genetic-code.js';
 import { PALETTE, withAlpha } from '../data/palette.js';
 import { formatEBF } from '../core/format.js';
 import { downloadSVG } from '../core/export.js';
+import { parseNewick } from '../core/newick.js';
 
 export class SiteTree {
   constructor(container, options = {}) {
@@ -109,7 +110,9 @@ export class SiteTree {
   setTree(newickStr) {
     this.treeNewick = newickStr;
     if (newickStr) {
-      this.treeRoot = this.parseNewick(newickStr);
+      // Substitution events and EBFs are matched against the labels as written,
+      // {Group} tags included, and zero lengths draw as 0.05, as they always have.
+      this.treeRoot = parseNewick(newickStr, { zeroLength: 0.05, tags: 'keep' });
     }
   }
 
@@ -121,69 +124,6 @@ export class SiteTree {
     this.site = siteNumber;
     this.siteResult = siteResult;
     this.render();
-  }
-
-  parseNewick(str) {
-    let s = (str || '').trim();
-    if (s.endsWith(';')) s = s.slice(0, -1);
-    if (!s) return null;
-
-    const root = { children: [] };
-    const stack = [root];
-    let i = 0;
-
-    while (i < s.length) {
-      const ch = s[i];
-      if (ch === '(') {
-        const newNode = { children: [] };
-        stack[stack.length - 1].children.push(newNode);
-        stack.push(newNode);
-        i++;
-      } else if (ch === ',') {
-        i++;
-      } else if (ch === ')') {
-        const finishedNode = stack.pop();
-        i++;
-        let token = '';
-        while (i < s.length && s[i] !== ',' && s[i] !== ')' && s[i] !== '(') {
-          token += s[i];
-          i++;
-        }
-        token = token.trim();
-        if (token.length > 0) {
-          let name = '', bl = 0.05;
-          if (token.includes(':')) {
-            const parts = token.split(':');
-            name = parts[0].trim().replace(/^['"]|['"]$/g, '');
-            bl = parseFloat(parts[1]) || 0.05;
-          } else {
-            name = token.replace(/^['"]|['"]$/g, '');
-          }
-          if (name) finishedNode.name = name;
-          finishedNode.branch_length = bl;
-        }
-      } else {
-        let token = '';
-        while (i < s.length && s[i] !== ',' && s[i] !== ')' && s[i] !== '(') {
-          token += s[i];
-          i++;
-        }
-        token = token.trim();
-        if (token.length > 0) {
-          let name = '', bl = 0.05;
-          if (token.includes(':')) {
-            const parts = token.split(':');
-            name = parts[0].trim().replace(/^['"]|['"]$/g, '');
-            bl = parseFloat(parts[1]) || 0.05;
-          } else {
-            name = token.replace(/^['"]|['"]$/g, '');
-          }
-          const leafNode = { name, branch_length: bl, children: [] };
-          stack[stack.length - 1].children.push(leafNode);
-        }
-      }
-    }
-    return root.children[0] || root;
   }
 
   // Clone tree topology so layout coordinates and states don't mutate base tree
