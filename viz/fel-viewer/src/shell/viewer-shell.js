@@ -89,6 +89,9 @@ export class ViewerShell {
       onThresholdChange: (p) => this.setThreshold(p),
       onStatisticChange: (statistic) => this.setStatistic(statistic),
       onSiteSelect: (site, tab) => this.selectSite(site, tab),
+      // The drawer's prev/next: the table's visible row keys, stepped through the focus path
+      siblings: () => this.siblingKeys(),
+      onStep: (key) => this.selectSite(key),
       onClose: () => this.setState({ focus: null })
     };
 
@@ -305,6 +308,12 @@ export class ViewerShell {
     } else {
       this.drawer?.close();
     }
+  }
+
+  // The keys of the rows the table shows, in its filter, search and sort order
+  siblingKeys() {
+    const table = this.table;
+    return table?.visibleRows ? table.visibleRows().map(r => r[table.rowKey]) : [];
   }
 
   // Table Filter API

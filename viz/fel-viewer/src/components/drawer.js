@@ -11,6 +11,9 @@
 // }
 // options.row(data, key) looks up the inspected row; options.header(row, ctx) returns
 // { tag, tone: 'div' | 'pur' | 'neutral', badge }.
+// options.siblings() returns the keys prev/next step through (the shell's hooks.siblings
+// gives the table's visible rows in order) and options.onStep(key) moves the focus there
+// (hooks.onStep). Without siblings the header has no step buttons.
 
 export function drawerTabButtons(tabs) {
   return tabs.map((tab, i) => `<button type="button" class="seg-btn${i === 0 ? ' active' : ''}" data-tab="${tab.id}" id="tab-btn-${tab.id}">${tab.label}</button>`)
@@ -24,6 +27,29 @@ export function drawerTabPanels(tabs) {
     .join('\n        ');
 }
 
+// The key delta rows from current in keys, or null past either end. A key the list no
+// longer holds steps to its first row forward and its last row back.
+export function stepKey(keys, current, delta) {
+  const i = keys.findIndex(k => String(k) === String(current));
+  const j = i < 0 ? (delta > 0 ? 0 : keys.length - 1) : i + delta;
+  return j >= 0 && j < keys.length ? keys[j] : null;
+}
+
+// Where current sits in keys, as the step control prints it
+export function stepPosition(keys, current) {
+  const i = keys.findIndex(k => String(k) === String(current));
+  return `${i < 0 ? '–' : i + 1} / ${keys.length}`;
+}
+
+function drawerStepMarkup() {
+  return `
+          <span class="drawer-step">
+            <button type="button" class="drawer-step-btn" id="drawer-prev-btn" title="Previous row in the table">‹</button>
+            <span class="drawer-step-pos" id="drawer-step-pos">–</span>
+            <button type="button" class="drawer-step-btn" id="drawer-next-btn" title="Next row in the table">›</button>
+          </span>`;
+}
+
 export class Drawer {
   constructor(container, options = {}) {
     this.container = container;
@@ -34,6 +60,8 @@ export class Drawer {
       emptyTag: '—',
       row: () => null,
       header: () => ({ tag: '', tone: 'neutral', badge: '—' }),
+      siblings: null,
+      onStep: null,
       onClose: null
     }, options);
 
@@ -61,7 +89,7 @@ export class Drawer {
     this.drawer.className = 'hyphy-site-drawer';
     this.drawer.innerHTML = `
       <div class="drawer-header">
-        <div class="drawer-title-group">
+        <div class="drawer-title-group">${this.options.siblings ? drawerStepMarkup() : ''}
           <span class="drawer-site-tag" id="drawer-site-tag">${this.options.emptyTag}</span>
           <span class="drawer-regime-badge" id="drawer-regime-badge">—</span>
         </div>
@@ -83,6 +111,12 @@ export class Drawer {
     this.regimeBadge = this.drawer.querySelector('#drawer-regime-badge');
     this.body = this.drawer.querySelector('#drawer-body');
     this.note = null;
+
+    this.prevBtn = this.drawer.querySelector('#drawer-prev-btn');
+    this.nextBtn = this.drawer.querySelector('#drawer-next-btn');
+    this.stepPos = this.drawer.querySelector('#drawer-step-pos');
+    this.prevBtn?.addEventListener('click', () => this.step(-1));
+    this.nextBtn?.addEventListener('click', () => this.step(1));
 
     // Per-tab button, panel and long-lived view
     this.parts = new Map(this.tabs.map(tab => {
@@ -219,5 +253,21 @@ export class Drawer {
     this.regimeBadge.textContent = badge;
 
     this.setTab(this.availableTab(activeTab || this.currentTab));
+    this.updateStep();
+  }
+
+  // Move the focus to the previous (-1) or next (1) row of the table
+  step(delta) {
+    if (!this.options.siblings) return;
+    const key = stepKey(this.options.siblings(), this.currentKey, delta);
+    if (key != null) this.options.onStep?.(key);
+  }
+
+  updateStep() {
+    if (!this.options.siblings) return;
+    const keys = this.options.siblings();
+    this.stepPos.textContent = stepPosition(keys, this.currentKey);
+    this.prevBtn.disabled = stepKey(keys, this.currentKey, -1) == null;
+    this.nextBtn.disabled = stepKey(keys, this.currentKey, 1) == null;
   }
 }

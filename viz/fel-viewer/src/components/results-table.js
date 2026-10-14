@@ -5,11 +5,18 @@
 //   rowKey: the row property that names a row ('site', 'branch', 'segment'). Rows
 //     carry it as data-<rowKey>, and selection reports it.
 //   rows(data): the parsed result's rows in their natural order.
-//   columns: [{ id, header, width?, align?, title?, cell(row, view), csv?, sort? }]
+//   columns: [{ id, header, width?, align?, title?, cell(row, view), csv?, sort?,
+//              availableWhen?(capabilities), hiddenByDefault? }]
+//     or columns(data) returning that array, resolved on every setData.
 //     cell returns the whole <td>; view is { data, threshold, statistic }.
 //     csv: [{ header, value(row, view) }], the column's export fields at full precision.
 //     A column without a cell is export-only. sort(row) is the value a header click
-//     sorts by.
+//     sorts by. availableWhen(data.capabilities) false drops the column for this result.
+//     hiddenByDefault columns start hidden; the column chooser shows or hides any column
+//     with a cell, and the export follows what is shown.
+//   columnChooser: draw the column chooser (default: when an available column is hiddenByDefault)
+//   virtualize: true or { minRows, overscan } draws only the rows in view once the
+//     filtered rows reach minRows (default 2000); off by default.
 //   filters: [{ id, key, glyph?, label, count(stats, view), test(row, t, view), subtitle(n, t) }]
 //     drawn as a segmented control; key names the button and badge ids, and stats is
 //     data.getStats(t). The first filter names the method's finding, so its label is
@@ -18,7 +25,7 @@
 //     Every filter needs a blank slot with its id; blank filters the method lacks are
 //     hidden once data loads.
 //   defaultFilter, defaultSort: { column, dir: 'asc' | 'desc' }
-//   search: { placeholder, match(row, q), noMatch: { title, desc } }
+//   search: { placeholder, match(row, q), noMatch: { title, desc } }; null draws no search box
 //   emptyState(t, view): when the filter leaves no rows; view is { filter, stats, rows }.
 //     Returns { icon?, title, desc?, jump?: { filter, label }, fallback?: rows }.
 //     The fallback rows are drawn dimmed under 'Closest calls'.
@@ -60,6 +67,38 @@ export function resultsRowMarkup(row, columns, view, rowKey, selected) {
         `;
 }
 
+function resultsSearchMarkup(search) {
+  return `
+          <!-- Search Input -->
+          <div class="candidates-search-box">
+            <input type="text" class="candidates-search-input" id="search-input" placeholder="${search.placeholder || 'Search...'}" />
+          </div>
+`;
+}
+
+// The columns a result offers: the config's list, or columns(data), less those whose
+// availableWhen rejects the result's capabilities
+export function resolveColumns(columns, data) {
+  const list = typeof columns === 'function' ? columns(data) : columns;
+  return list.filter(c => !c.availableWhen || c.availableWhen(data?.capabilities || {}));
+}
+
+// The slice of rows a virtual table draws at scroll offset top in a viewport of the
+// given height, with overscan rows either side and the spacer heights around it
+export function virtualWindow(top, height, rowHeight, total, overscan) {
+  const first = Math.max(0, Math.floor(top / rowHeight) - overscan);
+  const last = Math.min(total, Math.ceil((top + height) / rowHeight) + overscan);
+  return { first, last, before: first * rowHeight, after: (total - last) * rowHeight };
+}
+
+function virtualSpacer(height, span) {
+  return height > 0 ? `<tr class="virtual-spacer" aria-hidden="true"><td colspan="${span}" style="height: ${height}px;"></td></tr>` : '';
+}
+
+export function columnChooserItems(columns, shown) {
+  return columns.map(c => `<label class="column-chooser-item"><input type="checkbox" data-column="${c.id}"${shown(c) ? ' checked' : ''} /> ${c.header}</label>`).join('');
+}
+
 export class ResultsTable {
   constructor(container, options = {}) {
     this.container = container;
@@ -76,6 +115,8 @@ export class ResultsTable {
       search: null,
       emptyState: null,
       exportName: 'hyphy_results',
+      columnChooser: null,
+      virtualize: null,
       threshold: 0.1,
       statistic: null, // which statistic the threshold applies to ('p' | 'q'), for cells and filters
       filterType: null,
@@ -83,7 +124,13 @@ export class ResultsTable {
     }, options);
 
     this.rowKey = this.options.rowKey;
-    this.columns = this.options.columns;
+    this.columns = Array.isArray(this.options.columns) ? this.options.columns : [];
+    this.columnShown = new Map(); // the chooser's choices by column id, kept across loads
+    this.virtualize = this.options.virtualize && Object.assign({ minRows: 2000, overscan: 12 }, this.options.virtualize);
+    this.virtual = false;
+    this.drawn = null; // the virtual window last drawn
+    this.frame = null;
+    this.rowHeight = 32;
     this.filters = this.options.filters;
     this.blankFilters = this.options.blank?.filters || this.filters;
     this.defaultFilter = this.options.defaultFilter || this.filters[0].id;
@@ -95,6 +142,7 @@ export class ResultsTable {
     this.data = null;
     this.rows = [];
     this.rowsByKey = new Map();
+    this.bodyRows = [];
     this.selectedKey = null;
     this.searchQuery = '';
 
@@ -103,7 +151,7 @@ export class ResultsTable {
 
   initDOM() {
     const { title, placeholder, search } = this.options;
-    const blankColumns = this.options.blank?.columns || this.columns;
+    const blankColumns = this.options.blank?.columns || this.columns.filter(c => !c.hiddenByDefault);
     const defaultBlank = this.blankFilters.find(f => f.id === this.defaultFilter) || this.blankFilters[0];
     const filterButtons = this.blankFilters.map(f => resultsFilterMarkup(f, f.id === this.filterType)).join('');
 
@@ -119,12 +167,7 @@ export class ResultsTable {
           <!-- Category Filter Pills: ${defaultBlank.label} Default -->
           <div class="segmented-control category-filter-control">${filterButtons}
           </div>
-
-          <!-- Search Input -->
-          <div class="candidates-search-box">
-            <input type="text" class="candidates-search-input" id="search-input" placeholder="${search?.placeholder || 'Search...'}" />
-          </div>
-
+${search ? resultsSearchMarkup(search) : ''}
           <!-- CSV Export -->
           <button type="button" class="plot-tool-btn" id="btn-export-csv" title="Export ${title} to CSV">Export CSV</button>
         </div>
@@ -157,7 +200,7 @@ export class ResultsTable {
       btn.addEventListener('click', () => this.setFilterType(btn.dataset.filter));
     });
 
-    this.wrapper.querySelector('#search-input').addEventListener('input', (e) => {
+    this.wrapper.querySelector('#search-input')?.addEventListener('input', (e) => {
       this.searchQuery = e.target.value;
       this.render();
     });
@@ -181,14 +224,53 @@ export class ResultsTable {
       }
     });
 
-    this.wrapper.querySelector('#btn-export-csv').addEventListener('click', () => this.exportCSV());
+    this.exportBtn = this.wrapper.querySelector('#btn-export-csv');
+    this.exportBtn.addEventListener('click', () => this.exportCSV());
+
+    // A virtual table redraws its window when the scroll moves past it
+    this.tableScroll.addEventListener('scroll', () => {
+      if (!this.virtual || this.frame) return;
+      this.frame = requestAnimationFrame(() => {
+        this.frame = null;
+        this.drawBody(false);
+      });
+    });
   }
 
   setData(data) {
     this.data = data;
+    this.columns = resolveColumns(this.options.columns, data);
     this.rows = this.options.rows(data);
     this.rowsByKey = new Map(this.rows.map(r => [String(r[this.rowKey]), r]));
+    this.updateChooser();
     this.render();
+  }
+
+  isShown(column) {
+    return this.columnShown.get(column.id) ?? !column.hiddenByDefault;
+  }
+
+  setColumnShown(id, shown) {
+    this.columnShown.set(id, shown);
+    this.render();
+  }
+
+  // A compact menu of the drawable columns, beside the export button
+  updateChooser() {
+    const choosable = this.columns.filter(c => c.cell);
+    if (!(this.options.columnChooser ?? choosable.some(c => c.hiddenByDefault))) {
+      this.chooser?.remove();
+      this.chooser = null;
+      return;
+    }
+    if (!this.chooser) {
+      this.chooser = document.createElement('details');
+      this.chooser.className = 'column-chooser';
+      this.chooser.innerHTML = `<summary class="plot-tool-btn" title="Show or hide columns">Columns</summary><div class="column-chooser-menu"></div>`;
+      this.chooser.addEventListener('change', (e) => this.setColumnShown(e.target.dataset.column, e.target.checked));
+      this.exportBtn.before(this.chooser);
+    }
+    this.chooser.querySelector('.column-chooser-menu').innerHTML = columnChooserItems(choosable, c => this.isShown(c));
   }
 
   setThreshold(p) {
@@ -224,7 +306,20 @@ export class ResultsTable {
 
   selectSite(key) {
     this.selectedKey = key;
+    if (this.virtual) this.scrollToRow(key);
     this.highlightRows(true);
+  }
+
+  // Bring a virtual table's row into the drawn window
+  scrollToRow(key) {
+    const i = this.bodyRows.findIndex(r => String(r[this.rowKey]) === String(key));
+    if (i < 0) return;
+    const top = i * this.rowHeight;
+    const bottom = top + this.rowHeight + this.thead.offsetHeight;
+    const scroll = this.tableScroll;
+    if (top < scroll.scrollTop) scroll.scrollTop = top;
+    else if (bottom > scroll.scrollTop + scroll.clientHeight) scroll.scrollTop = bottom - scroll.clientHeight;
+    this.drawBody(false);
   }
 
   highlightRows(scroll) {
@@ -239,8 +334,14 @@ export class ResultsTable {
     return { data: this.data, threshold: this.threshold, statistic: this.statistic };
   }
 
+  // The columns drawn: those with a cell that are not hidden
   displayColumns() {
-    return this.columns.filter(c => c.cell);
+    return this.columns.filter(c => c.cell && this.isShown(c));
+  }
+
+  // The drawn columns plus the export-only ones
+  shownColumns() {
+    return this.columns.filter(c => !c.cell || this.isShown(c));
   }
 
   activeFilter() {
@@ -261,11 +362,16 @@ export class ResultsTable {
     this.wrapper.querySelector(`#btn-filter-${head.key}`).childNodes[0].nodeValue = `${filterText(head)} `;
   }
 
+  // The search query, or nothing for a table without search
+  searchText() {
+    return this.options.search ? this.searchQuery.toLowerCase().trim() : '';
+  }
+
   // The rows the filter and search pass, in the current sort order
   visibleRows() {
     const filter = this.activeFilter();
     const view = this.view();
-    const q = this.searchQuery.toLowerCase().trim();
+    const q = this.searchText();
     const rows = this.rows.filter(r => (!q || this.options.search.match(r, q)) && filter.test(r, this.threshold, view));
     const column = this.sort && this.columns.find(c => c.id === this.sort.column);
     if (!column) return rows;
@@ -285,13 +391,14 @@ export class ResultsTable {
   }
 
   rowsMarkup(rows, view) {
-    return rows.map(r => resultsRowMarkup(r, this.columns, view, this.rowKey, this.selectedKey === r[this.rowKey])).join('');
+    const columns = this.shownColumns();
+    return rows.map(r => resultsRowMarkup(r, columns, view, this.rowKey, this.selectedKey === r[this.rowKey])).join('');
   }
 
   render() {
     if (!this.data) return;
     this.updateFilters();
-    this.thead.innerHTML = resultsHeaderMarkup(this.columns, ' '.repeat(8), (c) => this.sortMark(c));
+    this.thead.innerHTML = resultsHeaderMarkup(this.shownColumns(), ' '.repeat(8), (c) => this.sortMark(c));
 
     const filter = this.activeFilter();
     const rows = this.visibleRows();
@@ -306,13 +413,39 @@ export class ResultsTable {
 
     this.tableEl.style.display = 'table';
     this.emptyEl.style.display = 'none';
-    this.tbody.innerHTML = this.rowsMarkup(rows, this.view());
+    this.bodyRows = rows;
+    this.virtual = Boolean(this.virtualize) && rows.length >= this.virtualize.minRows;
+    this.drawBody(true);
+  }
+
+  // All rows, or for a virtual table the window in view between two spacer rows. The
+  // row height is measured from the first drawn row, redrawing once if it was off.
+  drawBody(force) {
+    const view = this.view();
+    if (!this.virtual) {
+      this.tbody.innerHTML = this.rowsMarkup(this.bodyRows, view);
+      return;
+    }
+    const scroll = this.tableScroll;
+    const w = virtualWindow(scroll.scrollTop, scroll.clientHeight, this.rowHeight, this.bodyRows.length, this.virtualize.overscan);
+    if (!force && this.drawn?.first === w.first && this.drawn?.last === w.last) return;
+    this.drawn = w;
+    const span = this.displayColumns().length;
+    this.tbody.innerHTML = virtualSpacer(w.before, span)
+      + this.rowsMarkup(this.bodyRows.slice(w.first, w.last), view)
+      + virtualSpacer(w.after, span);
+
+    const measured = this.tbody.querySelector(`tr[data-${this.rowKey}]`)?.offsetHeight;
+    if (measured && Math.abs(measured - this.rowHeight) > 0.5) {
+      this.rowHeight = measured;
+      this.drawBody(true);
+    }
   }
 
   // A search that matches nothing says so; an empty filter gets the method's empty state
   renderEmptyState(filter) {
     const stats = this.data.getStats(this.threshold);
-    const state = this.searchQuery.trim()
+    const state = this.searchText()
       ? Object.assign({ icon: '🔍' }, this.options.search.noMatch)
       : this.options.emptyState(this.threshold, { filter, stats, rows: this.rows });
 
@@ -327,7 +460,7 @@ export class ResultsTable {
         <div class="empty-fallback">
           <div class="empty-fallback-label">Closest calls</div>
           <table class="candidates-table candidates-fallback">
-            <thead>${resultsHeaderMarkup(this.columns, ' '.repeat(14))}</thead>
+            <thead>${resultsHeaderMarkup(this.shownColumns(), ' '.repeat(14))}</thead>
             <tbody>${this.rowsMarkup(state.fallback, this.view())}</tbody>
           </table>
         </div>`;
@@ -340,7 +473,7 @@ export class ResultsTable {
   exportCSV() {
     if (!this.data) return;
     const view = this.view();
-    const fields = this.columns.flatMap(c => c.csv || []);
+    const fields = this.shownColumns().flatMap(c => c.csv || []);
     const rows = this.visibleRows().map(r => fields.map(f => f.value(r, view)));
     downloadCSV(fields.map(f => f.header), rows, `${this.options.exportName}_${this.filterType}.csv`);
   }

@@ -510,6 +510,56 @@
   border-color: var(--ink);
 }
 
+.column-chooser {
+  position: relative;
+}
+
+.column-chooser > summary {
+  list-style: none;
+}
+
+.column-chooser > summary::-webkit-details-marker {
+  display: none;
+}
+
+.column-chooser[open] > summary {
+  background-color: var(--ink);
+  color: var(--knockout);
+  border-color: var(--ink);
+}
+
+.column-chooser-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 160px;
+  padding: 6px 4px;
+  background-color: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 3px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.column-chooser-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--ink);
+  white-space: nowrap;
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.column-chooser-item:hover {
+  background-color: var(--row-hover);
+}
+
 .candidates-table-scroll {
   max-height: 380px;
   overflow-y: auto;
@@ -760,6 +810,17 @@
   margin-bottom: 6px;
 }
 
+.candidates-table tr.virtual-spacer,
+.candidates-table tr.virtual-spacer:hover {
+  cursor: default;
+  background-color: transparent;
+}
+
+.candidates-table tr.virtual-spacer td {
+  padding: 0;
+  border: 0;
+}
+
 .candidates-fallback tbody tr {
   opacity: 0.55;
 }
@@ -949,6 +1010,41 @@
 .drawer-close-btn:hover {
   background-color: var(--inset);
   color: var(--ink);
+}
+
+.drawer-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.drawer-step-btn {
+  background: none;
+  border: 1px solid var(--hairline);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.drawer-step-btn:hover:not(:disabled) {
+  background-color: var(--inset);
+}
+
+.drawer-step-btn:disabled {
+  color: var(--hairline);
+  cursor: default;
+}
+
+.drawer-step-pos {
+  min-width: 44px;
+  text-align: center;
+  font-size: 10px;
+  font-family: "SF Mono", Monaco, monospace;
+  color: var(--stone);
 }
 
 .drawer-body {
@@ -1329,6 +1425,7 @@
 }
 
 .hyphy-theme-dark .segmented-control,
+.hyphy-theme-dark .column-chooser-menu,
 .hyphy-theme-dark .candidates-search-input,
 .hyphy-theme-dark .plot-tool-btn,
 .hyphy-theme-dark .btn-inspect,

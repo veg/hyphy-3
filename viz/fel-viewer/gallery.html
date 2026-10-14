@@ -14,6 +14,10 @@
     The branch-keyed shell runs a gallery-local config over synthetic branch rows, with a
     log-scale controller whose p/q toggle drives the shell's statistic. The posterior
     controller runs a standalone KpiBar over synthetic posteriors.
+    The aBSREL table reads branch_results from &branches=<v3 aBSREL JSON> (default: the
+    fixture when it has them): its columns come from the file's declared columns, some
+    start hidden behind the column chooser, and the drawer steps through the visible rows.
+    The virtual table draws 5000 synthetic rows a window at a time.
   -->
   <link rel="stylesheet" href="src/styles/viewer.css" />
   <style>
@@ -121,6 +125,20 @@
     </div>
     <div id="shell-branches"></div>
     <div class="gallery-note" id="branch-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head">
+      <span>ViewerShell · aBSREL branch rows, columns from the file, column chooser, drawer prev/next</span>
+    </div>
+    <div id="shell-absrel"></div>
+    <div class="gallery-note" id="absrel-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>ResultsTable · virtual scroll over 5000 rows</span></div>
+    <div id="table-virtual"></div>
+    <div class="gallery-note" id="virtual-note"></div>
   </div>
 
   <div class="gallery-card">
@@ -402,14 +420,216 @@
       return bar;
     }
 
+    // aBSREL's v3 branch_results: a columnar table whose columns the file declares. The
+    // config builds one table column per declared column, so the table's columns are
+    // resolved from each load; the Holm p and LRT show by default, the rest wait in the
+    // chooser, and the EBF count is gated on a capability the parser derives from the file.
+    class AbsrelBranches {
+      constructor(json) {
+        const table = json.branch_results;
+        const ids = Object.keys(table.data);
+        this.declared = table.columns;
+        this.branches = table.data.branch.map((branch, i) => Object.fromEntries(ids.map(id => [id, table.data[id][i]])));
+        this.runThreshold = json.statistical_tests?.branch_level_summary?.threshold ?? null;
+        this.capabilities = { ebf: ids.includes('sites_ebf_100'), srv: Boolean(json.settings?.srv) };
+        this.numSites = json.dataset?.codon_sites;
+        this.numTaxa = json.dataset?.taxa_count;
+      }
+      getStats(t) {
+        return { tested: this.branches.length, positive: this.branches.filter(r => r.corrected_p_value <= t).length };
+      }
+    }
+
+    const ABSREL_HEADERS = {
+      corrected_p_value: 'Holm p',
+      uncorrected_p_value: 'p',
+      lrt: 'LRT',
+      baseline_omega: 'Baseline ω',
+      full_branch_length: 'Length',
+      rate_classes: 'ω classes',
+      sites_ebf_100: 'Sites EBF ≥ 100'
+    };
+    const ABSREL_HIDDEN = ['uncorrected_p_value', 'baseline_omega', 'full_branch_length'];
+    const ABSREL_CAPABILITY = { sites_ebf_100: 'ebf' };
+
+    function absrelValue(id, type, value, view) {
+      if (/p_value$/.test(id)) {
+        const sig = id === 'corrected_p_value' && value <= view.threshold;
+        return `<td class="font-mono pval-cell ${sig ? 'pval-sig font-bold' : ''}">${formatPValue(value)}</td>`;
+      }
+      if (type === 'float') return `<td class="font-mono">${value.toFixed(3)}</td>`;
+      return `<td class="font-mono">${value}</td>`;
+    }
+
+    function absrelColumns(data) {
+      const declared = Object.entries(data.declared)
+        .filter(([id]) => id !== 'branch' && id !== 'positive')
+        .map(([id, meta]) => ({
+          id,
+          header: ABSREL_HEADERS[id] || id,
+          title: meta.description,
+          hiddenByDefault: ABSREL_HIDDEN.includes(id),
+          availableWhen: ABSREL_CAPABILITY[id] && (caps => caps[ABSREL_CAPABILITY[id]]),
+          cell: (r, view) => absrelValue(id, meta.type, r[id], view),
+          csv: [{ header: id, value: r => r[id] }],
+          sort: r => r[id]
+        }));
+      return [
+        { id: 'branch', header: 'Branch', cell: r => `<td class="font-mono font-bold">${r.branch}</td>`,
+          csv: [{ header: 'branch', value: r => r.branch }], sort: r => r.branch },
+        ...declared,
+        { id: 'srv', header: 'SRV', availableWhen: caps => caps.srv, cell: () => '<td>—</td>' }
+      ];
+    }
+
+    const absrelRow = (data, key) => data.branches.find(r => r.branch === key) || null;
+    const ABSREL_CONTROLLER = {
+      title: 'Holm p Cutoff',
+      statistic: 'p',
+      direction: 'le',
+      min: 0.001,
+      max: 0.2,
+      step: 0.005,
+      presets: [0.1, 0.05, 0.01],
+      seed: 0.05,
+      format: formatThreshold
+    };
+
+    const ABSREL_CONFIG = {
+      id: 'absrel-demo',
+      Parser: AbsrelBranches,
+      controller: ABSREL_CONTROLLER,
+      row: absrelRow,
+      defaultFilter: 'all',
+      kpis: (parent, hooks) => new KpiBar(parent, {
+        cards: [
+          { id: 'tested', label: 'Tested Branches', value: stats => String(stats.tested), sub: (stats, { data }) => `${data.numTaxa} taxa`, tone: 'ink' },
+          { id: 'positive', label: 'Episodic Selection', value: stats => `▲ ${stats.positive}`,
+            sub: (stats, view) => `Holm p ≤ ${formatThreshold(view.threshold)}`, tone: 'accent' }
+        ],
+        controller: ABSREL_CONTROLLER,
+        threshold: hooks.threshold,
+        statistic: hooks.statistic,
+        onThresholdChange: hooks.onThresholdChange
+      }),
+      hero: () => ({ setData() {} }),
+      table: (parent, hooks) => new ResultsTable(parent, {
+        title: 'Branches',
+        rowKey: 'branch',
+        rows: data => data.branches,
+        columns: absrelColumns,
+        filters: [
+          { id: 'positive', key: 'pos', glyph: '▲', label: 'Episodic', count: stats => stats.positive,
+            test: (r, t) => r.corrected_p_value <= t, subtitle: (n, t) => `${n} branches at Holm p ≤ ${formatThreshold(t)}` },
+          { id: 'all', key: 'all', label: 'All Branches', count: stats => stats.tested,
+            test: () => true, subtitle: n => `all ${n} tested branches` }
+        ],
+        defaultSort: { column: 'corrected_p_value', dir: 'asc' },
+        search: { placeholder: 'Branch name...', match: (r, q) => r.branch.toLowerCase().includes(q),
+          noMatch: { title: 'No branch matches' } },
+        emptyState: () => ({ title: 'No branch passes the cutoff.' }),
+        exportName: 'gallery_absrel',
+        threshold: hooks.threshold,
+        statistic: hooks.statistic,
+        filterType: hooks.filterType,
+        onSelect: (key, row, action) => hooks.onSiteSelect(key, action)
+      }),
+      drawer: (container, hooks) => new Drawer(container, {
+        emptyTag: 'Branch —',
+        row: absrelRow,
+        header: (r, { threshold }) => r.corrected_p_value <= threshold
+          ? { tag: r.branch, tone: 'div', badge: '▲ Episodic Selection' }
+          : { tag: r.branch, tone: 'neutral', badge: 'Not significant' },
+        tabs: [{
+          id: 'summary',
+          label: 'Branch',
+          comment: 'Declared branch_results columns',
+          render: (panel, r, { data }) => {
+            panel.innerHTML = `<div class="drawer-section"><div class="drawer-stats-grid">${Object.entries(data.declared)
+              .filter(([id]) => id !== 'branch')
+              .map(([id, meta]) => `<div class="drawer-stat-card" title="${meta.description}">
+                <span class="dstat-label">${ABSREL_HEADERS[id] || id}</span>
+                <span class="dstat-value font-mono">${typeof r[id] === 'number' && !Number.isInteger(r[id]) ? formatPValue(r[id]) : r[id]}</span>
+              </div>`).join('')}</div></div>`;
+          }
+        }],
+        siblings: hooks.siblings,
+        onStep: hooks.onStep,
+        threshold: hooks.threshold,
+        statistic: hooks.statistic,
+        onClose: hooks.onClose
+      }),
+      diagnostics: data => `<div class="diag-item"><span class="diag-lbl">Run threshold</span><span class="diag-val font-mono">${data.runThreshold}</span></div>`
+    };
+
+    function showAbsrelShell(json) {
+      const mount = document.getElementById('shell-absrel');
+      const note = document.getElementById('absrel-note');
+      if (!json?.branch_results) {
+        note.textContent = 'This file has no branch_results; pass &branches=<v3 aBSREL JSON>.';
+        return null;
+      }
+      // aBSREL has no registered config yet, so its analysis id would bring the unsupported
+      // notice; the shell gets the v3 sections the parser reads, under the mounted config
+      const shell = new ViewerShell(mount);
+      shell.mount(ABSREL_CONFIG);
+      shell.load({
+        branch_results: json.branch_results,
+        statistical_tests: json.statistical_tests,
+        dataset: json.dataset,
+        settings: json.analysis?.settings
+      });
+      const offered = shell.table.columns.filter(c => c.cell).map(c => c.id);
+      const gated = absrelColumns(shell.data).filter(c => !offered.includes(c.id) && c.cell).map(c => c.id);
+      note.textContent = `columns from the file: ${offered.join(', ')}; gated out: ${gated.join(', ') || 'none'}`;
+      mount.addEventListener('site-select', e => {
+        note.textContent = `site-select: ${e.detail.site} (${shell.siblingKeys().indexOf(e.detail.site) + 1} of ${shell.siblingKeys().length} visible rows)`;
+      });
+      return shell;
+    }
+
+    // Synthetic site rows past the virtual threshold: only the rows in view are in the DOM
+    function showVirtualTable() {
+      const note = document.getElementById('virtual-note');
+      const rows = Array.from({ length: 5000 }, (_, i) => ({ site: i + 1, p: ((i * 7919) % 1000) / 1000 + 0.0005 }));
+      const table = new ResultsTable(document.getElementById('table-virtual'), {
+        title: 'Sites',
+        rows: data => data.rows,
+        columns: [
+          { id: 'site', header: 'Site', width: 90, cell: r => `<td class="font-mono font-bold">#${r.site}</td>`, sort: r => r.site },
+          { id: 'p', header: 'p-value', cell: (r, { threshold }) => `<td class="font-mono pval-cell ${r.p <= threshold ? 'pval-sig font-bold' : ''}">${formatPValue(r.p)}</td>`, sort: r => r.p }
+        ],
+        filters: [
+          { id: 'all', key: 'vall', label: 'All Sites', count: () => rows.length, test: () => true, subtitle: n => `${n} sites` },
+          { id: 'sig', key: 'vsig', label: 'p ≤ 0.1', count: () => rows.filter(r => r.p <= 0.1).length, test: (r, t) => r.p <= t, subtitle: n => `${n} sites` }
+        ],
+        search: { placeholder: 'Site...', match: (r, q) => String(r.site).startsWith(q), noMatch: { title: 'No site matches' } },
+        emptyState: () => ({ title: 'No rows' }),
+        virtualize: true,
+        threshold: 0.1,
+        onSelect: site => { note.textContent = `selected site ${site}`; }
+      });
+      table.setData({ rows, getStats: () => ({}) });
+      const report = () => {
+        const drawn = table.tbody.querySelectorAll('tr[data-site]');
+        note.textContent = `${table.bodyRows.length} rows, ${drawn.length} in the DOM: #${drawn[0].dataset.site}–#${drawn[drawn.length - 1].dataset.site} (row height ${table.rowHeight}px)`;
+      };
+      table.tableScroll.addEventListener('scroll', () => requestAnimationFrame(report));
+      report();
+      return table;
+    }
+
     async function main() {
       await showUnsupported();
       showBranchShell();
       showPosteriorBar();
+      showVirtualTable();
       const fixture = params.get('fixture');
+      const branches = params.get('branches') || fixture;
+      if (branches) showAbsrelShell(await fetchJSON(branches));
       if (!fixture) return;
       const sites = params.get('sites') || fixture;
-      document.getElementById('gallery-source').textContent = `tree: ${fixture}   sites: ${sites}`;
+      document.getElementById('gallery-source').textContent = `tree: ${fixture}   sites: ${sites}   branches: ${branches}`;
       const [treeJSON, sitesJSON] = await Promise.all([fetchJSON(fixture), fetchJSON(sites)]);
 
       const trees = showTrees(treeJSON);
