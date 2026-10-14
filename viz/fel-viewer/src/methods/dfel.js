@@ -18,9 +18,10 @@ import { PALETTE } from '../data/palette.js';
 import { formatThreshold, formatPValue } from '../core/format.js';
 import { csvQuote, downloadSVG, downloadSVGAsPNG } from '../core/export.js';
 
-// The slider runs on round stops (0.005, 0.010, ... 0.200), so every preset is reachable
+// The slider spans 0.001-0.20 in steps of 0.001, so every preset and any run cutoff written
+// to three decimals sits on a stop
 export const DFEL_P_THRESHOLD = Object.assign({}, SITE_P_THRESHOLD, {
-  min: 0.005,
+  step: 0.001,
   caption: 'Uncorrected per-site p-values'
 });
 
@@ -56,19 +57,40 @@ export function dfelOmegaText(omega) {
 
 const DFEL_ROOT_FIXED = new Set(['auto', 'keep']);
 
+// An outgroup was requested by name; whether it was found is root.branch === root.strategy
+function dfelOutgroup(root) {
+  return Boolean(root.strategy) && !DFEL_ROOT_FIXED.has(root.strategy);
+}
+
+// The requested outgroup is missing from the tree and the ML root stands in for it
+export function dfelOutgroupMissing(root) {
+  return Boolean(root?.branch) && dfelOutgroup(root) && root.branch !== root.strategy;
+}
+
+// 'w = 8.1% (weak)': a chosen root under half the Akaike weight is weakly supported
+function dfelRootWeight(root) {
+  if (root.weight == null) return null;
+  return `w = ${rootWeightPercent(root.weight)}${root.weight < 0.5 ? ' (weak)' : ''}`;
+}
+
 // The root as one phrase: the chosen edge and its weight in auto mode, the outgroup when one
-// was requested (or that it was not found), or the input root under 'keep', whose written
-// weight and log L are placeholders and never shown
+// was requested (the ML root when it was not found, which the model card warns about), or
+// the input root under 'keep', whose written weight and log L are placeholders and never shown
 export function dfelRootPhrase(root) {
   if (!root?.branch) return null;
   if (root.strategy === 'keep') return 'root: input (kept)';
-  const weight = root.weight == null ? '' : `, w = ${rootWeightPercent(root.weight)}`;
-  if (root.strategy && !DFEL_ROOT_FIXED.has(root.strategy)) {
-    return root.branch === root.strategy
-      ? `root: outgroup ${root.branch}${weight}`
-      : `outgroup ${root.strategy} not found; ML root ${rootEdgeLabel(root.branch)}${weight}`;
-  }
-  return `root ${rootEdgeLabel(root.branch)}${weight}${root.weight != null && root.weight < 0.5 ? ' (weak)' : ''}`;
+  const edge = dfelOutgroup(root) && !dfelOutgroupMissing(root)
+    ? `root: outgroup ${root.branch}`
+    : `${dfelOutgroupMissing(root) ? 'ML root' : 'root'} ${rootEdgeLabel(root.branch)}`;
+  return [edge, dfelRootWeight(root)].filter(Boolean).join(', ');
+}
+
+// The root in a few words for the KPI sub line; the edge name stays in the model card
+export function dfelRootToken(root) {
+  if (!root?.branch) return null;
+  if (root.strategy === 'keep') return 'root kept';
+  if (dfelOutgroupMissing(root)) return '⚠ outgroup not found';
+  return [dfelOutgroup(root) ? 'outgroup root' : 'root', dfelRootWeight(root)].filter(Boolean).join(' ');
 }
 
 // The screen and the fit, as two facts: K follows the screen only in auto mode, so a K the
@@ -79,16 +101,17 @@ export function dfelModelVerdict(data) {
   const K = data.K;
   const screen = comp.heterogeneous ? 'Heterogeneous' : 'Homogeneous';
   const forced = K != null && K !== (comp.heterogeneous ? 3 : 1);
-  const text = `${screen} · K = ${K ?? '—'}`;
-  return { forced, text, summary: `${screen} screen · K = ${K ?? '—'}${forced ? ' (forced)' : ''}` };
+  const fit = `K = ${K ?? '—'}${forced ? ' (forced)' : ''}`;
+  return { forced, screen: `${screen} screen`, fit, summary: `${screen} screen · ${fit}` };
 }
 
-// The deciding screen test: Overall or CP3, whichever has the smaller p
+// The deciding screen test: Overall or CP3, whichever has the smaller p (regimes are
+// activated when either falls under the heterogeneity threshold)
 export function dfelDecidingTest(comp) {
   const tests = [['Overall', comp.overall], ['CP3', comp.cp3]].filter(([, t]) => t?.p != null);
   if (!tests.length) return null;
   const [label, test] = tests.reduce((a, b) => (b[1].p < a[1].p ? b : a));
-  return `${label} χ² p = ${compositionP(test.p)}`;
+  return `screen p = ${compositionP(test.p)} (${label})`;
 }
 
 export const DFEL_KPI_CARDS = [
@@ -110,17 +133,18 @@ export const DFEL_KPI_CARDS = [
     tone: 'purifying'
   },
   {
+    // The screen verdict over the fitted K; a --legacy-json export has neither, so the card
+    // is left out rather than shown empty
     id: 'model',
     label: 'Directional model',
     cardClass: 'kpi-card-text',
-    value: (stats, { data }) => dfelModelVerdict(data)?.text ?? '—',
-    sub: (stats, { data }) => {
+    available: (data) => data.capabilities.directionalModel,
+    value: (stats, { data }) => {
       const verdict = dfelModelVerdict(data);
-      if (!verdict) return `Not reported in ${data.formatLabel} output`;
-      const forced = verdict.forced && `K forced (the screen alone fits ${data.composition.heterogeneous ? 3 : 1})`;
-      return [forced, dfelDecidingTest(data.composition), dfelRootPhrase(data.root)].filter(Boolean).join(' · ');
+      return `${verdict.screen}\n${verdict.fit}`;
     },
-    tone: (stats, { data }) => (data.composition ? 'ink' : 'muted')
+    sub: (stats, { data }) => [dfelDecidingTest(data.composition), dfelRootToken(data.root)].filter(Boolean).join(' · '),
+    tone: 'ink'
   }
 ];
 
@@ -137,6 +161,7 @@ export function dfelChangeSummary(r) {
 
 export const DFEL_EVIDENCE = {
   tone: felEvidenceTone,
+  alpha: (r) => dfelRate(r.alpha),
   badges: { div: '▲ Diversifying Selection', pur: '▼ Purifying Selection' },
   rows: (r) => [
     evidenceTipRow('β (dN)', dfelRate(r.beta)),
@@ -183,7 +208,7 @@ export function dfelHero(parent, hooks) {
 
 // Results table
 
-// The FEL rate-balance bar with ω beside it, the ω badge in the call's hue at t
+// The rate-balance bar (α grey, β orange) with ω beside it, the ω badge in the call's hue at t
 function dfelOmegaCell(r, t) {
   const call = dfelCall(r, t);
   const total = Math.max(0.1, r.alpha + r.beta);
@@ -191,17 +216,19 @@ function dfelOmegaCell(r, t) {
   const betaPct = Math.round((r.beta / total) * 100);
   return `<td class="omega-cell"><div class="dfel-omega-cell">
               <div class="micro-balance-bar" title="α ${dfelRate(r.alpha)} vs β ${dfelRate(r.beta)}">
-                <div class="bar-alpha" style="width: ${alphaPct}%;"></div>
+                <div class="bar-alpha dfel-bar-alpha" style="width: ${alphaPct}%;"></div>
                 <div class="bar-beta" style="width: ${betaPct}%;"></div>
               </div>
               <span class="omega-badge ${call.badgeClass}">${dfelOmegaText(r.omega)}</span>
             </div></td>`;
 }
 
-// '3 / 1' and a two-segment greyscale bar on the result's largest GC + AT count
+// '3 / 1' and a two-segment greyscale bar on the result's largest GC + AT count; a muted
+// dash for a site with no GC- or AT-ward change
 export function dfelGcAtCell(r, extent) {
   const t = r.tally;
   if (!t) return '<td></td>';
+  if (t.gc + t.at === 0) return '<td class="font-mono"><span class="dfel-muted">—</span></td>';
   const width = (n) => (extent > 0 ? (n / extent) * 100 : 0);
   return `<td class="font-mono"><div class="gcat-cell"><span>${t.gc} / ${t.at}</span>`
     + `<span class="gcat-bar" title="${t.gc} GC-ward, ${t.at} AT-ward non-synonymous changes">`
@@ -256,7 +283,7 @@ export const DFEL_COLUMNS = [
   {
     id: 'omega',
     header: dfelLiteral('ω = β/α'),
-    width: 150,
+    width: 130,
     title: 'Rate balance (α grey, β orange) and ω; ∞ where α is at its lower bound',
     cell: (r, { threshold }) => dfelOmegaCell(r, threshold),
     csv: [{ header: 'omega', value: (r) => (r.omega === Infinity ? 'Infinity' : dfelCsv(r.omega)) }],
@@ -419,6 +446,7 @@ function dfelOmegaSub(r) {
   return r.omega === 0 ? 'β at its lower bound' : 'β / α';
 }
 
+// The drawer's p carries one digit more than the table's, as in FEL's and MEME's drawers
 function dfelRatesSection(r, t) {
   const cls = dfelSiteClass(r, t);
   const significant = cls === 'diversifying' || cls === 'purifying';
@@ -527,25 +555,34 @@ function dfelWeightsBar(weights) {
 // What the diamond marks, under the tree
 export function dfelRootCaption(root) {
   if (!root?.branch) return '';
-  if (root.strategy === 'keep') return '◆ input root (kept)';
+  if (root.strategy === 'keep') return '◆ input root, kept from the input tree (root_strategy = keep)';
   const w = root.weight == null ? '' : ` (w = ${rootWeightPercent(root.weight)})`;
-  return `◆ ${root.strategy && !DFEL_ROOT_FIXED.has(root.strategy) && root.branch === root.strategy ? 'outgroup root' : 'ML root'} on ${rootEdgeLabel(root.branch)}${w}`;
+  return `◆ ${dfelOutgroup(root) && !dfelOutgroupMissing(root) ? 'outgroup root' : 'ML root'} on ${rootEdgeLabel(root.branch)}${w}`;
 }
 
 // Notes under the root bars: the weighting, the outgroup request and how flat the profile is
+// (a missing outgroup is warned about in the card header)
 export function dfelRootNotes(root) {
   const notes = ['Akaike weights ∝ exp(−ΔlnL); a flat profile means the root is not identifiable from these data.'];
   const n = root.candidates.length;
   if (n) notes.push(`95% of the weight needs ${rootCredibleCount(root.candidates)} of ${n} placements.`);
-  if (root.strategy && !DFEL_ROOT_FIXED.has(root.strategy)) {
-    notes.unshift(root.branch === root.strategy
-      ? `Outgroup requested: ${root.strategy}.`
-      : `⚠ Outgroup requested: ${root.strategy}; requested outgroup not found; ML root used.`);
+  if (dfelOutgroup(root)) {
+    notes.unshift(`Outgroup requested: ${root.strategy}${dfelOutgroupMissing(root) ? ' (not found)' : ''}.`);
   }
   return notes;
 }
 
+// The header warning when the requested outgroup is not in the tree
+export function dfelRootWarning(root) {
+  return dfelOutgroupMissing(root) ? `⚠ Outgroup ${root.strategy} not found in the tree; the ML root is used.` : null;
+}
+
 const DFEL_ROOT_TOP = 10;
+
+// Whether there are candidate placements to rank: none under 'keep', whose root is fixed
+export function dfelRootRanked(root) {
+  return root.strategy !== 'keep' && root.candidates.length > 0;
+}
 
 function dfelPanelHead(title, exportId) {
   const tools = exportId ? `<span class="plot-export-group">
@@ -570,13 +607,14 @@ export class DirectionalModelCard {
         <span class="dfel-model-summary" id="dfel-model-summary">—</span>
         <span class="dfel-model-icon" id="dfel-model-icon">▼</span>
       </button>
+      <div class="dfel-model-warning" id="dfel-model-warning" style="display: none;"></div>
       <div class="dfel-model-body" id="dfel-model-body" style="display: none;">
         <div class="dfel-model-row">
-          <section class="dfel-panel">
+          <section class="dfel-panel dfel-panel-narrow">
             ${dfelPanelHead('Composition screen')}
             <div id="dfel-composition"></div>
           </section>
-          <section class="dfel-panel">
+          <section class="dfel-panel dfel-panel-wide">
             ${dfelPanelHead('GC by taxon', 'gc')}
             <div class="dfel-figure" id="dfel-gc"></div>
             <div class="dfel-caption" id="dfel-gc-caption"></div>
@@ -590,7 +628,7 @@ export class DirectionalModelCard {
             <div class="dfel-caption" id="dfel-tree-caption"></div>
             <div id="dfel-regimes"></div>
           </section>
-          <section class="dfel-panel">
+          <section class="dfel-panel" id="dfel-root-panel">
             ${dfelPanelHead('Root support', 'root')}
             <div class="dfel-figure" id="dfel-root"></div>
             <button type="button" class="plot-tool-btn dfel-root-more" id="dfel-root-more" style="display: none;"></button>
@@ -613,7 +651,7 @@ export class DirectionalModelCard {
     });
 
     this.tree = new BranchTree(this.el.querySelector('#dfel-tree'), {
-      hoverColor: PALETTE.stone,
+      hoverColor: 'stone',
       rootShape: 'diamond',
       exportName: 'hyphy_dfel_regime_tree',
       onHover: (name) => this.showBranch(name)
@@ -630,6 +668,11 @@ export class DirectionalModelCard {
     this.tree.destroy();
   }
 
+  // Repaint the canvas tree in the current theme; the SVG figures follow the CSS tokens
+  render() {
+    this.tree.render();
+  }
+
   setExpanded(expanded) {
     this.expanded = expanded;
     this.body.style.display = expanded ? '' : 'none';
@@ -641,18 +684,17 @@ export class DirectionalModelCard {
     this.data = data;
     this.showAllRoots = false;
     const verdict = dfelModelVerdict(data);
-    const summary = this.el.querySelector('#dfel-model-summary');
+    // The legacy export carries none of the model, which the diagnostics' format notes say
+    this.el.style.display = verdict ? '' : 'none';
     if (!verdict) {
-      // The legacy export carries none of the model: one line, nothing to expand
-      summary.textContent = `Composition screen, rooting and regimes are not reported in ${data.formatLabel} output`;
-      this.toggleBtn.disabled = true;
-      this.el.querySelector('#dfel-model-icon').style.display = 'none';
       this.setExpanded(false);
       return;
     }
-    this.toggleBtn.disabled = false;
-    this.el.querySelector('#dfel-model-icon').style.display = '';
-    summary.textContent = [verdict.summary, dfelRootPhrase(data.root)].filter(Boolean).join(' · ');
+    this.el.querySelector('#dfel-model-summary').textContent = [verdict.summary, dfelRootPhrase(data.root)].filter(Boolean).join(' · ');
+    const warning = this.el.querySelector('#dfel-model-warning');
+    warning.textContent = dfelRootWarning(data.root) ?? '';
+    warning.style.display = warning.textContent ? '' : 'none';
+    this.el.querySelector('#dfel-root-panel').style.display = dfelRootRanked(data.root) ? '' : 'none';
 
     this.renderComposition();
     this.renderTree();
@@ -669,10 +711,11 @@ export class DirectionalModelCard {
           <div class="dfel-caption">Pearson ${dfelLiteral('χ²')} homogeneity across taxa, df = 3(N−1)${df != null ? ` = ${df} for N = ${numTaxa}` : ''}.</div>`;
   }
 
-  // The regime means the GC strip marks, when more than one regime was fitted
+  // The regime means the GC strip ticks, when more than one regime was fitted
   regimeMarks() {
     return this.data.K > 1
-      ? this.data.regimes.filter(g => g.meanGC != null).map(g => ({ value: g.meanGC, label: g.name }))
+      ? this.data.regimes.filter(g => g.meanGC != null)
+        .map(g => ({ value: g.meanGC, label: DFEL_REGIMES.find(r => r.id === g.id)?.short ?? g.name }))
       : [];
   }
 
@@ -686,25 +729,20 @@ export class DirectionalModelCard {
     if (!this.data?.composition || !this.expanded) return;
     const gc = gcStripSVG(this.data.composition.taxa, { width: this.figureWidth('#dfel-gc', 360), marks: this.regimeMarks() });
     this.el.querySelector('#dfel-gc').innerHTML = gc.svg;
+    const marks = this.regimeMarks();
+    const regimes = marks.length ? ` Ticks above: regime mean GC (${marks.map(m => `${m.label} ${m.value.toFixed(3)}`).join(', ')}).` : '';
     this.el.querySelector('#dfel-gc-caption').textContent =
-      'Filled: GC at third codon positions; hollow: GC over all positions. Dashed: mean GC3.';
+      `Filled: GC at third codon positions; hollow: GC over all positions. Dashed: mean GC3.${regimes}`;
     this.renderRoot();
   }
 
+  // Without ranked candidates the panel is hidden and the tree caption names the root
   renderRoot() {
     const root = this.data.root;
+    if (!dfelRootRanked(root)) return;
     const host = this.el.querySelector('#dfel-root');
     const more = this.el.querySelector('#dfel-root-more');
     const caption = this.el.querySelector('#dfel-root-caption');
-    const exportBtns = this.el.querySelectorAll('[data-export="root"]');
-    if (root.strategy === 'keep' || !root.candidates.length) {
-      host.innerHTML = '<div class="empty-events-notice">Root kept from input tree (root_strategy = keep).</div>';
-      more.style.display = 'none';
-      caption.textContent = '';
-      exportBtns.forEach(b => { b.style.display = 'none'; });
-      return;
-    }
-    exportBtns.forEach(b => { b.style.display = ''; });
     const n = root.candidates.length;
     const limit = this.showAllRoots ? n : DFEL_ROOT_TOP;
     host.innerHTML = rootSupportSVG(root.candidates, { chosen: root.branch, limit, width: this.figureWidth('#dfel-root', 360) }).svg;

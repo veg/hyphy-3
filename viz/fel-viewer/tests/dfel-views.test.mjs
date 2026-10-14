@@ -9,7 +9,7 @@ import { BranchTree, diamondPoints } from '../src/components/branch-tree.js';
 import {
   compositionTableMarkup, compositionP, gcOutliers, gcDomain, gcStripSVG, COMPOSITION_CSS_COLORS
 } from '../src/components/composition-panel.js';
-import { rootSupportSVG, rootCredibleCount, rootEdgeLabel } from '../src/components/root-support-bars.js';
+import { rootSupportSVG, rootSupportRows, rootCredibleCount, rootEdgeLabel } from '../src/components/root-support-bars.js';
 import { DFELData } from '../src/data/dfel-data.js';
 import { PALETTE } from '../src/data/palette.js';
 
@@ -57,7 +57,9 @@ test('the screen table marks the deciding tests and bolds a p under the heteroge
 
 test('the GC strip draws a filled GC3 and a hollow overall dot per taxon and labels the outliers', { skip: noFixtures }, () => {
   const taxa = new DFELData(fixture('dfel_cd2.json')).composition.taxa;
-  assert.deepEqual([...gcOutliers(taxa)].sort(), ['Cow', 'Human', 'Mouse', 'Rat']);
+  // Chimp's GC3 equals Human's, the second lowest, so both are labelled
+  assert.equal(taxa.find(t => t.taxon === 'Chimp').gcCP3, taxa.find(t => t.taxon === 'Human').gcCP3);
+  assert.deepEqual([...gcOutliers(taxa)].sort(), ['Chimp', 'Cow', 'Human', 'Mouse', 'Rat']);
   const [lo, hi] = gcDomain(taxa);
   assert.ok(Math.abs(lo - (0.3928 - 0.02)) < 1e-3 && Math.abs(hi - (0.6298 + 0.02)) < 1e-3);
   const { svg, height } = gcStripSVG(taxa, { width: 400 });
@@ -72,14 +74,18 @@ test('the GC strip draws a filled GC3 and a hollow overall dot per taxon and lab
   assert.ok(!gcStripSVG(taxa, { colors: PALETTE }).svg.includes('var(--'));
 });
 
-test('regime marks label the strip, a crowded label moving up a line', () => {
+test('regime marks are short ticks above the rows, a label that would overlap moving up a line', () => {
   const taxa = [{ taxon: 'a', gcCP3: 0.4, gcOverall: 0.38 }, { taxon: 'b', gcCP3: 0.6, gcOverall: 0.5 }];
-  const marks = [{ value: 0.47, label: 'AT-drift' }, { value: 0.48, label: 'Neutral' }, { value: 0.6, label: 'GC-drift' }];
+  const marks = [{ value: 0.47, label: 'AT' }, { value: 0.475, label: 'Neutral' }, { value: 0.6, label: 'GC' }];
   const { svg } = gcStripSVG(taxa, { width: 400, marks, colors: COMPOSITION_CSS_COLORS });
   const y = (label) => Number(svg.match(new RegExp(`y="([\\d.]+)"[^>]*>${label}</text>`))[1]);
-  assert.equal(y('AT-drift'), 36 - 13);
-  assert.equal(y('Neutral'), 36 - 25);
-  assert.equal(y('GC-drift'), 36 - 13);
+  assert.equal(y('AT'), 30 - 14);
+  assert.equal(y('Neutral'), 30 - 24);
+  assert.equal(y('GC'), 30 - 14);
+  // Ticks stop above the first row: no rule runs through the dots
+  const ticks = [...svg.matchAll(/<line x1="([\d.]+)" y1="22" x2="\1" y2="28"/g)];
+  assert.equal(ticks.length, 3);
+  assert.doesNotMatch(svg, /stroke-width="3"/);
 });
 
 test('root bars: the chosen edge by name in ink, the 95% rule, leaf glyphs and the top-N limit', () => {
@@ -97,9 +103,19 @@ test('root bars: the chosen edge by name in ink, the 95% rule, leaf glyphs and t
   assert.match(svg, />w = 46\.0% · ΔlnL 0\.08<\/text>/);
   assert.equal((svg.match(/stroke-dasharray/g) || []).length, 1);
   assert.equal((svg.match(/<circle/g) || []).length, 2);
-  const top = rootSupportSVG(candidates, { chosen: 'Cow', limit: 1 });
+  const top = rootSupportSVG(candidates, { chosen: 'Node1 - Node2', limit: 1 });
   assert.equal((top.svg.match(/<rect/g) || []).length, 2);
   assert.equal(top.height, 6 + 20 + 6);
+});
+
+test('a chosen root ranked below the limit is appended under its rank, so the ink bar is always shown', () => {
+  const candidates = ['A', 'B', 'C', 'Cow'].map((branch, i) => ({ branch, weight: 0.4 - i * 0.1, deltaLogL: i * 0.1 }));
+  assert.deepEqual(rootSupportRows(candidates, 'Cow', 2).map(r => [r.c.branch, r.rank]), [['A', 0], ['B', 1], ['Cow', 3]]);
+  assert.deepEqual(rootSupportRows(candidates, 'B', 2).map(r => r.c.branch), ['A', 'B']);
+  const { svg, height } = rootSupportSVG(candidates, { chosen: 'Cow', limit: 2, colors: PALETTE });
+  assert.match(svg, new RegExp(`font-weight="bold" style="fill: ${PALETTE.ink}">Cow</text>`));
+  assert.match(svg, />#4<\/text>/);
+  assert.equal(height, 6 + 3 * 20 + 10 + 6);
 });
 
 function stripTrack(toggle) {
@@ -174,5 +190,18 @@ test('a placed root draws as a diamond; branch styles get the palette in use', (
   assert.deepEqual(diamondPoints({ x: 10, y: 20, r: 5 }), [[10, 15], [15, 20], [10, 25], [5, 20]]);
   assert.match(tree.svg(), /<polygon points="[^"]+" fill="#1A1A18"\/>/);
   assert.ok(styled.length > 0 && styled.every(c => c.ink));
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+});
+
+test('a palette-key hover colour follows the theme the tree paints in', () => {
+  const container = new FakeElement();
+  container.clientWidth = 300;
+  globalThis.window = {};
+  const tree = new BranchTree(container, { hoverColor: 'stone' });
+  tree.setTree('((a:1,b:1)n1:1,c:2)Root;');
+  tree.hovered = tree.nodesByName.c;
+  const dark = Object.assign({}, PALETTE, { stone: '#94A3B8' });
+  assert.ok(tree.scene(dark).lines.some(l => l.stroke === '#94A3B8'));
+  assert.ok(tree.scene(PALETTE).lines.some(l => l.stroke === PALETTE.stone));
   globalThis.window = { addEventListener() {}, removeEventListener() {} };
 });

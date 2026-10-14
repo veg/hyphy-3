@@ -8,8 +8,9 @@
 //     tone(stats, view) for a card whose emphasis follows the cutoff.
 //     widget(el, stats, view) draws into a slot below the sub line.
 //     Optional: placeholder (the sub line before any data), comment (the HTML
-//     comment above the card), cardClass, and valueId/subId to override the
-//     default kpi-val-<id>/kpi-sub-<id> element ids.
+//     comment above the card), cardClass, valueId/subId to override the
+//     default kpi-val-<id>/kpi-sub-<id> element ids, and available(data) for a
+//     card left out when the result cannot fill it.
 //   blank: the cards drawn before data arrives (defaults to cards). When their ids
 //     match the cards' one for one, setData relabels them in place; otherwise it
 //     replaces them with the cards' own markup.
@@ -295,6 +296,7 @@ export class KpiBar {
 
   setData(data) {
     this.data = data;
+    this.cards = this.options.cards.filter(card => !card.available || card.available(data));
     this.fillCards();
     this.updateStats();
   }

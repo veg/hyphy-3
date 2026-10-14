@@ -122,6 +122,19 @@ test('cards whose ids differ from the blank cards replace them with their own ma
   assert.equal(bar.blank, cards);
 });
 
+test('a card the result cannot fill is left out, and the rest replace the blank cards', () => {
+  const cards = [{ id: 'align', label: 'Alignment' }, { id: 'model', label: 'Model', available: (data) => data.model }];
+  const bar = fakeBar(cards, cards);
+  bar.options = { cards };
+  bar.updateStats = () => {};
+  bar.setData({ model: false });
+  assert.deepEqual(bar.cards.map(c => c.id), ['align']);
+  assert.equal(bar.inserted.length, 1);
+  assert.doesNotMatch(bar.inserted[0][1], /kpi-model/);
+  bar.setData({ model: true });
+  assert.deepEqual(bar.cards.map(c => c.id), ['align', 'model']);
+});
+
 test('a card with a widget gets a slot even when its blank twin had none', () => {
   globalThis.document = { createElement: () => ({ className: '' }) };
   const blank = [{ id: 'omega', label: 'ω' }];

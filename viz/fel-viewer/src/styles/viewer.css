@@ -36,7 +36,7 @@
   --slate-light: #94A3B8;
   --slate-pale: #E2E8F0;
   --slate-faint: #F8FAFC;
-  --code-ink: var(--slate);        /* Monospace text blocks (Newick) */
+  --code-ink: var(--slate);        /* Monospace text blocks (Newick), substitution lists */
 }
 
 :host, .hyphy-fel-container {
@@ -742,7 +742,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 11px;
-  color: var(--slate);
+  color: var(--code-ink);
 }
 
 .btn-inspect {
@@ -1878,6 +1878,11 @@
   width: 56px;
 }
 
+/* α in grey, so the bar carries no hue beyond the signal orange of β */
+.dfel-bar-alpha {
+  background-color: var(--slate-light);
+}
+
 .gcat-cell > span:first-child {
   min-width: 40px;
 }
@@ -1972,10 +1977,6 @@
   color: var(--ink);
 }
 
-.dfel-model-toggle:disabled {
-  cursor: default;
-}
-
 .dfel-model-title {
   font-size: 13px;
   font-weight: 700;
@@ -1993,6 +1994,15 @@
 .dfel-model-icon {
   font-size: 11px;
   color: var(--stone);
+}
+
+.dfel-model-warning {
+  padding: 8px 18px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink);
+  border-top: 1px solid var(--grid-line);
+  background-color: var(--panel-header);
 }
 
 .dfel-model-body {
@@ -2020,6 +2030,11 @@
 
 .dfel-panel-wide {
   flex: 2 1 420px;
+}
+
+/* A table at its natural width beside a wide figure; its captions wrap under it */
+.dfel-panel-narrow {
+  flex: 0 1 300px;
 }
 
 .dfel-panel-head {
@@ -2084,9 +2099,11 @@
   background-color: var(--ink);
 }
 
-/* A KPI card whose value is a short phrase rather than a count */
+/* A KPI card whose value is a short phrase rather than a count, one line per fact */
 .kpi-card-text .kpi-value {
   font-size: 18px;
   letter-spacing: 0;
+  line-height: 1.3;
+  white-space: pre-line;
   margin: 10px 0 6px 0;
 }

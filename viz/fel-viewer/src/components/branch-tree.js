@@ -84,7 +84,7 @@ export class BranchTree {
     this.options = Object.assign({
       lengthKey: null,          // nodeMeta[name].branch_lengths key; null uses the Newick lengths
       style: null,              // (node, meta) => branch style, see the top of this file
-      hoverColor: PALETTE.accent,
+      hoverColor: 'accent',     // a colour, or a palette key resolved in the theme at paint time
       rootShape: 'dot',         // 'dot' | 'diamond' (a root the method placed itself)
       mini: false,              // compact rows and type, for drawers
       ladderize: true,
@@ -205,7 +205,7 @@ export class BranchTree {
   scene(colors = PALETTE) {
     const { nodes, leaves, maxDepth, root } = this.layout;
     const { rowHeight, font, labelFont, width: baseWidth, scale, padX, padY, rootRadius } = this.size;
-    const hover = this.options.hoverColor;
+    const hover = colors[this.options.hoverColor] ?? this.options.hoverColor;
 
     this.ctx.font = this.font(font, true);
     const labelW = leaves.reduce((max, leaf) => Math.max(max, this.ctx.measureText(this.leafLabel(leaf)).width), 0) + 8;

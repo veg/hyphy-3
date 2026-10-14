@@ -99,7 +99,8 @@ export class ViewerShell {
     this.hero = config.hero(this.layout, hooks);
     this.table = config.table(this.layout, hooks);
     // config.secondary(parent, hooks): a method's own view under the table (dFEL's
-    // directional model card); it gets data and the shared state like the others
+    // directional model card); it gets data and the shared state like the others, and
+    // render() if it has one on a theme change
     this.secondary = config.secondary ? config.secondary(this.layout, hooks) : null;
     this.initDiagnosticsSection();
     this.drawer = config.drawer(this.container, hooks);
@@ -360,5 +361,6 @@ export class ViewerShell {
       this.container.classList.remove('hyphy-theme-dark');
     }
     this.hero?.render();
+    this.secondary?.render?.();
   }
 }

@@ -8,6 +8,7 @@ import { configForResult } from '../src/methods/registry.js';
 import {
   DFEL_CONFIG, DFEL_KPI_CARDS, DFEL_FILTERS, DFEL_COLUMNS, DFEL_STRIP, DFEL_P_THRESHOLD,
   dfelRate, dfelOmegaText, dfelModelVerdict, dfelDecidingTest, dfelRootPhrase, dfelRootCaption, dfelRootNotes,
+  dfelRootToken, dfelRootWarning, dfelRootRanked, DFEL_EVIDENCE,
   dfelEmptyState, dfelChangeSummary, dfelChangesCell, dfelGcAtCell, dfelTallySentence, dfelDriftNote,
   dfelBranchStyle, dfelWeightsText, dfelDiagnostics, dfelFitsTable, dfelDiagnosticsPanel
 } from '../src/methods/dfel.js';
@@ -106,26 +107,30 @@ test('the KPI cards read the alignment, both calls and the model, never a global
   const stats = data.getStats(0.1);
   const view = { data, threshold: 0.1 };
   assert.deepEqual(DFEL_KPI_CARDS.map(c => c.id), ['alignment', 'div', 'pur', 'model']);
-  assert.deepEqual(DFEL_KPI_CARDS.map(c => c.value(stats, view)), ['187 Codons', '▲ 13', '▼ 27', 'Homogeneous · K = 1']);
+  assert.deepEqual(DFEL_KPI_CARDS.map(c => c.value(stats, view)), ['187 Codons', '▲ 13', '▼ 27', 'Homogeneous screen\nK = 1']);
   assert.deepEqual(DFEL_KPI_CARDS.map(c => c.sub(stats, view)), [
     '10 Taxa · 186 patterns',
     '7.0% of sites (β > α)',
     '14.4% of sites (α > β)',
-    'CP3 χ² p = 0.061 · root Node1 – Node2, w = 8.1% (weak)'
+    'screen p = 0.061 (CP3) · root w = 8.1% (weak)'
   ]);
-  assert.equal(DFEL_KPI_CARDS[3].tone(stats, view), 'ink');
+  assert.equal(DFEL_KPI_CARDS[3].available(data), true);
 });
 
 test('the screen verdict and the fitted K are separate facts; a K the screen would not pick is forced', () => {
   const comp = (heterogeneous) => ({ heterogeneous, overall: { p: 0.2 }, cp3: { p: 0.01 } });
   assert.deepEqual(dfelModelVerdict({ composition: comp(false), K: 1 }).forced, false);
   const forced = dfelModelVerdict({ composition: comp(false), K: 3 });
-  assert.deepEqual([forced.text, forced.summary], ['Homogeneous · K = 3', 'Homogeneous screen · K = 3 (forced)']);
+  // The KPI headline carries the qualifier: one line for the screen, one for the fit
+  assert.deepEqual([forced.screen, forced.fit, forced.summary], ['Homogeneous screen', 'K = 3 (forced)', 'Homogeneous screen · K = 3 (forced)']);
+  const view = { data: { composition: comp(false), K: 3, root: null } };
+  assert.equal(DFEL_KPI_CARDS[3].value({}, view), 'Homogeneous screen\nK = 3 (forced)');
+  assert.equal(DFEL_KPI_CARDS[3].sub({}, view), 'screen p = 0.010 (CP3)');
   assert.equal(dfelModelVerdict({ composition: comp(true), K: 1 }).summary, 'Heterogeneous screen · K = 1 (forced)');
   assert.equal(dfelModelVerdict({ composition: comp(true), K: 3 }).forced, false);
   assert.equal(dfelModelVerdict({ composition: null }), null);
-  assert.equal(dfelDecidingTest(comp(true)), 'CP3 χ² p = 0.010');
-  assert.equal(dfelDecidingTest({ overall: { p: 0.0001 }, cp3: { p: 0.2 } }), 'Overall χ² p = 1.0e-4');
+  assert.equal(dfelDecidingTest(comp(true)), 'screen p = 0.010 (CP3)');
+  assert.equal(dfelDecidingTest({ overall: { p: 0.0001 }, cp3: { p: 0.2 } }), 'screen p = 1.0e-4 (Overall)');
 });
 
 test('the root reads by strategy: ML edge, kept input, outgroup, or an outgroup that was not found', () => {
@@ -134,18 +139,34 @@ test('the root reads by strategy: ML edge, kept input, outgroup, or an outgroup 
   assert.equal(dfelRootPhrase(auto), 'root Node1 – Node2, w = 8.1% (weak)');
   assert.equal(dfelRootPhrase(Object.assign({}, auto, { weight: 0.6 })), 'root Node1 – Node2, w = 60.0%');
   assert.equal(dfelRootCaption(auto), '◆ ML root on Node1 – Node2 (w = 8.1%)');
+  assert.equal(dfelRootToken(auto), 'root w = 8.1% (weak)');
+  assert.equal(dfelRootWarning(auto), null);
+  assert.equal(dfelRootRanked(auto), true);
   // keep: the written weight 1.0 and log L 0 are placeholders and never shown
   const keep = { strategy: 'keep', branch: 'User Input Root (Preserved)', weight: 1, logL: 0, candidates: [] };
   assert.equal(dfelRootPhrase(keep), 'root: input (kept)');
-  assert.equal(dfelRootCaption(keep), '◆ input root (kept)');
+  assert.equal(dfelRootToken(keep), 'root kept');
+  assert.equal(dfelRootCaption(keep), '◆ input root, kept from the input tree (root_strategy = keep)');
+  assert.equal(dfelRootRanked(keep), false);
   assert.doesNotMatch(dfelFitsTable({ fits: {}, root: keep }), /chosen root/);
+  // Weak support is said for every strategy that weighs the root, not only auto
   const cow = { strategy: 'Cow', branch: 'Cow', weight: 0.4, candidates };
-  assert.equal(dfelRootPhrase(cow), 'root: outgroup Cow, w = 40.0%');
+  assert.equal(dfelRootPhrase(cow), 'root: outgroup Cow, w = 40.0% (weak)');
+  assert.equal(dfelRootToken(cow), 'outgroup root w = 40.0% (weak)');
   assert.equal(dfelRootNotes(cow)[0], 'Outgroup requested: Cow.');
-  const zebra = { strategy: 'Zebra', branch: 'Node1 - Node2', weight: 0.6, candidates };
-  assert.equal(dfelRootPhrase(zebra), 'outgroup Zebra not found; ML root Node1 – Node2, w = 60.0%');
-  assert.match(dfelRootNotes(zebra)[0], /requested outgroup not found; ML root used/);
+  assert.equal(dfelRootWarning(cow), null);
+  const zebra = { strategy: 'Zebra', branch: 'Node1 - Node2', weight: 0.081, candidates };
+  assert.equal(dfelRootPhrase(zebra), 'ML root Node1 – Node2, w = 8.1% (weak)');
+  assert.equal(dfelRootToken(zebra), '⚠ outgroup not found');
+  assert.equal(dfelRootWarning(zebra), '⚠ Outgroup Zebra not found in the tree; the ML root is used.');
+  assert.equal(dfelRootNotes(zebra)[0], 'Outgroup requested: Zebra (not found).');
   assert.equal(dfelRootNotes(auto)[1], '95% of the weight needs 2 of 2 placements.');
+  assert.equal(dfelRootPhrase(Object.assign({}, cow, { weight: 0.7 })), 'root: outgroup Cow, w = 70.0%');
+});
+
+test('the hero tooltip prints α with its bounds, as the table and drawer do', () => {
+  assert.equal(DFEL_EVIDENCE.alpha({ alpha: 1000 }), '≥1000 (bound)');
+  assert.equal(DFEL_EVIDENCE.alpha({ alpha: 1e-4 }), '0');
 });
 
 test('rates and ω spell out the optimiser bounds', () => {
@@ -184,14 +205,12 @@ test('a --legacy-json export maps onto the same site rows and nothing of the mod
   assert.equal(data.runCheck(), null);
   assert.equal(data.dataset.file, '/data/cd2.fna');
 
-  // Columns and the strip that need substitutions are dropped; the model card says why
+  // Columns, the strip and the model KPI that need the directional model are dropped; the
+  // format notes say why
   const shown = DFEL_COLUMNS.filter(c => !c.availableWhen || c.availableWhen(data.capabilities)).map(c => c.id);
   assert.deepEqual(shown, ['codon', 'alpha', 'beta', 'omega', 'lrt', 'p', 'detail', 'actions']);
   assert.equal(DFEL_STRIP.available(data), false);
-  const model = DFEL_KPI_CARDS[3];
-  assert.equal(model.value(data.getStats(0.1), { data }), '—');
-  assert.equal(model.sub(data.getStats(0.1), { data }), 'Not reported in hyphy3 --legacy-json output');
-  assert.equal(model.tone(data.getStats(0.1), { data }), 'muted');
+  assert.deepEqual(DFEL_KPI_CARDS.filter(c => !c.available || c.available(data)).map(c => c.id), ['alignment', 'div', 'pur']);
   assert.match(dfelDiagnostics(data), /hyphy3 --legacy-json/);
 });
 
@@ -216,6 +235,8 @@ test('table cells: GC/AT counts, changes cut to whole tokens with the synonymous
   const tally = { gc: 3, at: 1 };
   assert.match(dfelGcAtCell({ tally }, 6), /<span>3 \/ 1<\/span>.*width: 50%.*width: 16\.6/);
   assert.equal(dfelGcAtCell({ tally: null }, 6), '<td></td>');
+  // No GC- or AT-ward change: a muted dash, no empty track
+  assert.equal(dfelGcAtCell({ tally: { gc: 0, at: 0 } }, 6), '<td class="font-mono"><span class="dfel-muted">—</span></td>');
 });
 
 test('the default filter is diversifying by p; an empty one jumps to purifying or shows closest calls', () => {
@@ -250,7 +271,7 @@ test('regime branch styles: GC-drift solid, AT-drift dashed, Neutral thin grey; 
   assert.equal(dfelWeightsText([0.36, 0.58, 0.06]), 'AT 36% · Neutral 58% · GC 6%');
 });
 
-test('fits are listed without a ΔAICc; the cutoff controller runs on round stops', { skip: noFixtures }, () => {
+test('fits are listed without a ΔAICc; the cutoff controller spans 0.001-0.20 in steps of 0.001', { skip: noFixtures }, () => {
   const data = new DFELData(fixture('dfel_cd2.json'));
   const fits = dfelFitsTable(data);
   assert.match(fits, /Nucleotide GTR<\/td><td class="font-mono">-3532\.33<\/td><td class="font-mono">7110\.53/);
@@ -261,7 +282,9 @@ test('fits are listed without a ΔAICc; the cutoff controller runs on round stop
   assert.match(diag, /<span title="[^"]*cd2\.fna">cd2\.fna<\/span>/);
   assert.match(diag, /13 diversifying · 27 purifying · 147 neutral; matches the live call/);
   assert.match(diag, /1\.7233 \(baseline units\)/);
-  assert.deepEqual(sliderAttributes(DFEL_P_THRESHOLD, 0.1), { min: '0.005', max: '0.20', step: '0.005', value: '0.10' });
+  assert.deepEqual(sliderAttributes(DFEL_P_THRESHOLD, 0.1), { min: '0.001', max: '0.20', step: '0.001', value: '0.10' });
+  // A run cutoff under 0.005 sits on a stop, so the thumb shows it and it can be restored
+  assert.equal(sliderAttributes(DFEL_P_THRESHOLD, 0.003).value, '0.003');
   assert.equal(DFEL_P_THRESHOLD.caption, 'Uncorrected per-site p-values');
 });
 

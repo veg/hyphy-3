@@ -223,9 +223,11 @@ test('a secondary view mounts under the table, before diagnostics, and shares da
   const view = (name) => ({
     setData: (data) => log.push([name, 'data', data.branches.length]),
     setThreshold: (t) => log.push([name, 'threshold', t]),
+    render: () => log.push([name, 'render']),
     destroy: () => log.push([name, 'destroy'])
   });
   const config = Object.assign(branchConfig(GE_CONTROLLER), {
+    hero: () => view('hero'),
     table: () => { order.push('table'); return view('table'); },
     secondary: (parent) => { order.push(parent); return view('secondary'); }
   });
@@ -235,7 +237,9 @@ test('a secondary view mounts under the table, before diagnostics, and shares da
   assert.equal(shell.layout.children[shell.layout.children.length - 1], shell.diagWrapper);
   shell.load({ branches });
   shell.setThreshold(0.95);
-  assert.deepEqual(log.filter(([name]) => name === 'secondary'), [['secondary', 'data', 2], ['secondary', 'threshold', 0.95]]);
+  // A theme change repaints it, as it does the hero
+  shell.setTheme('dark');
+  assert.deepEqual(log.filter(([name]) => name === 'secondary'), [['secondary', 'data', 2], ['secondary', 'threshold', 0.95], ['secondary', 'render']]);
   shell.unmount();
   assert.deepEqual(log[log.length - 1], ['secondary', 'destroy']);
   assert.equal(shell.secondary, null);

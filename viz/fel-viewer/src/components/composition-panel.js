@@ -49,14 +49,14 @@ function compositionMean(values) {
 }
 
 // Taxa whose GC3 stands out: beyond 2 SD of the mean, or among the two highest and two
-// lowest when there are more than four taxa
+// lowest when there are more than four taxa (every taxon tied with the second value too)
 export function gcOutliers(taxa) {
   const values = taxa.map(t => t.gcCP3);
   const mean = compositionMean(values);
   const sd = Math.sqrt(compositionMean(values.map(v => (v - mean) ** 2)));
-  const sorted = [...taxa].sort((a, b) => a.gcCP3 - b.gcCP3);
-  const ends = taxa.length > 4 ? [...sorted.slice(0, 2), ...sorted.slice(-2)] : [];
-  return new Set(taxa.filter(t => Math.abs(t.gcCP3 - mean) > 2 * sd || ends.includes(t)).map(t => t.taxon));
+  const sorted = [...values].sort((a, b) => a - b);
+  const end = (v) => taxa.length > 4 && (v <= sorted[1] || v >= sorted[sorted.length - 2]);
+  return new Set(taxa.filter(t => Math.abs(t.gcCP3 - mean) > 2 * sd || end(t.gcCP3)).map(t => t.taxon));
 }
 
 // The axis: every plotted value with 0.02 either side
@@ -66,13 +66,13 @@ export function gcDomain(taxa, marks = []) {
 }
 
 // One row per taxon, sorted by GC3: a filled dot at GC3 and a hollow dot at overall GC,
-// joined by a thin line; a dashed rule at the mean GC3; faint labelled ticks for regime
-// mean GC (marks: [{ value, label }]). Returns { svg, width, height }.
+// joined by a thin line; a dashed rule at the mean GC3; short labelled hairline ticks above
+// the rows for regime mean GC (marks: [{ value, label }]). Returns { svg, width, height }.
 export function gcStripSVG(taxa, { width = 360, marks = [], colors = COMPOSITION_CSS_COLORS } = {}) {
   const rows = taxa.filter(t => t.gcCP3 != null).sort((a, b) => a.gcCP3 - b.gcCP3);
   const compact = rows.length > 40;
   const rowH = compact ? 6 : 16;
-  const pad = { left: compact ? 12 : 84, right: 44, top: marks.length ? 36 : 14, bottom: 26 };
+  const pad = { left: compact ? 12 : 84, right: 44, top: marks.length ? 30 : 14, bottom: 26 };
   const height = pad.top + rows.length * rowH + pad.bottom;
   const [lo, hi] = gcDomain(rows, marks.map(m => m.value));
   const plotW = width - pad.left - pad.right;
@@ -93,15 +93,15 @@ export function gcStripSVG(taxa, { width = 360, marks = [], colors = COMPOSITION
     svg += `  <line x1="${x(v)}" y1="${pad.top}" x2="${x(v)}" y2="${bottom}" ${stroke(colors.gridLine)}/>\n`;
     svg += text(x(v), bottom + 10, v.toFixed(2), 'middle', colors.stone);
   }
-  // A label too close to the previous one moves up a line
-  let lastX = -Infinity;
-  let raised = false;
+  // A label that would overlap the previous one moves up a line
+  let last = { x: -Infinity, half: 0, raised: true };
   for (const m of [...marks].sort((a, b) => a.value - b.value)) {
     const mx = x(m.value);
-    raised = mx - lastX < 60 && !raised;
-    lastX = mx;
-    svg += `  <line x1="${mx}" y1="${pad.top - 6}" x2="${mx}" y2="${bottom}" stroke-width="3" opacity="0.25" ${stroke(colors.stone)}/>\n`;
-    svg += text(mx, pad.top - (raised ? 25 : 13), m.label, 'middle', colors.stone);
+    const half = m.label.length * 2.8;
+    const raised = mx - half < last.x + last.half + 4 && !last.raised;
+    last = { x: mx, half, raised };
+    svg += `  <line x1="${mx}" y1="${pad.top - 8}" x2="${mx}" y2="${pad.top - 2}" ${stroke(colors.stone)}/>\n`;
+    svg += text(mx, pad.top - (raised ? 24 : 14), m.label, 'middle', colors.stone);
   }
   svg += `  <line x1="${x(mean)}" y1="${pad.top}" x2="${x(mean)}" y2="${bottom}" stroke-dasharray="3,3" ${stroke(colors.stone)}/>\n`;
   rows.forEach((t, i) => {

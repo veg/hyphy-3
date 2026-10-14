@@ -2,7 +2,8 @@
 // signed evidence and rate difference modes, ▲/▼ glyphs by direction at the live threshold).
 // The method config supplies the wording and the per-site values through a preset:
 // { tone(r, track), badges: { div, pur }, rows(r), signed(r), diff(r), subtitles: { manhattan, signed, diff },
-//   hint? } where hint replaces the tooltip's closing line for a method with no site tree
+//   alpha?, hint? } where alpha(r) formats the tooltip's α (two decimals by default) and hint
+//   replaces the tooltip's closing line for a method with no site tree
 
 import { formatPValue } from '../core/format.js';
 import { SiteTrackCanvas } from './site-track.js';
@@ -25,7 +26,7 @@ function evidenceTooltip(preset, r, track) {
   const rows = [
     evidenceTipRow('p-value', formatPValue(r.pValue)),
     evidenceTipRow('LRT', r.lrt.toFixed(2)),
-    evidenceTipRow('α (dS)', r.alpha.toFixed(2)),
+    evidenceTipRow('α (dS)', preset.alpha ? preset.alpha(r) : r.alpha.toFixed(2)),
     ...preset.rows(r)
   ];
   const statsRows = rows.map(row => `
