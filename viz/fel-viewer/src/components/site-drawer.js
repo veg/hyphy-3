@@ -97,11 +97,19 @@ export class SiteDrawer {
   }
 
   initKeyboardListener() {
-    window.addEventListener('keydown', (e) => {
+    this.onKeyDown = (e) => {
       if (e.key === 'Escape' && this.isOpen) {
         this.close();
       }
-    });
+    };
+    window.addEventListener('keydown', this.onKeyDown);
+  }
+
+  // Detach from the page when the viewer swaps in another method's components
+  destroy() {
+    window.removeEventListener('keydown', this.onKeyDown);
+    this.backdrop.remove();
+    this.drawer.remove();
   }
 
   setData(data) {

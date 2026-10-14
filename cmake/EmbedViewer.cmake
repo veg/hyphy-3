@@ -8,7 +8,7 @@
 # therefore: resolve imports depth-first from src/index.js, emit each module once in
 # dependency order, drop the import lines and `export` keywords, and wrap everything in
 # one function scope that publishes the entry module's exports as window.HyPhyFELViewer
-# (the same global the former UMD build exposed).
+# (the same global the former UMD build exposed) and under the neutral window.HyPhyViewer.
 
 cmake_minimum_required(VERSION 3.20)
 
@@ -87,7 +87,7 @@ foreach(_module IN LISTS _ordered)
     endif()
     string(APPEND _js "\n// ---- ${_rel} ----\n${_src}\n")
 endforeach()
-string(APPEND _js "\nwindow.HyPhyFELViewer = { ${_api_list} };\n})();\n")
+string(APPEND _js "\nwindow.HyPhyFELViewer = window.HyPhyViewer = { ${_api_list} };\n})();\n")
 
 # Stylesheets are linked from the dev page rather than imported, so embed them all
 file(GLOB _css_files "${VIEWER_DIR}/src/styles/*.css")

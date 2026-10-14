@@ -84,6 +84,10 @@ export class EvidencePlot {
     this.resizeObserver.observe(this.canvasContainer);
   }
 
+  destroy() {
+    this.resizeObserver.disconnect();
+  }
+
   resize() {
     if (!this.canvasContainer) return;
     const rect = this.canvasContainer.getBoundingClientRect();

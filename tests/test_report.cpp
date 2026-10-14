@@ -52,6 +52,7 @@ TEST_CASE("Report: FEL and MEME reports embed the viewer, stylesheet and data") 
     std::string fel = render_html(R"J({"analysis": {"id": "fel"}, "dataset": {}})J", "/runs/cd2.FEL.json");
     CHECK(fel.find("<hyphy-fel-viewer") != std::string::npos);
     CHECK(fel.find("window.HyPhyFELViewer") != std::string::npos);
+    CHECK(fel.find("window.HyPhyViewer") != std::string::npos);     // neutral alias of the same API
     CHECK(fel.find(".hyphy-fel-container") != std::string::npos);  // viewer stylesheet inlined
     CHECK(fel.find("FEL &bull; Pervasive Selection") != std::string::npos);
     CHECK(fel.find(">cd2.FEL.json<") != std::string::npos);        // file name only, not the path
