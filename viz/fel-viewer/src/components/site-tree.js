@@ -120,6 +120,11 @@ export class SiteTree {
     this.sequences = seqs || {};
   }
 
+  setData(data) {
+    this.setTree(data.treeNewick);
+    this.setSequences(data.sequences);
+  }
+
   setSite(siteNumber, siteResult) {
     this.site = siteNumber;
     this.siteResult = siteResult;

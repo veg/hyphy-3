@@ -1,12 +1,13 @@
 // MEME method config: episodic diversifying selection (beta+ vs alpha) per codon
-// Shares FEL's site components and parser; the KPI cards, table and diagnostics differ here
+// Shares FEL's site components and parser; the KPI cards, table, drawer and diagnostics differ here
 
 import { FEL_CONFIG, mg94FitItems, SITE_P_THRESHOLD, FEL_KPI_CARDS, ALIGNMENT_KPI, sitePercent } from './fel.js';
 import { CODON_COLUMN, LRT_COLUMN, SUBSTITUTIONS_COLUMN, SITE_ACTIONS_COLUMN, FEL_COLUMNS, FEL_FILTERS, FEL_TABLE, siteResultsTable } from './fel.js';
+import { FEL_DRAWER, SITE_TREE_TAB, siteOverviewTab, siteDrawer } from './fel.js';
 import { KpiBar } from '../components/kpi-bar.js';
 import { closestCalls } from '../components/results-table.js';
-import { PALETTE } from '../data/palette.js';
-import { formatThreshold, formatPValue } from '../core/format.js';
+import { PALETTE, withAlpha } from '../data/palette.js';
+import { formatThreshold, formatPValue, formatOmegaInf, formatEBF } from '../core/format.js';
 
 // The bar draws FEL's blank cards until a result loads, then relabels them
 export const MEME_KPI_CARDS = [
@@ -140,6 +141,123 @@ export const MEME_TABLE = Object.assign({}, FEL_TABLE, {
   exportName: 'hyphy_meme_candidates'
 });
 
+function memeDrawerHeader(r, { threshold }) {
+  return r.pValue <= threshold
+    ? { tag: `Codon #${r.site}`, tone: 'div', badge: '▲ Episodic Diversifying Selection' }
+    : { tag: `Codon #${r.site}`, tone: 'neutral', badge: 'Neutral / Constrained' };
+}
+
+function memeRatesGrid(r, threshold) {
+  const isSig = r.pValue <= threshold;
+  const omegaStr = formatOmegaInf(r.omega);
+  const pStr = formatPValue(r.pValue, 3);
+  const pPlusPct = Math.round((r.p_plus ?? 0) * 100);
+  const p1Pct = Math.round((r.p1 ?? (1 - (r.p_plus ?? 0))) * 100);
+  return `
+        <div class="drawer-section">
+          <div class="drawer-section-title">Maximum Likelihood Rates (MEME Mixture Model)</div>
+          <div class="drawer-stats-grid">
+            <div class="drawer-stat-card">
+              <div class="dstat-label">Synonymous Rate (α)</div>
+              <div class="dstat-value font-mono font-bold">${r.alpha.toFixed(2)}</div>
+              <div class="dstat-sub">dS estimate</div>
+            </div>
+            <div class="drawer-stat-card">
+              <div class="dstat-label">Constrained Rate (β₁)</div>
+              <div class="dstat-value font-mono font-bold">${(r.beta1 ?? 0).toFixed(2)}</div>
+              <div class="dstat-sub">p₁ = ${p1Pct}% of branches</div>
+            </div>
+            <div class="drawer-stat-card">
+              <div class="dstat-label">Episodic Rate (β⁺)</div>
+              <div class="dstat-value font-mono font-bold text-orange">${memeBetaPlus(r).toFixed(2)}</div>
+              <div class="dstat-sub">p⁺ = ${pPlusPct}% under selection</div>
+            </div>
+            <div class="drawer-stat-card">
+              <div class="dstat-label">Ratio (β⁺ / α)</div>
+              <div class="dstat-value font-mono font-bold">${omegaStr}</div>
+              <div class="dstat-sub">${isSig ? 'Episodic Diversification' : 'Unconstrained'}</div>
+            </div>
+            <div class="drawer-stat-card">
+              <div class="dstat-label">LRT Statistic</div>
+              <div class="dstat-value font-mono font-bold">${r.lrt.toFixed(2)}</div>
+              <div class="dstat-sub">2ΔlnL (vs β⁺ ≤ α)</div>
+            </div>
+            <div class="drawer-stat-card">
+              <div class="dstat-label">p-value</div>
+              <div class="dstat-value font-mono font-bold ${isSig ? 'text-orange' : ''}">${pStr}</div>
+              <div class="dstat-sub">${isSig ? 'Episodically Diversifying' : 'Not Significant'}</div>
+            </div>
+          </div>
+        </div>
+      `;
+}
+
+// Branches with EBF >= 100 at the site, matched to their reconstructed substitution
+function memeBranchSection(r, { events, rootCodon, rootAA }) {
+  const supportedBranches = Object.entries(r.branchEBF || {})
+    .filter(([_, ebf]) => ebf >= 100)
+    .sort((a, b) => b[1] - a[1]);
+
+  if (supportedBranches.length === 0) {
+    return `
+          <div class="drawer-section">
+            <div class="drawer-section-title">Branches Under Episodic Selection</div>
+            <div class="empty-events-notice">
+              No individual branches reached the strict EBF ≥ 100 evidentiary cutoff at this codon site.
+              ${r.p_plus > 0 ? `The episodic signal is distributed across branches (overall p⁺ = ${(r.p_plus * 100).toFixed(1)}%).` : ''}
+            </div>
+          </div>
+        `;
+  }
+
+  return `
+          <div class="drawer-section">
+            <div class="drawer-section-title">
+              <span>Branches Under Episodic Selection (EBF ≥ 100)</span>
+              <span class="root-badge" style="background: ${withAlpha(PALETTE.accent, 0.15)}; color: ${PALETTE.accent}; border-color: ${withAlpha(PALETTE.accent, 0.3)};">
+                <strong>${supportedBranches.length}</strong> branch(es) supported
+              </span>
+            </div>
+            <div class="events-table-wrapper">
+              <table class="events-table">
+                <thead>
+                  <tr>
+                    <th>Branch</th>
+                    <th>Empirical Bayes Factor (EBF)</th>
+                    <th>Reconstructed Substitution</th>
+                    <th>Type</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${supportedBranches.map(([bName, ebf]) => {
+                    const ev = events.find(e => e.branch === bName);
+                    const subStr = ev
+                      ? `<strong>${ev.parent_codon || rootCodon}</strong> (${ev.parent_aa || rootAA}) → <strong>${ev.child_codon}</strong> (${ev.child_aa})`
+                      : `<span style="color: ${PALETTE.neutral}; font-style: italic;">No discrete mutation reconstructed</span>`;
+                    const typeHtml = ev
+                      ? `<span class="ev-tag ${ev.is_synonymous ? 'ev-syn' : 'ev-nonsyn'}">${ev.is_synonymous ? 'Synonymous' : 'Non-synonymous'}</span>`
+                      : '—';
+                    return `
+                      <tr>
+                        <td class="font-mono font-bold">${bName}</td>
+                        <td class="font-mono"><span class="ebf-branch-badge ebf-active">⚡ EBF ${formatEBF(ebf)}</span></td>
+                        <td class="font-mono">${subStr}</td>
+                        <td>${typeHtml}</td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `;
+}
+
+export const MEME_DRAWER = Object.assign({}, FEL_DRAWER, {
+  header: memeDrawerHeader,
+  tabs: [siteOverviewTab(memeRatesGrid, memeBranchSection), SITE_TREE_TAB]
+});
+
 function memeDiagnostics(data) {
   return `
       <div class="diag-item">
@@ -171,5 +289,6 @@ export const MEME_CONFIG = Object.assign({}, FEL_CONFIG, {
     onThresholdChange: hooks.onThresholdChange
   }),
   table: (parent, hooks) => siteResultsTable(parent, hooks, MEME_TABLE),
+  drawer: (container, hooks) => siteDrawer(container, hooks, MEME_DRAWER),
   diagnostics: memeDiagnostics
 });

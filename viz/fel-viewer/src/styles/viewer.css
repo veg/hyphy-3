@@ -947,6 +947,13 @@
   gap: 20px;
 }
 
+/* One muted line naming the tabs a result has no data for */
+.drawer-tab-note {
+  font-size: 11px;
+  color: var(--stone);
+  font-style: italic;
+}
+
 .drawer-section {
   display: flex;
   flex-direction: column;

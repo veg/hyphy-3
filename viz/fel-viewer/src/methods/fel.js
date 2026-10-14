@@ -1,12 +1,14 @@
 // FEL method config: site-level pervasive selection, alpha vs beta per codon
-// The site components below also serve MEME; the hero and drawer read data.isMEME for its wording
+// The site components below also serve MEME; the hero reads data.isMEME for its wording
 
 import { FELData } from '../data/fel-data.js';
 import { KpiBar } from '../components/kpi-bar.js';
 import { EvidencePlot } from '../components/evidence-plot.js';
 import { ResultsTable, closestCalls } from '../components/results-table.js';
-import { SiteDrawer } from '../components/site-drawer.js';
-import { formatOmegaInf, formatThreshold, formatPValue } from '../core/format.js';
+import { Drawer } from '../components/drawer.js';
+import { SiteTree } from '../components/site-tree.js';
+import { translateCodon } from '../data/genetic-code.js';
+import { formatOmegaInf, formatThreshold, formatPValue, formatEBF } from '../core/format.js';
 import { csvQuote } from '../core/export.js';
 
 // Diagnostics rows for the global MG94 fit, from v3 model_fits or legacy fits
@@ -327,6 +329,217 @@ export const FEL_TABLE = {
   exportName: 'hyphy_fel_candidates'
 };
 
+// Drawer: a site's header badge, then the Overview & Events and Site Tree tabs.
+// The overview's markup is whitespace-sensitive like the table's; do not reformat it.
+
+const FEL_BADGES = {
+  Diversifying: { tone: 'div', badge: '▲ Diversifying Selection' },
+  Purifying: { tone: 'pur', badge: '▼ Purifying Selection' },
+  Neutral: { tone: 'neutral', badge: 'Neutral Evolution' }
+};
+
+function felDrawerHeader(r, { threshold }) {
+  return Object.assign({ tag: `Codon #${r.site}` }, FEL_BADGES[felRegime(r, threshold)]);
+}
+
+// Substitution events and root state at a site, from the row or the result's site maps
+export function siteSubstitutions(r, data) {
+  const events = r.events || data.eventsBySite[r.site] || [];
+  const rootCodon = r.rootCodon || (data.rootCodons?.[r.site - 1]) || '---';
+  const rootAA = r.rootAA || (data.rootAA?.[r.site - 1]) || translateCodon(rootCodon);
+  return { events, rootCodon, rootAA };
+}
+
+function felRatesGrid(r, threshold) {
+  const isSig = r.pValue <= threshold;
+  const isDiv = felDiversifying(r, threshold);
+  const isPur = felPurifying(r, threshold);
+  const omegaStr = formatOmegaInf(r.omega);
+  const pStr = formatPValue(r.pValue, 3);
+  return `
+        <div class="drawer-section">
+          <div class="drawer-section-title">Maximum Likelihood Rates</div>
+          <div class="drawer-stats-grid">
+            <div class="drawer-stat-card">
+              <div class="dstat-label">Synonymous Rate (α)</div>
+              <div class="dstat-value font-mono font-bold">${r.alpha.toFixed(2)}</div>
+              <div class="dstat-sub">dS estimate</div>
+            </div>
+            <div class="drawer-stat-card">
+              <div class="dstat-label">Non-synonymous Rate (β)</div>
+              <div class="dstat-value font-mono font-bold">${r.beta.toFixed(2)}</div>
+              <div class="dstat-sub">dN estimate</div>
+            </div>
+            <div class="drawer-stat-card">
+              <div class="dstat-label">Ratio (ω = dN/dS)</div>
+              <div class="dstat-value font-mono font-bold">${omegaStr}</div>
+              <div class="dstat-sub">${isDiv ? 'Positive Selection' : (isPur ? 'Constraint' : 'Neutral')}</div>
+            </div>
+            <div class="drawer-stat-card">
+              <div class="dstat-label">LRT Statistic</div>
+              <div class="dstat-value font-mono font-bold">${r.lrt.toFixed(2)}</div>
+              <div class="dstat-sub">2ΔlnL (vs neutral)</div>
+            </div>
+            <div class="drawer-stat-card">
+              <div class="dstat-label">p-value</div>
+              <div class="dstat-value font-mono font-bold ${isSig ? 'text-orange' : ''}">${pStr}</div>
+              <div class="dstat-sub">${isSig ? 'Statistically Significant' : 'Not Significant'}</div>
+            </div>
+            <div class="drawer-stat-card">
+              <div class="dstat-label">Neutral Rate (α=β)</div>
+              <div class="dstat-value font-mono font-bold">${(r.alpha_null ?? 0).toFixed(2)}</div>
+              <div class="dstat-sub">Null model rate</div>
+            </div>
+          </div>
+        </div>
+      `;
+}
+
+// Rates grid and branch section, then the reconstructed substitutions and extant codons
+function siteOverviewMarkup(r, data, ratesGridHtml, ebfSectionHtml, { events, rootCodon, rootAA }) {
+  const extantCodons = {};
+  for (const seq of Object.values(data.sequences || {})) {
+    const codon = seq.substr((r.site - 1) * 3, 3).toUpperCase();
+    if (codon && codon.length === 3 && codon !== '---') {
+      extantCodons[codon] = (extantCodons[codon] || 0) + 1;
+    }
+  }
+
+  let html = `
+      <!-- 1. Rates Grid -->
+      ${ratesGridHtml}
+
+      <!-- 2. Branches Under Episodic Selection (MEME Only) -->
+      ${ebfSectionHtml}
+
+      <!-- 3. Reconstructed Substitutions -->
+      <div class="drawer-section">
+        <div class="drawer-section-title">
+          <span>Reconstructed Substitutions</span>
+          <span class="root-badge">Root: <strong>${rootCodon}</strong> (${rootAA})</span>
+        </div>
+        <div class="sub-history-callout">
+          <strong>Summary:</strong> ${r.history || 'No substitutions detected (fully conserved site)'}
+        </div>
+    `;
+
+  if (events.length > 0) {
+    html += `
+        <div class="events-table-wrapper">
+          <table class="events-table">
+            <thead>
+              <tr>
+                <th>Branch</th>
+                <th>Transition</th>
+                <th>Type</th>
+                <th>Distance</th>
+                <th style="text-align: right;">Surprise</th>
+              </tr>
+            </thead>
+            <tbody>
+      `;
+
+    for (const ev of events) {
+      const isMultiHit = (ev.nt_distance > 1);
+      const typeClass = ev.is_synonymous ? 'ev-syn' : 'ev-nonsyn';
+      const typeLabel = ev.is_synonymous ? 'Synonymous' : 'Non-synonymous';
+      const distLabel = `${ev.nt_distance || 1}nt${isMultiHit ? ' ⚡' : ''}`;
+      const surpriseStr = ev.surprise_bits != null ? `${ev.surprise_bits.toFixed(1)} bits` : '—';
+      const ebf = r.branchEBF?.[ev.branch];
+      const ebfTag = (ebf != null && ebf >= 100)
+        ? `<span class="ebf-branch-badge ebf-active" style="margin-left: 6px; font-size: 8.5px; padding: 1px 4px;">⚡ EBF ${formatEBF(ebf)}</span>`
+        : '';
+
+      html += `
+          <tr>
+            <td class="font-mono">${ev.branch}${ebfTag}</td>
+            <td class="font-mono">
+              <strong>${ev.parent_codon || rootCodon}</strong> (${ev.parent_aa || rootAA}) → 
+              <strong>${ev.child_codon}</strong> (${ev.child_aa})
+            </td>
+            <td><span class="ev-tag ${typeClass}">${typeLabel}</span></td>
+            <td class="font-mono ${isMultiHit ? 'text-orange font-bold' : ''}">${distLabel}</td>
+            <td style="text-align: right;" class="font-mono">${surpriseStr}</td>
+          </tr>
+        `;
+    }
+
+    html += `
+            </tbody>
+          </table>
+        </div>
+      `;
+  } else {
+    html += `
+        <div class="empty-events-notice">
+          No branch-specific substitution events reconstructed for this codon site.
+        </div>
+      `;
+  }
+
+  html += `</div>`;
+
+  // 4. Extant Residues (if present)
+  if (Object.keys(extantCodons).length > 0) {
+    html += `
+        <div class="drawer-section">
+          <div class="drawer-section-title">Observed Extant Residues</div>
+          <div class="extant-chips-grid">
+      `;
+    for (const [codon, count] of Object.entries(extantCodons)) {
+      html += `
+          <div class="extant-chip">
+            <span class="extant-codon font-mono">${codon}</span>
+            <span class="extant-count font-mono">×${count}</span>
+          </div>
+        `;
+    }
+    html += `
+          </div>
+        </div>
+      `;
+  }
+
+  return html;
+}
+
+// Overview & Events tab around a method's rates grid and optional branch section
+export function siteOverviewTab(ratesGrid, branchSection = () => '') {
+  return {
+    id: 'summary',
+    label: 'Overview &amp; Events',
+    comment: 'Rates and events table',
+    render: (panel, r, { data, threshold }) => {
+      const subs = siteSubstitutions(r, data);
+      panel.innerHTML = siteOverviewMarkup(r, data, ratesGrid(r, threshold), branchSection(r, subs), subs);
+    }
+  };
+}
+
+// Always shown: SiteTree draws its own 'No tree available' notice for a result
+// without a tree, as the legacy FEL baseline does
+export const SITE_TREE_TAB = {
+  id: 'tree',
+  label: 'Site Tree 🌳',
+  comment: 'SiteTree component mounted here',
+  mount: (panel) => new SiteTree(panel),
+  render: (panel, r, { key, view }) => view.setSite(key, r)
+};
+
+export const FEL_DRAWER = {
+  emptyTag: 'Codon #—',
+  row: (data, site) => data.getSite(site),
+  header: felDrawerHeader,
+  tabs: [siteOverviewTab(felRatesGrid), SITE_TREE_TAB]
+};
+
+export function siteDrawer(container, hooks, drawer) {
+  return new Drawer(container, Object.assign({}, drawer, {
+    threshold: hooks.threshold,
+    onClose: hooks.onClose
+  }));
+}
+
 export function siteResultsTable(parent, hooks, table) {
   return new ResultsTable(parent, Object.assign({}, table, {
     threshold: hooks.threshold,
@@ -352,9 +565,6 @@ export const FEL_CONFIG = {
     onSiteSelect: (site) => hooks.onSiteSelect(site)
   }),
   table: (parent, hooks) => siteResultsTable(parent, hooks, FEL_TABLE),
-  drawer: (container, hooks) => new SiteDrawer(container, {
-    threshold: hooks.threshold,
-    onClose: hooks.onClose
-  }),
+  drawer: (container, hooks) => siteDrawer(container, hooks, FEL_DRAWER),
   diagnostics: felDiagnostics
 };
