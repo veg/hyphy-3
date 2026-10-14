@@ -61,6 +61,20 @@ foreach(_line IN LISTS _entry_exports)
 endforeach()
 list(JOIN _api ", " _api_list)
 
+# All modules share one scope after bundling, so top-level names must be unique across modules
+set(_declared "")
+foreach(_module IN LISTS _ordered)
+    file(STRINGS "${_module}" _decls REGEX "^(export )?(async )?(class|function|const|let|var) [A-Za-z_$][A-Za-z0-9_$]*")
+    foreach(_decl IN LISTS _decls)
+        string(REGEX REPLACE "^(export )?(async )?(class|function|const|let|var) ([A-Za-z_$][A-Za-z0-9_$]*).*$" "\\4" _name "${_decl}")
+        if(_name IN_LIST _declared)
+            message(FATAL_ERROR "Top-level name '${_name}' is declared in more than one viewer module "
+                                "(again in ${_module}). Bundled modules share one scope; rename one of them.")
+        endif()
+        list(APPEND _declared "${_name}")
+    endforeach()
+endforeach()
+
 set(_js "(function () {\n'use strict';\n")
 foreach(_module IN LISTS _ordered)
     file(READ "${_module}" _src)
