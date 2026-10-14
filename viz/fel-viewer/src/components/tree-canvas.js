@@ -1,17 +1,19 @@
 // High-performance phylogenetic tree canvas renderer with 1-to-1 leaf row registration
 
+import { PALETTE, withAlpha } from '../data/palette.js';
+
 export class TreeCanvas {
   constructor(container, options = {}) {
     this.container = container;
     this.options = Object.assign({
       rowHeight: 22,
       font: '11px -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif',
-      branchColor: '#1A1A18',
-      testedBranchColor: '#1A1A18',
-      backgroundBranchColor: '#8E8E8A',
-      leafTextColor: '#1A1A18',
-      highlightColor: '#EB5E28',
-      activeBranchColor: '#EB5E28',
+      branchColor: PALETTE.ink,
+      testedBranchColor: PALETTE.ink,
+      backgroundBranchColor: PALETTE.branchGrey,
+      leafTextColor: PALETTE.ink,
+      highlightColor: PALETTE.accent,
+      activeBranchColor: PALETTE.accent,
       cladogram: false,
       onBranchSelect: null,
       onLeafHover: null
@@ -252,7 +254,7 @@ export class TreeCanvas {
     const treeW = Math.max(w - padX - labelPad, 60);
 
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = '#FFFFFF';
+    ctx.fillStyle = PALETTE.panel;
     ctx.fillRect(0, 0, w, h);
     ctx.save();
     ctx.translate(0, -this.scrollTop);
@@ -289,7 +291,7 @@ export class TreeCanvas {
       // If branch is under episodic selection (EBF >= 100), draw an incandescent glowing aura first
       if (isEpisodic) {
         ctx.save();
-        ctx.strokeStyle = 'rgba(235, 94, 40, 0.28)';
+        ctx.strokeStyle = withAlpha(PALETTE.accent, 0.28);
         ctx.lineWidth = 7.0;
         ctx.lineCap = 'round';
         ctx.beginPath();
@@ -301,13 +303,13 @@ export class TreeCanvas {
 
       ctx.lineWidth = isHovered ? 2.5 : (isEpisodic ? 2.25 : (isTested ? 1.25 : 1.0));
       if (isHovered) {
-        ctx.strokeStyle = '#EB5E28'; // Iconic Braun Orange on hover focus
+        ctx.strokeStyle = PALETTE.accent; // Iconic Braun Orange on hover focus
       } else if (isEpisodic) {
-        ctx.strokeStyle = '#EB5E28'; // Braun Signal Orange for episodic branch
+        ctx.strokeStyle = PALETTE.accent; // Braun Signal Orange for episodic branch
       } else if (hasModerateEBF) {
-        ctx.strokeStyle = '#D97706'; // Amber for moderate EBF (5..100)
+        ctx.strokeStyle = PALETTE.amber; // Amber for moderate EBF (5..100)
       } else if (ev) {
-        ctx.strokeStyle = ev.is_synonymous ? '#1E40AF' : '#EB5E28'; // Cobalt for syn, Braun Orange for nonsyn
+        ctx.strokeStyle = ev.is_synonymous ? PALETTE.purifying : PALETTE.accent; // Cobalt for syn, Braun Orange for nonsyn
       } else if (isTested) {
         ctx.strokeStyle = this.options.testedBranchColor;
       } else {
@@ -324,7 +326,7 @@ export class TreeCanvas {
       if (isEpisodic) {
         ctx.save();
         const midX = (px + nx) / 2;
-        ctx.fillStyle = '#EB5E28';
+        ctx.fillStyle = PALETTE.accent;
         ctx.beginPath();
         ctx.moveTo(midX, ny - 4.5);
         ctx.lineTo(midX + 4.5, ny);
@@ -332,13 +334,13 @@ export class TreeCanvas {
         ctx.lineTo(midX - 4.5, ny);
         ctx.closePath();
         ctx.fill();
-        ctx.strokeStyle = '#FFFFFF';
+        ctx.strokeStyle = PALETTE.panel;
         ctx.lineWidth = 1.0;
         ctx.stroke();
 
         // EBF label tag above diamond
         ctx.font = 'bold 8px "SF Mono", Monaco, monospace';
-        ctx.fillStyle = '#EB5E28';
+        ctx.fillStyle = PALETTE.accent;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'bottom';
         const ebfLabel = ebf >= 1000 ? `EBF>${Math.round(ebf)}` : `EBF:${Math.round(ebf)}`;
@@ -350,17 +352,17 @@ export class TreeCanvas {
       if (ev) {
         ctx.save();
         const midX = isEpisodic ? ((px + nx) / 2 + 8) : ((px + nx) / 2);
-        ctx.fillStyle = ev.is_synonymous ? '#1E40AF' : '#EB5E28';
+        ctx.fillStyle = ev.is_synonymous ? PALETTE.purifying : PALETTE.accent;
         ctx.beginPath();
         ctx.arc(midX, ny, 4.0, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = '#FFFFFF';
+        ctx.strokeStyle = PALETTE.panel;
         ctx.lineWidth = 1.0;
         ctx.stroke();
 
         // High perplexity lightning badge
         if (ev.surprise_bits >= 10.0) {
-          ctx.fillStyle = '#B45309';
+          ctx.fillStyle = PALETTE.amberOchre;
           ctx.font = 'bold 10px sans-serif';
           ctx.fillText('⚡', midX - 4, ny - 6);
         }
@@ -372,7 +374,7 @@ export class TreeCanvas {
         const topY = node.children[0].y;
         const botY = node.children[node.children.length - 1].y;
 
-        ctx.strokeStyle = isHovered ? '#EB5E28' : (isTested ? this.options.testedBranchColor : this.options.backgroundBranchColor);
+        ctx.strokeStyle = isHovered ? PALETTE.accent : (isTested ? this.options.testedBranchColor : this.options.backgroundBranchColor);
         ctx.lineWidth = isHovered ? 2.5 : (isTested ? 1.75 : 1.25);
         ctx.beginPath();
         ctx.moveTo(nx, topY);
@@ -381,7 +383,7 @@ export class TreeCanvas {
 
         if (this.showAncestors && node.name) {
           ctx.font = isHovered ? 'bold 9px "SF Mono", Monaco, monospace' : '9px "SF Mono", Monaco, monospace';
-          ctx.fillStyle = isHovered ? '#EB5E28' : (isEpisodic ? '#EB5E28' : '#8E8E8A');
+          ctx.fillStyle = isHovered ? PALETTE.accent : (isEpisodic ? PALETTE.accent : PALETTE.branchGrey);
           ctx.textAlign = 'left';
           ctx.textBaseline = 'bottom';
           ctx.fillText(node.name, nx + 3, ny - 2);
@@ -393,7 +395,7 @@ export class TreeCanvas {
       } else {
         // Leaf label
         ctx.font = (isHovered || isEpisodic) ? `bold ${this.options.font}` : this.options.font;
-        ctx.fillStyle = (isHovered || isEpisodic) ? '#EB5E28' : this.options.leafTextColor;
+        ctx.fillStyle = (isHovered || isEpisodic) ? PALETTE.accent : this.options.leafTextColor;
         ctx.textBaseline = 'middle';
         ctx.textAlign = 'left';
         ctx.fillText(node.name || '', nx + 8, ny);
@@ -412,11 +414,11 @@ export class TreeCanvas {
         const isAncHovered = this.hoveredNode?.name === ancName;
 
         // Subtle row background wash
-        ctx.fillStyle = '#FAF9F6';
+        ctx.fillStyle = PALETTE.cellBg;
         ctx.fillRect(0, y, w, rowH);
 
         // Subtle hairline divider
-        ctx.strokeStyle = '#EAEAE6';
+        ctx.strokeStyle = PALETTE.gridLine;
         ctx.lineWidth = 0.5;
         ctx.beginPath();
         ctx.moveTo(0, y + rowH);
@@ -425,7 +427,7 @@ export class TreeCanvas {
 
         // Ancestral node row label
         ctx.font = isAncHovered ? 'bold 11px -apple-system, sans-serif' : 'italic 11px -apple-system, sans-serif';
-        ctx.fillStyle = isAncHovered ? '#EB5E28' : '#767672';
+        ctx.fillStyle = isAncHovered ? PALETTE.accent : PALETTE.stone;
         ctx.textBaseline = 'middle';
         ctx.textAlign = 'left';
         const isRoot = !this.nodesByName[ancName]?.parent;

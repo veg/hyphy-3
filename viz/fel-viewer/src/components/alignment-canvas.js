@@ -1,6 +1,7 @@
 // Virtualized 2D canvas sequence alignment matrix renderer (Codons & Amino Acids)
 
-import { ZAPPO_COLORS, NUCLEOTIDE_COLORS, SELECTION_COLORS, RAMS_COLORS } from '../data/genetic-code.js';
+import { ZAPPO_COLORS, NUCLEOTIDE_COLORS, SELECTION_COLORS } from '../data/genetic-code.js';
+import { PALETTE, withAlpha } from '../data/palette.js';
 
 export class AlignmentCanvas {
   constructor(container, options = {}) {
@@ -10,8 +11,8 @@ export class AlignmentCanvas {
       aaColWidth: 24,
       codonColWidth: 46,
       font: '12px -apple-system, BlinkMacSystemFont, "SF Mono", Monaco, "Cascadia Code", Consolas, monospace',
-      bgColor: '#FFFFFF',
-      cellBorderColor: '#EAEAE6',
+      bgColor: PALETTE.panel,
+      cellBorderColor: PALETTE.gridLine,
       displayMode: 'amino_acid',     // 'amino_acid' | 'codon'
       colorScheme: 'difference',      // 'difference' | 'selection' | 'chemistry'
       onSiteSelect: null,
@@ -140,9 +141,9 @@ export class AlignmentCanvas {
     // 1. Draw Column Selection Highlight Bar (Iconic Braun Signal Orange precision focus)
     if (this.selectedSite >= 1 && this.selectedSite <= this.data.numSites) {
       const sx = (this.selectedSite - 1) * colW;
-      ctx.fillStyle = 'rgba(235, 94, 40, 0.08)';
+      ctx.fillStyle = withAlpha(PALETTE.accent, 0.08);
       ctx.fillRect(sx, this.scrollTop, colW, h);
-      ctx.strokeStyle = '#EB5E28';
+      ctx.strokeStyle = PALETTE.accent;
       ctx.lineWidth = 1.5;
       ctx.strokeRect(sx + 0.5, this.scrollTop, colW - 1, h);
     }
@@ -167,7 +168,7 @@ export class AlignmentCanvas {
 
       // Ancestral row subtle background wash
       if (isAncestor) {
-        ctx.fillStyle = '#FAF9F6';
+        ctx.fillStyle = PALETTE.cellBg;
         ctx.fillRect(this.scrollLeft, y, w, rowH);
       }
 
@@ -192,32 +193,32 @@ export class AlignmentCanvas {
 
         // Background cell fill
         let cellFill = null;
-        let textColor = isAncestor ? '#4A4A45' : '#1A1A18';
+        let textColor = isAncestor ? PALETTE.ancestorInk : PALETTE.ink;
 
         if (scheme === 'difference' || scheme === 'difference_root') {
           if (isMutated) {
-            cellFill = ZAPPO_COLORS[aa] || '#767672';
-            textColor = lightZappoResidues.has(aa) ? '#1A1A18' : '#FFFFFF';
+            cellFill = ZAPPO_COLORS[aa] || PALETTE.stone;
+            textColor = lightZappoResidues.has(aa) ? PALETTE.ink : PALETTE.knockout;
           } else {
-            textColor = isAncestor ? '#B8B8B2' : '#A8A8A2'; // Restrained Dieter Rams muted dot
+            textColor = isAncestor ? PALETTE.dotMuted : PALETTE.dotFaint; // Restrained Dieter Rams muted dot
           }
         } else if (scheme === 'chemistry') {
-          cellFill = ZAPPO_COLORS[aa] || '#EAEAE6';
-          textColor = lightZappoResidues.has(aa) ? '#1A1A18' : '#FFFFFF';
+          cellFill = ZAPPO_COLORS[aa] || PALETTE.gridLine;
+          textColor = lightZappoResidues.has(aa) ? PALETTE.ink : PALETTE.knockout;
         } else if (scheme === 'selection') {
           if (siteResult) {
             if (siteResult.classification === 'diversifying') {
-              cellFill = isMutated ? '#EB5E28' : 'rgba(235, 94, 40, 0.12)';
-              textColor = isMutated ? '#FFFFFF' : '#EB5E28';
+              cellFill = isMutated ? PALETTE.accent : withAlpha(PALETTE.accent, 0.12);
+              textColor = isMutated ? PALETTE.knockout : PALETTE.accent;
             } else if (siteResult.classification === 'purifying') {
-              cellFill = isMutated ? '#1E40AF' : 'rgba(30, 64, 175, 0.10)';
-              textColor = isMutated ? '#FFFFFF' : '#1E40AF';
+              cellFill = isMutated ? PALETTE.purifying : withAlpha(PALETTE.purifying, 0.10);
+              textColor = isMutated ? PALETTE.knockout : PALETTE.purifying;
             } else {
               if (isMutated) {
-                cellFill = '#EAEAE6';
-                textColor = '#1A1A18';
+                cellFill = PALETTE.gridLine;
+                textColor = PALETTE.ink;
               } else {
-                textColor = '#A8A8A2';
+                textColor = PALETTE.dotFaint;
               }
             }
           }
@@ -235,7 +236,7 @@ export class AlignmentCanvas {
         ctx.fillStyle = textColor;
         if (isCodon) {
           if (scheme === 'difference' && !isMutated && aa !== '-') {
-            ctx.fillStyle = '#8E8E8A';
+            ctx.fillStyle = PALETTE.branchGrey;
           }
           ctx.fillText(codon, x + colW / 2, y + rowH / 2);
         } else {

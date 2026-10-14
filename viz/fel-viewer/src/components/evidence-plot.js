@@ -1,6 +1,8 @@
 // High-DPI Interactive Evidence Plot (Manhattan -log10 p)
 // Pure HTML5 Canvas with Retina scaling, responsive resize, threshold guide, hover tooltips, and click inspection
 
+import { PALETTE } from '../data/palette.js';
+
 export class EvidencePlot {
   constructor(container, options = {}) {
     this.container = container;
@@ -354,10 +356,10 @@ export class EvidencePlot {
     const scaleY = (val) => padTop + (1 - (val - yMin) / (yMax - yMin)) * plotH;
 
     // 1. Grid Lines & Ticks (Dieter Rams subtle gray)
-    ctx.strokeStyle = '#EAEAE6';
+    ctx.strokeStyle = PALETTE.gridLine;
     ctx.lineWidth = 1;
     ctx.font = '10px "SF Mono", Monaco, monospace';
-    ctx.fillStyle = '#767672';
+    ctx.fillStyle = PALETTE.stone;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
 
@@ -377,7 +379,7 @@ export class EvidencePlot {
     // Zero line for signed or diff mode
     if (yMin < 0 && yMax > 0) {
       const zeroY = scaleY(0);
-      ctx.strokeStyle = '#D1D1CB';
+      ctx.strokeStyle = PALETTE.hairline;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(padLeft, zeroY);
@@ -393,7 +395,7 @@ export class EvidencePlot {
 
     for (let s = 1; s <= numSites; s += actualStep) {
       const x = scaleX(s);
-      ctx.strokeStyle = '#EAEAE6';
+      ctx.strokeStyle = PALETTE.gridLine;
       ctx.beginPath();
       ctx.moveTo(x, padTop);
       ctx.lineTo(x, padTop + plotH);
@@ -412,7 +414,7 @@ export class EvidencePlot {
 
       ctx.save();
       ctx.setLineDash([4, 4]);
-      ctx.strokeStyle = '#EB5E28'; // Braun Signal Orange
+      ctx.strokeStyle = PALETTE.accent; // Braun Signal Orange
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(padLeft, threshY);
@@ -420,7 +422,7 @@ export class EvidencePlot {
       ctx.stroke();
 
       // Threshold label badge
-      ctx.fillStyle = '#EB5E28';
+      ctx.fillStyle = PALETTE.accent;
       ctx.font = 'bold 9px "SF Mono", Monaco, monospace';
       ctx.textAlign = 'left';
       ctx.fillText(`p = ${this.threshold.toFixed(this.threshold < 0.01 ? 3 : 2)}`, padLeft + 6, threshY - 6);
@@ -428,7 +430,7 @@ export class EvidencePlot {
       // If signed, draw negative threshold line for purifying
       if (this.plotMode === 'signed') {
         const negThreshY = scaleY(-threshNegLog);
-        ctx.strokeStyle = '#1E40AF';
+        ctx.strokeStyle = PALETTE.purifying;
         ctx.beginPath();
         ctx.moveTo(padLeft, negThreshY);
         ctx.lineTo(padLeft + plotW, negThreshY);
@@ -481,8 +483,8 @@ export class EvidencePlot {
       if (pt.isDiv) {
         // Diversifying: ▲ Upward Triangle (Braun Signal Orange)
         const size = isSelected ? 8 : (isHovered ? 7 : 5.5);
-        ctx.fillStyle = '#EB5E28';
-        ctx.strokeStyle = '#9A3412';
+        ctx.fillStyle = PALETTE.accent;
+        ctx.strokeStyle = PALETTE.accentDeep;
         ctx.lineWidth = isSelected ? 2 : 1;
 
         ctx.beginPath();
@@ -495,8 +497,8 @@ export class EvidencePlot {
       } else if (pt.isPur) {
         // Purifying: ▼ Downward Triangle (Technical Cobalt)
         const size = isSelected ? 7 : (isHovered ? 6 : 4.5);
-        ctx.fillStyle = '#1E40AF';
-        ctx.strokeStyle = '#1E3A8A';
+        ctx.fillStyle = PALETTE.purifying;
+        ctx.strokeStyle = PALETTE.purifyingDeep;
         ctx.lineWidth = isSelected ? 2 : 1;
 
         ctx.beginPath();
@@ -509,7 +511,7 @@ export class EvidencePlot {
       } else {
         // Neutral: subtle gray dot
         const rSize = isSelected ? 5 : (isHovered ? 4 : 2.5);
-        ctx.fillStyle = isHovered ? '#475569' : '#94A3B8';
+        ctx.fillStyle = isHovered ? PALETTE.slate : PALETTE.slateLight;
         ctx.beginPath();
         ctx.arc(pt.x, pt.y, rSize, 0, Math.PI * 2);
         ctx.fill();
@@ -517,7 +519,7 @@ export class EvidencePlot {
 
       // Draw Selected Reticle Ring
       if (isSelected) {
-        ctx.strokeStyle = '#F59E0B'; // Vivid Amber
+        ctx.strokeStyle = PALETTE.amberVivid; // Vivid Amber
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.arc(pt.x, pt.y, 11, 0, Math.PI * 2);
@@ -531,7 +533,7 @@ export class EvidencePlot {
       if (hPt) {
         ctx.save();
         ctx.setLineDash([2, 2]);
-        ctx.strokeStyle = '#1A1A18';
+        ctx.strokeStyle = PALETTE.ink;
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(hPt.x, padTop);
@@ -573,22 +575,22 @@ export class EvidencePlot {
     const scaleY = (v) => padTop + (1 - v / yMax) * plotH;
 
     let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">\n`;
-    svg += `  <style>\n    text { font-family: -apple-system, sans-serif; font-size: 10px; fill: #767672; }\n  </style>\n`;
-    svg += `  <rect width="100%" height="100%" fill="#FFFFFF"/>\n`;
+    svg += `  <style>\n    text { font-family: -apple-system, sans-serif; font-size: 10px; fill: ${PALETTE.stone}; }\n  </style>\n`;
+    svg += `  <rect width="100%" height="100%" fill="${PALETTE.panel}"/>\n`;
 
     // Threshold line
     const threshY = scaleY(-Math.log10(this.threshold));
-    svg += `  <line x1="${padLeft}" y1="${threshY}" x2="${padLeft + plotW}" y2="${threshY}" stroke="#EB5E28" stroke-dasharray="4,4" stroke-width="1.5"/>\n`;
-    svg += `  <text x="${padLeft + 6}" y="${threshY - 4}" fill="#EB5E28" font-weight="bold">p = ${this.threshold}</text>\n`;
+    svg += `  <line x1="${padLeft}" y1="${threshY}" x2="${padLeft + plotW}" y2="${threshY}" stroke="${PALETTE.accent}" stroke-dasharray="4,4" stroke-width="1.5"/>\n`;
+    svg += `  <text x="${padLeft + 6}" y="${threshY - 4}" fill="${PALETTE.accent}" font-weight="bold">p = ${this.threshold}</text>\n`;
 
     // Points
     for (const pt of this.points) {
       if (pt.isDiv) {
-        svg += `  <polygon points="${pt.x},${pt.y - 6} ${pt.x - 5},${pt.y + 4} ${pt.x + 5},${pt.y + 4}" fill="#EB5E28" stroke="#9A3412"/>\n`;
+        svg += `  <polygon points="${pt.x},${pt.y - 6} ${pt.x - 5},${pt.y + 4} ${pt.x + 5},${pt.y + 4}" fill="${PALETTE.accent}" stroke="${PALETTE.accentDeep}"/>\n`;
       } else if (pt.isPur) {
-        svg += `  <polygon points="${pt.x},${pt.y + 6} ${pt.x - 5},${pt.y - 4} ${pt.x + 5},${pt.y - 4}" fill="#1E40AF" stroke="#1E3A8A"/>\n`;
+        svg += `  <polygon points="${pt.x},${pt.y + 6} ${pt.x - 5},${pt.y - 4} ${pt.x + 5},${pt.y - 4}" fill="${PALETTE.purifying}" stroke="${PALETTE.purifyingDeep}"/>\n`;
       } else {
-        svg += `  <circle cx="${pt.x}" cy="${pt.y}" r="2.5" fill="#94A3B8"/>\n`;
+        svg += `  <circle cx="${pt.x}" cy="${pt.y}" r="2.5" fill="${PALETTE.slateLight}"/>\n`;
       }
     }
 

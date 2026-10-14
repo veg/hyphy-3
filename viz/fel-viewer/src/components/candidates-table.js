@@ -1,6 +1,8 @@
 // Candidate Sites Table: Diversifying Only Default
 // Dieter Rams minimalist data table with category pills, rate sparkbars, live search, and CSV export
 
+import { PALETTE } from '../data/palette.js';
+
 export class CandidatesTable {
   constructor(container, options = {}) {
     this.container = container;
@@ -288,7 +290,7 @@ export class CandidatesTable {
         const brCount = r.branchesUnderSelection || (r.branchEBF ? Object.values(r.branchEBF).filter(v => v >= 100).length : 0);
         const brBadge = brCount > 0
           ? `<span class="ebf-branch-badge ebf-active" title="${brCount} branch(es) with Empirical Bayes Factor ≥ 100">⚡ ${brCount}</span>`
-          : `<span class="font-mono" style="color: #9CA3AF; font-size: 11px;">0</span>`;
+          : `<span class="font-mono" style="color: ${PALETTE.neutral}; font-size: 11px;">0</span>`;
 
         html += `
           <tr data-site="${r.site}" class="${isSelected ? 'row-selected' : ''}">
@@ -312,7 +314,7 @@ export class CandidatesTable {
               ${brBadge}
             </td>
             <td class="font-mono lrt-cell">${r.lrt.toFixed(2)}</td>
-            <td class="font-mono pval-cell ${isSig ? 'pval-sig font-bold' : ''}" style="${isSig ? 'color: #EB5E28;' : ''}">${pStr}</td>
+            <td class="font-mono pval-cell ${isSig ? 'pval-sig font-bold' : ''}" style="${isSig ? `color: ${PALETTE.accent};` : ''}">${pStr}</td>
             <td class="sub-cell" title="${historyStr}">
               <div class="sub-text-wrapper">${historyStr}</div>
             </td>

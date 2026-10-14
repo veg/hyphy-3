@@ -1,7 +1,8 @@
 // Bird's Eye Overview: Whole-Gene Selection Landscape & 2D Alignment Minimap
 // Dieter Rams Aesthetic: Calibrated frequency tuner dial with dual 1D profile and 2D matrix modes
 
-import { ZAPPO_COLORS, RAMS_COLORS } from '../data/genetic-code.js';
+import { ZAPPO_COLORS } from '../data/genetic-code.js';
+import { PALETTE, withAlpha } from '../data/palette.js';
 
 export class BirdsEyeOverview {
   constructor(container, options = {}) {
@@ -254,7 +255,7 @@ export class BirdsEyeOverview {
     if (totalSites <= 0) return;
 
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = '#FFFFFF';
+    ctx.fillStyle = PALETTE.panel;
     ctx.fillRect(0, 0, w, h);
 
     const is2D = this.options.mode === '2d';
@@ -283,9 +284,9 @@ export class BirdsEyeOverview {
     }
     ctx.lineTo(w, profileH);
     ctx.closePath();
-    ctx.fillStyle = '#F4F4F1';
+    ctx.fillStyle = PALETTE.overviewBg;
     ctx.fill();
-    ctx.strokeStyle = '#E2E2DC';
+    ctx.strokeStyle = PALETTE.overviewRule;
     ctx.lineWidth = 0.75;
     ctx.stroke();
 
@@ -293,7 +294,7 @@ export class BirdsEyeOverview {
     const th = this.options.pThreshold;
     const threshNegLog = -Math.log10(Math.max(th, 1e-15));
     const threshY = profileH - (Math.min(threshNegLog, maxNegLogP) / maxNegLogP) * profileH;
-    ctx.strokeStyle = 'rgba(235, 94, 40, 0.45)';
+    ctx.strokeStyle = withAlpha(PALETTE.accent, 0.45);
     ctx.lineWidth = 1;
     ctx.setLineDash([2, 3]);
     ctx.beginPath();
@@ -316,7 +317,7 @@ export class BirdsEyeOverview {
       if (isSig) {
         if (this.data.isMEME || r.beta > r.alpha) {
           // Diversifying / Episodic: Braun Signal Orange
-          ctx.fillStyle = '#EB5E28';
+          ctx.fillStyle = PALETTE.accent;
           ctx.fillRect(x, barY, Math.max(1.5, siteW), barH);
           // Landmark Pip
           ctx.beginPath();
@@ -324,7 +325,7 @@ export class BirdsEyeOverview {
           ctx.fill();
         } else {
           // Purifying: Technical Cobalt Blue
-          ctx.fillStyle = '#1E40AF';
+          ctx.fillStyle = PALETTE.purifying;
           ctx.fillRect(x, barY, Math.max(1.5, siteW), barH);
           ctx.beginPath();
           ctx.arc(x + siteW / 2, barY - 2, 2, 0, Math.PI * 2);
@@ -332,13 +333,13 @@ export class BirdsEyeOverview {
         }
       } else {
         // Neutral baseline stick
-        ctx.fillStyle = '#D6D6D0';
+        ctx.fillStyle = PALETTE.overviewEmpty;
         ctx.fillRect(x, profileH - Math.max(1, barH * 0.4), Math.max(1, siteW * 0.7), Math.max(1, barH * 0.4));
       }
     }
 
     // 4. Subtle Profile Baseline Rule
-    ctx.strokeStyle = '#D1D1CB';
+    ctx.strokeStyle = PALETTE.hairline;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, profileH);
@@ -352,7 +353,7 @@ export class BirdsEyeOverview {
       const rowStep = matrixH / Math.max(1, numTaxa);
 
       // Light backdrop
-      ctx.fillStyle = '#FAFAF8';
+      ctx.fillStyle = PALETTE.overviewRow;
       ctx.fillRect(0, matrixTop, w, matrixH);
 
       const scheme = this.options.colorScheme;
@@ -372,14 +373,14 @@ export class BirdsEyeOverview {
 
           if (aa !== refAA && aa !== '-') {
             const x = (s / totalSites) * w;
-            ctx.fillStyle = ZAPPO_COLORS[aa] || '#EB5E28';
+            ctx.fillStyle = ZAPPO_COLORS[aa] || PALETTE.accent;
             ctx.fillRect(x, y, Math.max(1, siteW), Math.max(1, rowStep));
           }
         }
       }
 
       // Matrix bottom hairline
-      ctx.strokeStyle = '#D1D1CB';
+      ctx.strokeStyle = PALETTE.hairline;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(0, matrixTop + matrixH);
@@ -390,7 +391,7 @@ export class BirdsEyeOverview {
     // 6. Calibrated Site Ruler (at the very bottom)
     const rulerY = h - 3;
     ctx.font = '8px "SF Mono", Monaco, sans-serif';
-    ctx.fillStyle = '#767672';
+    ctx.fillStyle = PALETTE.stone;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
 
@@ -398,7 +399,7 @@ export class BirdsEyeOverview {
     for (let s = 1; s <= totalSites; s += step) {
       const x = ((s - 0.5) / totalSites) * w;
       ctx.fillText(s.toString(), x, rulerY);
-      ctx.strokeStyle = '#B8B8B2';
+      ctx.strokeStyle = PALETTE.dotMuted;
       ctx.lineWidth = 0.75;
       ctx.beginPath();
       ctx.moveTo(x, rulerY - 10);
@@ -444,31 +445,31 @@ export class BirdsEyeOverview {
       lensH = Math.max(10, endY - startY);
 
       // In 2D mode, also draw horizontal lens stripe across the 1D profile
-      ctx.fillStyle = 'rgba(235, 94, 40, 0.08)';
+      ctx.fillStyle = withAlpha(PALETTE.accent, 0.08);
       ctx.fillRect(startX, 0, lensW, profileH);
-      ctx.strokeStyle = 'rgba(235, 94, 40, 0.4)';
+      ctx.strokeStyle = withAlpha(PALETTE.accent, 0.4);
       ctx.lineWidth = 1;
       ctx.strokeRect(startX + 0.5, 0.5, lensW - 1, profileH - 1);
     }
 
     // Caliper Lens Body
-    ctx.fillStyle = 'rgba(235, 94, 40, 0.10)';
+    ctx.fillStyle = withAlpha(PALETTE.accent, 0.10);
     ctx.fillRect(startX, lensY, lensW, lensH);
 
     // Caliper Machined Border (Braun Signal Orange)
-    ctx.strokeStyle = '#EB5E28';
+    ctx.strokeStyle = PALETTE.accent;
     ctx.lineWidth = 1.5;
     ctx.strokeRect(startX + 0.5, lensY + 0.5, lensW - 1, lensH - 1);
 
     // Caliper Left & Right Gripper Handles
-    ctx.fillStyle = '#EB5E28';
+    ctx.fillStyle = PALETTE.accent;
     ctx.fillRect(startX - 1, lensY, 2.5, lensH);
     ctx.fillRect(startX + lensW - 1.5, lensY, 2.5, lensH);
 
     // 2. Active Site Needle (Precision hair needle with pointer cap)
     if (this.selectedSite >= 1 && this.selectedSite <= totalSites) {
       const needleX = ((this.selectedSite - 0.5) / totalSites) * w;
-      ctx.strokeStyle = '#EB5E28';
+      ctx.strokeStyle = PALETTE.accent;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(needleX, 0);
@@ -476,7 +477,7 @@ export class BirdsEyeOverview {
       ctx.stroke();
 
       // Top triangle pointer
-      ctx.fillStyle = '#EB5E28';
+      ctx.fillStyle = PALETTE.accent;
       ctx.beginPath();
       ctx.moveTo(needleX - 3.5, 0);
       ctx.lineTo(needleX + 3.5, 0);
@@ -488,7 +489,7 @@ export class BirdsEyeOverview {
     // 3. Hovered Site Guide & Readout
     if (this.hoveredSite >= 1 && this.hoveredSite <= totalSites && !this.isDragging) {
       const hx = ((this.hoveredSite - 0.5) / totalSites) * w;
-      ctx.strokeStyle = '#1A1A18';
+      ctx.strokeStyle = PALETTE.ink;
       ctx.lineWidth = 1;
       ctx.setLineDash([1, 2]);
       ctx.beginPath();

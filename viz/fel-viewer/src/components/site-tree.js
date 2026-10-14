@@ -2,6 +2,7 @@
 // Maps ancestral root state, branch mutations (synonymous & nonsynonymous), and extant leaf states
 
 import { translateCodon, SELECTION_COLORS } from '../data/genetic-code.js';
+import { PALETTE, withAlpha } from '../data/palette.js';
 
 export class SiteTree {
   constructor(container, options = {}) {
@@ -50,20 +51,20 @@ export class SiteTree {
 
       <div class="site-tree-legend">
         <div class="tree-legend-item">
-          <span class="tree-legend-line" style="background-color: #CBD5E1;"></span>
+          <span class="tree-legend-line" style="background-color: ${PALETTE.treeLine};"></span>
           <span>Ancestral State Maintained</span>
         </div>
         <div class="tree-legend-item">
-          <span class="tree-legend-line" style="background-color: #EB5E28; height: 3px;"></span>
-          <span style="color: #EB5E28; font-weight: 700;">▲ Non-synonymous Mutation</span>
+          <span class="tree-legend-line" style="background-color: ${PALETTE.accent}; height: 3px;"></span>
+          <span style="color: ${PALETTE.accent}; font-weight: 700;">▲ Non-synonymous Mutation</span>
         </div>
         <div class="tree-legend-item">
-          <span class="tree-legend-line" style="background-color: #047857; height: 3px;"></span>
-          <span style="color: #047857; font-weight: 700;">Synonymous Mutation</span>
+          <span class="tree-legend-line" style="background-color: ${PALETTE.synonymous}; height: 3px;"></span>
+          <span style="color: ${PALETTE.synonymous}; font-weight: 700;">Synonymous Mutation</span>
         </div>
         <div class="tree-legend-item">
-          <span class="tree-legend-line" style="background-color: #EB5E28; height: 3.5px; border-top: 1px solid #FED7AA;"></span>
-          <span style="color: #EB5E28; font-weight: 700;">⚡ Episodic Selection (EBF ≥ 100)</span>
+          <span class="tree-legend-line" style="background-color: ${PALETTE.accent}; height: 3.5px; border-top: 1px solid ${PALETTE.accentPale};"></span>
+          <span style="color: ${PALETTE.accent}; font-weight: 700;">⚡ Episodic Selection (EBF ≥ 100)</span>
         </div>
       </div>
 
@@ -310,18 +311,18 @@ export class SiteTree {
     // Render SVG
     let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${totalWidth}" height="${totalHeight}" viewBox="0 0 ${totalWidth} ${totalHeight}">\n`;
     svg += `  <style>\n`;
-    svg += `    .tree-line { fill: none; stroke: #CBD5E1; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }\n`;
-    svg += `    .tree-mut-nonsyn { stroke: #EB5E28 !important; stroke-width: 2.5 !important; }\n`;
-    svg += `    .tree-mut-syn { stroke: #047857 !important; stroke-width: 2.5 !important; }\n`;
-    svg += `    .tree-branch-ebf { stroke: #EB5E28 !important; stroke-width: 3.5px !important; }\n`;
-    svg += `    .tree-leaf-text { font-family: -apple-system, sans-serif; font-size: 11px; fill: #1A1A18; font-weight: 500; dominant-baseline: middle; }\n`;
+    svg += `    .tree-line { fill: none; stroke: ${PALETTE.treeLine}; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }\n`;
+    svg += `    .tree-mut-nonsyn { stroke: ${PALETTE.accent} !important; stroke-width: 2.5 !important; }\n`;
+    svg += `    .tree-mut-syn { stroke: ${PALETTE.synonymous} !important; stroke-width: 2.5 !important; }\n`;
+    svg += `    .tree-branch-ebf { stroke: ${PALETTE.accent} !important; stroke-width: 3.5px !important; }\n`;
+    svg += `    .tree-leaf-text { font-family: -apple-system, sans-serif; font-size: 11px; fill: ${PALETTE.ink}; font-weight: 500; dominant-baseline: middle; }\n`;
     svg += `    .tree-leaf-mono { font-family: "SF Mono", Monaco, monospace; font-size: 10px; font-weight: 700; }\n`;
     svg += `    .tree-badge-bg { rx: 3px; ry: 3px; }\n`;
     svg += `  </style>\n`;
 
     // 1. Draw Root Node
-    svg += `  <circle cx="${tree.x}" cy="${tree.y}" r="4" fill="#1A1A18"/>\n`;
-    svg += `  <text x="${tree.x - 8}" y="${tree.y}" text-anchor="end" class="tree-leaf-mono" fill="#767672" dominant-baseline="middle">Root: ${rootCodon} (${rootAA})</text>\n`;
+    svg += `  <circle cx="${tree.x}" cy="${tree.y}" r="4" fill="${PALETTE.ink}"/>\n`;
+    svg += `  <text x="${tree.x - 8}" y="${tree.y}" text-anchor="end" class="tree-leaf-mono" fill="${PALETTE.stone}" dominant-baseline="middle">Root: ${rootCodon} (${rootAA})</text>\n`;
 
     const formatEBF = (val) => {
       if (val == null) return '—';
@@ -339,14 +340,14 @@ export class SiteTree {
         const codonLabel = n.codon || '---';
         const aaLabel = n.aa || '-';
 
-        let badgeFill = '#EDEDE9';
-        let badgeText = '#475569';
+        let badgeFill = PALETTE.inset;
+        let badgeText = PALETTE.slate;
         if (isDiff) {
-          badgeFill = 'rgba(235, 94, 40, 0.15)';
-          badgeText = '#EB5E28';
+          badgeFill = withAlpha(PALETTE.accent, 0.15);
+          badgeText = PALETTE.accent;
         } else if (n.hasMutation) {
-          badgeFill = 'rgba(4, 120, 87, 0.12)';
-          badgeText = '#047857';
+          badgeFill = withAlpha(PALETTE.synonymous, 0.12);
+          badgeText = PALETTE.synonymous;
         }
 
         let displayTag = `${codonLabel} [${aaLabel}]`;
@@ -357,7 +358,7 @@ export class SiteTree {
         }
 
         // Leaf dot
-        svg += `  <circle cx="${n.x}" cy="${n.y}" r="3" fill="${isDiff ? '#EB5E28' : '#767672'}"/>\n`;
+        svg += `  <circle cx="${n.x}" cy="${n.y}" r="3" fill="${isDiff ? PALETTE.accent : PALETTE.stone}"/>\n`;
 
         // Taxon name
         svg += `  <text x="${n.x + 8}" y="${n.y}" class="tree-leaf-text">${n.name || 'Leaf'}</text>\n`;
@@ -377,7 +378,7 @@ export class SiteTree {
       // Horizontal branch to each child
       for (const c of n.children) {
         let branchClass = 'tree-line';
-        let strokeColor = '#CBD5E1';
+        let strokeColor = PALETTE.treeLine;
         let badgeHtml = '';
 
         const ebf = (r.branchEBF && c.name && r.branchEBF[c.name]) || null;
@@ -398,8 +399,8 @@ export class SiteTree {
 
           badgeHtml = `
             <g class="branch-mutation-badge">
-              <rect x="${midX - bW / 2}" y="${c.y - 15}" width="${bW}" height="13" rx="2" fill="${isSyn ? '#047857' : '#EB5E28'}"/>
-              <text x="${midX}" y="${c.y - 8}" fill="#FFFFFF" font-family="'SF Mono', Monaco, monospace" font-size="8.5px" font-weight="700" text-anchor="middle" dominant-baseline="middle">${label}</text>
+              <rect x="${midX - bW / 2}" y="${c.y - 15}" width="${bW}" height="13" rx="2" fill="${isSyn ? PALETTE.synonymous : PALETTE.accent}"/>
+              <text x="${midX}" y="${c.y - 8}" fill="${PALETTE.knockout}" font-family="'SF Mono', Monaco, monospace" font-size="8.5px" font-weight="700" text-anchor="middle" dominant-baseline="middle">${label}</text>
             </g>
           `;
         } else if (isEBF) {
@@ -410,8 +411,8 @@ export class SiteTree {
 
           badgeHtml = `
             <g class="branch-ebf-badge">
-              <rect x="${midX - bW / 2}" y="${c.y - 15}" width="${bW}" height="13" rx="2" fill="#EB5E28"/>
-              <text x="${midX}" y="${c.y - 8}" fill="#FFFFFF" font-family="'SF Mono', Monaco, monospace" font-size="8.5px" font-weight="700" text-anchor="middle" dominant-baseline="middle">${label}</text>
+              <rect x="${midX - bW / 2}" y="${c.y - 15}" width="${bW}" height="13" rx="2" fill="${PALETTE.accent}"/>
+              <text x="${midX}" y="${c.y - 8}" fill="${PALETTE.knockout}" font-family="'SF Mono', Monaco, monospace" font-size="8.5px" font-weight="700" text-anchor="middle" dominant-baseline="middle">${label}</text>
             </g>
           `;
         }

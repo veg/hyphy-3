@@ -1,5 +1,7 @@
 // Detail Inspector Panel for selected codon site and ancestral substitution events
 
+import { PALETTE, withAlpha } from '../data/palette.js';
+
 export class Inspector {
   constructor(container, options = {}) {
     this.container = container;
@@ -97,7 +99,7 @@ export class Inspector {
         <span class="stat-pill"><span class="stat-label">LRT:</span> <strong>${r.lrt.toFixed(2)}</strong></span>
         <span class="stat-pill"><span class="stat-label">α (Syn):</span> <strong>${r.alpha.toFixed(2)}</strong></span>
         <span class="stat-pill"><span class="stat-label">β1 (p1):</span> <strong>${r.beta1.toFixed(2)} (${(r.p1 * 100).toFixed(0)}%)</strong></span>
-        <span class="stat-pill"><span class="stat-label">β+ (p+):</span> <strong style="color:#EB5E28;">${r.beta_plus.toFixed(2)} (${(r.p_plus * 100).toFixed(0)}%)</strong></span>
+        <span class="stat-pill"><span class="stat-label">β+ (p+):</span> <strong style="color:${PALETTE.accent};">${r.beta_plus.toFixed(2)} (${(r.p_plus * 100).toFixed(0)}%)</strong></span>
         <span class="stat-pill"><span class="stat-label">Rates (α:β+):</span> <strong class="spark-code">${r.spark.text}</strong></span>
         ${deltaLogL ? `<span class="stat-pill"><span class="stat-label">ΔLogL (MEME–FEL):</span> <strong>+${deltaLogL}</strong></span>` : ''}
       `;
@@ -121,13 +123,13 @@ export class Inspector {
           const badge = isHigh
             ? `<span class="event-badge badge-nonsyn">EBF ≥ 100 (Strong Selection)</span>`
             : (isMod 
-                ? `<span class="event-badge" style="background-color:rgba(217,119,6,0.12);color:#B45309;border:1px solid rgba(217,119,6,0.3);">EBF ≥ 10 (Moderate)</span>`
+                ? `<span class="event-badge" style="background-color:${withAlpha(PALETTE.amber, 0.12)};color:${PALETTE.amberOchre};border:1px solid ${withAlpha(PALETTE.amber, 0.3)};">EBF ≥ 10 (Moderate)</span>`
                 : `<span class="event-badge badge-syn">EBF ≥ 1.0 (Weak)</span>`);
           const ebfFmt = ebfVal >= 1000 ? ebfVal.toFixed(0) : ebfVal.toFixed(1);
           return `
             <tr class="event-row" data-branch="${bName}">
               <td class="cell-branch"><strong>${bName}</strong></td>
-              <td class="cell-prob"><strong style="${isHigh ? 'color:#EB5E28;' : ''}">${ebfFmt}</strong></td>
+              <td class="cell-prob"><strong style="${isHigh ? `color:${PALETTE.accent};` : ''}">${ebfFmt}</strong></td>
               <td class="cell-type">${badge}</td>
             </tr>
           `;

@@ -3,6 +3,7 @@
 
 import { SiteTree } from './site-tree.js';
 import { translateCodon } from '../data/genetic-code.js';
+import { PALETTE, withAlpha } from '../data/palette.js';
 
 export class SiteDrawer {
   constructor(container, options = {}) {
@@ -293,7 +294,7 @@ function formatEBF(val) {
           <div class="drawer-section">
             <div class="drawer-section-title">
               <span>Branches Under Episodic Selection (EBF ≥ 100)</span>
-              <span class="root-badge" style="background: rgba(235,94,40,0.15); color: #EB5E28; border-color: rgba(235,94,40,0.3);">
+              <span class="root-badge" style="background: ${withAlpha(PALETTE.accent, 0.15)}; color: ${PALETTE.accent}; border-color: ${withAlpha(PALETTE.accent, 0.3)};">
                 <strong>${supportedBranches.length}</strong> branch(es) supported
               </span>
             </div>
@@ -312,7 +313,7 @@ function formatEBF(val) {
                     const ev = events.find(e => e.branch === bName);
                     const subStr = ev
                       ? `<strong>${ev.parent_codon || rootCodon}</strong> (${ev.parent_aa || rootAA}) → <strong>${ev.child_codon}</strong> (${ev.child_aa})`
-                      : '<span style="color: #9CA3AF; font-style: italic;">No discrete mutation reconstructed</span>';
+                      : `<span style="color: ${PALETTE.neutral}; font-style: italic;">No discrete mutation reconstructed</span>`;
                     const typeHtml = ev
                       ? `<span class="ev-tag ${ev.is_synonymous ? 'ev-syn' : 'ev-nonsyn'}">${ev.is_synonymous ? 'Synonymous' : 'Non-synonymous'}</span>`
                       : '—';

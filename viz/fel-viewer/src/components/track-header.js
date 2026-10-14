@@ -1,6 +1,7 @@
 // Sticky multi-track selection header aligned with codon columns
 
 import { SELECTION_COLORS } from '../data/genetic-code.js';
+import { PALETTE, withAlpha } from '../data/palette.js';
 
 export class TrackHeader {
   constructor(container, options = {}) {
@@ -11,7 +12,7 @@ export class TrackHeader {
       codonColWidth: 46,
       displayMode: 'amino_acid',
       pThreshold: 0.1,
-      bgColor: '#F8F8F6',
+      bgColor: PALETTE.trackBg,
       onSiteSelect: null
     }, options);
 
@@ -94,9 +95,9 @@ export class TrackHeader {
     // Selected Column Highlight (Braun Signal Orange)
     if (this.selectedSite >= 1 && this.selectedSite <= this.data.numSites) {
       const sx = (this.selectedSite - 1) * colW;
-      ctx.fillStyle = 'rgba(235, 94, 40, 0.08)';
+      ctx.fillStyle = withAlpha(PALETTE.accent, 0.08);
       ctx.fillRect(sx, 0, colW, h);
-      ctx.strokeStyle = '#EB5E28';
+      ctx.strokeStyle = PALETTE.accent;
       ctx.lineWidth = 1.5;
       ctx.strokeRect(sx + 0.5, 0, colW - 1, h);
     }
@@ -113,9 +114,9 @@ export class TrackHeader {
 
       // Draw tick & label for every 10th site, or every 5th if wide
       if (siteNum === 1 || siteNum % 10 === 0 || (colW >= 36 && siteNum % 5 === 0)) {
-        ctx.fillStyle = '#1A1A18';
+        ctx.fillStyle = PALETTE.ink;
         ctx.fillText(siteNum.toString(), midX, 10);
-        ctx.strokeStyle = '#D1D1CB';
+        ctx.strokeStyle = PALETTE.hairline;
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(midX, 16);
@@ -134,7 +135,7 @@ export class TrackHeader {
       const isSig = r.pValue <= this.options.pThreshold;
       if (isSig) {
         if (this.data.isMEME) {
-          ctx.fillStyle = '#EB5E28'; // Braun Signal Orange
+          ctx.fillStyle = PALETTE.accent; // Braun Signal Orange
           const nBr = r.branchesUnderSelection || 0;
           if (colW >= 34 && nBr > 0) {
             ctx.font = 'bold 9px sans-serif';
@@ -144,16 +145,16 @@ export class TrackHeader {
             ctx.fillText('▲', midX, 31);
           }
         } else if (r.beta > r.alpha) {
-          ctx.fillStyle = '#EB5E28'; // Braun Signal Orange
+          ctx.fillStyle = PALETTE.accent; // Braun Signal Orange
           ctx.font = 'bold 11px sans-serif';
           ctx.fillText('▲', midX, 31);
         } else if (r.alpha > r.beta) {
-          ctx.fillStyle = '#1E40AF'; // Technical Cobalt Blue
+          ctx.fillStyle = PALETTE.purifying; // Technical Cobalt Blue
           ctx.font = 'bold 11px sans-serif';
           ctx.fillText('▼', midX, 31);
         }
       } else {
-        ctx.fillStyle = '#B8B8B2';
+        ctx.fillStyle = PALETTE.dotMuted;
         ctx.fillText('·', midX, 31);
       }
     }
@@ -166,7 +167,7 @@ export class TrackHeader {
     // Threshold baseline line (Precision dashed hairline in Braun Orange)
     const threshNegLog = -Math.log10(this.options.pThreshold);
     const threshY = track3Top + track3H - (threshNegLog / maxNegLogP) * track3H;
-    ctx.strokeStyle = 'rgba(235, 94, 40, 0.7)';
+    ctx.strokeStyle = withAlpha(PALETTE.accent, 0.7);
     ctx.lineWidth = 1;
     ctx.setLineDash([2, 2]);
     ctx.beginPath();
@@ -187,12 +188,12 @@ export class TrackHeader {
       const isSig = r.pValue <= this.options.pThreshold;
       if (isSig) {
         if (this.data.isMEME) {
-          ctx.fillStyle = '#EB5E28'; // All episodic selection peaks in Signal Orange
+          ctx.fillStyle = PALETTE.accent; // All episodic selection peaks in Signal Orange
         } else {
-          ctx.fillStyle = r.beta > r.alpha ? '#EB5E28' : '#1E40AF';
+          ctx.fillStyle = r.beta > r.alpha ? PALETTE.accent : PALETTE.purifying;
         }
       } else {
-        ctx.fillStyle = '#D1D1CB';
+        ctx.fillStyle = PALETTE.hairline;
       }
 
       const barW = Math.max(3, colW - 6);
@@ -211,27 +212,27 @@ export class TrackHeader {
       if (colW >= 38) {
         // Draw textual glyphs
         ctx.font = '9px monospace';
-        ctx.fillStyle = isSig && r.alpha > r.beta ? '#1E40AF' : '#767672'; // alpha
+        ctx.fillStyle = isSig && r.alpha > r.beta ? PALETTE.purifying : PALETTE.stone; // alpha
         ctx.fillText(spk.sa, midX - 8, 82);
-        ctx.fillStyle = '#A8A8A2';
+        ctx.fillStyle = PALETTE.dotFaint;
         ctx.fillText(':', midX, 82);
-        ctx.fillStyle = isSig && r.beta > r.alpha ? '#EB5E28' : '#767672'; // beta
+        ctx.fillStyle = isSig && r.beta > r.alpha ? PALETTE.accent : PALETTE.stone; // beta
         ctx.fillText(spk.sb, midX + 8, 82);
       } else {
         // Draw proportional micro-segments
         const segW = Math.max(1.5, (colW - 8) / 7);
         let curX = x + 4;
-        const alphaCol = isSig && r.alpha > r.beta ? '#1E40AF' : '#767672';
-        const betaCol = isSig && r.beta > r.alpha ? '#EB5E28' : '#767672';
+        const alphaCol = isSig && r.alpha > r.beta ? PALETTE.purifying : PALETTE.stone;
+        const betaCol = isSig && r.beta > r.alpha ? PALETTE.accent : PALETTE.stone;
 
         for (let i = 0; i < 3; ++i) {
-          ctx.fillStyle = i < spk.na ? alphaCol : '#EAEAE6';
+          ctx.fillStyle = i < spk.na ? alphaCol : PALETTE.gridLine;
           ctx.fillRect(curX, 78, segW, 6);
           curX += segW + 0.5;
         }
         curX += 2;
         for (let i = 0; i < 3; ++i) {
-          ctx.fillStyle = i < spk.nb ? betaCol : '#EAEAE6';
+          ctx.fillStyle = i < spk.nb ? betaCol : PALETTE.gridLine;
           ctx.fillRect(curX, 78, segW, 6);
           curX += segW + 0.5;
         }
@@ -251,14 +252,14 @@ export class TrackHeader {
       }
 
       if (hasHighSurprise) {
-        ctx.fillStyle = '#B45309'; // Amber Ochre
+        ctx.fillStyle = PALETTE.amberOchre; // Amber Ochre
         ctx.font = '11px sans-serif';
         ctx.fillText('⚡', midX, 98);
       }
     }
 
     // Draw track baseline border
-    ctx.strokeStyle = '#D1D1CB';
+    ctx.strokeStyle = PALETTE.hairline;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(this.scrollLeft, h);
