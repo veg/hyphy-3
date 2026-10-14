@@ -6,18 +6,12 @@
 // are mapped onto the same feature set; what only they carry (PSRF/Neff columns,
 // equilibrium frequencies) is not read.
 
-import { detectMethod } from '../core/detect-method.js';
+import { detectMethod, FORMAT_LABELS } from '../core/detect-method.js';
 import { poissonBinomialCI } from '../core/stats.js';
 
 // Positions in a legacy MLE.content row. hyphy3 writes MLE.headers as a key-sorted
 // object, so the header order cannot name the columns.
 const FUBAR_ROW = { alpha: 0, beta: 1, diff: 2, probNeg: 3, probPos: 4, ebf: 5 };
-
-export const FUBAR_FORMAT_LABELS = {
-  v3: 'hyphy3 v3',
-  hyphy25: 'HyPhy 2.5 legacy',
-  'hyphy3-legacy': 'hyphy3 --legacy-json'
-};
 
 // A site's call at cutoff t: diversifying first, as hyphy3 classifies
 export function fubarSiteClass(r, t) {
@@ -92,7 +86,7 @@ export class FUBARData {
   }
 
   get formatLabel() {
-    return FUBAR_FORMAT_LABELS[this.format];
+    return FORMAT_LABELS[this.format];
   }
 
   parseV3(json) {

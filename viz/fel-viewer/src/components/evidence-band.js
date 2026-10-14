@@ -1,7 +1,7 @@
 // Evidence band: one mark per site on a y-axis, coloured by the site's call at the live
 // threshold. Serves p-style evidence (rule at -log10 t), posterior-style evidence (rule
-// at t, direction 'ge') and a mirrored two-sided layout (SLAC: one series above zero,
-// one below).
+// at t, direction 'ge'), a mirrored two-sided layout (SLAC: one series above zero,
+// one below) and signed effect bars drawn from zero.
 
 import { PALETTE } from '../data/palette.js';
 import { formatThreshold } from '../core/format.js';
@@ -32,6 +32,29 @@ export function autoEvidenceDomain(values, symmetric) {
   return [lo < 0 ? Math.floor(lo - margin) : 0, Math.ceil(hi + margin)];
 }
 
+// A bar's width: most of one site's span, between 1 and 6 pixels
+export function evidenceBarWidth(frame) {
+  const perSite = Math.abs(frame.scaleX(2) - frame.scaleX(1));
+  return Math.min(6, Math.max(1, perSite * 0.6));
+}
+
+// Where a flag sits: 11px past the mark on the side away from zero
+export function evidenceFlagPosition(pt, zeroY) {
+  return { x: pt.x, y: pt.y + (pt.y > zeroY ? 11 : -11) };
+}
+
+function evidenceToneColor(tone, isHovered) {
+  if (tone === 'div') return PALETTE.accent;
+  if (tone === 'pur') return PALETTE.purifying;
+  return isHovered ? PALETTE.slate : PALETTE.slateLight;
+}
+
+// Uncalled stems are grey (faded by neutralAlpha), readable on light and dark panels
+function evidenceStemColor(tone) {
+  if (tone === 'div') return PALETTE.accent;
+  return tone === 'pur' ? PALETTE.purifying : PALETTE.slateLight;
+}
+
 export class EvidenceBand {
   constructor(options = {}) {
     this.options = Object.assign({
@@ -47,7 +70,11 @@ export class EvidenceBand {
       ruleLabelAt: 'start',      // 'start': on the rule at the left; 'end': at the right, above
                                  // the +t rule and below a mirrored one, drawn over the marks
       label: null,               // y caption, or [above zero, below zero] for a two-sided band
-      shape: 'triangle',         // 'triangle' | 'dot'
+      shape: 'triangle',         // 'triangle' | 'dot' | 'bar' (a bar from zero, as wide as a site allows)
+      neutralAlpha: 1,           // opacity of uncalled marks and stems, so a dense carpet recedes
+      marker: null,              // (row, track, series) => null | 'hollow' | 'flag': 'hollow' draws an
+                                 // empty ring in place of the mark (an untestable site), 'flag' adds
+                                 // a ⚠ beside it (a call made on degenerate input)
       tooltip: null              // (row, track, point) => HTML; point.series is 1 below zero
     }, options);
     this.points = [];
@@ -164,7 +191,8 @@ export class EvidenceBand {
           yVal,
           raw: r,
           series: index,
-          tone: s.tone(r, track)
+          tone: s.tone(r, track),
+          marker: this.options.marker?.(r, track, index) ?? null
         });
       }
     }
@@ -213,15 +241,23 @@ export class EvidenceBand {
       (EVIDENCE_TONE_ORDER[a.tone] ?? 0) - (EVIDENCE_TONE_ORDER[b.tone] ?? 0));
     const zeroY = frame.scaleY(0);
     const selected = this.selectedPoint(track);
+    this.barWidth = evidenceBarWidth(frame);
 
     for (const pt of order) {
       const isSelected = (pt === selected);
       const isHovered = (track.hoveredSite === pt.site);
-      if (this.mirrored) this.drawStem(ctx, pt, zeroY);
-      if (this.options.shape === 'dot') {
-        this.drawDot(ctx, pt, isSelected, isHovered);
+      if (pt.marker === 'hollow') {
+        this.drawHollow(ctx, pt, isHovered);
       } else {
-        this.drawTriangle(ctx, pt, isSelected, isHovered);
+        if (this.mirrored) this.drawStem(ctx, pt, zeroY);
+        if (this.options.shape === 'bar') {
+          this.drawBar(ctx, pt, zeroY, isHovered);
+        } else if (this.options.shape === 'dot') {
+          this.drawDot(ctx, pt, isSelected, isHovered);
+        } else {
+          this.drawTriangle(ctx, pt, isSelected, isHovered);
+        }
+        if (pt.marker === 'flag') this.drawFlag(ctx, pt, zeroY);
       }
       if (isSelected) drawSelectionRing(ctx, pt.x, pt.y);
     }
@@ -233,12 +269,15 @@ export class EvidenceBand {
   }
 
   drawStem(ctx, pt, zeroY) {
-    ctx.strokeStyle = pt.tone === 'div' ? PALETTE.accent : (pt.tone === 'pur' ? PALETTE.purifying : PALETTE.gridLine);
+    ctx.save();
+    if (!pt.tone) ctx.globalAlpha = this.options.neutralAlpha;
+    ctx.strokeStyle = evidenceStemColor(pt.tone);
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(pt.x, zeroY);
     ctx.lineTo(pt.x, pt.y);
     ctx.stroke();
+    ctx.restore();
   }
 
   // ▲ diversifying, ▼ purifying, small grey dot otherwise
@@ -286,12 +325,44 @@ export class EvidenceBand {
     ctx.fill();
   }
 
+  // A signed bar from zero in the call's hue, grey when the site is not called
+  drawBar(ctx, pt, zeroY, isHovered) {
+    ctx.fillStyle = evidenceToneColor(pt.tone, isHovered);
+    ctx.fillRect(pt.x - this.barWidth / 2, Math.min(pt.y, zeroY), this.barWidth, Math.max(1, Math.abs(zeroY - pt.y)));
+  }
+
+  // An empty ring on the mark's place: the site is plotted but carries no evidence
+  drawHollow(ctx, pt, isHovered) {
+    ctx.fillStyle = PALETTE.panel;
+    ctx.strokeStyle = isHovered ? PALETTE.slate : PALETTE.slateLight;
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  // ⚠ just past the mark, away from zero
+  drawFlag(ctx, pt, zeroY) {
+    const flag = evidenceFlagPosition(pt, zeroY);
+    ctx.save();
+    ctx.fillStyle = PALETTE.ink;
+    ctx.font = 'bold 10px "SF Mono", Monaco, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('⚠', flag.x, flag.y);
+    ctx.restore();
+  }
+
   drawNeutralDot(ctx, pt, isSelected, isHovered) {
     const rSize = isSelected ? 5 : (isHovered ? 4 : 2.5);
+    const faint = this.options.neutralAlpha < 1 && !isSelected && !isHovered;
+    if (faint) ctx.globalAlpha = this.options.neutralAlpha;
     ctx.fillStyle = isHovered ? PALETTE.slate : PALETTE.slateLight;
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, rSize, 0, Math.PI * 2);
     ctx.fill();
+    if (faint) ctx.globalAlpha = 1;
   }
 
   tooltip(row, track, point) {
@@ -313,15 +384,30 @@ export class EvidenceBand {
       if (this.hasMirrorRule) svg += line(frame.scaleY(-at), PALETTE.purifying);
     }
 
+    const zeroY = frame.scaleY(0);
     for (const pt of this.points) {
-      if (pt.tone === 'div' && this.options.shape === 'triangle') {
+      if (pt.marker === 'hollow') {
+        svg += `  <circle cx="${pt.x}" cy="${pt.y}" r="3" fill="${PALETTE.panel}" stroke="${PALETTE.slateLight}" stroke-width="1.25"/>\n`;
+        continue;
+      }
+      const opacity = pt.tone || this.options.neutralAlpha === 1 ? '' : ` opacity="${this.options.neutralAlpha}"`;
+      if (this.mirrored) {
+        svg += `  <line x1="${pt.x}" y1="${zeroY}" x2="${pt.x}" y2="${pt.y}" stroke="${evidenceStemColor(pt.tone)}"${opacity}/>\n`;
+      }
+      if (this.options.shape === 'bar') {
+        svg += `  <rect x="${pt.x - this.barWidth / 2}" y="${Math.min(pt.y, zeroY)}" width="${this.barWidth}" height="${Math.max(1, Math.abs(zeroY - pt.y))}" fill="${evidenceToneColor(pt.tone, false)}"/>\n`;
+      } else if (pt.tone === 'div' && this.options.shape === 'triangle') {
         svg += `  <polygon points="${pt.x},${pt.y - 6} ${pt.x - 5},${pt.y + 4} ${pt.x + 5},${pt.y + 4}" fill="${PALETTE.accent}" stroke="${PALETTE.accentDeep}"/>\n`;
       } else if (pt.tone === 'pur' && this.options.shape === 'triangle') {
         svg += `  <polygon points="${pt.x},${pt.y + 6} ${pt.x - 5},${pt.y - 4} ${pt.x + 5},${pt.y - 4}" fill="${PALETTE.purifying}" stroke="${PALETTE.purifyingDeep}"/>\n`;
       } else if (pt.tone) {
         svg += `  <circle cx="${pt.x}" cy="${pt.y}" r="4" fill="${pt.tone === 'div' ? PALETTE.accent : PALETTE.purifying}"/>\n`;
       } else {
-        svg += `  <circle cx="${pt.x}" cy="${pt.y}" r="2.5" fill="${PALETTE.slateLight}"/>\n`;
+        svg += `  <circle cx="${pt.x}" cy="${pt.y}" r="2.5" fill="${PALETTE.slateLight}"${opacity}/>\n`;
+      }
+      if (pt.marker === 'flag') {
+        const flag = evidenceFlagPosition(pt, zeroY);
+        svg += `  <text x="${flag.x}" y="${flag.y}" fill="${PALETTE.ink}" font-weight="bold" text-anchor="middle" dominant-baseline="middle">⚠</text>\n`;
       }
     }
     const text = this.ruleLabel(track.threshold);

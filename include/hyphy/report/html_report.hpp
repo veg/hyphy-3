@@ -29,6 +29,7 @@ inline const std::vector<ReportViewer>& report_viewers() {
         {"fel", "FEL &bull; Pervasive Selection", "hyphy-fel-viewer"},
         {"meme", "MEME &bull; Episodic Selection", "hyphy-meme-viewer"},
         {"fubar", "FUBAR &bull; Bayesian Pervasive Selection", "hyphy-viewer"},
+        {"slac", "SLAC &bull; Ancestral Counting", "hyphy-viewer"},
     };
     return viewers;
 }
@@ -220,7 +221,12 @@ inline std::string render_html(const std::string& json_text, const std::string& 
     const std::string& badge = viewer->badge;
     const std::string& tag = viewer->tag;
     std::string viewer_tags;
-    for (const auto& v : report_viewers()) viewer_tags += (viewer_tags.empty() ? "" : ", ") + v.tag;
+    std::vector<std::string> seen_tags;
+    for (const auto& v : report_viewers()) {
+        if (std::find(seen_tags.begin(), seen_tags.end(), v.tag) != seen_tags.end()) continue;
+        seen_tags.push_back(v.tag);
+        viewer_tags += (viewer_tags.empty() ? "" : ", ") + v.tag;
+    }
     const std::string name = detail::html_escape(detail::basename(source_name));
 
     std::ostringstream html;

@@ -14,7 +14,8 @@
 // { tag, tone: 'div' | 'pur' | 'neutral', badge }.
 // options.siblings() returns the keys prev/next step through (the shell's hooks.siblings
 // gives the table's visible rows in order) and options.onStep(key) moves the focus there
-// (hooks.onStep). Without siblings the header has no step buttons.
+// (hooks.onStep); ← and → step too while the drawer is open. Without siblings the header
+// has no step buttons.
 
 export function drawerTabButtons(tabs) {
   return tabs.map((tab, i) => `<button type="button" class="seg-btn${i === 0 ? ' active' : ''}" data-tab="${tab.id}" id="tab-btn-${tab.id}">${tab.label}</button>`)
@@ -49,6 +50,13 @@ function drawerStepMarkup() {
             <span class="drawer-step-pos" id="drawer-step-pos">–</span>
             <button type="button" class="drawer-step-btn" id="drawer-next-btn" title="Next row in the table">›</button>
           </span>`;
+}
+
+const DRAWER_STEP_KEYS = { ArrowLeft: -1, ArrowRight: 1 };
+
+// Arrow keys typed into a field move its caret, not the drawer
+function isTextEntry(target) {
+  return /^(INPUT|TEXTAREA|SELECT)$/.test(target?.tagName || '') || Boolean(target?.isContentEditable);
 }
 
 export class Drawer {
@@ -152,8 +160,11 @@ export class Drawer {
 
   initKeyboardListener() {
     this.onKeyDown = (e) => {
-      if (e.key === 'Escape' && this.isOpen) {
+      if (!this.isOpen) return;
+      if (e.key === 'Escape') {
         this.close();
+      } else if (DRAWER_STEP_KEYS[e.key] && !isTextEntry(e.target)) {
+        this.step(DRAWER_STEP_KEYS[e.key]);
       }
     };
     window.addEventListener('keydown', this.onKeyDown);

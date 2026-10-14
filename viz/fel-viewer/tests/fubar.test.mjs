@@ -5,7 +5,7 @@ import { FUBARData, fubarSiteClass, fubarFalsePositives, fubarPriorNonPositive }
 import { configForResult } from '../src/methods/registry.js';
 import {
   FUBAR_CONFIG, FUBAR_KPI_CARDS, FUBAR_FILTERS, FUBAR_TABLE, FUBAR_COLUMNS, FUBAR_POSTERIOR_CUTOFF,
-  fubarEmptyState, fubarDiagnostics, fubarSigned, posteriorMassBar
+  fubarEmptyState, fubarDiagnostics, posteriorMassBar
 } from '../src/methods/fubar.js';
 import { thresholdLabel, presetLabel, sliderAttributes, thresholdPasses } from '../src/components/kpi-bar.js';
 
@@ -234,9 +234,6 @@ test('table cells keep sub-1 Bayes factors and round before signing', { skip: no
   assert.equal(cell('ebf', 47), '<td class="font-mono">0.047</td>');
   assert.equal(cell('ebf', 113), '<td class="font-mono">32.0</td>');
   assert.equal(cell('diff', 183), '<td class="font-mono">+0.00</td>');
-  assert.equal(fubarSigned(-0.004), '+0.00');
-  assert.equal(fubarSigned(-0.006), '−0.01');
-  assert.equal(fubarSigned(1.82), '+1.82');
 });
 
 test('the purifying tab lists its strongest sites first', { skip: noFixtures }, () => {

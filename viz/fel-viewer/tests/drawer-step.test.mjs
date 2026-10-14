@@ -62,6 +62,21 @@ test('the drawer steps through the siblings it is given and reports its place', 
   assert.deepEqual(steps, ['Cat', 'Horse']);
 });
 
+test('arrow keys step an open drawer, but not from a text field', () => {
+  const steps = [];
+  const drawer = branchDrawer(() => ['Cow', 'Cat', 'Horse'], steps);
+  const key = (k, tagName = 'BODY') => drawer.onKeyDown({ key: k, target: { tagName } });
+  key('ArrowRight');
+  assert.deepEqual(steps, []);
+  drawer.inspectSite('Cat');
+  key('ArrowRight');
+  key('ArrowLeft');
+  key('ArrowRight', 'INPUT');
+  assert.deepEqual(steps, ['Horse', 'Cow']);
+  key('Escape');
+  assert.equal(drawer.isOpen, false);
+});
+
 test('without siblings the header keeps its FEL markup and has no step buttons', () => {
   const drawer = new Drawer(new FakeElement(), FEL_DRAWER);
   assert.ok(drawer.drawer.innerHTML.includes(`<div class="drawer-title-group">

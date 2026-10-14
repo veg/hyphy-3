@@ -1579,3 +1579,193 @@
 .diag-val-wrap {
   overflow-wrap: anywhere;
 }
+
+/* Overview brush inside a site track's card, above the canvas (long alignments) */
+.overview-track-brush {
+  padding: 10px 16px 0 16px;
+}
+
+/* SLAC: a site with no inferred substitutions, and the dS-undefined flag */
+.omega-invariant {
+  background-color: var(--panel);
+  border: 1px solid var(--hairline);
+  color: var(--stone);
+}
+
+.slac-flag {
+  margin-left: 4px;
+  font-size: 11px;
+  color: var(--ink);
+  cursor: help;
+}
+
+/* Inline diverging bar for scaled dN − dS: zero at the centre, hue only when called */
+.effect-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.effect-cell > span:first-child {
+  min-width: 44px;
+}
+
+.effect-bar {
+  position: relative;
+  display: inline-block;
+  width: 60px;
+  height: 8px;
+  background-color: var(--grid-line);
+  border-radius: 2px;
+}
+
+.effect-bar::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -2px;
+  bottom: -2px;
+  width: 1px;
+  background-color: var(--stone);
+}
+
+.effect-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background-color: var(--slate-light);
+}
+
+.effect-fill.effect-div {
+  background-color: var(--accent);
+}
+
+.effect-fill.effect-pur {
+  background-color: var(--purifying);
+}
+
+/* SLAC counting test: expected vs observed synonymous | non-synonymous shares */
+.count-test {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.count-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--stone);
+}
+
+.count-bar {
+  display: flex;
+  height: 14px;
+  border-radius: 3px;
+  overflow: hidden;
+  background-color: var(--grid-line);
+}
+
+.count-bar-empty {
+  border: 1px dashed var(--hairline);
+  background-color: transparent;
+}
+
+.count-syn {
+  background-color: var(--hairline);
+}
+
+.count-non {
+  background-color: var(--slate);
+}
+
+/* The side the observed counts exceed is outlined in its direction's hue */
+.count-excess-div {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.count-excess-pur {
+  box-shadow: inset 0 0 0 2px var(--purifying);
+}
+
+.count-val {
+  font-size: 11px;
+  color: var(--stone);
+  min-width: 96px;
+  text-align: right;
+}
+
+.count-sentence {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+/* Dot-and-whisker rows: estimate, median and range over sampled ancestors */
+.whisker-grid {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.whisker-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.whisker-text {
+  font-size: 11px;
+  color: var(--stone);
+}
+
+.whisker-axis {
+  stroke: var(--grid-line);
+  stroke-width: 1;
+}
+
+.whisker-range {
+  stroke: var(--stone);
+  stroke-width: 2;
+}
+
+.whisker-median {
+  stroke: var(--stone);
+  stroke-width: 1.5;
+}
+
+.whisker-point {
+  fill: var(--ink);
+}
+
+/* A drawer tree tab's host: the tree scrolls with the drawer body */
+.slac-tree-host {
+  width: 100%;
+}
+
+/* Model fits listed in diagnostics */
+.diag-fits-table {
+  border-collapse: collapse;
+  margin-top: 4px;
+  font-size: 11px;
+}
+
+.diag-fits-table th,
+.diag-fits-table td {
+  padding: 3px 12px 3px 0;
+  text-align: left;
+  border-bottom: 1px solid var(--grid-line);
+  color: var(--ink);
+}
+
+.diag-fits-table th {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--stone);
+}

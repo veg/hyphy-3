@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   formatThreshold, formatPValue, formatOmegaInf, formatEBF, formatBayesFactor,
-  formatP, formatComputedP, formatOmega, formatPosterior, formatCount, formatPosteriorCutoff
+  formatP, formatComputedP, formatOmega, formatPosterior, formatCount, formatPosteriorCutoff, formatSigned
 } from '../src/core/format.js';
 
 test('FEL formatters keep their existing output', () => {
@@ -64,4 +64,11 @@ test('posterior cutoffs keep the third decimal only when they need it', () => {
   assert.equal(formatPosteriorCutoff(0.995), '0.995');
   assert.equal(formatPosteriorCutoff(0.999), '0.999');
   assert.equal(formatPosteriorCutoff(0.9 + 0.001 * 3), '0.903');
+});
+
+test('signed differences are signed after rounding', () => {
+  assert.equal(formatSigned(-0.004), '+0.00');
+  assert.equal(formatSigned(-0.006), '−0.01');
+  assert.equal(formatSigned(1.82), '+1.82');
+  assert.equal(formatSigned(-1.2346, 3), '−1.235');
 });

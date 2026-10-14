@@ -11,7 +11,7 @@ import { evidenceTipRow } from '../components/evidence-plot.js';
 import { ResultsTable, closestCalls } from '../components/results-table.js';
 import { Drawer } from '../components/drawer.js';
 import { RateGridHeatmap } from '../components/rate-grid-heatmap.js';
-import { formatPosteriorCutoff, formatPosterior, formatBayesFactor } from '../core/format.js';
+import { formatPosteriorCutoff, formatPosterior, formatBayesFactor, formatSigned } from '../core/format.js';
 
 export const FUBAR_POSTERIOR_CUTOFF = {
   title: 'Call Cutoff',
@@ -49,12 +49,6 @@ function fubarLiteral(text) {
 
 function fubarPercent(p) {
   return `${(p * 100).toFixed(1)}%`;
-}
-
-// A signed difference at 2 dp, signed after rounding so −0.004 reads +0.00, not −0.00
-export function fubarSigned(v) {
-  const rounded = Number(v.toFixed(2));
-  return `${rounded < 0 ? '−' : '+'}${Math.abs(rounded).toFixed(2)}`;
 }
 
 export const FUBAR_KPI_CARDS = [
@@ -149,7 +143,7 @@ export const FUBAR_COLUMNS = [
     header: fubarLiteral('β − α'),
     width: 70,
     title: 'Posterior mean β minus posterior mean α',
-    cell: (r) => `<td class="font-mono">${fubarSigned(r.diff)}</td>`,
+    cell: (r) => `<td class="font-mono">${formatSigned(r.diff)}</td>`,
     csv: [{ header: 'beta-alpha', value: (r) => r.diff }],
     sort: (r) => r.diff
   },
@@ -344,7 +338,7 @@ function fubarStatsSection(r, t, data) {
           <div class="drawer-stats-grid">${[
             fubarStatCard(`Synonymous rate (${fubarLiteral('α')})`, r.alpha.toFixed(2), 'posterior mean'),
             fubarStatCard(`Non-synonymous rate (${fubarLiteral('β')})`, r.beta.toFixed(2), 'posterior mean'),
-            fubarStatCard(fubarLiteral('β − α'), fubarSigned(r.diff), 'posterior mean β minus posterior mean α'),
+            fubarStatCard(fubarLiteral('β − α'), formatSigned(r.diff), 'posterior mean β minus posterior mean α'),
             fubarStatCard(fubarLiteral('P[β>α]'), formatPosterior(r.probPos), r.probPos >= t ? 'diversifying at this cutoff' : 'below the cutoff', r.probPos >= t ? 'text-orange' : ''),
             fubarStatCard(fubarLiteral('P[α>β]'), formatPosterior(r.probNeg), r.probNeg >= t ? 'purifying at this cutoff' : 'below the cutoff', r.probNeg >= t ? 'text-blue' : ''),
             fubarStatCard(fubarLiteral('EBF[β>α]'), formatBayesFactor(r.ebf), `posterior odds ÷ prior odds${priorNote}`)

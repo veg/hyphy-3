@@ -45,7 +45,14 @@ check_report("${WORK_DIR}/fubar.html" hyphy-viewer)
 run("${HYPHY3}" report fubar.json --html fubar.report.html)
 check_report("${WORK_DIR}/fubar.report.html" hyphy-viewer)
 
-# 4. Analyses without a viewer are refused with a clear error rather than mis-rendered
+# 4. SLAC reports mount the neutral viewer element, from a run and from its result file
+run("${HYPHY3}" slac --alignment "${DATA_DIR}/cd2_reduced.fna" --tree "${DATA_DIR}/cd2_reduced.nwk"
+    --samples 0 --no-progress --output slac.json --html slac.html)
+check_report("${WORK_DIR}/slac.html" hyphy-viewer)
+run("${HYPHY3}" report slac.json --html slac.report.html)
+check_report("${WORK_DIR}/slac.report.html" hyphy-viewer)
+
+# 5. Analyses without a viewer are refused with a clear error rather than mis-rendered
 file(WRITE "${WORK_DIR}/busted.json" "{\"analysis\": {\"id\": \"busted\"}}")
 execute_process(COMMAND "${HYPHY3}" report busted.json --html busted.html WORKING_DIRECTORY "${WORK_DIR}"
                 RESULT_VARIABLE rc ERROR_VARIABLE err OUTPUT_QUIET)

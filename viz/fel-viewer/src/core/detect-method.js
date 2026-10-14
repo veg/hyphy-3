@@ -6,6 +6,13 @@
  * is taken for one whose layout it shares.
  */
 
+// The producer of each format, as the report header's chip names it
+export const FORMAT_LABELS = {
+  v3: 'hyphy3 v3',
+  hyphy25: 'HyPhy 2.5 legacy',
+  'hyphy3-legacy': 'hyphy3 --legacy-json'
+};
+
 const LEGACY_INFO_METHODS = ['fel', 'meme', 'slac', 'fubar', 'busted', 'absrel',
   'relax', 'prime', 'gard', 'contrast-fel', 'bgm', 'fade'];
 

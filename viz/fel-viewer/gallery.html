@@ -21,7 +21,9 @@
     Site tracks with stacked, clickable bands load &prime=<PRIME v3 JSON> and
     &contrast=<Contrast-FEL v3 JSON> (MatrixBand: click a row label to focus it, a cell to
     select its site), &gard=<GARD v3 JSON> (SegmentBand: click a segment) and
-    &slac=<SLAC v3 JSON> (mirrored EvidenceBand: the series under the pointer is picked by y).
+    &slac=<SLAC v3 JSON> (mirrored EvidenceBand: the series under the pointer is picked by y;
+    the same file also drives an OverviewTrack with the SLAC preset, its brush shown from 60
+    codons so it zooms even a short alignment).
     RateGridHeatmap loads &fubar=<FUBAR JSON, v3 or legacy>: the estimated grid weights and
     the posterior of the site with the highest P[β>α], its mode outlined and mean marked.
     The hidden tab holds a BranchTree built while display:none; showing the tab draws it. Clicking a branch in the full tree selects it in the mini tree.
@@ -152,6 +154,12 @@
   </div>
 
   <div class="gallery-card">
+    <div class="gallery-card-head"><span>OverviewTrack · SLAC preset, the brush zooms the track (Evidence | Effect)</span></div>
+    <div id="track-slac-overview"></div>
+    <div class="gallery-note" id="slac-overview-note"></div>
+  </div>
+
+  <div class="gallery-card">
     <div class="gallery-card-head"><span>OverviewBrush</span></div>
     <div id="brush"></div>
     <div class="gallery-note" id="brush-note"></div>
@@ -215,7 +223,10 @@
     import { MatrixBand } from './src/components/matrix-band.js';
     import { SegmentBand } from './src/components/segment-band.js';
     import { RateGridHeatmap } from './src/components/rate-grid-heatmap.js';
+    import { OverviewTrack } from './src/components/overview-track.js';
     import { FUBARData } from './src/data/fubar-data.js';
+    import { SLACData } from './src/data/slac-data.js';
+    import { slacTrackModes, SLAC_BRUSH } from './src/methods/slac.js';
     import { PALETTE } from './src/data/palette.js';
     import { formatPValue, formatThreshold } from './src/core/format.js';
 
@@ -509,6 +520,25 @@
         }
       });
       track.setData({ rows: columnRows(json.site_results) });
+      showSlacOverview(json);
+    }
+
+    // The SLAC hero outside the shell, with the brush threshold lowered so cd2 zooms too
+    function showSlacOverview(json) {
+      const note = document.getElementById('slac-overview-note');
+      const view = new OverviewTrack(document.getElementById('track-slac-overview'), {
+        track: (container) => new SiteTrackCanvas(container, {
+          title: 'Selection Evidence Landscape',
+          modes: slacTrackModes(),
+          threshold: 0.1,
+          exportName: 'gallery_slac_overview'
+        }),
+        brush: Object.assign({}, SLAC_BRUSH, { minSites: 60 }),
+        window: 60,
+        onSiteSelect: (site) => { note.textContent = `site-select: ${site}`; }
+      });
+      view.setData(new SLACData(json));
+      note.textContent = `${view.track.numSites} codons, window ${view.span}`;
     }
 
     function showBrush(json) {

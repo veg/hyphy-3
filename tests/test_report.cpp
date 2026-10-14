@@ -72,15 +72,23 @@ TEST_CASE("Report: FEL and MEME reports embed the viewer, stylesheet and data") 
     CHECK(fubar.find("<hyphy-viewer id=\"hyphy-viewer\"") != std::string::npos);
     CHECK(fubar.find("FUBAR &bull; Bayesian Pervasive Selection") != std::string::npos);
     CHECK(fubar.find("whenDefined('hyphy-viewer')") != std::string::npos);
+
+    std::string slac = render_html(R"J({"analysis": {"id": "slac"}})J", "s.json");
+    CHECK(slac.find("<hyphy-viewer id=\"hyphy-viewer\"") != std::string::npos);
+    CHECK(slac.find("SLAC &bull; Ancestral Counting") != std::string::npos);
+    // Viewers that share an element name it once in the sizing rule
+    CHECK(count(slac, "hyphy-viewer, hyphy-viewer") == 0);
 }
 
 TEST_CASE("Report: the viewer table drives the supported analyses") {
-    CHECK(supported_analyses() == std::vector<std::string>{"fel", "meme", "fubar"});
-    CHECK(supported_analyses_text() == "FEL, MEME, FUBAR");
+    CHECK(supported_analyses() == std::vector<std::string>{"fel", "meme", "fubar", "slac"});
+    CHECK(supported_analyses_text() == "FEL, MEME, FUBAR, SLAC");
     REQUIRE(find_viewer("meme") != nullptr);
     CHECK(find_viewer("meme")->tag == "hyphy-meme-viewer");
     REQUIRE(find_viewer("fubar") != nullptr);
     CHECK(find_viewer("fubar")->tag == "hyphy-viewer");
+    REQUIRE(find_viewer("slac") != nullptr);
+    CHECK(find_viewer("slac")->tag == "hyphy-viewer");
     CHECK(find_viewer("busted") == nullptr);
     CHECK(find_viewer("") == nullptr);
 }

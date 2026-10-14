@@ -69,3 +69,9 @@ export function formatPosteriorCutoff(t) {
   const two = t.toFixed(2);
   return Math.abs(Number(two) - t) < 1e-9 ? two : t.toFixed(3);
 }
+
+// A signed difference, signed after rounding so −0.004 reads +0.00, not −0.00
+export function formatSigned(v, digits = 2) {
+  const rounded = Number(v.toFixed(digits));
+  return `${rounded < 0 ? '−' : '+'}${Math.abs(rounded).toFixed(digits)}`;
+}

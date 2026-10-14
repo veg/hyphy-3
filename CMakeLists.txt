@@ -206,7 +206,7 @@ add_executable(hyphy3-gard src/apps/hyphy_gard.cpp)
 target_link_libraries(hyphy3-gard PRIVATE hyphy3_core)
 
 add_executable(hyphy3-slac src/apps/hyphy_slac.cpp)
-target_link_libraries(hyphy3-slac PRIVATE hyphy3_core)
+target_link_libraries(hyphy3-slac PRIVATE hyphy3_report)
 
 add_executable(hyphy3-dfel src/apps/hyphy_dfel.cpp)
 target_link_libraries(hyphy3-dfel PRIVATE hyphy3_core)

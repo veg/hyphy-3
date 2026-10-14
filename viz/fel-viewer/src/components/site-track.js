@@ -20,6 +20,9 @@
 // A region of kind 'site' (key = site) hovers and selects that site like a main-band
 // point; any other kind is the track's hoveredRegion/selectedRegion and goes to
 // onRegionHover/onRegionSelect.
+//
+// setViewport(start, end) narrows the x-scale to sites start..end (1-based, inclusive),
+// for an overview brush to zoom the track; the main band's marks are clipped to it.
 
 import { PALETTE } from '../data/palette.js';
 import { downloadPNG, downloadSVG } from '../core/export.js';
@@ -164,6 +167,7 @@ export class SiteTrackCanvas {
     this.hoveredSite = null;
     this.selectedRegion = null;
     this.hoveredRegion = null;
+    this.viewport = null; // { start, end } when zoomed in, else the whole alignment
     this.points = [];    // Cached screen coordinates of the main band's marks
     this.regions = [];   // Hit regions the stacked bands returned, each with its band
     this.hitFrames = []; // Frames of the stacked bands that returned regions
@@ -283,6 +287,23 @@ export class SiteTrackCanvas {
     this.render();
   }
 
+  // Show sites start..end (1-based, inclusive); null shows the whole alignment
+  setViewport(start, end) {
+    this.viewport = start == null ? null : { start, end };
+    this.render();
+  }
+
+  // How far past the plot a zoomed window's clip reaches: half a site, at most 6px, so
+  // the edge sites' marks show and their neighbours' do not
+  windowPad(frame) {
+    return Math.min(6, Math.abs(frame.scaleX(2) - frame.scaleX(1)) / 2);
+  }
+
+  // The first and last site the x-scale spans
+  siteRange() {
+    return this.viewport ? [this.viewport.start, this.viewport.end] : [1, Math.max(1, this.numSites)];
+  }
+
   initEvents() {
     this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
     this.canvas.addEventListener('mouseleave', () => this.handleMouseLeave());
@@ -294,7 +315,8 @@ export class SiteTrackCanvas {
   hitAt(e, minTolerance) {
     if (!this.data) return null;
     const rect = this.canvas.getBoundingClientRect();
-    const tolerance = Math.max(minTolerance, this.plotWidth / Math.max(1, this.numSites) * 2);
+    const [from, to] = this.siteRange();
+    const tolerance = Math.max(minTolerance, this.plotWidth / (to - from + 1) * 2);
     return resolveTrackHit(this, e.clientX - rect.left, e.clientY - rect.top, tolerance);
   }
 
@@ -396,24 +418,24 @@ export class SiteTrackCanvas {
 
   // Frames for the current size, each with the shared codon x-scale
   layout() {
-    const numSites = Math.max(1, this.numSites);
+    const [from, to] = this.siteRange();
     this.stack.forEach(b => b.measure?.(this));
     return stackBandFrames(this.width, this.height, this.stack, this.options.gutter).map(frame => Object.assign(frame, {
-      scaleX: (site) => frame.left + ((site - 1) / Math.max(1, numSites - 1)) * frame.width
+      scaleX: (site) => frame.left + ((site - from) / Math.max(1, to - from)) * frame.width
     }));
   }
 
   // Vertical codon gridlines through the main frame, labelled underneath. The gridlines
   // keep the line width the band's background left (its zero rule widens them).
   drawCodonAxis(ctx, frame) {
-    const numSites = Math.max(1, this.numSites);
+    const [from, to] = this.siteRange();
     const bottom = frame.top + frame.height;
     ctx.font = '10px "SF Mono", Monaco, monospace';
     ctx.fillStyle = PALETTE.stone;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
 
-    for (let s = 1; s <= numSites; s += codonTickStep(numSites)) {
+    for (let s = from; s <= to; s += codonTickStep(to - from + 1)) {
       const x = frame.scaleX(s);
       ctx.strokeStyle = PALETTE.gridLine;
       ctx.beginPath();
@@ -424,7 +446,7 @@ export class SiteTrackCanvas {
       ctx.fillText(String(s), x, bottom + 8);
     }
     // Last codon tick if not overlapping
-    ctx.fillText(String(numSites), frame.scaleX(numSites), bottom + 8);
+    ctx.fillText(String(to), frame.scaleX(to), bottom + 8);
   }
 
   render() {
@@ -443,7 +465,18 @@ export class SiteTrackCanvas {
     const band = this.band;
     band.drawBackground(ctx, main, this);
     this.drawCodonAxis(ctx, main);
-    this.points = band.drawMarks(ctx, main, this);
+    if (this.viewport) {
+      // Zoomed in: marks of the sites outside the window are clipped and cannot be hit
+      const pad = this.windowPad(main);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(main.left - pad, 0, main.width + 2 * pad, this.height);
+      ctx.clip();
+      this.points = band.drawMarks(ctx, main, this).filter(p => p.x >= main.left - pad && p.x <= main.left + main.width + pad);
+      ctx.restore();
+    } else {
+      this.points = band.drawMarks(ctx, main, this);
+    }
     this.regions = [];
     this.hitFrames = [];
     this.stack.forEach((b, i) => {
@@ -485,7 +518,13 @@ export class SiteTrackCanvas {
     let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">\n`;
     svg += `  <style>\n    text { font-family: -apple-system, sans-serif; font-size: 10px; fill: ${PALETTE.stone}; }\n  </style>\n`;
     svg += `  <rect width="100%" height="100%" fill="${PALETTE.panel}"/>\n`;
-    svg += this.band.svg(main, this);
+    if (this.viewport) {
+      const pad = this.windowPad(main);
+      svg += `  <clipPath id="track-window"><rect x="${main.left - pad}" y="0" width="${main.width + 2 * pad}" height="${h}"/></clipPath>\n`;
+      svg += `  <g clip-path="url(#track-window)">\n${this.band.svg(main, this)}  </g>\n`;
+    } else {
+      svg += this.band.svg(main, this);
+    }
     this.stack.forEach((b, i) => { svg += b.svg(stacked[i], this); });
     svg += `</svg>`;
     downloadSVG(svg, `${this.options.exportName}.svg`);
