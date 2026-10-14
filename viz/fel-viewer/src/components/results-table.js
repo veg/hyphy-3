@@ -17,10 +17,13 @@
 //   columnChooser: draw the column chooser (default: when an available column is hiddenByDefault)
 //   virtualize: true or { minRows, overscan } draws only the rows in view once the
 //     filtered rows reach minRows (default 2000); off by default.
-//   filters: [{ id, key, glyph?, label, count(stats, view), test(row, t, view), subtitle(n, t) }]
+//   filters: [{ id, key, glyph?, label, count(stats, view), test(row, t, view), subtitle(n, t),
+//              sort? }]
 //     drawn as a segmented control; key names the button and badge ids, and stats is
-//     data.getStats(t). The first filter names the method's finding, so its label is
-//     rewritten on load; the others keep the markup's label.
+//     data.getStats(t). sort ({ column, dir }) orders the filter's rows until the
+//     viewer picks a column, in place of defaultSort. The first filter names the
+//     method's finding, so its label is rewritten on load; the others keep the
+//     markup's label.
 //   blank: { filters, columns } drawn before data arrives (defaults to the method's own).
 //     Every filter needs a blank slot with its id; blank filters the method lacks are
 //     hidden once data loads.
@@ -135,7 +138,7 @@ export class ResultsTable {
     this.blankFilters = this.options.blank?.filters || this.filters;
     this.defaultFilter = this.options.defaultFilter || this.filters[0].id;
     this.defaultSort = this.options.defaultSort;
-    this.sort = this.defaultSort;
+    this.sort = null; // the column the viewer sorted by, over the default order
     this.threshold = this.options.threshold;
     this.statistic = this.options.statistic;
     this.filterType = this.knownFilter(this.options.filterType);
@@ -296,10 +299,16 @@ ${search ? resultsSearchMarkup(search) : ''}
     this.render();
   }
 
+  // The order in force: the viewer's column, else the filter's own, else the default
+  currentSort() {
+    return this.sort || this.activeFilter()?.sort || this.defaultSort;
+  }
+
   // Header clicks sort ascending first, then flip
   sortBy(column) {
     if (!column?.sort) return;
-    const dir = this.sort?.column === column.id && this.sort.dir === 'asc' ? 'desc' : 'asc';
+    const current = this.currentSort();
+    const dir = current?.column === column.id && current.dir === 'asc' ? 'desc' : 'asc';
     this.sort = { column: column.id, dir };
     this.render();
   }
@@ -373,9 +382,10 @@ ${search ? resultsSearchMarkup(search) : ''}
     const view = this.view();
     const q = this.searchText();
     const rows = this.rows.filter(r => (!q || this.options.search.match(r, q)) && filter.test(r, this.threshold, view));
-    const column = this.sort && this.columns.find(c => c.id === this.sort.column);
+    const sort = this.currentSort();
+    const column = sort && this.columns.find(c => c.id === sort.column);
     if (!column) return rows;
-    const sign = this.sort.dir === 'desc' ? -1 : 1;
+    const sign = sort.dir === 'desc' ? -1 : 1;
     return rows.sort((a, b) => {
       const x = column.sort(a);
       const y = column.sort(b);
@@ -385,8 +395,7 @@ ${search ? resultsSearchMarkup(search) : ''}
 
   // The default order is unmarked; a header the viewer sorted by shows its direction
   sortMark(column) {
-    const isDefault = this.sort === this.defaultSort;
-    if (isDefault || this.sort.column !== column.id) return '';
+    if (!this.sort || this.sort.column !== column.id) return '';
     return this.sort.dir === 'asc' ? ' ↑' : ' ↓';
   }
 

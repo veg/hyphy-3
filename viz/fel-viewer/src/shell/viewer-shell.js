@@ -95,12 +95,6 @@ export class ViewerShell {
       onClose: () => this.setState({ focus: null })
     };
 
-    // A method that names its producer gets a chip above the KPI bar
-    if (config.formatLabel) {
-      this.formatChip = document.createElement('div');
-      this.formatChip.className = 'hyphy-format-chip';
-      this.layout.appendChild(this.formatChip);
-    }
     this.kpiBar = config.kpis(this.layout, hooks);
     this.hero = config.hero(this.layout, hooks);
     this.table = config.table(this.layout, hooks);
@@ -113,7 +107,7 @@ export class ViewerShell {
     this.views.forEach(view => view.destroy?.());
     this.views = [];
     this.kpiBar = this.hero = this.table = this.drawer = null;
-    this.formatChip = this.diagPanel = null;
+    this.diagPanel = null;
     this.layout.replaceChildren();
     this.state.focus = null;
   }
@@ -239,7 +233,6 @@ export class ViewerShell {
     this.data = data;
 
     // Propagate data to all subcomponents
-    if (this.formatChip) this.formatChip.textContent = config.formatLabel(data);
     this.views.forEach(view => view.setData(this.data));
     this.updateDiagnostics();
     if (config.diagnosticsPanel) {
@@ -254,7 +247,9 @@ export class ViewerShell {
       detail: {
         numSites: this.data.numSites,
         numTaxa: this.data.numTaxa,
-        stats: this.data.getStats(this.threshold)
+        stats: this.data.getStats(this.threshold),
+        // The producer, for the host's header chip, when the method names it
+        formatLabel: config.formatLabel ? config.formatLabel(data) : null
       }
     }));
   }

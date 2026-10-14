@@ -144,3 +144,22 @@ test('a table without search draws no search box and ignores a stray query', () 
   searched.searchQuery = 'B1';
   assert.deepEqual(searched.visibleRows().map(r => r.branch), ['B1']);
 });
+
+test('a filter with its own sort orders its rows until the viewer picks a column', () => {
+  const filters = [
+    { id: 'all', key: 'all', label: 'All', count: (s) => s.total, test: () => true, subtitle: (n) => `${n}` },
+    { id: 'rev', key: 'rev', label: 'Rev', sort: { column: 'lrt', dir: 'desc' }, count: (s) => s.total, test: () => true, subtitle: (n) => `${n}` }
+  ];
+  const table = branchTable({ filters, defaultSort: { column: 'lrt', dir: 'asc' } });
+  table.setData(branchData(3));
+  const order = () => table.visibleRows().map(r => r.branch);
+  assert.deepEqual(order(), ['B0', 'B1', 'B2']);
+  table.setFilterType('rev');
+  assert.deepEqual(order(), ['B2', 'B1', 'B0']);
+  assert.equal(headers(table)[1], 'LRT');
+  table.sortBy(table.displayColumns()[1]);
+  assert.deepEqual(order(), ['B0', 'B1', 'B2']);
+  assert.equal(headers(table)[1], 'LRT ↑');
+  table.setFilterType('all');
+  assert.deepEqual(order(), ['B0', 'B1', 'B2']);
+});

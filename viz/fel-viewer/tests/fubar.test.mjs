@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { FUBARData, fubarSiteClass, fubarFalsePositives, fubarPriorNonPositive } from '../src/data/fubar-data.js';
 import { configForResult } from '../src/methods/registry.js';
-import { FUBAR_CONFIG, FUBAR_KPI_CARDS, FUBAR_FILTERS, FUBAR_POSTERIOR_CUTOFF, fubarEmptyState, fubarDiagnostics } from '../src/methods/fubar.js';
-import { thresholdLabel, sliderAttributes, thresholdPasses } from '../src/components/kpi-bar.js';
+import {
+  FUBAR_CONFIG, FUBAR_KPI_CARDS, FUBAR_FILTERS, FUBAR_TABLE, FUBAR_COLUMNS, FUBAR_POSTERIOR_CUTOFF,
+  fubarEmptyState, fubarDiagnostics, fubarSigned, posteriorMassBar
+} from '../src/methods/fubar.js';
+import { thresholdLabel, presetLabel, sliderAttributes, thresholdPasses } from '../src/components/kpi-bar.js';
 
 const FIXTURES = new URL('../../../parity/viewer/fixtures/', import.meta.url);
 const noFixtures = !existsSync(FIXTURES) && 'parity fixtures are not in this checkout';
@@ -187,14 +190,16 @@ test('calls are diversifying first, and the false-positive count covers diversif
 test('the posterior cutoff passes at or above t and labels three decimals near 1', () => {
   assert.equal(thresholdPasses(FUBAR_POSTERIOR_CUTOFF, 0.9, 0.9), true);
   assert.equal(thresholdPasses(FUBAR_POSTERIOR_CUTOFF, 0.89, 0.9), false);
-  assert.equal(thresholdLabel(FUBAR_POSTERIOR_CUTOFF, 0.9), 'P ≥ 0.90');
-  assert.equal(thresholdLabel(FUBAR_POSTERIOR_CUTOFF, 0.999), 'P ≥ 0.999');
+  assert.equal(thresholdLabel(FUBAR_POSTERIOR_CUTOFF, 0.9), 'Posterior ≥ 0.90');
+  assert.equal(thresholdLabel(FUBAR_POSTERIOR_CUTOFF, 0.999), 'Posterior ≥ 0.999');
+  assert.equal(presetLabel(FUBAR_POSTERIOR_CUTOFF, 0.95), '≥ 0.95');
   assert.deepEqual(sliderAttributes(FUBAR_POSTERIOR_CUTOFF, 0.95), { min: '0.50', max: '0.999', step: '0.001', value: '0.95' });
 });
 
 test('KPI cards follow the cutoff', { skip: noFixtures }, () => {
   const data = new FUBARData(fixture('fubar_cd2.json'));
   const read = (t) => FUBAR_KPI_CARDS.map(card => [card.value(data.getStats(t), { data, threshold: t }), card.sub(data.getStats(t), { data, threshold: t })]);
+  const efp = FUBAR_KPI_CARDS[3];
   assert.deepEqual(read(0.9), [
     ['187 Codons', '10 Taxa'],
     ['▲ 13', 'P[β>α] ≥ 0.90'],
@@ -204,8 +209,10 @@ test('KPI cards follow the cutoff', { skip: noFixtures }, () => {
   assert.deepEqual(read(0.99).slice(1), [
     ['▲ 0', 'P[β>α] ≥ 0.99'],
     ['▼ 2', 'P[α>β] ≥ 0.99'],
-    ['0.00', '95% CI 0–0 of 0 diversifying calls']
+    ['—', 'No diversifying calls at Posterior ≥ 0.99']
   ]);
+  assert.equal(efp.tone(data.getStats(0.9)), 'ink');
+  assert.equal(efp.tone(data.getStats(0.99)), 'muted');
 });
 
 test('an empty class jumps to its mirror, else lists the closest calls', () => {
@@ -218,4 +225,42 @@ test('an empty class jumps to its mirror, else lists the closest calls', () => {
   assert.deepEqual(fallback.fallback.map(r => r.site), [1, 2]);
   const closest = fubarEmptyState(0.9, { filter: div, stats: { diversifying: 0, purifying: 0 }, rows });
   assert.deepEqual(closest.fallback.map(r => r.site), [2, 1]);
+});
+
+test('table cells keep sub-1 Bayes factors and round before signing', { skip: noFixtures }, () => {
+  const data = new FUBARData(fixture('fubar_cd2.json'));
+  const cell = (id, site) => FUBAR_COLUMNS.find(c => c.id === id).cell(data.siteResults[site - 1], { threshold: 0.9 });
+  assert.equal(cell('ebf', 87), '<td class="font-mono">0.0011</td>');
+  assert.equal(cell('ebf', 47), '<td class="font-mono">0.047</td>');
+  assert.equal(cell('ebf', 113), '<td class="font-mono">32.0</td>');
+  assert.equal(cell('diff', 183), '<td class="font-mono">+0.00</td>');
+  assert.equal(fubarSigned(-0.004), '+0.00');
+  assert.equal(fubarSigned(-0.006), '−0.01');
+  assert.equal(fubarSigned(1.82), '+1.82');
+});
+
+test('the purifying tab lists its strongest sites first', { skip: noFixtures }, () => {
+  const data = new FUBARData(fixture('fubar_cd2.json'));
+  const pur = FUBAR_FILTERS.find(f => f.id === 'purifying');
+  const column = FUBAR_COLUMNS.find(c => c.id === pur.sort.column);
+  const rows = data.siteResults.filter(r => pur.test(r, 0.9)).sort((a, b) => column.sort(b) - column.sort(a));
+  assert.deepEqual([rows[0].site, rows[rows.length - 1].site], [87, 120]);
+  assert.equal(FUBAR_TABLE.defaultSort.column, 'ppos');
+});
+
+test('the mass bar takes full hue only on the side that reaches the cutoff', () => {
+  const r = { probNeg: 0.05, probEq: 0.19, probPos: 0.76 };
+  const muted = (t) => [...posteriorMassBar(r, t).matchAll(/class="(mass-(?:neg|eq|pos))( mass-below)?"/g)].map(m => `${m[1]}${m[2] ? '-' : ''}`);
+  assert.deepEqual(muted(0.9), ['mass-neg-', 'mass-eq', 'mass-pos-']);
+  assert.deepEqual(muted(0.75), ['mass-neg-', 'mass-eq', 'mass-pos']);
+});
+
+test('diagnostics give the run cutoff once, and keep case only on notation', { skip: noFixtures }, () => {
+  const v3 = fubarDiagnostics(new FUBARData(fixture('fubar_cd2.json')));
+  assert.match(v3, /Run cutoff, as written by <span class="case-literal">hyphy3<\/span><\/span>\s*<span class="diag-val ">Posterior ≥ 0\.90: 13 diversifying · 14 purifying · EFP 0\.95 \(95% CI 0–3\)/);
+  assert.equal(v3.match(/Run cutoff/g).length, 1);
+  assert.match(v3, />Non-zero <span class="case-literal">α<\/span> constraint</);
+  assert.match(v3, />GTR <span class="case-literal">AICc<\/span> \(<span class="case-literal">hyphy3 v3<\/span>\)</);
+  const legacy = fubarDiagnostics(new FUBARData(fixture('fubar_cd2.hyphy25.json')));
+  assert.match(legacy, /Run cutoff<\/span>\s*<span class="diag-val ">Posterior ≥ 0\.90</);
 });

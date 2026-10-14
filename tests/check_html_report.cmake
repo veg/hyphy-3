@@ -17,7 +17,9 @@ function(check_report html tag)
         message(FATAL_ERROR "Report not written: ${html}")
     endif()
     file(READ "${html}" content)
-    foreach(needle "<${tag}" "window.HyPhyFELViewer" ".hyphy-fel-container" "const payload = {")
+    # The header takes the producer chip the viewer names on load
+    foreach(needle "<${tag}" "window.HyPhyFELViewer" ".hyphy-fel-container" "const payload = {"
+                   "<div class=\"app-nav-meta\">" "addEventListener('data-loaded', showFormat)")
         string(FIND "${content}" "${needle}" pos)
         if(pos EQUAL -1)
             message(FATAL_ERROR "${html} is missing '${needle}'")

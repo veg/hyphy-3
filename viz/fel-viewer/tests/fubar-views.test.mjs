@@ -29,10 +29,10 @@ test('the fill is a sqrt greyscale from the panel to near-ink', () => {
   assert.equal(rateGridShade(0.0025, 0.01), 'rgb(141, 141, 141)');
 });
 
-test('grid tick labels thin out to fit and always include the last value', () => {
-  assert.deepEqual(rateGridTicks(20, 16), [0, 2, 4, 6, 8, 10, 12, 14, 16, 19]);
-  assert.deepEqual(rateGridTicks(20, 8), [0, 4, 8, 12, 19]);
-  assert.deepEqual(rateGridTicks(5, 40), [0, 1, 2, 3, 4]);
+test('grid ticks always label the ends, the neutral rate 1 and the range above it', () => {
+  assert.deepEqual(rateGridTicks(FUBAR_AXIS, 8), [0, 4, 8, 13, 16, 19]);
+  assert.deepEqual(rateGridTicks(FUBAR_AXIS, 16), [0, 2, 4, 6, 8, 10, 13, 16, 19]);
+  assert.deepEqual(rateGridTicks([0, 0.5, 1, 2, 4], 40), [0, 1, 2, 3, 4]);
 });
 
 test('the signed mode shows whichever posterior is larger, negative for α > β', () => {
@@ -57,7 +57,12 @@ test('posterior modes: fixed probability axes with the cutoff rule, only diversi
   assert.equal(pos.band.options.rule, 'ge');
   assert.equal(signed.band.options.mirrorRule, true);
   assert.equal(diff.band.options.rule, null);
-  assert.equal(pos.band.ruleLabel(0.999), 'P ≥ 0.999');
+  assert.equal(pos.band.ruleLabel(0.999), 'Posterior ≥ 0.999');
+  assert.equal(pos.band.options.ruleLabelAt, 'end');
+  assert.deepEqual([pos.label, signed.label, diff.label], ['Posterior P[β>α]', 'Signed Posterior', 'Rate Diff (β − α)']);
+  // Signed ticks read as probabilities either side of zero, with the 0.9 reference both ways
+  // (±1 is the frame edge; its label would collide with 0.9 at half the scale)
+  assert.deepEqual(signed.band.options.ticks.map(signed.band.options.tickFormat), ['0.9', '0.5', '0.0', '0.5', '0.9']);
 
   const track = { threshold: 0.9 };
   const purifying = { probPos: 0.02, probNeg: 0.95, diff: -3 };
@@ -75,4 +80,15 @@ test('an evidence band can derive its ticks from the domain', () => {
   band.yMin = -4;
   band.yMax = 2;
   assert.deepEqual(band.tickValues(), [-4, -1, 2]);
+});
+
+test('end rule labels: one above the rule, a mirrored one below it in the purifying hue', () => {
+  const frame = { top: 0, height: 200, scaleY: (v) => 100 - v * 100 };
+  const [pos, signed] = posteriorPlotModes(FUBAR_EVIDENCE);
+  const labels = (band, threshold) => band.endRuleLabels(frame, { threshold }).map(([y, , side]) => [Math.round(y), side]);
+  assert.deepEqual(labels(pos.band, 0.9), [[10, 'above']]);
+  assert.deepEqual(labels(signed.band, 0.8), [[20, 'above'], [180, 'below']]);
+  // Too close to the floor for a label below: it moves above its rule
+  assert.deepEqual(labels(signed.band, 0.9), [[10, 'above'], [190, 'above']]);
+  assert.deepEqual(new EvidenceBand({ rule: 'le' }).endRuleLabels(frame, { threshold: 0.9 }), []);
 });

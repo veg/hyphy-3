@@ -1,7 +1,9 @@
 // Posterior Plot: the site track preset for posterior-probability site methods (FUBAR).
 // Three modes share the call colouring at the live cutoff: P[β>α] on a fixed 0–1 axis
 // with the cutoff rule at t; a signed mode, +P[β>α] or −P[α>β] for whichever side is
-// larger, on a fixed −1..1 axis with rules at ±t; and the posterior mean difference β − α.
+// larger, on a fixed −1..1 axis with rules at ±t (its ticks read as probabilities, the
+// sign carried by the axis captions); and the posterior mean difference β − α.
+// Rule labels sit at the plot's right end, over the dots.
 // The method config supplies values and wording through a preset:
 // { tone(r, track), pos(r), neg(r), diff(r), tooltip(r, track), ruleLabel(t),
 //   labels: { pos, signed: [above, below], diff }, subtitles: { pos, signed, diff } }
@@ -49,12 +51,13 @@ export function posteriorPlotModes(preset) {
     shape: 'dot',
     rule: 'ge',
     ruleLabel: preset.ruleLabel,
+    ruleLabelAt: 'end',
     tickFormat: (v) => v.toFixed(1)
   }, options));
   return [
     {
       id: 'pos',
-      label: 'P[β>α]',
+      label: 'Posterior P[β>α]',
       subtitle: preset.subtitles.pos,
       // On the P[β>α] axis only the diversifying calls take a hue
       band: band({
@@ -67,19 +70,20 @@ export function posteriorPlotModes(preset) {
     },
     {
       id: 'signed',
-      label: 'Signed',
+      label: 'Signed Posterior',
       subtitle: preset.subtitles.signed,
       band: band({
         value: (r) => signedPosterior(preset.pos(r), preset.neg(r)),
         domain: [-1, 1],
-        ticks: [-1, -0.5, 0, 0.5, 1],
+        ticks: [-0.9, -0.5, 0, 0.5, 0.9],
+        tickFormat: (v) => Math.abs(v).toFixed(1),
         mirrorRule: true,
         label: preset.labels.signed
       })
     },
     {
       id: 'diff',
-      label: 'β − α',
+      label: 'Rate Diff (β − α)',
       subtitle: preset.subtitles.diff,
       band: band({
         value: preset.diff,

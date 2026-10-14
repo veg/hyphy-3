@@ -178,14 +178,23 @@ test('the cutoff label names the statistic in force', () => {
   assert.equal(thresholdLabel(SITE_P_THRESHOLD, 0.05, 'q'), 'q ≤ 0.05');
 });
 
-test('a config that names its format gets a chip, filled on load', () => {
+test('a config that names its format hands the label to the host on load, outside the layout', () => {
+  const loaded = (shell) => shell.container.events.find(e => e.type === 'data-loaded').detail.formatLabel;
   const config = Object.assign(branchConfig(GE_CONTROLLER), { formatLabel: (data) => `${data.branches.length} branches` });
   const shell = shellWith(config);
-  const chip = shell.layout.children.find(el => el.className === 'hyphy-format-chip');
-  assert.ok(chip);
   shell.load({ branches });
-  assert.equal(chip.textContent, '2 branches');
-  assert.ok(!shellWith(branchConfig(GE_CONTROLLER)).layout.children.some(el => el.className === 'hyphy-format-chip'));
+  assert.equal(loaded(shell), '2 branches');
+  assert.ok(!shell.layout.children.some(el => /chip/.test(el.className)));
+  const plain = shellWith(branchConfig(GE_CONTROLLER));
+  plain.load({ branches });
+  assert.equal(loaded(plain), null);
+});
+
+test('a drawer with one tab hides its tab strip; two tabs show it', () => {
+  const tab = (id) => ({ id, label: id, render: () => {} });
+  const strip = (tabs) => new Drawer(new FakeElement(), { tabs }).drawer.innerHTML.match(/<div class="segmented-control drawer-nav-tabs"[^>]*>/)[0];
+  assert.equal(strip([tab('a')]), '<div class="segmented-control drawer-nav-tabs" style="display: none;">');
+  assert.equal(strip([tab('a'), tab('b')]), '<div class="segmented-control drawer-nav-tabs">');
 });
 
 test('a diagnostics panel is drawn once per load, not on every threshold change', () => {

@@ -5,25 +5,31 @@
 
 import { FUBARData, fubarSiteClass } from '../data/fubar-data.js';
 import { ALIGNMENT_KPI, CODON_COLUMN, siteRow } from './fel.js';
-import { KpiBar } from '../components/kpi-bar.js';
+import { KpiBar, thresholdLabel } from '../components/kpi-bar.js';
 import { PosteriorPlot } from '../components/posterior-plot.js';
 import { evidenceTipRow } from '../components/evidence-plot.js';
 import { ResultsTable, closestCalls } from '../components/results-table.js';
 import { Drawer } from '../components/drawer.js';
 import { RateGridHeatmap } from '../components/rate-grid-heatmap.js';
-import { formatPosteriorCutoff, formatPosterior, formatEBF } from '../core/format.js';
+import { formatPosteriorCutoff, formatPosterior, formatBayesFactor } from '../core/format.js';
 
 export const FUBAR_POSTERIOR_CUTOFF = {
-  title: 'Posterior Cutoff',
-  statistic: 'P',
+  title: 'Call Cutoff',
+  statistic: 'Posterior',
   direction: 'ge',
   min: 0.5,
   max: 0.999,
   step: 0.001,
   presets: [0.9, 0.95, 0.99],
   seed: 0.9,
-  format: formatPosteriorCutoff
+  format: formatPosteriorCutoff,
+  presetLabel: (t) => `≥ ${formatPosteriorCutoff(t)}`
 };
+
+// 'Posterior ≥ 0.90': the cutoff as the controller, hero rule and diagnostics name it
+function fubarCutoff(t) {
+  return thresholdLabel(FUBAR_POSTERIOR_CUTOFF, t);
+}
 
 const FUBAR_CALLS = {
   diversifying: { tone: 'div', glyph: '▲', label: 'Diversifying', badge: '▲ Diversifying selection', badgeClass: 'omega-div' },
@@ -35,7 +41,8 @@ function fubarCall(r, t) {
   return FUBAR_CALLS[fubarSiteClass(r, t)];
 }
 
-// Greek and bracketed notation inside uppercased labels: 'α' must not read as 'Α'
+// Greek and bracketed notation inside uppercased labels: 'α' must not read as 'Α'.
+// Wrap only the notation, so the rest of the label takes the label's case.
 function fubarLiteral(text) {
   return `<span class="case-literal">${text}</span>`;
 }
@@ -44,18 +51,24 @@ function fubarPercent(p) {
   return `${(p * 100).toFixed(1)}%`;
 }
 
+// A signed difference at 2 dp, signed after rounding so −0.004 reads +0.00, not −0.00
+export function fubarSigned(v) {
+  const rounded = Number(v.toFixed(2));
+  return `${rounded < 0 ? '−' : '+'}${Math.abs(rounded).toFixed(2)}`;
+}
+
 export const FUBAR_KPI_CARDS = [
   ALIGNMENT_KPI,
   {
     id: 'div',
-    label: 'Diversifying sites',
+    label: 'Diversifying (Positive)',
     value: (stats) => `▲ ${stats.diversifying}`,
     sub: (stats, { threshold }) => `P[β>α] ≥ ${formatPosteriorCutoff(threshold)}`,
     tone: 'accent'
   },
   {
     id: 'pur',
-    label: 'Purifying sites',
+    label: 'Purifying (Constraint)',
     value: (stats) => `▼ ${stats.purifying}`,
     sub: (stats, { threshold }) => `P[α>β] ≥ ${formatPosteriorCutoff(threshold)}`,
     tone: 'purifying'
@@ -63,18 +76,27 @@ export const FUBAR_KPI_CARDS = [
   {
     id: 'efp',
     label: 'Expected false positives',
-    value: (stats) => stats.expectedFalse.toFixed(2),
-    sub: (stats) => `95% CI ${stats.falseCI[0]}–${stats.falseCI[1]} of ${stats.diversifying} diversifying calls`,
-    tone: 'ink'
+    // Nothing to estimate without a diversifying call
+    value: (stats) => (stats.diversifying ? stats.expectedFalse.toFixed(2) : '—'),
+    sub: (stats, { threshold }) => (stats.diversifying
+      ? `95% CI ${stats.falseCI[0]}–${stats.falseCI[1]} of ${stats.diversifying} diversifying calls`
+      : `No diversifying calls at ${fubarCutoff(threshold)}`),
+    tone: (stats) => (stats.diversifying ? 'ink' : 'muted')
   }
 ];
 
-// Posterior mass split three ways: P[α>β] | P[α=β] | P[β>α]
-export function posteriorMassBar(r) {
-  return `<span class="mass-bar" title="P[α>β] ${fubarPercent(r.probNeg)} · P[α=β] ${fubarPercent(r.probEq)} · P[β>α] ${fubarPercent(r.probPos)}">`
-    + `<span class="mass-neg" style="width: ${r.probNeg * 100}%;"></span>`
+// The posterior mass segments P[α>β] | P[α=β] | P[β>α]. A side takes its full hue only
+// when it reaches the cutoff t; below t it is a faint tint, so only calls read as findings.
+function posteriorMassSegments(r, t) {
+  const side = (cls, p) => `<span class="${cls}${p >= t ? '' : ' mass-below'}" style="width: ${p * 100}%;"></span>`;
+  return side('mass-neg', r.probNeg)
     + `<span class="mass-eq" style="width: ${r.probEq * 100}%;"></span>`
-    + `<span class="mass-pos" style="width: ${r.probPos * 100}%;"></span></span>`;
+    + side('mass-pos', r.probPos);
+}
+
+export function posteriorMassBar(r, t) {
+  return `<span class="mass-bar" title="P[α>β] ${fubarPercent(r.probNeg)} · P[α=β] ${fubarPercent(r.probEq)} · P[β>α] ${fubarPercent(r.probPos)}">`
+    + `${posteriorMassSegments(r, t)}</span>`;
 }
 
 // A posterior cell: bold in the call's hue when it passes the cutoff
@@ -127,7 +149,7 @@ export const FUBAR_COLUMNS = [
     header: fubarLiteral('β − α'),
     width: 70,
     title: 'Posterior mean β minus posterior mean α',
-    cell: (r) => `<td class="font-mono">${r.diff >= 0 ? '+' : '−'}${Math.abs(r.diff).toFixed(2)}</td>`,
+    cell: (r) => `<td class="font-mono">${fubarSigned(r.diff)}</td>`,
     csv: [{ header: 'beta-alpha', value: (r) => r.diff }],
     sort: (r) => r.diff
   },
@@ -135,7 +157,7 @@ export const FUBAR_COLUMNS = [
     id: 'ppos',
     header: fubarLiteral('P[β>α]'),
     width: 130,
-    cell: (r, { threshold }) => `<td class="font-mono"><div class="posterior-cell"><span class="${posteriorCell(r.probPos, threshold, 'text-orange')}">${formatPosterior(r.probPos)}</span>${posteriorMassBar(r)}</div></td>`,
+    cell: (r, { threshold }) => `<td class="font-mono"><div class="posterior-cell"><span class="${posteriorCell(r.probPos, threshold, 'text-orange')}">${formatPosterior(r.probPos)}</span>${posteriorMassBar(r, threshold)}</div></td>`,
     csv: [{ header: 'P[beta>alpha]', value: (r) => r.probPos }],
     sort: (r) => r.probPos
   },
@@ -152,13 +174,13 @@ export const FUBAR_COLUMNS = [
     header: fubarLiteral('EBF[β>α]'),
     width: 80,
     title: 'Empirical Bayes factor: posterior odds ÷ prior odds of β > α (informational; the cutoff applies to the posterior)',
-    cell: (r) => `<td class="font-mono">${formatEBF(r.ebf)}</td>`,
+    cell: (r) => `<td class="font-mono">${formatBayesFactor(r.ebf)}</td>`,
     csv: [{ header: 'EBF[beta>alpha]', value: (r) => r.ebf }],
     sort: (r) => r.ebf
   },
   {
     id: 'actions',
-    header: '',
+    header: 'Inspect',
     width: 80,
     align: 'right',
     cell: (r) => `<td style="text-align: right;"><button type="button" class="btn-inspect" data-action="posterior" data-site="${r.site}">Inspect</button></td>`
@@ -187,6 +209,7 @@ export const FUBAR_FILTERS = [
     unit: 'purifying site',
     statistic: 'P[α>β]',
     posterior: (r) => r.probNeg,
+    sort: { column: 'pneg', dir: 'desc' },
     opposite: 'diversifying',
     count: (stats) => stats.purifying,
     test: (r, t) => fubarSiteClass(r, t) === 'purifying',
@@ -239,7 +262,7 @@ function fubarTooltip(r, track) {
     evidenceTipRow('β (dN)', r.beta.toFixed(2)),
     evidenceTipRow('P[β>α]', formatPosterior(r.probPos)),
     evidenceTipRow('P[α>β]', formatPosterior(r.probNeg)),
-    evidenceTipRow('EBF[β>α]', formatEBF(r.ebf))
+    evidenceTipRow('EBF[β>α]', formatBayesFactor(r.ebf))
   ];
   return `
       <div class="tip-header">
@@ -266,7 +289,7 @@ export const FUBAR_EVIDENCE = {
   neg: (r) => r.probNeg,
   diff: (r) => r.diff,
   tooltip: fubarTooltip,
-  ruleLabel: (t) => `P ≥ ${formatPosteriorCutoff(t)}`,
+  ruleLabel: fubarCutoff,
   labels: { pos: 'P[β>α]', signed: ['P[β>α]', 'P[α>β]'], diff: 'β − α' },
   subtitles: {
     pos: (data) => `Posterior probability of β > α per codon (FUBAR, ${fubarRunNote(data)})`,
@@ -283,22 +306,21 @@ function fubarDrawerHeader(r, { threshold }) {
   return { tag: `Codon #${r.site}`, tone: call.tone, badge: call.badge };
 }
 
+// The mass labels take the call's hue only when that side reaches the cutoff
 function fubarMassSection(r, t) {
-  const label = (cls, text, p) => `<span class="mass-label ${cls}">${text} <strong>${fubarPercent(p)}</strong></span>`;
+  const label = (cls, text, p) => `<span class="mass-label${cls ? ` ${cls}` : ''}">${text} <strong>${fubarPercent(p)}</strong></span>`;
   return `
         <div class="drawer-section">
           <div class="drawer-section-title">Posterior mass</div>
           <div class="mass-bar mass-bar-full">
-            <span class="mass-neg" style="width: ${r.probNeg * 100}%;"></span>
-            <span class="mass-eq" style="width: ${r.probEq * 100}%;"></span>
-            <span class="mass-pos" style="width: ${r.probPos * 100}%;"></span>
+            ${posteriorMassSegments(r, t)}
             <span class="mass-tick mass-tick-neg" style="left: ${t * 100}%;" title="P[α>β] ≥ ${formatPosteriorCutoff(t)} past here"></span>
             <span class="mass-tick mass-tick-pos" style="left: ${(1 - t) * 100}%;" title="P[β>α] ≥ ${formatPosteriorCutoff(t)} past here"></span>
           </div>
           <div class="mass-labels">
-            ${label('text-blue', 'P[α>β]', r.probNeg)}
+            ${label(r.probNeg >= t && 'text-blue', 'P[α>β]', r.probNeg)}
             ${label('', 'P[α=β]', r.probEq)}
-            ${label('text-orange', 'P[β>α]', r.probPos)}
+            ${label(r.probPos >= t && 'text-orange', 'P[β>α]', r.probPos)}
           </div>
           <div class="empty-events-notice">Ticks mark the cutoff ${formatPosteriorCutoff(t)} from each end; a site is called when its colour reaches the tick.</div>
         </div>`;
@@ -307,7 +329,7 @@ function fubarMassSection(r, t) {
 function fubarStatCard(label, value, sub, hue = '') {
   return `
             <div class="drawer-stat-card">
-              <div class="dstat-label">${fubarLiteral(label)}</div>
+              <div class="dstat-label">${label}</div>
               <div class="dstat-value font-mono font-bold ${hue}">${value}</div>
               <div class="dstat-sub">${sub}</div>
             </div>`;
@@ -320,16 +342,19 @@ function fubarStatsSection(r, t, data) {
         <div class="drawer-section">
           <div class="drawer-section-title">Posterior summaries</div>
           <div class="drawer-stats-grid">${[
-            fubarStatCard('Synonymous rate (α)', r.alpha.toFixed(2), 'posterior mean'),
-            fubarStatCard('Non-synonymous rate (β)', r.beta.toFixed(2), 'posterior mean'),
-            fubarStatCard('β − α', `${r.diff >= 0 ? '+' : '−'}${Math.abs(r.diff).toFixed(2)}`, 'posterior mean β minus posterior mean α'),
-            fubarStatCard('P[β>α]', formatPosterior(r.probPos), r.probPos >= t ? 'diversifying at this cutoff' : 'below the cutoff', r.probPos >= t ? 'text-orange' : ''),
-            fubarStatCard('P[α>β]', formatPosterior(r.probNeg), r.probNeg >= t ? 'purifying at this cutoff' : 'below the cutoff', r.probNeg >= t ? 'text-blue' : ''),
-            fubarStatCard('EBF[β>α]', formatEBF(r.ebf), `posterior odds ÷ prior odds${priorNote}`)
+            fubarStatCard(`Synonymous rate (${fubarLiteral('α')})`, r.alpha.toFixed(2), 'posterior mean'),
+            fubarStatCard(`Non-synonymous rate (${fubarLiteral('β')})`, r.beta.toFixed(2), 'posterior mean'),
+            fubarStatCard(fubarLiteral('β − α'), fubarSigned(r.diff), 'posterior mean β minus posterior mean α'),
+            fubarStatCard(fubarLiteral('P[β>α]'), formatPosterior(r.probPos), r.probPos >= t ? 'diversifying at this cutoff' : 'below the cutoff', r.probPos >= t ? 'text-orange' : ''),
+            fubarStatCard(fubarLiteral('P[α>β]'), formatPosterior(r.probNeg), r.probNeg >= t ? 'purifying at this cutoff' : 'below the cutoff', r.probNeg >= t ? 'text-blue' : ''),
+            fubarStatCard(fubarLiteral('EBF[β>α]'), formatBayesFactor(r.ebf), `posterior odds ÷ prior odds${priorNote}`)
           ].join('')}
           </div>
         </div>`;
 }
+
+// Both small multiples share one plot size, so their axes line up
+const FUBAR_DRAWER_GRID_SIZE = 160;
 
 const FUBAR_POSTERIOR_TAB = {
   id: 'posterior',
@@ -350,7 +375,7 @@ const FUBAR_POSTERIOR_TAB = {
       new RateGridHeatmap(pair, {
         title: `Codon #${r.site} posterior`,
         caption: 'Mode outlined; ✕ marks the posterior mean (ᾱ, β̄)',
-        size: 160,
+        size: FUBAR_DRAWER_GRID_SIZE,
         grid: data.grid,
         weights,
         mode: true,
@@ -361,7 +386,7 @@ const FUBAR_POSTERIOR_TAB = {
     new RateGridHeatmap(pair, {
       title: 'Estimated grid weights',
       caption: 'The empirical prior every site shares',
-      size: 170,
+      size: FUBAR_DRAWER_GRID_SIZE,
       grid: data.grid,
       weights: data.grid.weight,
       exportName: 'hyphy_fubar_grid_weights'
@@ -399,10 +424,19 @@ function fubarChainItem(settings) {
   return fubarDiagItem('Chains', `${settings.chains} × ${n(settings.chainLength)} steps, burn-in ${n(settings.burnIn)}, ${n(settings.samples)} samples`);
 }
 
+// The run's own cutoff, with what hyphy3 wrote at it when the file records that
+function fubarRunItem(data) {
+  const run = data.runSummary;
+  if (run) {
+    return fubarDiagItem(`Run cutoff, as written by ${fubarLiteral('hyphy3')}`,
+      `${fubarCutoff(run.threshold)}: ${run.diversifying} diversifying · ${run.purifying} purifying · EFP ${run.expected.toFixed(2)} (95% CI ${run.ci[0]}–${run.ci[1]})`);
+  }
+  return fubarDiagItem('Run cutoff', data.runThreshold == null ? null : fubarCutoff(data.runThreshold));
+}
+
 export function fubarDiagnostics(data) {
   const s = data.settings;
   const gtr = data.gtr || {};
-  const run = data.runSummary;
   const versions = data.format === 'v3'
     ? `analysis ${data.version.analysis} · hyphy ${data.version.software}`
     : `analysis ${data.version.analysis} · ${data.format === 'hyphy25' ? 'HyPhy' : 'hyphy3'} ${data.version.software}`;
@@ -419,15 +453,13 @@ export function fubarDiagnostics(data) {
     fubarChainItem(s),
     fubarDiagItem('Rate grid', s.gridPoints && `${s.gridPoints} × ${s.gridPoints} (${s.totalGridPoints} points)`),
     fubarDiagItem('Dirichlet concentration', s.concentration),
-    fubarDiagItem(fubarLiteral('Non-zero α constraint'), s.nonZero == null ? null : (s.nonZero ? 'yes' : 'no')),
+    fubarDiagItem(`Non-zero ${fubarLiteral('α')} constraint`, s.nonZero == null ? null : (s.nonZero ? 'yes' : 'no')),
     fubarDiagItem('Grid scalers', s.bestScalerAlpha == null ? null : `α ${s.bestScalerAlpha.toFixed(3)} · β ${s.bestScalerBeta.toFixed(3)}`),
     fubarDiagItem('Tree scaling', s.treeScaling),
-    fubarDiagItem('Run cutoff', data.runThreshold == null ? null : `P ≥ ${formatPosteriorCutoff(data.runThreshold)}`),
-    run && fubarDiagItem(`As written by hyphy3 at ${fubarLiteral('P')} ≥ ${formatPosteriorCutoff(run.threshold)}`,
-      `${run.diversifying} diversifying · ${run.purifying} purifying · EFP ${run.expected.toFixed(2)} (95% CI ${run.ci[0]}–${run.ci[1]})`),
-    fubarDiagItem(fubarLiteral('Prior P[β>α]'), data.priorPositive == null ? null : fubarPercent(data.priorPositive)),
+    fubarRunItem(data),
+    fubarDiagItem(`Prior ${fubarLiteral('P[β>α]')}`, data.priorPositive == null ? null : fubarPercent(data.priorPositive)),
     fubarDiagItem('GTR log L', gtr.logL == null ? null : gtr.logL.toFixed(3)),
-    fubarDiagItem(`GTR AICc (${data.formatLabel})`, gtr.aicc == null ? null : gtr.aicc.toFixed(2)),
+    fubarDiagItem(`GTR ${fubarLiteral('AICc')} (${fubarLiteral(data.formatLabel)})`, gtr.aicc == null ? null : gtr.aicc.toFixed(2)),
     fubarDiagItem('GTR parameters', gtr.params),
     fubarDiagItem('GTR relative rates', gtr.rates && gtr.rates.map(([k, v]) => `${k} ${Number(v.toFixed(3))}`).join(' · ')),
     fubarDiagItem('GTR tree length', gtr.treeLength == null ? null : `${gtr.treeLength.toFixed(3)} subs/site`),

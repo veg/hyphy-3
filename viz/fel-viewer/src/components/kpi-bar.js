@@ -4,7 +4,8 @@
 // A method config describes the bar as data:
 //   cards: [{ id, label, value(stats, view), sub(stats, view), tone, widget?, ... }]
 //     view is { data, threshold, statistic }; stats is data.getStats(threshold).
-//     tone colours the value: 'accent' | 'purifying' | 'ink' | 'muted'.
+//     tone colours the value: 'accent' | 'purifying' | 'ink' | 'muted', or
+//     tone(stats, view) for a card whose emphasis follows the cutoff.
 //     widget(el, stats, view) draws into a slot below the sub line.
 //     Optional: placeholder (the sub line before any data), comment (the HTML
 //     comment above the card), cardClass, and valueId/subId to override the
@@ -13,7 +14,7 @@
 //     match the cards' one for one, setData relabels them in place; otherwise it
 //     replaces them with the cards' own markup.
 //   controller: { title, statistic, direction: 'le' | 'ge', min, max, step,
-//     presets, seed, format(t), caption?, toggle?, scale? }
+//     presets, seed, format(t), caption?, toggle?, scale?, presetLabel? }
 //     seed is the starting cutoff, and statistic the one the cutoff applies to until
 //     the shell switches it (options.statistic). format(t) prints a cutoff for labels.
 //     caption: a muted line under the slider, a string or caption({ threshold,
@@ -22,6 +23,7 @@
 //       statistic through options.onStatisticChange.
 //     scale: 'linear' (default) or 'log'. On a log scale min and max are still
 //       cutoffs, step is in decades, and slider position x is the cutoff 10^x.
+//     presetLabel(t): a shorter preset pill label than the full cutoff label.
 
 const KPI_TONE_CLASSES = {
   accent: 'kpi-value kpi-text-orange',
@@ -29,6 +31,12 @@ const KPI_TONE_CLASSES = {
   ink: 'kpi-value',
   muted: 'kpi-value kpi-text-muted'
 };
+
+// The tone class of a card's value: fixed, or chosen from the stats when stats are given
+function kpiToneClass(card, stats, view) {
+  const tone = typeof card.tone === 'function' ? (stats ? card.tone(stats, view) : 'ink') : card.tone;
+  return KPI_TONE_CLASSES[tone || 'ink'];
+}
 
 function kpiCardMarkup(card, index) {
   const cardClass = card.cardClass ? `kpi-card ${card.cardClass}` : 'kpi-card';
@@ -38,7 +46,7 @@ function kpiCardMarkup(card, index) {
         <!-- ${index + 1}. ${card.comment || `${card.label} Card`} -->
         <div class="${cardClass}" id="kpi-${card.id}">
           <div class="kpi-label"></div>
-          <div class="${KPI_TONE_CLASSES[card.tone || 'ink']}" id="kpi-val-${card.valueId || card.id}">—</div>
+          <div class="${kpiToneClass(card)}" id="kpi-val-${card.valueId || card.id}">—</div>
           <div class="kpi-sub" id="kpi-sub-${card.subId || card.id}">${card.placeholder || '—'}</div>${widget}
         </div>
 `;
@@ -112,7 +120,7 @@ export function thresholdControllerMarkup(controller, threshold, statistic, inde
   const pill = (p) => {
     const active = presetActive(controller, p, threshold) ? ' active' : '';
     return `
-            <button type="button" class="preset-pill${active}" data-p="${cutoffAttribute(controller, p)}">${thresholdLabel(controller, p, statistic)}</button>`;
+            <button type="button" class="preset-pill${active}" data-p="${cutoffAttribute(controller, p)}">${presetLabel(controller, p, statistic)}</button>`;
   };
   const slider = sliderAttributes(controller, threshold);
   const caption = controller.caption == null ? '' : `
@@ -137,6 +145,11 @@ export function thresholdControllerMarkup(controller, threshold, statistic, inde
 export function thresholdLabel(controller, t, statistic = controller.statistic) {
   const op = controller.direction === 'ge' ? '≥' : '≤';
   return `${statistic} ${op} ${controller.format(t)}`;
+}
+
+// A preset pill's label: the controller's short form, else the full cutoff label
+export function presetLabel(controller, t, statistic = controller.statistic) {
+  return controller.presetLabel ? controller.presetLabel(t) : thresholdLabel(controller, t, statistic);
 }
 
 // Whether the cards can take over the blank cards' markup: the same ids in order
@@ -231,7 +244,7 @@ export class KpiBar {
     this.cards.forEach((card, i) => {
       const els = this.cardEls[i];
       els.label.textContent = card.label;
-      els.value.className = KPI_TONE_CLASSES[card.tone || 'ink'];
+      els.value.className = kpiToneClass(card);
       if (card.widget && !els.widget) {
         els.widget = document.createElement('div');
         els.widget.className = 'kpi-widget';
@@ -267,7 +280,7 @@ export class KpiBar {
     this.statistic = statistic;
     this.display.textContent = thresholdLabel(this.controller, this.threshold, statistic);
     this.presetBtns.forEach(btn => {
-      btn.textContent = thresholdLabel(this.controller, parseFloat(btn.dataset.p), statistic);
+      btn.textContent = presetLabel(this.controller, parseFloat(btn.dataset.p), statistic);
     });
     this.statisticBtns.forEach(btn => {
       btn.classList.toggle('active', btn.dataset.statistic === statistic);
@@ -293,6 +306,7 @@ export class KpiBar {
 
     this.cards.forEach((card, i) => {
       const els = this.cardEls[i];
+      els.value.className = kpiToneClass(card, stats, view);
       els.value.textContent = card.value(stats, view);
       els.sub.textContent = card.sub(stats, view);
       if (card.widget) card.widget(els.widget, stats, view);

@@ -9,6 +9,7 @@
 //   mount(panel) -> view kept for the drawer's lifetime; its setData(data) runs on load,
 //   render(panel, row, { data, threshold, statistic, key, view })
 // }
+// A drawer with a single tab hides its tab strip.
 // options.row(data, key) looks up the inspected row; options.header(row, ctx) returns
 // { tag, tone: 'div' | 'pur' | 'neutral', badge }.
 // options.siblings() returns the keys prev/next step through (the shell's hooks.siblings
@@ -93,7 +94,7 @@ export class Drawer {
           <span class="drawer-site-tag" id="drawer-site-tag">${this.options.emptyTag}</span>
           <span class="drawer-regime-badge" id="drawer-regime-badge">—</span>
         </div>
-        <div class="segmented-control drawer-nav-tabs">
+        <div class="segmented-control drawer-nav-tabs"${this.tabs.length < 2 ? ' style="display: none;"' : ''}>
           ${drawerTabButtons(this.tabs)}
         </div>
         <button type="button" class="drawer-close-btn" id="drawer-close-btn" title="Close Inspector (Esc)">✕</button>

@@ -93,6 +93,31 @@ export function drawThresholdRule(ctx, frame, y, color, label) {
   ctx.restore();
 }
 
+// The surface a canvas sits on: the themed --panel when the page defines it
+function canvasSurface(canvas) {
+  const themed = typeof getComputedStyle === 'function' && canvas
+    ? getComputedStyle(canvas).getPropertyValue('--panel').trim()
+    : '';
+  return themed || PALETTE.panel;
+}
+
+// A rule's label at the plot's right end, just above or below the rule, on a plate of
+// the surface colour so the marks under it and the rule itself never run through the text
+export function drawRuleLabel(ctx, frame, y, color, label, side) {
+  ctx.save();
+  ctx.font = 'bold 10px "SF Mono", Monaco, monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = side === 'above' ? 'bottom' : 'top';
+  const x = frame.left + frame.width - 6;
+  const ty = side === 'above' ? y - 4 : y + 4;
+  const w = ctx.measureText(label).width;
+  ctx.fillStyle = canvasSurface(ctx.canvas);
+  ctx.fillRect(x - w - 4, side === 'above' ? ty - 12 : ty - 1, w + 8, 13);
+  ctx.fillStyle = color;
+  ctx.fillText(label, x, ty);
+  ctx.restore();
+}
+
 // Amber reticle around the selected site's mark
 export function drawSelectionRing(ctx, x, y) {
   ctx.strokeStyle = PALETTE.amberVivid;

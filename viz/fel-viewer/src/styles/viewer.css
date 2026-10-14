@@ -34,6 +34,7 @@
   --slate-light: #94A3B8;
   --slate-pale: #E2E8F0;
   --slate-faint: #F8FAFC;
+  --code-ink: var(--slate);        /* Monospace text blocks (Newick) */
 }
 
 :host, .hyphy-fel-container {
@@ -163,6 +164,7 @@
   color: var(--on-ink-fill);
   padding: 2px 6px;
   border-radius: 3px;
+  white-space: nowrap;
 }
 
 .kpi-slider-row {
@@ -1304,7 +1306,7 @@
   padding: 8px;
   font-family: "SF Mono", Monaco, monospace;
   font-size: 10px;
-  color: var(--slate);
+  color: var(--code-ink);
   overflow-x: auto;
   white-space: pre;
 }
@@ -1400,6 +1402,7 @@
   --grid-line: #2D2D2D;
   --ink-fill: #F8FAFC;
   --on-ink-fill: #121212;
+  --code-ink: #CBD5E1;
 }
 
 /* Notice shown for a recognized method that has no viewer yet */
@@ -1433,21 +1436,6 @@
   color: var(--stone);
 }
 
-/* Format chip: names the program and format that wrote the result */
-.hyphy-format-chip {
-  align-self: flex-end;
-  font-family: "SF Mono", Monaco, monospace;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  color: var(--stone);
-  background-color: var(--inset);
-  border: 1px solid var(--hairline);
-  border-radius: 3px;
-  padding: 2px 8px;
-  margin-bottom: -8px;
-}
-
 /* Posterior mass bar: P[α>β] | P[α=β] | P[β>α] */
 .mass-bar {
   display: flex;
@@ -1478,6 +1466,11 @@
 
 .mass-pos {
   background-color: var(--accent);
+}
+
+/* A side that does not reach the cutoff keeps only a tint of its hue */
+.mass-bar > .mass-below {
+  opacity: 0.3;
 }
 
 .mass-bar-full {
@@ -1567,7 +1560,7 @@
 
 .diag-notes {
   margin: 4px 0 0 16px;
-  color: var(--slate);
+  color: var(--stone);
   line-height: 1.5;
 }
 

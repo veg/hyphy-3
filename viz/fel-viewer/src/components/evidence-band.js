@@ -5,7 +5,7 @@
 
 import { PALETTE } from '../data/palette.js';
 import { formatThreshold } from '../core/format.js';
-import { drawThresholdRule, drawSelectionRing } from './site-track.js';
+import { drawThresholdRule, drawSelectionRing, drawRuleLabel } from './site-track.js';
 
 // Render order: neutral first, purifying second, diversifying on top
 const EVIDENCE_TONE_ORDER = { div: 2, pur: 1 };
@@ -44,6 +44,8 @@ export class EvidenceBand {
       rule: 'le',                // 'le': p-style rule at -log10 t; 'ge': posterior-style rule at t; null: none
       mirrorRule: false,         // also draw the rule below zero, in the purifying hue
       ruleLabel: null,           // t => text; defaults to 'p = t' or 'P ≥ t'
+      ruleLabelAt: 'start',      // 'start': on the rule at the left; 'end': at the right, above
+                                 // the +t rule and below a mirrored one, drawn over the marks
       label: null,               // y caption, or [above zero, below zero] for a two-sided band
       shape: 'triangle',         // 'triangle' | 'dot'
       tooltip: null              // (row, track, point) => HTML; point.series is 1 below zero
@@ -176,13 +178,31 @@ export class EvidenceBand {
     return candidates.find(p => p.series === track.selectedSeries) ?? candidates[0] ?? null;
   }
 
+  get hasMirrorRule() {
+    return this.options.mirrorRule || this.mirrored;
+  }
+
   drawRules(ctx, frame, track) {
     if (!this.options.rule) return;
     const at = evidenceRuleValue(this.options.rule, track.threshold);
-    drawThresholdRule(ctx, frame, frame.scaleY(at), PALETTE.accent, this.ruleLabel(track.threshold));
-    if (this.options.mirrorRule || this.mirrored) {
+    const startLabel = this.options.ruleLabelAt === 'start' ? this.ruleLabel(track.threshold) : null;
+    drawThresholdRule(ctx, frame, frame.scaleY(at), PALETTE.accent, startLabel);
+    if (this.hasMirrorRule) {
       drawThresholdRule(ctx, frame, frame.scaleY(-at), PALETTE.purifying);
     }
+  }
+
+  // The 'end' labels: [y, colour, side of the rule] for the rule and its mirror. The
+  // mirror's label goes below its rule unless that would run past the plot's floor.
+  endRuleLabels(frame, track) {
+    if (!this.options.rule || this.options.ruleLabelAt !== 'end') return [];
+    const at = evidenceRuleValue(this.options.rule, track.threshold);
+    const labels = [[frame.scaleY(at), PALETTE.accent, 'above']];
+    if (this.hasMirrorRule) {
+      const y = frame.scaleY(-at);
+      labels.push([y, PALETTE.purifying, y + 17 <= frame.top + frame.height ? 'below' : 'above']);
+    }
+    return labels;
   }
 
   drawMarks(ctx, frame, track) {
@@ -204,6 +224,10 @@ export class EvidenceBand {
         this.drawTriangle(ctx, pt, isSelected, isHovered);
       }
       if (isSelected) drawSelectionRing(ctx, pt.x, pt.y);
+    }
+    const text = this.ruleLabel(track.threshold);
+    for (const [y, color, side] of this.endRuleLabels(frame, track)) {
+      drawRuleLabel(ctx, frame, y, color, text, side);
     }
     return this.points;
   }
@@ -283,8 +307,10 @@ export class EvidenceBand {
       const at = evidenceRuleValue(this.options.rule, track.threshold);
       const threshY = frame.scaleY(at);
       svg += line(threshY, PALETTE.accent);
-      svg += `  <text x="${frame.left + 6}" y="${threshY - 4}" fill="${PALETTE.accent}" font-weight="bold">${this.ruleLabel(track.threshold)}</text>\n`;
-      if (this.options.mirrorRule || this.mirrored) svg += line(frame.scaleY(-at), PALETTE.purifying);
+      if (this.options.ruleLabelAt === 'start') {
+        svg += `  <text x="${frame.left + 6}" y="${threshY - 4}" fill="${PALETTE.accent}" font-weight="bold">${this.ruleLabel(track.threshold)}</text>\n`;
+      }
+      if (this.hasMirrorRule) svg += line(frame.scaleY(-at), PALETTE.purifying);
     }
 
     for (const pt of this.points) {
@@ -297,6 +323,11 @@ export class EvidenceBand {
       } else {
         svg += `  <circle cx="${pt.x}" cy="${pt.y}" r="2.5" fill="${PALETTE.slateLight}"/>\n`;
       }
+    }
+    const text = this.ruleLabel(track.threshold);
+    for (const [y, color, side] of this.endRuleLabels(frame, track)) {
+      const x = frame.left + frame.width - 6;
+      svg += `  <text x="${x}" y="${side === 'above' ? y - 5 : y + 13}" fill="${color}" font-weight="bold" text-anchor="end" paint-order="stroke" stroke="${PALETTE.panel}" stroke-width="3">${text}</text>\n`;
     }
     return svg;
   }

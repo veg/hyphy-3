@@ -12,7 +12,7 @@
 import { PALETTE, withAlpha } from '../data/palette.js';
 import { downloadPNG, downloadSVG, escapeSvgText } from '../core/export.js';
 
-export const RATE_GRID_MARGIN = { left: 40, right: 58, top: 8, bottom: 30 };
+export const RATE_GRID_MARGIN = { left: 44, right: 58, top: 8, bottom: 30 };
 
 // The distinct axis values: alpha changes along the major index, beta along the minor
 export function rateGridAxes(grid) {
@@ -39,16 +39,21 @@ export function rateGridShade(w, max) {
   return `rgb(${level}, ${level}, ${level})`;
 }
 
-// Indices to label: about one per minPx pixels, always the last
-export function rateGridTicks(n, cell, minPx = 28) {
+// Indices to label on ascending axis values. Always the ends, the neutral rate 1 (or
+// the value nearest it) and the middle of the range above it, where the posterior mass
+// of most sites sits; then, left to right, any index at least minPx from every label.
+export function rateGridTicks(values, cell, minPx = 28) {
+  const n = values.length;
   const every = Math.max(1, Math.ceil(minPx / cell));
-  const ticks = [];
-  for (let i = 0; i < n; i += every) ticks.push(i);
-  if (ticks[ticks.length - 1] !== n - 1) {
-    if (n - 1 - ticks[ticks.length - 1] < every) ticks.pop();
-    ticks.push(n - 1);
+  let one = 0;
+  values.forEach((v, i) => {
+    if (Math.abs(v - 1) < Math.abs(values[one] - 1)) one = i;
+  });
+  const ticks = new Set([0, n - 1, one, Math.round((one + n - 1) / 2)]);
+  for (let i = 1; i < n - 1; i++) {
+    if ([...ticks].every(t => Math.abs(t - i) >= every)) ticks.add(i);
   }
-  return ticks;
+  return [...ticks].sort((a, b) => a - b);
 }
 
 function rateGridValue(v) {
@@ -139,7 +144,7 @@ export class RateGridHeatmap {
       const j = g % n;
       return Object.assign(this.cellAt(i, j), { fill: rateGridShade(w, this.max) });
     });
-    const ticks = rateGridTicks(n, this.cell);
+
     const mean = this.options.mean && {
       x: m.left + (ordinalIndex(this.axes.alpha, this.options.mean.alpha) + 0.5) * this.cell,
       y: m.top + (n - 0.5 - ordinalIndex(this.axes.beta, this.options.mean.beta)) * this.cell
@@ -149,8 +154,8 @@ export class RateGridHeatmap {
       cells,
       mode,
       mean,
-      xTicks: ticks.map(i => ({ x: m.left + (i + 0.5) * this.cell, label: rateGridValue(this.axes.alpha[i]) })),
-      yTicks: ticks.map(j => ({ y: m.top + (n - 0.5 - j) * this.cell, label: rateGridValue(this.axes.beta[j]) })),
+      xTicks: rateGridTicks(this.axes.alpha, this.cell).map(i => ({ x: m.left + (i + 0.5) * this.cell, label: rateGridValue(this.axes.alpha[i]) })),
+      yTicks: rateGridTicks(this.axes.beta, this.cell).map(j => ({ y: m.top + (n - 0.5 - j) * this.cell, label: rateGridValue(this.axes.beta[j]) })),
       plot: { left: m.left, top: m.top, right: m.left + size, bottom: m.top + size },
       ramp: { x: m.left + size + 10, top: m.top, bottom: m.top + size, width: 8 }
     };
@@ -192,21 +197,25 @@ export class RateGridHeatmap {
     ctx.fillStyle = withAlpha(PALETTE.purifying, 0.7);
     ctx.fillText('α > β', plot.right - 6, plot.bottom - 6);
 
+    // Mode and mean in ink on a knockout halo: neutral marks that read on either half
     if (k.mode) {
-      ctx.strokeStyle = PALETTE.accent;
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = PALETTE.knockout;
+      ctx.lineWidth = 3.5;
+      ctx.strokeRect(k.mode.x, k.mode.y, this.cell, this.cell);
+      ctx.strokeStyle = PALETTE.ink;
+      ctx.lineWidth = 1.5;
       ctx.strokeRect(k.mode.x, k.mode.y, this.cell, this.cell);
     }
     if (k.mean) {
       ctx.strokeStyle = PALETTE.knockout;
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 3.5;
       this.cross(ctx, k.mean);
-      ctx.strokeStyle = PALETTE.accentDeep;
+      ctx.strokeStyle = PALETTE.ink;
       ctx.lineWidth = 1.5;
       this.cross(ctx, k.mean);
     }
 
-    ctx.font = '9px "SF Mono", Monaco, monospace';
+    ctx.font = '10px "SF Mono", Monaco, monospace';
     ctx.fillStyle = PALETTE.stone;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
@@ -231,6 +240,7 @@ export class RateGridHeatmap {
     }
     ctx.strokeStyle = PALETTE.hairline;
     ctx.strokeRect(ramp.x, ramp.top, ramp.width, ramp.bottom - ramp.top);
+    ctx.fillStyle = PALETTE.stone;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
     ctx.fillText(rateGridPercent(this.max), ramp.x + ramp.width + 3, ramp.top);
@@ -239,12 +249,13 @@ export class RateGridHeatmap {
     ctx.restore();
   }
 
+  // A diagonal ✕, as the caption names it
   cross(ctx, { x, y }) {
     ctx.beginPath();
-    ctx.moveTo(x - 5, y);
-    ctx.lineTo(x + 5, y);
-    ctx.moveTo(x, y - 5);
-    ctx.lineTo(x, y + 5);
+    ctx.moveTo(x - 4, y - 4);
+    ctx.lineTo(x + 4, y + 4);
+    ctx.moveTo(x - 4, y + 4);
+    ctx.lineTo(x + 4, y - 4);
     ctx.stroke();
   }
 
@@ -267,7 +278,7 @@ export class RateGridHeatmap {
     const { plot, ramp } = k;
     const text = (x, y, s, attrs = '') => `  <text x="${x}" y="${y}"${attrs}>${escapeSvgText(s)}</text>\n`;
     let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${this.width}" height="${this.height}" viewBox="0 0 ${this.width} ${this.height}">\n`;
-    svg += `  <style>\n    text { font-family: -apple-system, sans-serif; font-size: 9px; fill: ${PALETTE.stone}; }\n  </style>\n`;
+    svg += `  <style>\n    text { font-family: -apple-system, sans-serif; font-size: 10px; fill: ${PALETTE.stone}; }\n  </style>\n`;
     svg += `  <rect width="100%" height="100%" fill="${PALETTE.panel}"/>\n`;
     for (const c of k.cells) {
       svg += `  <rect x="${c.x}" y="${c.y}" width="${this.cell}" height="${this.cell}" fill="${c.fill}"/>\n`;
@@ -277,11 +288,15 @@ export class RateGridHeatmap {
     svg += text(plot.left + 6, plot.top + 14, 'β > α', ` style="fill: ${PALETTE.accent}; font-weight: bold;" opacity="0.7"`);
     svg += text(plot.right - 6, plot.bottom - 6, 'α > β', ` style="fill: ${PALETTE.purifying}; font-weight: bold;" opacity="0.7" text-anchor="end"`);
     if (k.mode) {
-      svg += `  <rect x="${k.mode.x}" y="${k.mode.y}" width="${this.cell}" height="${this.cell}" fill="none" stroke="${PALETTE.accent}" stroke-width="2"/>\n`;
+      const rect = `x="${k.mode.x}" y="${k.mode.y}" width="${this.cell}" height="${this.cell}" fill="none"`;
+      svg += `  <rect ${rect} stroke="${PALETTE.knockout}" stroke-width="3.5"/>\n`;
+      svg += `  <rect ${rect} stroke="${PALETTE.ink}" stroke-width="1.5"/>\n`;
     }
     if (k.mean) {
       const { x, y } = k.mean;
-      svg += `  <path d="M${x - 5},${y}H${x + 5}M${x},${y - 5}V${y + 5}" stroke="${PALETTE.accentDeep}" stroke-width="1.5"/>\n`;
+      const d = `M${x - 4},${y - 4}L${x + 4},${y + 4}M${x - 4},${y + 4}L${x + 4},${y - 4}`;
+      svg += `  <path d="${d}" stroke="${PALETTE.knockout}" stroke-width="3.5"/>\n`;
+      svg += `  <path d="${d}" stroke="${PALETTE.ink}" stroke-width="1.5"/>\n`;
     }
     for (const t of k.xTicks) svg += text(t.x, plot.bottom + 12, t.label, ' text-anchor="middle"');
     svg += text((plot.left + plot.right) / 2, plot.bottom + 25, 'α (synonymous)', ' text-anchor="middle"');

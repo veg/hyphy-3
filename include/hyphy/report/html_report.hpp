@@ -257,6 +257,8 @@ inline std::string render_html(const std::string& json_text, const std::string& 
       color: #767672; font-family: "SF Mono", Monaco, monospace; font-size: 11px;
       background-color: #EDEDE9; border: 1px solid #D1D1CB; border-radius: 2px; padding: 2px 8px;
     }
+    .app-nav-meta { display: flex; align-items: center; gap: 8px; }
+    .app-nav-format { font-weight: 700; letter-spacing: 0.5px; }
     #viewer-mount {
       flex: 1 1 0%; min-height: 0; display: flex; position: relative;
       overflow-y: auto; overflow-x: hidden;
@@ -274,7 +276,9 @@ inline std::string render_html(const std::string& json_text, const std::string& 
         <span>)" << badge << R"(</span>
         <span class="app-brand-dot">&#9679;</span>
       </div>
-      <div class="app-nav-title"><span>)" << name << R"(</span></div>
+      <div class="app-nav-meta">
+        <div class="app-nav-title"><span>)" << name << R"(</span></div>
+      </div>
     </nav>
     <div id="viewer-mount">
       <)" << tag << R"( id="hyphy-viewer" theme="light"></)" << tag << R"(>
@@ -285,8 +289,19 @@ inline std::string render_html(const std::string& json_text, const std::string& 
   </script>
   <script>
     const payload = )" << detail::json_for_script(json_text) << R"(;
+    // The producer chip ('hyphy3 v3', 'HyPhy 2.5 legacy') sits beside the file name
+    function showFormat(event) {
+      const label = event.detail && event.detail.formatLabel;
+      if (!label) return;
+      const meta = document.querySelector('.app-nav-meta');
+      const chip = meta.querySelector('.app-nav-format') || document.createElement('div');
+      chip.className = 'app-nav-title app-nav-format';
+      chip.textContent = label;
+      meta.prepend(chip);
+    }
     function startViewer() {
       const viewer = document.getElementById('hyphy-viewer');
+      viewer.addEventListener('data-loaded', showFormat);
       customElements.whenDefined(')" << tag << R"(').then(function () { viewer.load(payload); });
     }
     if (document.readyState === 'loading') {

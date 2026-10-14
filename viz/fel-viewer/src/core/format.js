@@ -28,6 +28,12 @@ export function formatEBF(val, cap = '≥10,000') {
   return val.toFixed(1);
 }
 
+// Bayes factors that can fall below 1 (FUBAR): two significant digits there, so
+// strong evidence against never reads as an impossible 0.0
+export function formatBayesFactor(val) {
+  return val != null && val < 1 ? val.toPrecision(2) : formatEBF(val);
+}
+
 // HyPhy 2.5 underflows tiny p-values to exactly 0; say so instead of printing 0
 export function formatP(p, digits = 2) {
   return p === 0 ? 'p < 1e-16' : formatPValue(p, digits);

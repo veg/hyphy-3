@@ -15,9 +15,9 @@ test('every config supplies what the shell mounts', () => {
       assert.equal(typeof config[part], 'function', `${id}.${part}`);
     }
     assert.equal(typeof config.controller.seed, 'number', `${id}.controller.seed`);
-    // p-values and q-values pass at or below the cutoff, posteriors (P) at or above it
+    // p-values and q-values pass at or below the cutoff, posteriors at or above it
     const { statistic, direction } = config.controller;
-    assert.ok(direction === 'ge' ? statistic === 'P' : ['p', 'q'].includes(statistic), `${id}.controller.statistic`);
+    assert.ok(direction === 'ge' ? statistic === 'Posterior' : ['p', 'q'].includes(statistic), `${id}.controller.statistic`);
   }
 });
 

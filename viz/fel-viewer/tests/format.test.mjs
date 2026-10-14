@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  formatThreshold, formatPValue, formatOmegaInf, formatEBF,
+  formatThreshold, formatPValue, formatOmegaInf, formatEBF, formatBayesFactor,
   formatP, formatComputedP, formatOmega, formatPosterior, formatCount, formatPosteriorCutoff
 } from '../src/core/format.js';
 
@@ -23,6 +23,14 @@ test('formatEBF caps and abbreviates', () => {
   assert.equal(formatEBF(1234), '1.2k');
   assert.equal(formatEBF(20000), '≥10,000');
   assert.equal(formatEBF(20000, '≥10k'), '≥10k');
+});
+
+test('formatBayesFactor keeps two significant digits below 1', () => {
+  assert.equal(formatBayesFactor(0.0466), '0.047');
+  assert.equal(formatBayesFactor(0.00109), '0.0011');
+  assert.equal(formatBayesFactor(0.5), '0.50');
+  assert.equal(formatBayesFactor(32.04), '32.0');
+  assert.equal(formatBayesFactor(null), '—');
 });
 
 test('formatP flags an underflowed zero', () => {
