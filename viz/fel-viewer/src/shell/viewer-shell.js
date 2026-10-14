@@ -95,6 +95,12 @@ export class ViewerShell {
       onClose: () => this.setState({ focus: null })
     };
 
+    // A method that names its producer gets a chip above the KPI bar
+    if (config.formatLabel) {
+      this.formatChip = document.createElement('div');
+      this.formatChip.className = 'hyphy-format-chip';
+      this.layout.appendChild(this.formatChip);
+    }
     this.kpiBar = config.kpis(this.layout, hooks);
     this.hero = config.hero(this.layout, hooks);
     this.table = config.table(this.layout, hooks);
@@ -107,6 +113,7 @@ export class ViewerShell {
     this.views.forEach(view => view.destroy?.());
     this.views = [];
     this.kpiBar = this.hero = this.table = this.drawer = null;
+    this.formatChip = this.diagPanel = null;
     this.layout.replaceChildren();
     this.state.focus = null;
   }
@@ -124,18 +131,23 @@ export class ViewerShell {
     }));
   }
 
+  // The collapsed diagnostics card: the config's items, then its optional panel
+  // (config.diagnosticsPanel(el, data), drawn once per load), then the Newick text
   initDiagnosticsSection() {
+    const title = this.config.diagnosticsTitle || 'Model Fits &amp; Phylogeny Diagnostics';
+    const panel = this.config.diagnosticsPanel ? `
+        <div class="diag-panel" id="diag-panel"></div>` : '';
     this.diagWrapper = document.createElement('div');
     this.diagWrapper.className = 'hyphy-diagnostics-card';
     this.diagWrapper.innerHTML = `
       <button type="button" class="diagnostics-toggle-btn" id="diag-toggle-btn">
-        <span>Model Fits &amp; Phylogeny Diagnostics</span>
+        <span>${title}</span>
         <span id="diag-toggle-icon">▼</span>
       </button>
       <div class="diagnostics-content" id="diag-content">
         <div class="diag-grid" id="diag-grid">
           <!-- Dynamic fit metrics -->
-        </div>
+        </div>${panel}
         <div class="diag-item" style="margin-top: 8px;">
           <span class="diag-lbl">Phylogenetic Tree (Newick)</span>
           <div class="newick-box" id="diag-newick">No tree loaded</div>
@@ -144,6 +156,7 @@ export class ViewerShell {
     `;
 
     this.layout.appendChild(this.diagWrapper);
+    this.diagPanel = this.diagWrapper.querySelector('#diag-panel');
 
     const toggleBtn = this.diagWrapper.querySelector('#diag-toggle-btn');
     const content = this.diagWrapper.querySelector('#diag-content');
@@ -226,8 +239,13 @@ export class ViewerShell {
     this.data = data;
 
     // Propagate data to all subcomponents
+    if (this.formatChip) this.formatChip.textContent = config.formatLabel(data);
     this.views.forEach(view => view.setData(this.data));
     this.updateDiagnostics();
+    if (config.diagnosticsPanel) {
+      this.diagPanel.replaceChildren();
+      config.diagnosticsPanel(this.diagPanel, data);
+    }
 
     // Notify listeners
     this.container.dispatchEvent(new CustomEvent('data-loaded', {

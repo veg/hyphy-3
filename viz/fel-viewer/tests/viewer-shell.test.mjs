@@ -177,3 +177,33 @@ test('the cutoff label names the statistic in force', () => {
   assert.equal(thresholdLabel(SITE_P_THRESHOLD, 0.05), 'p ≤ 0.05');
   assert.equal(thresholdLabel(SITE_P_THRESHOLD, 0.05, 'q'), 'q ≤ 0.05');
 });
+
+test('a config that names its format gets a chip, filled on load', () => {
+  const config = Object.assign(branchConfig(GE_CONTROLLER), { formatLabel: (data) => `${data.branches.length} branches` });
+  const shell = shellWith(config);
+  const chip = shell.layout.children.find(el => el.className === 'hyphy-format-chip');
+  assert.ok(chip);
+  shell.load({ branches });
+  assert.equal(chip.textContent, '2 branches');
+  assert.ok(!shellWith(branchConfig(GE_CONTROLLER)).layout.children.some(el => el.className === 'hyphy-format-chip'));
+});
+
+test('a diagnostics panel is drawn once per load, not on every threshold change', () => {
+  const drawn = [];
+  const config = Object.assign(branchConfig(GE_CONTROLLER), {
+    diagnosticsTitle: 'Run details',
+    diagnosticsPanel: (el, data) => drawn.push(data.branches.length)
+  });
+  const shell = shellWith(config);
+  assert.match(shell.diagWrapper.innerHTML, /<span>Run details<\/span>/);
+  assert.match(shell.diagWrapper.innerHTML, /<\/div>\n        <div class="diag-panel" id="diag-panel"><\/div>/);
+  shell.load({ branches });
+  shell.setThreshold(0.95);
+  shell.load({ branches: branches.slice(1) });
+  assert.deepEqual(drawn, [2, 1]);
+
+  // Without one the card keeps its original markup
+  const plain = shellWith(branchConfig(GE_CONTROLLER));
+  assert.doesNotMatch(plain.diagWrapper.innerHTML, /diag-panel/);
+  assert.match(plain.diagWrapper.innerHTML, /<span>Model Fits &amp; Phylogeny Diagnostics<\/span>/);
+});

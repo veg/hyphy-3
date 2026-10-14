@@ -39,7 +39,7 @@ export class EvidenceBand {
       tone: () => null,          // (row, track) => 'div' | 'pur' | null at the live threshold
       mirror: null,              // { value, tone }: a second series drawn downward from zero
       domain: 'auto',            // 'auto' | [min, max] | (rows, track) => [min, max]
-      ticks: 5,                  // number of tick intervals, or the tick values
+      ticks: 5,                  // number of tick intervals, the tick values, or (min, max) => values
       tickFormat: (v) => v.toFixed(1),
       rule: 'le',                // 'le': p-style rule at -log10 t; 'ge': posterior-style rule at t; null: none
       mirrorRule: false,         // also draw the rule below zero, in the purifying hue
@@ -74,6 +74,7 @@ export class EvidenceBand {
   tickValues() {
     const { ticks } = this.options;
     if (Array.isArray(ticks)) return ticks;
+    if (typeof ticks === 'function') return ticks(this.yMin, this.yMax);
     return Array.from({ length: ticks + 1 }, (_, i) => this.yMin + (i / ticks) * (this.yMax - this.yMin));
   }
 

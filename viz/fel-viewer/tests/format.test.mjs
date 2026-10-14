@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   formatThreshold, formatPValue, formatOmegaInf, formatEBF,
-  formatP, formatComputedP, formatOmega, formatPosterior, formatCount
+  formatP, formatComputedP, formatOmega, formatPosterior, formatCount, formatPosteriorCutoff
 } from '../src/core/format.js';
 
 test('FEL formatters keep their existing output', () => {
@@ -47,4 +47,13 @@ test('formatPosterior and formatCount', () => {
   assert.equal(formatPosterior(0.95123), '0.951');
   assert.equal(formatCount(341), '341');
   assert.equal(formatCount(193.75), '193.8');
+});
+
+test('posterior cutoffs keep the third decimal only when they need it', () => {
+  assert.equal(formatPosteriorCutoff(0.9), '0.90');
+  assert.equal(formatPosteriorCutoff(0.95), '0.95');
+  assert.equal(formatPosteriorCutoff(0.5), '0.50');
+  assert.equal(formatPosteriorCutoff(0.995), '0.995');
+  assert.equal(formatPosteriorCutoff(0.999), '0.999');
+  assert.equal(formatPosteriorCutoff(0.9 + 0.001 * 3), '0.903');
 });

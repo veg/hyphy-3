@@ -36,7 +36,14 @@ run("${HYPHY3}" fel --alignment "${DATA_DIR}/cd2_reduced.fna" --tree "${DATA_DIR
 run("${HYPHY3}" report fel.legacy.json)
 check_report("${WORK_DIR}/fel.legacy.html" hyphy-fel-viewer)
 
-# 3. Analyses without a viewer are refused with a clear error rather than mis-rendered
+# 3. FUBAR reports mount the neutral viewer element, from a run and from its result file
+run("${HYPHY3}" fubar --alignment "${DATA_DIR}/cd2_reduced.fna" --tree "${DATA_DIR}/cd2_reduced.nwk"
+    --threads 2 --no-progress --output fubar.json --html fubar.html)
+check_report("${WORK_DIR}/fubar.html" hyphy-viewer)
+run("${HYPHY3}" report fubar.json --html fubar.report.html)
+check_report("${WORK_DIR}/fubar.report.html" hyphy-viewer)
+
+# 4. Analyses without a viewer are refused with a clear error rather than mis-rendered
 file(WRITE "${WORK_DIR}/busted.json" "{\"analysis\": {\"id\": \"busted\"}}")
 execute_process(COMMAND "${HYPHY3}" report busted.json --html busted.html WORKING_DIRECTORY "${WORK_DIR}"
                 RESULT_VARIABLE rc ERROR_VARIABLE err OUTPUT_QUIET)

@@ -197,7 +197,7 @@ add_executable(hyphy3-relax src/apps/hyphy_relax.cpp)
 target_link_libraries(hyphy3-relax PRIVATE hyphy3_core)
 
 add_executable(hyphy3-fubar src/apps/hyphy_fubar.cpp)
-target_link_libraries(hyphy3-fubar PRIVATE hyphy3_core)
+target_link_libraries(hyphy3-fubar PRIVATE hyphy3_report)
 
 add_executable(hyphy3-prime src/apps/hyphy_prime.cpp)
 target_link_libraries(hyphy3-prime PRIVATE hyphy3_core)

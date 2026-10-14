@@ -22,6 +22,8 @@
     &contrast=<Contrast-FEL v3 JSON> (MatrixBand: click a row label to focus it, a cell to
     select its site), &gard=<GARD v3 JSON> (SegmentBand: click a segment) and
     &slac=<SLAC v3 JSON> (mirrored EvidenceBand: the series under the pointer is picked by y).
+    RateGridHeatmap loads &fubar=<FUBAR JSON, v3 or legacy>: the estimated grid weights and
+    the posterior of the site with the highest P[β>α], its mode outlined and mean marked.
     The hidden tab holds a BranchTree built while display:none; showing the tab draws it. Clicking a branch in the full tree selects it in the mini tree.
   -->
   <link rel="stylesheet" href="src/styles/viewer.css" />
@@ -190,6 +192,12 @@
   </div>
 
   <div class="gallery-card">
+    <div class="gallery-card-head"><span>RateGridHeatmap · FUBAR grid weights and a site posterior on ordinal axes</span></div>
+    <div class="rate-grid-pair" id="rate-grid"></div>
+    <div class="gallery-note" id="fubar-note"></div>
+  </div>
+
+  <div class="gallery-card">
     <div class="gallery-card-head"><span>ViewerShell · dark theme (tokens overridden by .hyphy-theme-dark)</span></div>
     <div id="shell-dark"></div>
     <div class="gallery-note" id="dark-note"></div>
@@ -206,6 +214,8 @@
     import { EvidenceBand } from './src/components/evidence-band.js';
     import { MatrixBand } from './src/components/matrix-band.js';
     import { SegmentBand } from './src/components/segment-band.js';
+    import { RateGridHeatmap } from './src/components/rate-grid-heatmap.js';
+    import { FUBARData } from './src/data/fubar-data.js';
     import { PALETTE } from './src/data/palette.js';
     import { formatPValue, formatThreshold } from './src/core/format.js';
 
@@ -530,6 +540,26 @@
       const note = document.getElementById('shell-note');
       mount.addEventListener('data-unsupported', e => { note.textContent = `data-unsupported: ${e.detail.method}`; });
       new ViewerShell(mount).load(json);
+    }
+
+    function showRateGrid(json) {
+      const data = new FUBARData(json);
+      const mount = document.getElementById('rate-grid');
+      const top = data.siteResults.reduce((a, b) => (b.probPos > a.probPos ? b : a));
+      new RateGridHeatmap(mount, { title: 'Estimated grid weights', caption: data.formatLabel, size: 240, grid: data.grid, weights: data.grid.weight });
+      const weights = data.sitePosterior(top.site);
+      if (weights) {
+        new RateGridHeatmap(mount, {
+          title: `Codon #${top.site} posterior`,
+          caption: 'Mode outlined; ✕ marks the posterior mean',
+          size: 240,
+          grid: data.grid,
+          weights,
+          mode: true,
+          mean: { alpha: top.alpha, beta: top.beta }
+        });
+      }
+      document.getElementById('fubar-note').textContent = `${data.grid.dims}×${data.grid.dims} grid; codon #${top.site} has P[β>α] = ${top.probPos.toFixed(3)}`;
     }
 
     // The dark theme only overrides the :root tokens, so any method's report follows it
@@ -918,6 +948,8 @@
       if (branches) showAbsrelShell(await fetchJSON(branches));
       if (params.get('dark')) showDarkShell(await fetchJSON(params.get('dark')));
       else document.getElementById('dark-note').textContent = 'pass &dark=<FEL or MEME JSON> to draw a dark report';
+      if (params.get('fubar')) showRateGrid(await fetchJSON(params.get('fubar')));
+      else document.getElementById('fubar-note').textContent = 'pass &fubar=<FUBAR JSON> to draw the rate grid';
       const tracks = { prime: showPrimeTrack, contrast: showContrastTrack, gard: showGardTrack, slac: showSlacTrack };
       for (const [param, show] of Object.entries(tracks)) {
         if (params.get(param)) show(await fetchJSON(params.get(param)));

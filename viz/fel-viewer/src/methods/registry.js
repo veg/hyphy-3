@@ -5,10 +5,12 @@
 import { detectMethod } from '../core/detect-method.js';
 import { FEL_CONFIG } from './fel.js';
 import { MEME_CONFIG } from './meme.js';
+import { FUBAR_CONFIG } from './fubar.js';
 
 export const METHOD_CONFIGS = {
   fel: FEL_CONFIG,
-  meme: MEME_CONFIG
+  meme: MEME_CONFIG,
+  fubar: FUBAR_CONFIG
 };
 
 // Config for a method id ('fel', 'MEME', ...), or null when the viewer has none

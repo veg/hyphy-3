@@ -15,7 +15,9 @@ test('every config supplies what the shell mounts', () => {
       assert.equal(typeof config[part], 'function', `${id}.${part}`);
     }
     assert.equal(typeof config.controller.seed, 'number', `${id}.controller.seed`);
-    assert.ok(['p', 'q'].includes(config.controller.statistic), `${id}.controller.statistic`);
+    // p-values and q-values pass at or below the cutoff, posteriors (P) at or above it
+    const { statistic, direction } = config.controller;
+    assert.ok(direction === 'ge' ? statistic === 'P' : ['p', 'q'].includes(statistic), `${id}.controller.statistic`);
   }
 });
 
@@ -27,8 +29,8 @@ test('configs are looked up by method id, case-insensitively', () => {
   assert.equal(methodConfig('constructor'), null);
 });
 
-test('FEL and MEME results get their own config, v3 or legacy', { skip: noFixtures }, () => {
-  const files = readdirSync(FIXTURES).filter(f => /^(fel|meme)_.*\.json$/.test(f));
+test('FEL, MEME and FUBAR results get their own config, v3 or legacy', { skip: noFixtures }, () => {
+  const files = readdirSync(FIXTURES).filter(f => /^(fel|meme|fubar)_.*\.json$/.test(f));
   assert.ok(files.length > 0);
   for (const file of files) {
     const json = JSON.parse(readFileSync(new URL(file, FIXTURES), 'utf8'));
@@ -46,7 +48,8 @@ test('only unrecognized results fall back; a recognized method without a viewer 
   assert.deepEqual(resolveConfig({ analysis: { id: 'busted' } }, fallback), { method: 'busted', config: null });
   assert.deepEqual(resolveConfig({ analysis: { info: 'Directional FEL detects site-level selection' } }, fallback),
     { method: 'dfel', config: null });
-  assert.deepEqual(resolveConfig({ grid: [], posterior: {} }, fallback), { method: 'fubar', config: null });
+  assert.deepEqual(resolveConfig({ MLE: { content: { 0: { 'by-site': {} } } } }, fallback), { method: 'slac', config: null });
+  assert.deepEqual(resolveConfig({ grid: [], posterior: {} }, fallback), { method: 'fubar', config: METHOD_CONFIGS.fubar });
   assert.deepEqual(resolveConfig({ analysis: { id: 'fel' } }, fallback), { method: 'fel', config: METHOD_CONFIGS.fel });
   assert.deepEqual(resolveConfig({ something: 'else' }, fallback), { method: null, config: fallback });
 });

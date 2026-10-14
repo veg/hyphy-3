@@ -7,6 +7,7 @@
 #include "hyphy/core/console.hpp"
 #include "hyphy/opt/optimizer.hpp"
 #include "hyphy/analyses/fubar.hpp"
+#include "hyphy/report/html_report.hpp"
 
 #include <iostream>
 #include <string>
@@ -52,6 +53,7 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--samples") << " <N>            MCMC samples to draw (default: 100)\n"
               << "  " << Console::brand("--threads, -T") << " <N>        Number of OpenMP worker threads\n"
               << "  " << Console::brand("--output, -o") << " <file>      Path to output JSON file (default: <alignment>.FUBAR.json)\n"
+              << "  " << Console::brand("--html") << " <file>            Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--all-sites") << "              Display all codon sites in console table (default: significant only)\n"
               << "  " << Console::brand("--progress") << "               Force interactive progress bar\n"
               << "  " << Console::brand("--no-progress") << "            Disable progress bar\n"
@@ -66,6 +68,7 @@ int run_fubar(int argc, char* argv[]) {
     std::string alignment_file;
     std::string tree_file;
     std::string output_file;
+    std::string html_file;
     std::string code_name = "Universal";
     int num_threads = 0;
     
@@ -106,6 +109,8 @@ int run_fubar(int argc, char* argv[]) {
             num_threads = std::stoi(argv[++i]);
         } else if ((arg == "--output" || arg == "-o") && i + 1 < argc) {
             output_file = argv[++i];
+        } else if (arg == "--html" && i + 1 < argc) {
+            html_file = argv[++i];
         } else if (arg == "--all-sites") {
             all_sites = true;
         } else if (arg == "--legacy") {
@@ -263,6 +268,17 @@ int run_fubar(int argc, char* argv[]) {
                   << "  " << Console::muted("Analysis results saved to: ") << Console::brand(output_file) << "\n\n";
     } catch (const std::exception& e) {
         std::cerr << Console::danger("Error writing JSON output: ") << e.what() << "\n";
+    }
+
+    if (!html_file.empty()) {
+        try {
+            hyphy::report::write_html_report(output_file, html_file);
+            std::cout << Console::success("✔") << " " << Console::bold("Saved HTML report to: ")
+                      << Console::brand(html_file) << "\n\n";
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error writing HTML report: ") << e.what() << "\n";
+            return 1;
+        }
     }
 
     return 0;

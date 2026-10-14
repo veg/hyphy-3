@@ -65,14 +65,22 @@ TEST_CASE("Report: FEL and MEME reports embed the viewer, stylesheet and data") 
     CHECK(meme.find("<hyphy-meme-viewer") != std::string::npos);
     CHECK(meme.find("MEME &bull; Episodic Selection") != std::string::npos);
     CHECK(meme.find("whenDefined('hyphy-meme-viewer')") != std::string::npos);
-    CHECK(meme.find("hyphy-fel-viewer, hyphy-meme-viewer { width: 100%;") != std::string::npos);
+    CHECK(meme.find("hyphy-fel-viewer, hyphy-meme-viewer, hyphy-viewer { width: 100%;") != std::string::npos);
+
+    // FUBAR mounts the neutral element, which picks its viewer from the result itself
+    std::string fubar = render_html(R"J({"analysis": {"id": "fubar"}})J", "f.json");
+    CHECK(fubar.find("<hyphy-viewer id=\"hyphy-viewer\"") != std::string::npos);
+    CHECK(fubar.find("FUBAR &bull; Bayesian Pervasive Selection") != std::string::npos);
+    CHECK(fubar.find("whenDefined('hyphy-viewer')") != std::string::npos);
 }
 
 TEST_CASE("Report: the viewer table drives the supported analyses") {
-    CHECK(supported_analyses() == std::vector<std::string>{"fel", "meme"});
-    CHECK(supported_analyses_text() == "FEL, MEME");
+    CHECK(supported_analyses() == std::vector<std::string>{"fel", "meme", "fubar"});
+    CHECK(supported_analyses_text() == "FEL, MEME, FUBAR");
     REQUIRE(find_viewer("meme") != nullptr);
     CHECK(find_viewer("meme")->tag == "hyphy-meme-viewer");
+    REQUIRE(find_viewer("fubar") != nullptr);
+    CHECK(find_viewer("fubar")->tag == "hyphy-viewer");
     CHECK(find_viewer("busted") == nullptr);
     CHECK(find_viewer("") == nullptr);
 }

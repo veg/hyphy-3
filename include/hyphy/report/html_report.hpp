@@ -28,6 +28,7 @@ inline const std::vector<ReportViewer>& report_viewers() {
     static const std::vector<ReportViewer> viewers = {
         {"fel", "FEL &bull; Pervasive Selection", "hyphy-fel-viewer"},
         {"meme", "MEME &bull; Episodic Selection", "hyphy-meme-viewer"},
+        {"fubar", "FUBAR &bull; Bayesian Pervasive Selection", "hyphy-viewer"},
     };
     return viewers;
 }

@@ -128,3 +128,28 @@ function runningMaxInOrder(values, order) {
   }
   return out;
 }
+
+// Exact 95% (by default) interval for the number of false calls among calls with
+// the given error probabilities: the Poisson-binomial distribution by convolution,
+// bounded by the first counts whose CDF reaches alpha/2 and 1 - alpha/2. Matches
+// hyphy3 compute_enfp_ci and HyPhy 2.5 fubar.ComputeENFP_CI; no calls gives [0, 0].
+export function poissonBinomialCI(errProbs, alpha = 0.05) {
+  let pdf = [1];
+  for (const p of errProbs) {
+    const next = new Array(pdf.length + 1).fill(0);
+    pdf.forEach((mass, k) => {
+      next[k] += mass * (1 - p);
+      next[k + 1] += mass * p;
+    });
+    pdf = next;
+  }
+  const firstReaching = (level) => {
+    let cdf = 0;
+    for (let k = 0; k < pdf.length; k++) {
+      cdf += pdf[k];
+      if (cdf >= level) return k;
+    }
+    return pdf.length - 1;
+  };
+  return [firstReaching(alpha / 2), firstReaching(1 - alpha / 2)];
+}

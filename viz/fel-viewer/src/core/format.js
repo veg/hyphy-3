@@ -56,3 +56,10 @@ export function formatPosterior(p) {
 export function formatCount(n) {
   return Number.isInteger(n) ? String(n) : n.toFixed(1);
 }
+
+// Posterior cutoffs: two decimals unless the cutoff needs three (0.995, 0.999), so a
+// cutoff near 1 never reads as 1.00
+export function formatPosteriorCutoff(t) {
+  const two = t.toFixed(2);
+  return Math.abs(Number(two) - t) < 1e-9 ? two : t.toFixed(3);
+}

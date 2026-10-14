@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import {
-  erfc, logGamma, gammaQ, chi2Survival, benjaminiHochberg, holm, enforceStepDown
+  erfc, logGamma, gammaQ, chi2Survival, benjaminiHochberg, holm, enforceStepDown, poissonBinomialCI
 } from '../src/core/stats.js';
 
 const FIXTURES = new URL('../../../parity/viewer/fixtures/', import.meta.url);
@@ -88,4 +88,21 @@ test('HyPhy 2.5 aBSREL corrected p is made monotone', { skip: noFixtures }, () =
   const changed = tested.filter((name, i) => pHolm[i] !== branches[name]['Corrected P-value']);
   assert.deepEqual(changed, ['HAMSTER']);
   assert.equal(pHolm[tested.indexOf('HAMSTER')], branches.Node26['Corrected P-value']);
+});
+
+test('poissonBinomialCI bounds the false-call count by the CDF crossings', () => {
+  assert.deepEqual(poissonBinomialCI([]), [0, 0]);
+  assert.deepEqual(poissonBinomialCI([0, 0, 0]), [0, 0]);
+  assert.deepEqual(poissonBinomialCI([1, 1]), [2, 2]);
+  // Binomial(10, 0.5): CDF(1) = 0.0107, CDF(2) = 0.0547, CDF(7) = 0.9453, CDF(8) = 0.9893
+  assert.deepEqual(poissonBinomialCI(new Array(10).fill(0.5)), [2, 8]);
+  // A wider level narrows the interval
+  assert.deepEqual(poissonBinomialCI(new Array(10).fill(0.5), 0.5), [4, 6]);
+});
+
+test('poissonBinomialCI reproduces the FUBAR run summary', { skip: noFixtures }, () => {
+  const json = fixture('fubar_cd2.json');
+  const { prob_pos } = json.site_results.data;
+  const errors = prob_pos.filter(p => p >= 0.9).map(p => 1 - p);
+  assert.deepEqual(poissonBinomialCI(errors), json.summary.false_positives_ci_95);
 });

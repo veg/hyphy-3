@@ -797,6 +797,25 @@
   margin: 6px 0 16px 0;
 }
 
+/* One-click jump from an empty filter to its non-empty mirror */
+.btn-jump {
+  margin-top: 12px;
+  background-color: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 3px;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.btn-jump:hover {
+  background-color: var(--ink-fill);
+  color: var(--on-ink-fill);
+  border-color: var(--ink-fill);
+}
+
 /* Closest calls under an empty filter: below the cutoff, so drawn dimmed */
 .empty-fallback {
   margin-top: 16px;
@@ -1412,4 +1431,158 @@
 .unsupported-notice-body {
   font-size: 12px;
   color: var(--stone);
+}
+
+/* Format chip: names the program and format that wrote the result */
+.hyphy-format-chip {
+  align-self: flex-end;
+  font-family: "SF Mono", Monaco, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--stone);
+  background-color: var(--inset);
+  border: 1px solid var(--hairline);
+  border-radius: 3px;
+  padding: 2px 8px;
+  margin-bottom: -8px;
+}
+
+/* Posterior mass bar: P[α>β] | P[α=β] | P[β>α] */
+.mass-bar {
+  display: flex;
+  width: 44px;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background-color: var(--grid-line);
+}
+
+.posterior-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.posterior-cell > span:first-child {
+  min-width: 36px;
+}
+
+.mass-neg {
+  background-color: var(--purifying);
+}
+
+.mass-eq {
+  background-color: var(--hairline);
+}
+
+.mass-pos {
+  background-color: var(--accent);
+}
+
+.mass-bar-full {
+  position: relative;
+  width: 100%;
+  height: 14px;
+  overflow: visible;
+}
+
+.mass-bar-full > .mass-neg {
+  border-radius: 3px 0 0 3px;
+}
+
+.mass-bar-full > .mass-pos {
+  border-radius: 0 3px 3px 0;
+}
+
+.mass-tick {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  margin-left: -1px;
+  background-color: var(--ink);
+}
+
+.mass-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--stone);
+}
+
+/* Rate grid heatmap (FUBAR) */
+.rate-grid-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.rate-grid-heatmap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rate-grid-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.rate-grid-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--ink);
+}
+
+.rate-grid-canvas {
+  display: block;
+  background-color: var(--panel);
+  cursor: crosshair;
+}
+
+.rate-grid-readout {
+  font-family: "SF Mono", Monaco, monospace;
+  font-size: 10px;
+  color: var(--stone);
+  max-width: 100%;
+}
+
+/* A diagnostics card's figure and notes, between its items and the Newick text */
+.diag-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.diag-panel > .diag-item {
+  flex: 1 1 280px;
+}
+
+.diag-notes {
+  margin: 4px 0 0 16px;
+  color: var(--slate);
+  line-height: 1.5;
+}
+
+/* Notation inside an uppercased label keeps its case (α, β, P[β>α], dS) */
+.case-literal {
+  text-transform: none;
+}
+
+/* A drawer tab's sections, spaced like the drawer body's own children */
+.drawer-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.diag-val-wrap {
+  overflow-wrap: anywhere;
 }
