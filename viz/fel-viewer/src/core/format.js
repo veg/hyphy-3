@@ -4,9 +4,11 @@
 
 import { erfc } from './stats.js';
 
-// Threshold labels: three decimals below 0.01 so 0.005 does not read as 0.01
+// Cutoff labels: two decimals unless the cutoff needs three (0.005, 0.106, 0.995), so a
+// label always reads back as the cutoff it names and never rounds 0.999 up to 1.00
 export function formatThreshold(t) {
-  return t.toFixed(t < 0.01 ? 3 : 2);
+  const two = t.toFixed(2);
+  return Math.abs(Number(two) - t) < 1e-9 ? two : t.toFixed(3);
 }
 
 // FEL/MEME site p-values: scientific notation below 1e-4
@@ -61,13 +63,6 @@ export function formatPosterior(p) {
 // Substitution counts are fractional when ties are split between paths
 export function formatCount(n) {
   return Number.isInteger(n) ? String(n) : n.toFixed(1);
-}
-
-// Posterior cutoffs: two decimals unless the cutoff needs three (0.995, 0.999), so a
-// cutoff near 1 never reads as 1.00
-export function formatPosteriorCutoff(t) {
-  const two = t.toFixed(2);
-  return Math.abs(Number(two) - t) < 1e-9 ? two : t.toFixed(3);
 }
 
 // A signed difference, signed after rounding so −0.004 reads +0.00, not −0.00

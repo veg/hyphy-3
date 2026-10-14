@@ -282,9 +282,13 @@ export class SLACData {
     this.provenance = { wallSeconds: slacNumber(total?.timer ?? total), command: null, alignmentSha256: null };
   }
 
+  // Where dS is undefined (ES = 0) its sampled range is too: v3 writes it as null,
+  // --legacy-json as 0, and both read as blank
   siteRow(site, partition, v, sampled) {
     const S = v.S ?? 0;
     const N = v.N ?? 0;
+    const dSUndefined = slacNumber(v.dS) == null;
+    if (dSUndefined) sampled.dS = null;
     return {
       site,
       partition,
@@ -301,7 +305,7 @@ export class SLACData {
       tbl: slacNumber(v.tbl),
       sampled: SLAC_SAMPLED.some(k => sampled[k]) ? sampled : null,
       noSubs: S + N === 0,
-      dSUndefined: slacNumber(v.dS) == null
+      dSUndefined
     };
   }
 

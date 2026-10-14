@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installFakeDOM, FakeElement } from './fake-dom.mjs';
 import { EvidenceBand, evidenceBarWidth, evidenceFlagPosition } from '../src/components/evidence-band.js';
-import { SiteTrackCanvas } from '../src/components/site-track.js';
+import { SiteTrackCanvas, trackColors } from '../src/components/site-track.js';
+import { PALETTE } from '../src/data/palette.js';
 import { OverviewTrack, revealWindow } from '../src/components/overview-track.js';
 import {
   slacTrackModes, slacEvidenceDomain, slacEvidenceTicks, slacPTick, slacMarker, slacNegLog10, SLAC_BRUSH
@@ -39,8 +40,67 @@ test('the evidence axis is symmetric, at least p = 0.001 either way, and ticks r
   assert.deepEqual(slacEvidenceDomain([site(1, { pPos: 1e-7, pNeg: 1 })]), [-8, 8]);
   assert.deepEqual(slacEvidenceTicks(-3, 3), [-3, -2, -1, 0, 1, 2, 3]);
   assert.deepEqual(slacEvidenceTicks(-8, 8), [-8, -6, -4, -2, 0, 2, 4, 6, 8]);
-  assert.deepEqual([0, 1, -2, 3, -6].map(slacPTick), ['1', '0.1', '0.01', '0.001', '1e-6']);
+  assert.deepEqual([0, 1, -2, 3].map(v => slacPTick(v, 3)), ['1', '0.1', '0.01', '0.001']);
+  // An axis past 0.001 reads in powers of ten throughout, never mixing the two
+  assert.deepEqual([0, 2, -4, 6].map(v => slacPTick(v, 6)), ['1', '1e-2', '1e-4', '1e-6']);
   assert.equal(slacNegLog10(0), 15);
+});
+
+test('a degenerate p(dN>dS) = 0 does not set the scale; its flagged mark is held at the top edge', () => {
+  const degenerate = site(2, { dSUndefined: true, N: 2, pPos: 0, pNeg: 1 });
+  const rows = [site(1, { pPos: 1, pNeg: 0.0086 }), degenerate];
+  assert.deepEqual(slacEvidenceDomain(rows), [-3, 3]);
+  const [evidence] = slacTrackModes();
+  const frame = frameFor(2);
+  const ctx = recordingContext();
+  const track = { rows, threshold: 0.1, selectedSite: null, hoveredSite: null };
+  evidence.band.drawBackground(ctx, frame, track);
+  const points = evidence.band.drawMarks(ctx, frame, track);
+  const top = points.find(p => p.site === 2 && p.series === 0);
+  assert.equal(top.y, frame.top);
+  assert.ok(top.clipped);
+  assert.equal(top.marker, 'flag');
+  assert.ok(!points.find(p => p.site === 1 && p.series === 1).clipped);
+  assert.ok(ctx.calls.some(c => c[0] === 'fillText' && c[1] === '⚠'));
+});
+
+test('the selection ring sits on the called mark, in its own hue', () => {
+  const [evidence] = slacTrackModes();
+  const rows = [site(1, { pPos: 1, pNeg: 0.0086 }), site(2)];
+  const frame = frameFor(2);
+  const ctx = recordingContext();
+  const track = { rows, threshold: 0.1, selectedSite: 1, selectedSeries: null, hoveredSite: null };
+  evidence.band.drawBackground(ctx, frame, track);
+  evidence.band.drawMarks(ctx, frame, track);
+  const ring = evidence.band.selectedPoint(track);
+  assert.equal(ring.series, 1);
+  assert.equal(evidence.band.ringColor(ring), PALETTE.purifying);
+  assert.equal(evidence.band.ringColor({ tone: null }), PALETTE.ink);
+  assert.equal(new EvidenceBand().ringColor({ tone: 'pur' }), PALETTE.amberVivid);
+});
+
+test('canvas colours fall back to PALETTE where the page defines no tokens', () => {
+  assert.deepEqual(trackColors(null), PALETTE);
+  const themed = recordingContext();
+  const track = { rows: [site(1)], threshold: 0.1, selectedSite: null, hoveredSite: null, colors: Object.assign({}, PALETTE, { gridLine: '#2D2D2D', panel: '#1E1E1E' }) };
+  const band = new EvidenceBand({ value: () => 0, marker: () => 'hollow', shape: 'dot' });
+  const frame = frameFor(1);
+  band.drawBackground(themed, frame, track);
+  band.drawMarks(themed, frame, track);
+  assert.ok(themed.calls.some(c => c[0] === '=strokeStyle' && c[1] === '#2D2D2D'));
+  assert.ok(themed.calls.some(c => c[0] === '=fillStyle' && c[1] === '#1E1E1E'));
+});
+
+test('a pair caption is set level in the frame corners, in the two hues', () => {
+  const [evidence] = slacTrackModes();
+  const frame = frameFor(2);
+  const ctx = recordingContext();
+  evidence.band.drawBackground(ctx, frame, { rows: [site(1)], threshold: 0.1 });
+  assert.ok(!ctx.calls.some(c => c[0] === 'rotate'));
+  assert.deepEqual(evidence.band.cornerCaptions(frame).map(([text, color, y]) => [text, color, y]), [
+    ['more non-synonymous ▲', PALETTE.accent, frame.top + 4],
+    ['more synonymous ▼', PALETTE.purifying, frame.top + frame.height - 4]
+  ]);
 });
 
 test('untestable sites are hollow rings; a degenerate diversifying call is flagged above', () => {

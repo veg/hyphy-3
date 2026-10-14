@@ -5,9 +5,11 @@ import { SLACData, slacSiteClass, consensusResidue } from '../src/data/slac-data
 import { configForResult } from '../src/methods/registry.js';
 import {
   SLAC_CONFIG, SLAC_KPI_CARDS, SLAC_FILTERS, SLAC_TABLE, SLAC_COLUMNS, SLAC_P_THRESHOLD,
-  slacEmptyState, slacDiagnostics, slacCountingSentence, slacFitsTable, slacP, slacEffectBar, slacLeafLabel
+  SLAC_DRAWER, slacEmptyState, slacDiagnostics, slacCountingSentence, slacFitsTable, slacP, slacEffectBar,
+  slacLeafLabel, slacShares, slacTipPValues, slacNewickText
 } from '../src/methods/slac.js';
 import { thresholdLabel, thresholdCaption, sliderAttributes } from '../src/components/kpi-bar.js';
+import { formatThreshold } from '../src/core/format.js';
 
 const FIXTURES = new URL('../../../parity/viewer/fixtures/', import.meta.url);
 const noFixtures = !existsSync(FIXTURES) && 'parity fixtures are not in this checkout';
@@ -113,7 +115,19 @@ test('sampled ancestors give S, N, dS and dN ranges; p-value ranges are not read
   }
   const v3 = new SLACData(fixture('slac_cd2.json'));
   assert.deepEqual(v3.getSite(7).sampled.S, { median: 1.5, lo: 1 / 6, hi: 4 });
-  assert.equal(v3.getSite(35).sampled.dS.median, null);
+  assert.equal(v3.getSite(35).sampled.dS, null);
+});
+
+test('where dS is undefined its sampled range is blank in every format, not --legacy-json\'s zeros', { skip: noFixtures }, () => {
+  for (const file of FILES) {
+    const data = new SLACData(fixture(file));
+    for (const site of [35, 114]) {
+      const r = data.getSite(site);
+      assert.ok(r.dSUndefined, `${file} ${site}`);
+      assert.equal(r.sampled.dS, null, `${file} ${site}`);
+      assert.ok(r.sampled.dN, `${file} ${site}`);
+    }
+  }
 });
 
 test('the consensus residue ignores gaps and breaks ties alphabetically', { skip: noFixtures }, () => {
@@ -169,7 +183,59 @@ test('the controller is the shared p cutoff with the uncorrected caption', () =>
   assert.equal(thresholdLabel(SLAC_P_THRESHOLD, 0.1), 'p ≤ 0.10');
   assert.deepEqual(SLAC_P_THRESHOLD.presets, [0.1, 0.05, 0.01]);
   assert.equal(sliderAttributes(SLAC_P_THRESHOLD, 0.1).max, '0.20');
-  assert.match(thresholdCaption(SLAC_P_THRESHOLD, 0.1, 'p'), /^Uncorrected per-site p-values/);
+  assert.equal(thresholdCaption(SLAC_P_THRESHOLD, 0.1, 'p'), 'Uncorrected per-site p-values');
+});
+
+// The browser only lets a range input land on min + k·step; each such stop must be the
+// cutoff its label prints, and the presets and the maximum must be stops
+test('every slider stop is the cutoff its label prints, and the presets and maximum are stops', () => {
+  const { min, max, step, presets } = SLAC_P_THRESHOLD;
+  const stops = [];
+  for (let k = 0; min + k * step <= max + 1e-9; k++) stops.push(Number((min + k * step).toFixed(3)));
+  for (const t of stops) assert.equal(Number(formatThreshold(t)), t, `stop ${t}`);
+  assert.equal(stops[stops.length - 1], max);
+  for (const p of presets) assert.ok(stops.includes(p), `preset ${p}`);
+  assert.deepEqual(sliderAttributes(SLAC_P_THRESHOLD, 0.1), { min: '0.005', max: '0.20', step: '0.005', value: '0.10' });
+  assert.equal(thresholdLabel(SLAC_P_THRESHOLD, 0.015), 'p ≤ 0.015');
+});
+
+test('p-values switch to exponential below 1e-3; shares add up to 100%', () => {
+  assert.equal(slacP(0.0005), '5.00e-4');
+  assert.equal(slacP(0.001), '0.0010');
+  assert.equal(slacP(0.0086), '0.0086');
+  assert.equal(slacShares(0.625), 'S 63% · N 37%');
+  assert.equal(slacShares(0.2), 'S 20% · N 80%');
+});
+
+test('the tooltip puts both p-values on one row and colours the one that passes', () => {
+  const r = { pPos: 1, pNeg: 0.0086, S: 3, N: 0, noSubs: false };
+  assert.equal(slacTipPValues(r, 0.1), '1.0000 / <span class="tip-pass-pur">0.0086</span>');
+  assert.equal(slacTipPValues(r, 0.005), '1.0000 / 0.0086');
+  assert.equal(slacTipPValues({ pPos: 0.03, pNeg: 0.99 }, 0.05), '<span class="tip-pass-div">0.0300</span> / 0.9900');
+});
+
+test('the drawer says a failing p-value is not significant, and invariant sites get the short badge', { skip: noFixtures }, () => {
+  const data = new SLACData(fixture('slac_cd2.json'));
+  const render = (site, threshold) => {
+    const panel = { innerHTML: '' };
+    SLAC_DRAWER.tabs[0].render(panel, data.getSite(site), { data, threshold });
+    return panel.innerHTML;
+  };
+  const purifying = render(87, 0.1);
+  assert.doesNotMatch(purifying, /below the cutoff/);
+  assert.match(purifying, /1\.0000<\/div>\s*<div class="dstat-sub">not significant at p ≤ 0\.10</);
+  assert.match(purifying, /0\.0086<\/div>\s*<div class="dstat-sub">purifying at this cutoff</);
+  assert.equal((render(1, 0.1).match(/not significant at p ≤ 0\.10/g) || []).length, 2);
+  assert.match(render(47, 0.1), /S 63% · N 37%/);
+  const header = (site) => SLAC_DRAWER.header(data.getSite(site), { data, threshold: 0.1 });
+  assert.equal(header(2).badge, '○ Invariant');
+  assert.equal(header(35).badge, '○ Invariant · ⚠ dS undefined');
+  assert.equal(header(87).badge, '▼ Purifying selection');
+});
+
+test('codon and selection columns cannot be hidden', () => {
+  const pinned = SLAC_COLUMNS.filter(c => c.alwaysShown).map(c => c.id);
+  assert.deepEqual(pinned, ['codon', 'class']);
 });
 
 test('KPI cards: Alignment first with the substitution totals, the controller after the context card', { skip: noFixtures }, () => {
@@ -186,14 +252,18 @@ test('KPI cards: Alignment first with the substitution totals, the controller af
   assert.equal(omega.value(stats, view), '0.993');
 });
 
-test('the empty diversifying tab jumps to purifying; with neither it lists the closest calls', { skip: noFixtures }, () => {
+test('the empty diversifying tab explains itself, jumps to purifying and lists the closest calls', { skip: noFixtures }, () => {
   const data = new SLACData(fixture('slac_cd2.json'));
   const [div, pur, sig] = SLAC_FILTERS;
   const state = slacEmptyState(0.1, { filter: div, stats: data.getStats(0.1), rows: data.siteResults });
   assert.deepEqual(state.jump, { filter: 'purifying', label: 'View Purifying Sites (▼ 11)' });
   assert.match(state.title, /p\(dN&gt;dS\)/);
+  assert.match(state.desc, /^No codon has significantly more non-synonymous substitutions/);
+  assert.equal(state.fallback.length, 5);
+  assert.ok(state.fallback.every(r => r.pPos > 0.1));
   const strict = slacEmptyState(0.001, { filter: sig, stats: data.getStats(0.001), rows: data.siteResults });
   assert.equal(strict.jump, undefined);
+  assert.equal(strict.desc, undefined);
   assert.deepEqual(strict.fallback.map(r => r.site), [87, 166, 164, 65, 82]);
   assert.equal(pur.sort.column, 'pneg');
   assert.equal(SLAC_TABLE.defaultFilter, 'diversifying');
@@ -229,13 +299,24 @@ test('diagnostics list the run as each producer wrote it', { skip: noFixtures },
   const html = slacDiagnostics(v3);
   assert.match(html, /as written by <span class="case-literal">hyphy3<\/span>/);
   assert.match(html, /p ≤ 0\.10: 0 diversifying · 11 purifying · 176 neutral/);
-  assert.match(html, /16 tested · 0 background · tested tree length 1\.7233 · branches: All/);
+  assert.match(html, /All · 16 tested · 0 background · tested tree length 1\.7233</);
   assert.match(html, /doi:10\.1093\/molbev\/msi105/);
+  assert.match(html, /<div class="diag-item diag-item-wide">\s*<span class="diag-lbl">Citation<\/span>\s*<span class="diag-val diag-val-prose">/);
+  assert.doesNotMatch(html, /branches: All/);
   const legacy = slacDiagnostics(hyphy25);
   assert.doesNotMatch(legacy, /Run cutoff/);
   assert.doesNotMatch(legacy, /Ancestor samples/);
   assert.match(slacFitsTable(hyphy25.fits, hyphy25.formatLabel), /<td class="font-mono">31<\/td>/);
   assert.match(slacFitsTable(new SLACData(fixture('slac_cd2.legacy.json')).fits, 'x'), /<td class="font-mono">—<\/td>/);
+});
+
+test('the Newick text drops v3\'s zero lengths and END root, and keeps real lengths', { skip: noFixtures }, () => {
+  const v3 = new SLACData(fixture('slac_cd2.json'));
+  const text = SLAC_CONFIG.newick(v3);
+  assert.doesNotMatch(text, /:0|END/);
+  assert.match(text, /^\(\(\(\(Pig,Cow\)Node3,Horse,Cat\)Node2,/);
+  assert.match(text, /Rat,Mouse\);$/);
+  assert.equal(slacNewickText('(A:0.12,B:0)C:0.0;'), '(A:0.12,B)C;');
 });
 
 test('leaf labels carry the codon and residue at the site', () => {

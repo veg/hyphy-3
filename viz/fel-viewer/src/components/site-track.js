@@ -96,12 +96,27 @@ export function drawThresholdRule(ctx, frame, y, color, label) {
   ctx.restore();
 }
 
-// The surface a canvas sits on: the themed --panel when the page defines it
-function canvasSurface(canvas) {
-  const themed = typeof getComputedStyle === 'function' && canvas
-    ? getComputedStyle(canvas).getPropertyValue('--panel').trim()
-    : '';
-  return themed || PALETTE.panel;
+// The theme tokens a canvas draws with, by PALETTE key
+const TRACK_TOKENS = {
+  panel: '--panel',
+  ink: '--ink',
+  stone: '--stone',
+  hairline: '--hairline',
+  gridLine: '--grid-line',
+  purifying: '--purifying'
+};
+
+// PALETTE with the themed values of the page's tokens where it defines them, so canvas
+// marks, grid and surfaces follow the dark theme as the CSS does
+export function trackColors(canvas) {
+  const style = typeof getComputedStyle === 'function' && canvas ? getComputedStyle(canvas) : null;
+  const colors = Object.assign({}, PALETTE);
+  if (!style) return colors;
+  for (const [key, token] of Object.entries(TRACK_TOKENS)) {
+    const value = style.getPropertyValue(token).trim();
+    if (value) colors[key] = value;
+  }
+  return colors;
 }
 
 // A rule's label at the plot's right end, just above or below the rule, on a plate of
@@ -114,16 +129,16 @@ export function drawRuleLabel(ctx, frame, y, color, label, side) {
   const x = frame.left + frame.width - 6;
   const ty = side === 'above' ? y - 4 : y + 4;
   const w = ctx.measureText(label).width;
-  ctx.fillStyle = canvasSurface(ctx.canvas);
+  ctx.fillStyle = trackColors(ctx.canvas).panel;
   ctx.fillRect(x - w - 4, side === 'above' ? ty - 12 : ty - 1, w + 8, 13);
   ctx.fillStyle = color;
   ctx.fillText(label, x, ty);
   ctx.restore();
 }
 
-// Amber reticle around the selected site's mark
-export function drawSelectionRing(ctx, x, y) {
-  ctx.strokeStyle = PALETTE.amberVivid;
+// Reticle around the selected site's mark, amber unless the band gives its own colour
+export function drawSelectionRing(ctx, x, y, color = PALETTE.amberVivid) {
+  ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.arc(x, y, 11, 0, Math.PI * 2);
@@ -431,13 +446,13 @@ export class SiteTrackCanvas {
     const [from, to] = this.siteRange();
     const bottom = frame.top + frame.height;
     ctx.font = '10px "SF Mono", Monaco, monospace';
-    ctx.fillStyle = PALETTE.stone;
+    ctx.fillStyle = this.colors.stone;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
 
     for (let s = from; s <= to; s += codonTickStep(to - from + 1)) {
       const x = frame.scaleX(s);
-      ctx.strokeStyle = PALETTE.gridLine;
+      ctx.strokeStyle = this.colors.gridLine;
       ctx.beginPath();
       ctx.moveTo(x, frame.top);
       ctx.lineTo(x, bottom);
@@ -456,6 +471,7 @@ export class SiteTrackCanvas {
     ctx.save();
     ctx.scale(this.dpr, this.dpr);
     ctx.clearRect(0, 0, this.width, this.height);
+    this.colors = trackColors(this.canvas);
 
     this.frames = this.layout();
     const [main, ...stacked] = this.frames;
@@ -492,7 +508,7 @@ export class SiteTrackCanvas {
       const last = this.frames[this.frames.length - 1];
       ctx.save();
       ctx.setLineDash([2, 2]);
-      ctx.strokeStyle = PALETTE.ink;
+      ctx.strokeStyle = this.colors.ink;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(hPt.x, main.top);

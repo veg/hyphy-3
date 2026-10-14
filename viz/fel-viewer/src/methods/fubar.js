@@ -11,7 +11,7 @@ import { evidenceTipRow } from '../components/evidence-plot.js';
 import { ResultsTable, closestCalls } from '../components/results-table.js';
 import { Drawer } from '../components/drawer.js';
 import { RateGridHeatmap } from '../components/rate-grid-heatmap.js';
-import { formatPosteriorCutoff, formatPosterior, formatBayesFactor, formatSigned } from '../core/format.js';
+import { formatThreshold, formatPosterior, formatBayesFactor, formatSigned } from '../core/format.js';
 
 export const FUBAR_POSTERIOR_CUTOFF = {
   title: 'Call Cutoff',
@@ -22,8 +22,8 @@ export const FUBAR_POSTERIOR_CUTOFF = {
   step: 0.001,
   presets: [0.9, 0.95, 0.99],
   seed: 0.9,
-  format: formatPosteriorCutoff,
-  presetLabel: (t) => `≥ ${formatPosteriorCutoff(t)}`
+  format: formatThreshold,
+  presetLabel: (t) => `≥ ${formatThreshold(t)}`
 };
 
 // 'Posterior ≥ 0.90': the cutoff as the controller, hero rule and diagnostics name it
@@ -57,14 +57,14 @@ export const FUBAR_KPI_CARDS = [
     id: 'div',
     label: 'Diversifying (Positive)',
     value: (stats) => `▲ ${stats.diversifying}`,
-    sub: (stats, { threshold }) => `P[β>α] ≥ ${formatPosteriorCutoff(threshold)}`,
+    sub: (stats, { threshold }) => `P[β>α] ≥ ${formatThreshold(threshold)}`,
     tone: 'accent'
   },
   {
     id: 'pur',
     label: 'Purifying (Constraint)',
     value: (stats) => `▼ ${stats.purifying}`,
-    sub: (stats, { threshold }) => `P[α>β] ≥ ${formatPosteriorCutoff(threshold)}`,
+    sub: (stats, { threshold }) => `P[α>β] ≥ ${formatThreshold(threshold)}`,
     tone: 'purifying'
   },
   {
@@ -193,7 +193,7 @@ export const FUBAR_FILTERS = [
     opposite: 'purifying',
     count: (stats) => stats.diversifying,
     test: (r, t) => fubarSiteClass(r, t) === 'diversifying',
-    subtitle: (n, t) => `Showing ${n} diversifying sites (P[β>α] ≥ ${formatPosteriorCutoff(t)})`
+    subtitle: (n, t) => `Showing ${n} diversifying sites (P[β>α] ≥ ${formatThreshold(t)})`
   },
   {
     id: 'purifying',
@@ -207,7 +207,7 @@ export const FUBAR_FILTERS = [
     opposite: 'diversifying',
     count: (stats) => stats.purifying,
     test: (r, t) => fubarSiteClass(r, t) === 'purifying',
-    subtitle: (n, t) => `Showing ${n} purifying sites (P[α>β] ≥ ${formatPosteriorCutoff(t)})`
+    subtitle: (n, t) => `Showing ${n} purifying sites (P[α>β] ≥ ${formatThreshold(t)})`
   },
   {
     id: 'all',
@@ -222,7 +222,7 @@ export const FUBAR_FILTERS = [
 
 // Jump to the mirror class when it has sites, else show the sites closest to the cutoff
 export function fubarEmptyState(t, { filter, stats, rows }) {
-  const title = `No ${filter.unit} reaches ${fubarLiteral(filter.statistic)} ≥ ${formatPosteriorCutoff(t)}`;
+  const title = `No ${filter.unit} reaches ${fubarLiteral(filter.statistic)} ≥ ${formatThreshold(t)}`;
   const other = FUBAR_FILTERS.find(f => f.id === filter.opposite);
   const otherCount = other.count(stats);
   if (otherCount > 0) {
@@ -308,15 +308,15 @@ function fubarMassSection(r, t) {
           <div class="drawer-section-title">Posterior mass</div>
           <div class="mass-bar mass-bar-full">
             ${posteriorMassSegments(r, t)}
-            <span class="mass-tick mass-tick-neg" style="left: ${t * 100}%;" title="P[α>β] ≥ ${formatPosteriorCutoff(t)} past here"></span>
-            <span class="mass-tick mass-tick-pos" style="left: ${(1 - t) * 100}%;" title="P[β>α] ≥ ${formatPosteriorCutoff(t)} past here"></span>
+            <span class="mass-tick mass-tick-neg" style="left: ${t * 100}%;" title="P[α>β] ≥ ${formatThreshold(t)} past here"></span>
+            <span class="mass-tick mass-tick-pos" style="left: ${(1 - t) * 100}%;" title="P[β>α] ≥ ${formatThreshold(t)} past here"></span>
           </div>
           <div class="mass-labels">
             ${label(r.probNeg >= t && 'text-blue', 'P[α>β]', r.probNeg)}
             ${label('', 'P[α=β]', r.probEq)}
             ${label(r.probPos >= t && 'text-orange', 'P[β>α]', r.probPos)}
           </div>
-          <div class="empty-events-notice">Ticks mark the cutoff ${formatPosteriorCutoff(t)} from each end; a site is called when its colour reaches the tick.</div>
+          <div class="empty-events-notice">Ticks mark the cutoff ${formatThreshold(t)} from each end; a site is called when its colour reaches the tick.</div>
         </div>`;
 }
 

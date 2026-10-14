@@ -126,11 +126,17 @@ export class ViewerShell {
   }
 
   // The collapsed diagnostics card: the config's items, then its optional panel
-  // (config.diagnosticsPanel(el, data), drawn once per load), then the Newick text
+  // (config.diagnosticsPanel(el, data), drawn once per load), then the Newick text.
+  // config.newick(data) gives the text as the method prints it, with a copy button;
+  // without it the parsed treeNewick is shown as is.
   initDiagnosticsSection() {
     const title = this.config.diagnosticsTitle || 'Model Fits &amp; Phylogeny Diagnostics';
     const panel = this.config.diagnosticsPanel ? `
         <div class="diag-panel" id="diag-panel"></div>` : '';
+    const newickLabel = '<span class="diag-lbl">Phylogenetic Tree (Newick)</span>';
+    const newickHead = this.config.newick
+      ? `<span class="diag-lbl-row">${newickLabel}<button type="button" class="plot-tool-btn" id="diag-newick-copy" title="Copy the Newick text">Copy</button></span>`
+      : newickLabel;
     this.diagWrapper = document.createElement('div');
     this.diagWrapper.className = 'hyphy-diagnostics-card';
     this.diagWrapper.innerHTML = `
@@ -143,7 +149,7 @@ export class ViewerShell {
           <!-- Dynamic fit metrics -->
         </div>${panel}
         <div class="diag-item" style="margin-top: 8px;">
-          <span class="diag-lbl">Phylogenetic Tree (Newick)</span>
+          ${newickHead}
           <div class="newick-box" id="diag-newick">No tree loaded</div>
         </div>
       </div>
@@ -160,6 +166,12 @@ export class ViewerShell {
       const isOpen = content.classList.toggle('active');
       icon.textContent = isOpen ? '▲' : '▼';
     });
+
+    const copyBtn = this.diagWrapper.querySelector('#diag-newick-copy');
+    copyBtn?.addEventListener('click', () => {
+      const text = this.diagWrapper.querySelector('#diag-newick').textContent;
+      navigator.clipboard?.writeText(text).then(() => { copyBtn.textContent = 'Copied'; }, () => {});
+    });
   }
 
   updateDiagnostics() {
@@ -168,7 +180,8 @@ export class ViewerShell {
     const newickBox = this.diagWrapper.querySelector('#diag-newick');
 
     grid.innerHTML = this.config.diagnostics(this.data);
-    newickBox.textContent = this.data.treeNewick || 'No Newick string available in JSON';
+    const newick = this.config.newick ? this.config.newick(this.data) : this.data.treeNewick;
+    newickBox.textContent = newick || 'No Newick string available in JSON';
   }
 
   initDragAndDrop() {

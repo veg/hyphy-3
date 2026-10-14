@@ -24,7 +24,7 @@ test('FEL slider attributes keep their label form when it reads back exactly', (
 });
 
 test('slider attributes carry the raw cutoff where the label would round it', () => {
-  assert.equal(formatThreshold(0.999), '1.00');
+  assert.equal(cutoffAttribute(SITE_P_THRESHOLD, 0.0501), '0.0501');
   assert.deepEqual(sliderAttributes(POSTERIOR, 0.995), { min: '0.50', max: '0.999', step: '0.001', value: '0.995' });
   assert.equal(cutoffAttribute(POSTERIOR, 0.999), '0.999');
 });

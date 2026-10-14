@@ -9,6 +9,8 @@ export const PALETTE = {
   accentPale: '#FED7AA',
   purifying: '#1E40AF',       // --purifying: Technical Cobalt Blue
   purifyingDeep: '#1E3A8A',   // Outline for purifying glyphs
+  purifyingSolid: '#1E40AF',  // --purifying-solid: Cobalt under knockout text, either theme
+  purifyingLight: '#7C9BF0',  // --purifying-light: Cobalt on dark surfaces (dark --purifying)
   synonymous: '#047857',      // --synonymous: Deep green
   amber: '#D97706',           // Moderate EBF
   amberOchre: '#B45309',

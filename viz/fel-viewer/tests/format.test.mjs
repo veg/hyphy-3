@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   formatThreshold, formatPValue, formatOmegaInf, formatEBF, formatBayesFactor,
-  formatP, formatComputedP, formatOmega, formatPosterior, formatCount, formatPosteriorCutoff, formatSigned
+  formatP, formatComputedP, formatOmega, formatPosterior, formatCount, formatSigned
 } from '../src/core/format.js';
 
 test('FEL formatters keep their existing output', () => {
@@ -57,13 +57,24 @@ test('formatPosterior and formatCount', () => {
   assert.equal(formatCount(193.75), '193.8');
 });
 
-test('posterior cutoffs keep the third decimal only when they need it', () => {
-  assert.equal(formatPosteriorCutoff(0.9), '0.90');
-  assert.equal(formatPosteriorCutoff(0.95), '0.95');
-  assert.equal(formatPosteriorCutoff(0.5), '0.50');
-  assert.equal(formatPosteriorCutoff(0.995), '0.995');
-  assert.equal(formatPosteriorCutoff(0.999), '0.999');
-  assert.equal(formatPosteriorCutoff(0.9 + 0.001 * 3), '0.903');
+test('cutoffs keep the third decimal only when they need it', () => {
+  assert.equal(formatThreshold(0.9), '0.90');
+  assert.equal(formatThreshold(0.95), '0.95');
+  assert.equal(formatThreshold(0.5), '0.50');
+  assert.equal(formatThreshold(0.995), '0.995');
+  assert.equal(formatThreshold(0.999), '0.999');
+  assert.equal(formatThreshold(0.9 + 0.001 * 3), '0.903');
+});
+
+test('a cutoff label reads back as the cutoff it names, so off-grid slider stops are not rounded', () => {
+  // FEL's slider grid is 0.001 + 0.005k; each stop prints as itself
+  for (let k = 0; k * 0.005 + 0.001 <= 0.2; k++) {
+    const t = Number((0.001 + k * 0.005).toFixed(3));
+    assert.equal(Number(formatThreshold(t)), t);
+  }
+  assert.equal(formatThreshold(0.106), '0.106');
+  assert.equal(formatThreshold(0.196), '0.196');
+  assert.equal(formatThreshold(0.2), '0.20');
 });
 
 test('signed differences are signed after rounding', () => {

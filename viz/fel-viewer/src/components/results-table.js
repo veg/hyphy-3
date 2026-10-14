@@ -6,14 +6,14 @@
 //     carry it as data-<rowKey>, and selection reports it.
 //   rows(data): the parsed result's rows in their natural order.
 //   columns: [{ id, header, width?, align?, title?, cell(row, view), csv?, sort?,
-//              availableWhen?(capabilities), hiddenByDefault? }]
+//              availableWhen?(capabilities), hiddenByDefault?, alwaysShown? }]
 //     or columns(data) returning that array, resolved on every setData.
 //     cell returns the whole <td>; view is { data, threshold, statistic }.
 //     csv: [{ header, value(row, view) }], the column's export fields at full precision.
 //     A column without a cell is export-only. sort(row) is the value a header click
 //     sorts by. availableWhen(data.capabilities) false drops the column for this result.
 //     hiddenByDefault columns start hidden; the column chooser shows or hides any column
-//     with a cell, and the export follows what is shown.
+//     with a cell that is not alwaysShown, and the export follows what is shown.
 //   columnChooser: draw the column chooser (default: when an available column is hiddenByDefault)
 //   virtualize: true or { minRows, overscan } draws only the rows in view once the
 //     filtered rows reach minRows (default 2000); off by default.
@@ -260,7 +260,7 @@ ${search ? resultsSearchMarkup(search) : ''}
 
   // A compact menu of the drawable columns, beside the export button
   updateChooser() {
-    const choosable = this.columns.filter(c => c.cell);
+    const choosable = this.columns.filter(c => c.cell && !c.alwaysShown);
     if (!(this.options.columnChooser ?? choosable.some(c => c.hiddenByDefault))) {
       this.chooser?.remove();
       this.chooser = null;
@@ -271,9 +271,27 @@ ${search ? resultsSearchMarkup(search) : ''}
       this.chooser.className = 'column-chooser';
       this.chooser.innerHTML = `<summary class="plot-tool-btn" title="Show or hide columns">Columns</summary><div class="column-chooser-menu"></div>`;
       this.chooser.addEventListener('change', (e) => this.setColumnShown(e.target.dataset.column, e.target.checked));
+      this.chooser.addEventListener('toggle', () => this.trackChooserMenu());
       this.exportBtn.before(this.chooser);
     }
     this.chooser.querySelector('.column-chooser-menu').innerHTML = columnChooserItems(choosable, c => this.isShown(c));
+  }
+
+  // The menu is fixed so the card's overflow cannot clip it: placed under its button's
+  // right edge on open, and kept there while anything scrolls
+  trackChooserMenu() {
+    this.placeChooserMenu ||= () => {
+      const button = this.chooser.querySelector('summary').getBoundingClientRect();
+      const menu = this.chooser.querySelector('.column-chooser-menu');
+      menu.style.top = `${button.bottom + 4}px`;
+      menu.style.right = `${document.documentElement.clientWidth - button.right}px`;
+    };
+    if (this.chooser.open) {
+      this.placeChooserMenu();
+      window.addEventListener('scroll', this.placeChooserMenu, true);
+    } else {
+      window.removeEventListener('scroll', this.placeChooserMenu, true);
+    }
   }
 
   setThreshold(p) {

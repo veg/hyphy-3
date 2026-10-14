@@ -163,3 +163,13 @@ test('a filter with its own sort orders its rows until the viewer picks a column
   table.setFilterType('all');
   assert.deepEqual(order(), ['B0', 'B1', 'B2']);
 });
+
+test('alwaysShown columns stay out of the chooser and are always drawn', () => {
+  const pinned = (data) => dynamicColumns(data).map(c => (c.id === 'branch' ? Object.assign(c, { alwaysShown: true }) : c));
+  const table = branchTable({ columns: pinned });
+  table.setData(branchData(2));
+  const menu = table.chooser.querySelector('.column-chooser-menu').innerHTML;
+  assert.ok(!menu.includes('data-column="branch"'));
+  assert.ok(menu.includes('data-column="lrt"'));
+  assert.equal(headers(table)[0], 'BRANCH');
+});

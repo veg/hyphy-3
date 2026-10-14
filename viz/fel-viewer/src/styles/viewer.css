@@ -8,6 +8,8 @@
   --accent-tint-border: rgba(235, 94, 40, 0.3);
   --purifying: #1E40AF;            /* Technical Cobalt Blue */
   --purifying-tint: rgba(30, 64, 175, 0.12);
+  --purifying-solid: #1E40AF;      /* Cobalt under knockout text, in either theme */
+  --purifying-light: #7C9BF0;      /* Cobalt for text and marks on dark surfaces */
   --synonymous: #047857;           /* Deep green */
   --synonymous-tint: rgba(4, 120, 87, 0.12);
 
@@ -400,8 +402,19 @@
 }
 
 .tip-pur {
-  background-color: var(--purifying);
+  background-color: var(--purifying-solid);
   color: var(--knockout);
+}
+
+/* A passing p-value inside the (always dark) tooltip, in its direction's hue */
+.tip-pass-div {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.tip-pass-pur {
+  color: var(--purifying-light);
+  font-weight: 700;
 }
 
 .tip-neutral {
@@ -532,10 +545,9 @@
   border-color: var(--ink-fill);
 }
 
+/* Fixed, so the table card's overflow never clips it; placed under its button on open */
 .column-chooser-menu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 4px);
+  position: fixed;
   z-index: 20;
   display: flex;
   flex-direction: column;
@@ -1020,6 +1032,7 @@
 }
 
 .drawer-close-btn {
+  flex-shrink: 0;
   background: none;
   border: none;
   font-size: 18px;
@@ -1387,9 +1400,12 @@
   cursor: crosshair;
 }
 
-/* Dark theme: the same rules over dark surfaces and light ink. Signal hues, their
-   tints and the tooltip keep their light-theme values. */
+/* Dark theme: the same rules over dark surfaces and light ink. The accent and the
+   tooltip keep their light-theme values; cobalt lightens to stay readable on the dark
+   panel (about 6:1 on #1E1E1E). */
 .hyphy-theme-dark, :host([theme="dark"]) {
+  --purifying: var(--purifying-light);
+  --purifying-tint: rgba(124, 155, 240, 0.16);
   --chassis: #121212;
   --panel: #1E1E1E;
   --panel-header: #252525;
@@ -1578,6 +1594,72 @@
 
 .diag-val-wrap {
   overflow-wrap: anywhere;
+}
+
+/* Prose values (method description, citation) span the grid in the body face */
+.diag-item-wide {
+  grid-column: 1 / -1;
+}
+
+.diag-val-prose {
+  font-family: inherit;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+/* A diagnostics label with an action beside it */
+.diag-lbl-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Phones: the drawer takes the full width and its header wraps, step nav, title and
+   close on the first row, badge and tabs on the second */
+@media (max-width: 480px) {
+  .hyphy-site-drawer {
+    width: 100vw;
+    max-width: 100vw;
+  }
+
+  .drawer-header {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  .drawer-title-group {
+    display: contents;
+  }
+
+  .drawer-step {
+    order: 1;
+  }
+
+  /* Wide enough that the badge cannot join the first row */
+  .drawer-site-tag {
+    order: 2;
+    flex: 1 1 calc(100% - 160px);
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .drawer-close-btn {
+    order: 3;
+  }
+
+  .drawer-regime-badge {
+    order: 4;
+  }
+
+  .drawer-nav-tabs {
+    order: 5;
+    margin-left: auto;
+  }
 }
 
 /* Overview brush inside a site track's card, above the canvas (long alignments) */

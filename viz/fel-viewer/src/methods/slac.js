@@ -16,15 +16,18 @@ import { roundedDomain, roundedTicks } from '../components/posterior-plot.js';
 import { ResultsTable, closestCalls } from '../components/results-table.js';
 import { Drawer } from '../components/drawer.js';
 import { BranchTree } from '../components/branch-tree.js';
-import { formatThreshold, formatPValue, formatSigned } from '../core/format.js';
+import { formatThreshold, formatSigned } from '../core/format.js';
 
+// The slider runs on round stops (0.005, 0.010, ... 0.200), so every preset and the
+// maximum are reachable and the cutoff applied is the one the label prints
 export const SLAC_P_THRESHOLD = Object.assign({}, SITE_P_THRESHOLD, {
-  caption: 'Uncorrected per-site p-values; SLAC is conservative when S + N is small'
+  min: 0.005,
+  caption: 'Uncorrected per-site p-values'
 });
 
 const SLAC_CALLS = {
-  diversifying: { tone: 'div', glyph: '▲', label: 'Diversifying', badge: '▲ Diversifying', badgeClass: 'omega-div' },
-  purifying: { tone: 'pur', glyph: '▼', label: 'Purifying', badge: '▼ Purifying', badgeClass: 'omega-pur' },
+  diversifying: { tone: 'div', glyph: '▲', label: 'Diversifying', badge: '▲ Diversifying selection', badgeClass: 'omega-div' },
+  purifying: { tone: 'pur', glyph: '▼', label: 'Purifying', badge: '▼ Purifying selection', badgeClass: 'omega-pur' },
   neutral: { tone: 'neutral', glyph: '—', label: 'Neutral', badge: 'Neutral', badgeClass: '' },
   invariant: { tone: 'neutral', glyph: '○', label: 'Invariant', badge: 'Invariant (no substitutions)', badgeClass: 'omega-invariant' }
 };
@@ -43,9 +46,11 @@ export function slacCount(n) {
   return n.toFixed(1);
 }
 
-// A p-value as the method reports it; an exact 0 is the degenerate P_S = 0 case, not underflow
+// A p-value as the method reports it: four decimals, exponential below 1e-3. An exact 0
+// is the degenerate P_S = 0 case, not underflow.
 export function slacP(p) {
-  return p === 0 ? '0' : formatPValue(p);
+  if (p === 0) return '0';
+  return p < 0.001 ? p.toExponential(2) : p.toFixed(4);
 }
 
 // Rates that are undefined where ES = 0 read as a dash, never 0
@@ -104,10 +109,14 @@ export function slacNegLog10(p) {
   return -Math.log10(Math.max(p, 1e-15));
 }
 
-// Symmetric about zero, at least down to p = 0.001 either way
+// Symmetric about zero, at least down to p = 0.001 either way. A degenerate p(dN>dS) = 0
+// carries no magnitude, so it does not set the scale; its mark is pinned at the top edge.
 export function slacEvidenceDomain(rows) {
   let max = 0;
-  for (const r of rows) max = Math.max(max, slacNegLog10(r.pPos), slacNegLog10(r.pNeg));
+  for (const r of rows) {
+    max = Math.max(max, slacNegLog10(r.pNeg));
+    if (!slacDegenerate(r)) max = Math.max(max, slacNegLog10(r.pPos));
+  }
   const extent = Math.max(3, Math.ceil(max * 1.1));
   return [-extent, extent];
 }
@@ -120,11 +129,12 @@ export function slacEvidenceTicks(min, max) {
   return ticks;
 }
 
-// A tick at ±k reads as the p-value 10^-k it stands for
-export function slacPTick(v) {
+// A tick at ±k reads as the p-value 10^-k it stands for: decimals while the axis stops
+// at 0.001, powers of ten throughout once it runs further, so one axis never mixes them
+export function slacPTick(v, max) {
   const k = Math.round(Math.abs(v));
   if (k === 0) return '1';
-  return k <= 3 ? String(Number((10 ** -k).toPrecision(1))) : `1e-${k}`;
+  return max > 3 ? `1e-${k}` : String(Number((10 ** -k).toPrecision(1)));
 }
 
 const slacDivTone = (r, track) => (slacSiteClass(r, track.threshold) === 'diversifying' ? 'div' : null);
@@ -136,10 +146,18 @@ function slacEffectTone(r, track) {
 }
 
 // A site with no inferred substitutions is plotted as an empty ring on the baseline; the
-// degenerate ES = 0 call carries a warning beside its upward mark
+// degenerate ES = 0 call carries a warning beside its upward mark, which is held at the
+// top edge since slacEvidenceDomain leaves it out
 export function slacMarker(r, track, series) {
   if (r.noSubs) return 'hollow';
   return slacDegenerate(r) && series === 0 ? 'flag' : null;
+}
+
+// Both p-values on one line, the one that passes at t in its direction's hue
+export function slacTipPValues(r, t) {
+  const cls = slacSiteClass(r, t);
+  const shown = (p, passes, hue) => (passes ? `<span class="${hue}">${slacP(p)}</span>` : slacP(p));
+  return `${shown(r.pPos, cls === 'diversifying', 'tip-pass-div')} / ${shown(r.pNeg, cls === 'purifying', 'tip-pass-pur')}`;
 }
 
 function slacTooltip(r, track) {
@@ -150,8 +168,7 @@ function slacTooltip(r, track) {
     evidenceTipRow('dS', slacRate(r.dS)),
     evidenceTipRow('dN', slacRate(r.dN)),
     evidenceTipRow('dN − dS (scaled)', slacSignedOrDash(r.dNmdS)),
-    evidenceTipRow(SLAC_P_POS, slacP(r.pPos)),
-    evidenceTipRow(SLAC_P_NEG, slacP(r.pNeg))
+    evidenceTipRow(`${SLAC_P_POS} / ${SLAC_P_NEG}`, slacTipPValues(r, track.threshold))
   ];
   const notes = [];
   if (r.noSubs) notes.push('No substitutions inferred, so not informative');
@@ -191,13 +208,14 @@ export function slacTrackModes() {
         label: ['more non-synonymous ▲', 'more synonymous ▼'],
         shape: 'dot',
         neutralAlpha: 0.45,
+        toneRing: true,
         tooltip: slacTooltip
       })
     },
     {
       id: 'effect',
       label: 'Effect: scaled dN − dS',
-      subtitle: () => 'dN − dS ÷ branch length contributing at the site; hue where called',
+      subtitle: () => 'dN − dS ÷ branch length contributing at the site; coloured where significant at the cutoff',
       band: new EvidenceBand({
         value: (r) => r.dNmdS,
         tone: slacEffectTone,
@@ -208,6 +226,7 @@ export function slacTrackModes() {
         rule: null,
         label: 'scaled dN − dS',
         shape: 'bar',
+        toneRing: true,
         tooltip: slacTooltip
       })
     }
@@ -272,7 +291,7 @@ const SLAC_SAMPLED_CSV = ['S', 'N', 'dS', 'dN'].flatMap(k => [
 const slacCsvValue = (v) => v ?? '';
 
 export const SLAC_COLUMNS = [
-  CODON_COLUMN,
+  Object.assign({}, CODON_COLUMN, { alwaysShown: true }),
   {
     id: 'partition',
     header: 'Partition',
@@ -286,6 +305,7 @@ export const SLAC_COLUMNS = [
     id: 'class',
     header: 'Selection',
     width: 130,
+    alwaysShown: true,
     title: 'The call at the current cutoff; sorts by the smaller p-value',
     cell: (r, { threshold }) => `<td>${slacCallBadge(r, threshold)}</td>`,
     csv: [
@@ -395,6 +415,7 @@ export const SLAC_FILTERS = [
     glyph: '▲',
     label: 'Diversifying',
     unit: 'diversifying site',
+    evidence: 'more non-synonymous substitutions',
     statistic: SLAC_P_POS,
     p: (r) => r.pPos,
     opposite: 'purifying',
@@ -409,6 +430,7 @@ export const SLAC_FILTERS = [
     glyph: '▼',
     label: 'Purifying',
     unit: 'purifying site',
+    evidence: 'fewer non-synonymous substitutions',
     statistic: SLAC_P_NEG,
     p: (r) => r.pNeg,
     opposite: 'diversifying',
@@ -440,15 +462,20 @@ export const SLAC_FILTERS = [
   }
 ];
 
-// Jump to the mirror direction when it has sites, else show the sites closest to passing
+// What the empty filter means, a jump to the mirror direction when it has sites, and the
+// sites closest to passing
 export function slacEmptyState(t, { filter, stats, rows }) {
   const title = `No ${filter.unit} reaches ${slacLiteral(filter.statistic)} ≤ ${formatThreshold(t)}`;
+  const state = { icon: filter.glyph, title, fallback: closestCalls(rows, filter.p) };
+  if (filter.evidence) {
+    state.desc = `No codon has significantly ${filter.evidence} than its synonymous opportunity predicts at this cutoff.`;
+  }
   const other = SLAC_FILTERS.find(f => f.id === filter.opposite);
   const otherCount = other ? other.count(stats) : 0;
   if (otherCount > 0) {
-    return { icon: filter.glyph, title, jump: { filter: other.id, label: `View ${other.label} Sites (${other.glyph} ${otherCount})` } };
+    state.jump = { filter: other.id, label: `View ${other.label} Sites (${other.glyph} ${otherCount})` };
   }
-  return { icon: filter.glyph, title, fallback: closestCalls(rows, filter.p) };
+  return state;
 }
 
 export const SLAC_TABLE = {
@@ -472,11 +499,14 @@ export const SLAC_TABLE = {
 // Drawer: the call at the live cutoff, the counting test behind it, the site's counts and
 // rates, their spread over sampled ancestors, and the leaves' codons
 
+// The header badge is the table's short call ('○ Invariant'); the counting test spells
+// out what an invariant site lacks
 function slacDrawerHeader(r, { threshold }) {
   const call = slacCall(r, threshold);
   const aa = r.consensusAA ? ` · ${r.consensusAA}` : '';
   const flag = r.dSUndefined ? ' · ⚠ dS undefined' : '';
-  return { tag: `Codon #${r.site}${aa}`, tone: call.tone, badge: `${call.badge}${flag}` };
+  const badge = call === SLAC_CALLS.invariant ? `${call.glyph} ${call.label}` : call.badge;
+  return { tag: `Codon #${r.site}${aa}`, tone: call.tone, badge: `${badge}${flag}` };
 }
 
 function slacPercent(x) {
@@ -502,6 +532,12 @@ export function slacCountingSentence(r, t) {
     : `Of ${slacCount(total)} inferred substitutions, ${slacCount(r.S)} are synonymous (${slacPercent(r.S / total)}); ${slacPercent(1 - expectedN)} would be expected if neutral → ${label} = ${shown}.`;
 }
 
+// A synonymous share and its complement as whole percentages that add up to 100
+export function slacShares(syn) {
+  const s = Math.round(syn * 100);
+  return `S ${s}% · N ${100 - s}%`;
+}
+
 // Two 100% bars, expected and observed synonymous | non-synonymous shares. The side where
 // the observed share exceeds the expected one is outlined in its direction's hue.
 function slacCountingSection(r, t) {
@@ -514,13 +550,12 @@ function slacCountingSection(r, t) {
   const observed = obsS == null
     ? '<span class="count-bar count-bar-empty"></span>'
     : bar(obsS, obsS > expS ? ' count-excess-pur' : '', obsS < expS ? ' count-excess-div' : '');
-  const shares = (syn) => `S ${slacPercent(syn)} · N ${slacPercent(1 - syn)}`;
   return `
         <div class="drawer-section">
           <div class="drawer-section-title">Counting test</div>
           <div class="count-test">
-            <span class="count-label">Expected</span>${bar(expS)}<span class="count-val font-mono">${shares(expS)}</span>
-            <span class="count-label">Observed</span>${observed}<span class="count-val font-mono">${obsS == null ? 'none' : shares(obsS)}</span>
+            <span class="count-label">Expected</span>${bar(expS)}<span class="count-val font-mono">${slacShares(expS)}</span>
+            <span class="count-label">Observed</span>${observed}<span class="count-val font-mono">${obsS == null ? 'none' : slacShares(obsS)}</span>
           </div>
           <div class="count-sentence">${slacCountingSentence(r, t)}</div>
           <div class="empty-events-notice">Binomial tails on fractional counts (HyPhy's extended binomial): n = S + N, success = synonymous with probability P_S = ES / (ES + EN). Uncorrected for multiple sites.</div>
@@ -534,6 +569,11 @@ function slacStatCard(label, value, sub, hue = '') {
               <div class="dstat-value font-mono font-bold ${hue}">${value}</div>
               <div class="dstat-sub">${sub}</div>
             </div>`;
+}
+
+// A p card's caption: the call when this direction passes, else that it does not
+function slacPCaption(passes, call, t) {
+  return passes ? `${call} at this cutoff` : `not significant at p ≤ ${formatThreshold(t)}`;
 }
 
 function slacStatsSection(r, t) {
@@ -551,8 +591,8 @@ function slacStatsSection(r, t) {
             slacStatCard(slacLiteral('dN'), slacRate(r.dN), 'non-synonymous rate'),
             slacStatCard(`${slacLiteral('dN − dS')} (scaled)`, slacSignedOrDash(r.dNmdS), 'divided by the total branch length'),
             slacStatCard('Total branch length', slacRate(r.tbl, 4), 'length of branches contributing at this site, used to scale dN − dS'),
-            slacStatCard(slacLiteral(SLAC_P_POS), slacP(r.pPos), cls === 'diversifying' ? 'diversifying at this cutoff' : 'below the cutoff', cls === 'diversifying' ? 'text-orange' : ''),
-            slacStatCard(slacLiteral(SLAC_P_NEG), slacP(r.pNeg), cls === 'purifying' ? 'purifying at this cutoff' : 'below the cutoff', cls === 'purifying' ? 'text-blue' : '')
+            slacStatCard(slacLiteral(SLAC_P_POS), slacP(r.pPos), slacPCaption(cls === 'diversifying', 'diversifying', t), cls === 'diversifying' ? 'text-orange' : ''),
+            slacStatCard(slacLiteral(SLAC_P_NEG), slacP(r.pNeg), slacPCaption(cls === 'purifying', 'purifying', t), cls === 'purifying' ? 'text-blue' : '')
           ].join('')}
           </div>
         </div>`;
@@ -675,9 +715,9 @@ export const SLAC_DRAWER = {
 
 // Diagnostics: the run, the test setup and the fits the reconstruction rests on
 
-function slacDiagItem(label, value, valueClass = '') {
+function slacDiagItem(label, value, valueClass = '', itemClass = '') {
   return value == null || value === '' ? '' : `
-      <div class="diag-item">
+      <div class="diag-item${itemClass && ` ${itemClass}`}">
         <span class="diag-lbl">${label}</span>
         <span class="diag-val ${valueClass}">${value}</span>
       </div>`;
@@ -692,8 +732,8 @@ function slacTestedItem(data) {
   const { tested, background, testedLength } = data.testing;
   if (tested == null) return null;
   const parts = [`${tested} tested · ${background} background`];
+  if (data.settings.testBranches) parts.unshift(data.settings.testBranches);
   if (testedLength != null) parts.push(`tested tree length ${testedLength.toFixed(4)}`);
-  if (data.settings.testBranches) parts.push(`branches: ${data.settings.testBranches}`);
   return parts.join(' · ');
 }
 
@@ -728,9 +768,15 @@ export function slacDiagnostics(data) {
     slacDiagItem('Run time', slacSeconds(data.provenance.wallSeconds)),
     slacDiagItem('Command', data.provenance.command, 'diag-val-wrap'),
     slacDiagItem('Alignment SHA-256', data.provenance.alignmentSha256, 'diag-val-wrap font-mono'),
-    slacDiagItem('Method', data.description),
-    slacDiagItem('Citation', citation)
+    slacDiagItem('Method', data.description, 'diag-val-prose', 'diag-item-wide'),
+    slacDiagItem('Citation', citation, 'diag-val-prose', 'diag-item-wide')
   ].filter(Boolean).join('');
+}
+
+// The tree as the diagnostics print it: without {tags}, without the zero lengths v3
+// writes (lengths live in the fits) and without v3's 'END' root label
+export function slacNewickText(newick) {
+  return newick.replace(/:0(?:\.0+)?(?=[,);])/g, '').replace(/\)END;?$/, ');');
 }
 
 // Every fit the file reports, with an em dash for a field it lacks
@@ -750,15 +796,13 @@ export function slacFitsTable(fits, formatLabel) {
 }
 
 // Notes on what each number means, so none is read across formats
-function slacFormatNotes(data) {
+function slacFormatNotes() {
   const notes = [
     'p(dN&gt;dS) and p(dN&lt;dS) are separate one-sided binomial tails on fractional counts; they sum to at least 1, so no site is called both ways. Calls and counts are recomputed at the live cutoff, with no multiple-testing correction.',
     'dS and scaled dN − dS are undefined where ES = 0 and are left blank, never 0. If such a site has non-synonymous substitutions its p(dN&gt;dS) is 0 by construction and is flagged ⚠.',
+    'Counting on a reconstruction is conservative: a site with few inferred substitutions (small S + N) cannot reach a small p in either direction.',
     'Scaled dN − dS divides by the length of the branches contributing at the site; that length, the AICc values and the parameter counts are this file\'s own and are not comparable across formats.'
   ];
-  if (data.format !== 'v3') {
-    notes.push('Per-site values are read from the ambiguity-resolved table, which is what hyphy3 v3 reports.');
-  }
   return `<ul class="diag-notes">${notes.map(n => `<li>${n}</li>`).join('')}</ul>`;
 }
 
@@ -767,7 +811,7 @@ export function slacDiagnosticsPanel(el, data) {
   el.insertAdjacentHTML('beforeend', `
         <div class="diag-item">
           <span class="diag-lbl">Format notes</span>
-          ${slacFormatNotes(data)}
+          ${slacFormatNotes()}
         </div>`);
 }
 
@@ -802,5 +846,6 @@ export const SLAC_CONFIG = {
   })),
   diagnosticsTitle: 'Model fits, tree &amp; run details',
   diagnostics: slacDiagnostics,
+  newick: (data) => slacNewickText(data.treeNewick),
   diagnosticsPanel: slacDiagnosticsPanel
 };
