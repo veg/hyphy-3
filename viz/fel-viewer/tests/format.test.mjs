@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   formatThreshold, formatPValue, formatOmegaInf, formatEBF,
-  formatP, formatComputedP, erfc, formatOmega, formatPosterior, formatCount
+  formatP, formatComputedP, formatOmega, formatPosterior, formatCount
 } from '../src/core/format.js';
 
 test('FEL formatters keep their existing output', () => {
@@ -34,8 +34,6 @@ test('formatComputedP recomputes the chi-square tail from LR', () => {
   assert.equal(formatComputedP(0), null);
   assert.equal(formatComputedP(undefined), null);
   assert.equal(formatComputedP(113.95), '1.34e-26 (computed)');
-  assert.ok(Math.abs(erfc(0) - 1) < 1e-7);
-  assert.ok(Math.abs(erfc(-1) - 1.8427007929) < 1e-6);
 });
 
 test('formatOmega clamps sentinels and the floor', () => {

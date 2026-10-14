@@ -149,6 +149,14 @@ add_test(NAME HTMLReportEndToEndTest
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_html_report.cmake
 )
 
+# Viewer unit tests (node:test, no packages). Node expands the glob itself; a bare
+# directory argument is resolved as a module by Node 22 and fails.
+find_program(NODE_EXECUTABLE node)
+if(NODE_EXECUTABLE)
+    add_test(NAME ViewerUnitTests
+        COMMAND ${NODE_EXECUTABLE} --test ${CMAKE_CURRENT_SOURCE_DIR}/viz/fel-viewer/tests/*.test.mjs)
+endif()
+
 
 # Unified HyPhy 3 CLI Driver (hyphy3 fel ..., hyphy3 meme ..., hyphy3 busted ..., hyphy3 absrel ..., hyphy3 relax ..., hyphy3 fubar ..., hyphy3 prime ..., hyphy3 gard ..., hyphy3 slac ..., hyphy3 dfel ...)
 add_executable(hyphy3

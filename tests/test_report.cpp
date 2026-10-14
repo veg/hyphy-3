@@ -27,6 +27,7 @@ TEST_CASE("Report: analysis detection for modern and legacy result JSON") {
     CHECK(detect_analysis(json::parse(R"J({"analysis": {"info": "SLAC (Single Likelihood Ancestor Counting)"}})J")) == "slac");
     CHECK(detect_analysis(json::parse(R"J({"analysis": {"info": "GARD : Genetic Algorithms for Recombination"}})J")) == "gard");
     CHECK(detect_analysis(json::parse(R"J({"analysis": {"info": "Perform a Fast Unbiased AppRoximate Bayesian (FUBAR) analysis"}})J")) == "fubar");
+    CHECK(detect_analysis(json::parse(R"J({"analysis": {"info": "Directional FEL detects site-level selection"}})J")) == "dfel");
 
     // Without usable info, FEL and MEME are recognized from their site-table headers
     CHECK(detect_analysis(json::parse(R"J({"MLE": {"headers": [["alpha", ""], ["beta", ""], ["alpha=beta", ""]]}})J")) == "fel");

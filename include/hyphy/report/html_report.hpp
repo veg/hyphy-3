@@ -101,6 +101,7 @@ inline std::string detect_analysis(const nlohmann::json& j) {
             if (std::find(known.begin(), known.end(), lead) != known.end()) return lead;
         }
         if (info.find("(fubar") != std::string::npos) return "fubar";
+        if (start != std::string::npos && info.compare(start, 15, "directional fel") == 0) return "dfel";
     }
 
     // Older legacy files without usable info: recognize FEL/MEME from their site-table headers

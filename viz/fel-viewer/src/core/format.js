@@ -2,6 +2,8 @@
  * House number formatters shared by every method viewer.
  */
 
+import { erfc } from './stats.js';
+
 // Threshold labels: three decimals below 0.01 so 0.005 does not read as 0.01
 export function formatThreshold(t) {
   return t.toFixed(t < 0.01 ? 3 : 2);
@@ -36,17 +38,6 @@ export function formatP(p, digits = 2) {
 export function formatComputedP(lrt) {
   if (!(lrt > 0)) return null;
   return `${formatPValue(erfc(Math.sqrt(lrt / 2)))} (computed)`;
-}
-
-// Complementary error function (Numerical Recipes erfcc). Its relative error
-// stays below 1.2e-7 far into the tail, where 1 - erf(x) would round to 0.
-export function erfc(x) {
-  const z = Math.abs(x);
-  const t = 1 / (1 + 0.5 * z);
-  const r = t * Math.exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 +
-    t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 +
-    t * (-0.82215223 + t * 0.17087277)))))))));
-  return x >= 0 ? r : 2 - r;
 }
 
 // Omega from rate-class fits: legacy sentinels (1e10) and large v3 values
