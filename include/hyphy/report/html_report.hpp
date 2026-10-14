@@ -99,6 +99,65 @@ inline std::string basename(const std::string& path) {
     return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
+// Site-table column names, from either the [[name, description], ...] array
+// or the { name: description } object that hyphy3 MEME writes
+inline std::vector<std::string> mle_header_names(const nlohmann::json& j) {
+    std::vector<std::string> names;
+    if (!j.contains("MLE") || !j["MLE"].is_object() || !j["MLE"].contains("headers")) return names;
+    const auto& headers = j["MLE"]["headers"];
+    if (headers.is_array()) {
+        for (const auto& h : headers) {
+            const auto& name = h.is_array() && !h.empty() ? h[0] : h;
+            if (name.is_string()) names.push_back(name.get<std::string>());
+        }
+    } else if (headers.is_object()) {
+        for (const auto& item : headers.items()) names.push_back(item.key());
+    }
+    return names;
+}
+
+// Legacy files without a usable info: structural signatures, ordered so that no
+// method is taken for one whose layout it shares (detectMethod in the viewer
+// checks the same signatures in the same order)
+inline std::string method_from_layout(const nlohmann::json& j) {
+    const auto names = mle_header_names(j);
+    auto has_header = [&](const std::string& name) {
+        return std::find(names.begin(), names.end(), name) != names.end();
+    };
+    auto object_at = [&](const char* key) -> const nlohmann::json& {
+        static const nlohmann::json empty = nlohmann::json::object();
+        return j.contains(key) && j[key].is_object() ? j[key] : empty;
+    };
+    const auto& tests = object_at("test results");
+    const auto& fits = object_at("fits");
+
+    if (j.contains("MLE") && j["MLE"].is_object() && j["MLE"].contains("content") &&
+        j["MLE"]["content"].is_object() && j["MLE"]["content"].contains("0")) {
+        const auto& first_partition = j["MLE"]["content"]["0"];
+        if (first_partition.is_object() && first_partition.contains("by-site")) return "slac";
+    }
+    if (j.contains("grid") && j.contains("posterior")) return "fubar";
+    if (has_header("P-value (overall)")) return "contrast-fel";
+    if (has_header("PRIME LogL")) return "prime";
+    if (fits.contains("Unconstrained model") && tests.contains("p-value")) return "busted";
+    if (tests.contains("positive test results")) return "absrel";
+    if (tests.contains("relaxation or intensification parameter")) return "relax";
+    if (j.contains("breakpointData") && j["breakpointData"].is_object()) return "gard";
+
+    bool beta_plus = false, alpha_eq_beta = false;
+    for (const auto& n : names) {
+        std::string name = lower(n);
+        if (name.find("beta") != std::string::npos &&
+            (name.find('+') != std::string::npos || name.find("plus") != std::string::npos)) {
+            beta_plus = true;
+        }
+        if (name == "alpha=beta") alpha_eq_beta = true;
+    }
+    if (beta_plus) return "meme";
+    if (alpha_eq_beta) return "fel";
+    return "";
+}
+
 }  // namespace detail
 
 // Identify the analysis that produced a result JSON (hyphy3 modern v3 or HyPhy 2.5 legacy).
@@ -126,22 +185,8 @@ inline std::string detect_analysis(const nlohmann::json& j) {
         if (start != std::string::npos && info.compare(start, 15, "directional fel") == 0) return "dfel";
     }
 
-    // Older legacy files without usable info: recognize FEL/MEME from their site-table headers
-    if (j.contains("MLE") && j["MLE"].contains("headers") && j["MLE"]["headers"].is_array()) {
-        bool beta_plus = false, alpha_eq_beta = false;
-        for (const auto& h : j["MLE"]["headers"]) {
-            std::string name = detail::lower(h.is_array() && !h.empty() && h[0].is_string() ? h[0].get<std::string>()
-                                             : h.is_string() ? h.get<std::string>() : "");
-            if (name.find("beta") != std::string::npos &&
-                (name.find('+') != std::string::npos || name.find("plus") != std::string::npos)) {
-                beta_plus = true;
-            }
-            if (name == "alpha=beta") alpha_eq_beta = true;
-        }
-        if (beta_plus) return "meme";
-        if (alpha_eq_beta) return "fel";
-    }
-    return "";
+    // Legacy output without a usable info: recognize the method from its layout
+    return detail::method_from_layout(j);
 }
 
 inline std::string supported_analyses_text() {

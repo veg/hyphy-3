@@ -9,7 +9,8 @@
     modules directly (it is not embedded in hyphy3), so serve this directory over http:
       gallery.html?fixture=<path to a v3 JSON>[&sites=<v3 JSON with site_results>][&length=<branch_lengths key>]
     Paths are relative to this page. sites defaults to the fixture; length defaults to the
-    first branch_lengths key found in phylogeny.nodes.
+    first branch_lengths key found in phylogeny.nodes. The unsupported-method notice loads
+    &unsupported=<result JSON of a method without a viewer>, or a synthetic BUSTED result.
   -->
   <link rel="stylesheet" href="src/styles/viewer.css" />
   <style>
@@ -66,6 +67,12 @@
       margin-top: 8px;
       min-height: 12px;
     }
+    body > .gallery-card + .gallery-card {
+      margin-top: 16px;
+    }
+    #shell-unsupported.hyphy-fel-container {
+      min-height: 0;
+    }
   </style>
 </head>
 <body>
@@ -96,7 +103,14 @@
     <div class="gallery-note" id="brush-note"></div>
   </div>
 
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>ViewerShell · method without a viewer</span></div>
+    <div id="shell-unsupported"></div>
+    <div class="gallery-note" id="shell-note"></div>
+  </div>
+
   <script type="module">
+    import { ViewerShell } from './src/shell/viewer-shell.js';
     import { BranchTree } from './src/components/branch-tree.js';
     import { OverviewBrush } from './src/components/overview-brush.js';
     import { PALETTE } from './src/data/palette.js';
@@ -186,7 +200,19 @@
       return brush;
     }
 
+    // The shell recognizes the method but has no config for it, so it shows the notice
+    // in place of a report rather than drawing the file as FEL
+    async function showUnsupported() {
+      const path = params.get('unsupported');
+      const json = path ? await fetchJSON(path) : { analysis: { id: 'busted' } };
+      const mount = document.getElementById('shell-unsupported');
+      const note = document.getElementById('shell-note');
+      mount.addEventListener('data-unsupported', e => { note.textContent = `data-unsupported: ${e.detail.method}`; });
+      new ViewerShell(mount).load(json);
+    }
+
     async function main() {
+      await showUnsupported();
       const fixture = params.get('fixture');
       if (!fixture) return;
       const sites = params.get('sites') || fixture;

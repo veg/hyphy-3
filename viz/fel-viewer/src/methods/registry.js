@@ -21,3 +21,11 @@ export function methodConfig(id) {
 export function configForResult(json) {
   return methodConfig(detectMethod(json).method);
 }
+
+// What the shell mounts for a result JSON: { method, config }. Only a result whose
+// method goes unrecognized gets the fallback; a recognized method without a viewer
+// gets a null config, so it is never drawn with another method's parser.
+export function resolveConfig(json, fallback) {
+  const method = detectMethod(json).method;
+  return { method, config: method == null ? fallback : methodConfig(method) };
+}

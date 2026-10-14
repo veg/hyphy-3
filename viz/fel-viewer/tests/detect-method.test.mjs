@@ -37,26 +37,14 @@ test('v3 id wins and is lowercased', () => {
     { method: 'meme', format: 'v3' });
 });
 
-test('legacy info names the method', () => {
-  const method = info => detectMethod({ analysis: { info } }).method;
-  assert.equal(method('FEL (Fixed Effects Likelihood)\n estimates'), 'fel');
-  assert.equal(method('aBSREL (Adaptive branch-site random effects likelihood)'), 'absrel');
-  assert.equal(method('Contrast-FEL (Fixed Effects Likelihood) investigates'), 'contrast-fel');
-  assert.equal(method('GARD : Genetic Algorithms for Recombination'), 'gard');
-  assert.equal(method('Perform a Fast Unbiased AppRoximate Bayesian (FUBAR) analysis'), 'fubar');
-  assert.equal(method('Directional FEL detects site-level selection'), 'dfel');
-  assert.equal(method('Something else entirely'), null);
-});
-
-test('layout signatures that share columns resolve in order', () => {
-  const headers = names => ({ MLE: { headers: names.map(n => [n, '']) } });
-  assert.equal(detectMethod(headers(['alpha', 'beta (Group1)', 'P-value (overall)'])).method, 'contrast-fel');
-  assert.equal(detectMethod(headers(['alpha', 'beta', 'alpha=beta'])).method, 'fel');
-  assert.equal(detectMethod(headers(['&alpha;', '&beta;<sup>+</sup>'])).method, 'meme');
-  assert.equal(detectMethod({ MLE: { headers: { '&beta;<sup>+</sup>': '' } } }).method, 'meme');
-  assert.equal(detectMethod({ MLE: { headers: 'bogus', content: { 0: { 'by-site': {} } } } }).method, 'slac');
-  assert.equal(detectMethod({ grid: [], posterior: {}, ...headers(['alpha=beta']) }).method, 'fubar');
-  assert.equal(detectMethod({ 'test results': { 'p-value': 0.1, 'relaxation or intensification parameter': 1 } }).method, 'relax');
+// tests/data/detect_cases.json is shared with the C++ detect_analysis test, so
+// both detectors are held to the same answers
+test('detection agrees with the shared test vectors', () => {
+  const { cases } = JSON.parse(readFileSync(new URL('../../../tests/data/detect_cases.json', import.meta.url), 'utf8'));
+  assert.ok(cases.length > 0);
+  for (const c of cases) {
+    assert.equal(detectMethod(c.json).method, c.method, c.name);
+  }
 });
 
 test('legacy flavour comes from runtime, version or info line breaks', () => {

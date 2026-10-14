@@ -1353,3 +1353,44 @@
   color: #FB923C;
   border-color: rgba(235, 94, 40, 0.5);
 }
+
+/* Notice shown for a recognized method that has no viewer yet */
+.hyphy-unsupported-notice {
+  background-color: var(--panel);
+  border: 1px solid var(--hairline);
+  border-left: 4px solid var(--accent);
+  border-radius: 4px;
+  padding: 20px 24px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.unsupported-notice-tag {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.unsupported-notice-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+
+.unsupported-notice-body {
+  font-size: 12px;
+  color: var(--stone);
+}
+
+.hyphy-theme-dark .hyphy-unsupported-notice {
+  background-color: #1E1E1E;
+  border-color: #333333;
+  border-left-color: var(--accent);
+}
+
+.hyphy-theme-dark .unsupported-notice-title {
+  color: #F8FAFC;
+}

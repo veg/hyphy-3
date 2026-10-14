@@ -3,11 +3,15 @@
 
 #include "hyphy/report/html_report.hpp"
 
+#include <fstream>
 #include <stdexcept>
 #include <string>
 
 using hyphy::report::detect_analysis;
+using hyphy::report::find_viewer;
 using hyphy::report::render_html;
+using hyphy::report::supported_analyses;
+using hyphy::report::supported_analyses_text;
 using nlohmann::json;
 
 static size_t count(const std::string& haystack, const std::string& needle) {
@@ -16,24 +20,18 @@ static size_t count(const std::string& haystack, const std::string& needle) {
     return n;
 }
 
-TEST_CASE("Report: analysis detection for modern and legacy result JSON") {
-    CHECK(detect_analysis(json::parse(R"J({"analysis": {"id": "fel"}})J")) == "fel");
-    CHECK(detect_analysis(json::parse(R"J({"analysis": {"id": "MEME"}})J")) == "meme");
-    CHECK(detect_analysis(json::parse(R"J({"analysis": {"id": "contrast-fel"}})J")) == "contrast-fel");
-
-    // Legacy HyPhy 2.5 files name the method at the start of analysis.info
-    CHECK(detect_analysis(json::parse(R"J({"analysis": {"info": "FEL (Fixed Effects Likelihood)\n estimates"}})J")) == "fel");
-    CHECK(detect_analysis(json::parse(R"J({"analysis": {"info": "MEME (Mixed Effects Model of Evolution) estimates"}})J")) == "meme");
-    CHECK(detect_analysis(json::parse(R"J({"analysis": {"info": "SLAC (Single Likelihood Ancestor Counting)"}})J")) == "slac");
-    CHECK(detect_analysis(json::parse(R"J({"analysis": {"info": "GARD : Genetic Algorithms for Recombination"}})J")) == "gard");
-    CHECK(detect_analysis(json::parse(R"J({"analysis": {"info": "Perform a Fast Unbiased AppRoximate Bayesian (FUBAR) analysis"}})J")) == "fubar");
-    CHECK(detect_analysis(json::parse(R"J({"analysis": {"info": "Directional FEL detects site-level selection"}})J")) == "dfel");
-
-    // Without usable info, FEL and MEME are recognized from their site-table headers
-    CHECK(detect_analysis(json::parse(R"J({"MLE": {"headers": [["alpha", ""], ["beta", ""], ["alpha=beta", ""]]}})J")) == "fel");
-    CHECK(detect_analysis(json::parse(R"J({"MLE": {"headers": [["&alpha;", ""], ["&beta;<sup>+</sup>", ""]]}})J")) == "meme");
-
-    CHECK(detect_analysis(json::parse(R"J({"something": "else"})J")) == "");
+// tests/data/detect_cases.json is shared with the viewer's detectMethod test, so
+// both detectors are held to the same answers
+TEST_CASE("Report: analysis detection agrees with the shared test vectors") {
+    std::ifstream in(HYPHY3_SOURCE_DIR "/tests/data/detect_cases.json");
+    REQUIRE(in.good());
+    const json cases = json::parse(in)["cases"];
+    REQUIRE(cases.size() > 0);
+    for (const auto& c : cases) {
+        const std::string expected = c["method"].is_null() ? "" : c["method"].get<std::string>();
+        INFO(c["name"].get<std::string>());
+        CHECK(detect_analysis(c["json"]) == expected);
+    }
 }
 
 TEST_CASE("Report: analyses without a viewer are refused instead of rendered as FEL") {

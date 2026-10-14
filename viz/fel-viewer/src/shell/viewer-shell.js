@@ -3,7 +3,8 @@
 // site drawer slides over it. The shell keeps the threshold and the focused site,
 // fans them out to the mounted views, and handles loading and drag & drop.
 
-import { methodConfig, configForResult } from '../methods/registry.js';
+import { METHOD_CONFIGS, methodConfig, resolveConfig } from '../methods/registry.js';
+import { unsupportedNotice } from '../components/unsupported-notice.js';
 
 export class ViewerShell {
   constructor(container, options = {}) {
@@ -74,8 +75,22 @@ export class ViewerShell {
   unmount() {
     this.views.forEach(view => view.destroy?.());
     this.views = [];
+    this.kpiBar = this.hero = this.table = this.drawer = null;
     this.layout.replaceChildren();
     this.state.focus = null;
+  }
+
+  // Replace the report with a notice for a recognized method that has no viewer
+  showUnsupported(method) {
+    this.unmount();
+    this.config = null;
+    this.data = null;
+    this.layout.innerHTML = unsupportedNotice(method, Object.keys(METHOD_CONFIGS));
+    this.container.dispatchEvent(new CustomEvent('data-unsupported', {
+      bubbles: true,
+      composed: true,
+      detail: { method }
+    }));
   }
 
   initDiagnosticsSection() {
@@ -160,10 +175,15 @@ export class ViewerShell {
     }
   }
 
-  // Core API: load a parsed HyPhy result JSON. A method without a viewer of its
-  // own falls back to the mounted config, or to FEL when nothing is mounted yet.
+  // Core API: load a parsed HyPhy result JSON. A result whose method is not
+  // recognized falls back to the mounted config, or to FEL when nothing is mounted
+  // yet; a recognized method without a viewer gets a notice instead of a report.
   load(json) {
-    const config = configForResult(json) || this.config || methodConfig('fel');
+    const { method, config } = resolveConfig(json, this.config || methodConfig('fel'));
+    if (!config) {
+      this.showUnsupported(method);
+      return;
+    }
     if (config !== this.config) this.mount(config);
     this.data = new config.Parser(json);
 

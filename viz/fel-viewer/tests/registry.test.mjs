@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { METHOD_CONFIGS, methodConfig, configForResult } from '../src/methods/registry.js';
+import { METHOD_CONFIGS, methodConfig, configForResult, resolveConfig } from '../src/methods/registry.js';
 
 const FIXTURES = new URL('../../../parity/viewer/fixtures/', import.meta.url);
 const noFixtures = !existsSync(FIXTURES) && 'parity fixtures are not in this checkout';
@@ -37,6 +37,16 @@ test('FEL and MEME results get their own config, v3 or legacy', { skip: noFixtur
 test('results of methods without a viewer get no config', () => {
   assert.equal(configForResult({ analysis: { id: 'busted' } }), null);
   assert.equal(configForResult({}), null);
+});
+
+test('only unrecognized results fall back; a recognized method without a viewer does not', () => {
+  const fallback = METHOD_CONFIGS.meme;
+  assert.deepEqual(resolveConfig({ analysis: { id: 'busted' } }, fallback), { method: 'busted', config: null });
+  assert.deepEqual(resolveConfig({ analysis: { info: 'Directional FEL detects site-level selection' } }, fallback),
+    { method: 'dfel', config: null });
+  assert.deepEqual(resolveConfig({ grid: [], posterior: {} }, fallback), { method: 'fubar', config: null });
+  assert.deepEqual(resolveConfig({ analysis: { id: 'fel' } }, fallback), { method: 'fel', config: METHOD_CONFIGS.fel });
+  assert.deepEqual(resolveConfig({ something: 'else' }, fallback), { method: null, config: fallback });
 });
 
 test('diagnostics name the method and list the MG94 fit', () => {
