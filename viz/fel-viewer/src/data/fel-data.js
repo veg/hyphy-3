@@ -1,5 +1,24 @@
 import { translateCodon, getRateSparkGlyphs } from './genetic-code.js';
 
+// HyPhy 2.5 column order of each legacy site table. hyphy3 --legacy-json writes MEME's
+// MLE.headers as an object, whose keys come out alphabetized while the content rows keep this
+// order, so object-form headers are mapped back through the matching layout.
+const LEGACY_COLUMN_LAYOUTS = [
+  ['alpha', 'beta', 'alpha=beta', 'LRT', 'p-value', 'Total branch length'],
+  ['&alpha;', '&beta;<sup>1</sup>', 'p<sup>1</sup>', '&beta;<sup>+</sup>', 'p<sup>+</sup>', 'LRT', 'p-value',
+   '# branches under selection', 'Total branch length', 'MEME LogL', 'FEL LogL', 'LRT MEME vs FEL',
+   'FEL &alpha;', 'FEL &beta;'],
+];
+
+function orderedLegacyHeaders(headers) {
+  if (Array.isArray(headers)) return headers.map(h => (Array.isArray(h) ? h[0] : h) || '');
+  if (!headers || typeof headers !== 'object') return [];
+  const keys = Object.keys(headers);
+  const layout = LEGACY_COLUMN_LAYOUTS.find(l => l.length === keys.length && l.every(name => name in headers));
+  if (!layout) throw new Error('Unrecognized legacy site-table headers; column order cannot be determined');
+  return layout;
+}
+
 export class FELData {
   constructor(json) {
     this.raw = json;
@@ -41,10 +60,10 @@ export class FELData {
       aId === 'meme' ||
       aInfo.includes('meme') ||
       !!json.site_results?.data?.beta_plus ||
-      (json.MLE?.headers && json.MLE.headers.some(h => {
-        const name = (h[0] || '').toLowerCase();
+      orderedLegacyHeaders(json.MLE?.headers).some(h => {
+        const name = h.toLowerCase();
         return name.includes('beta') && (name.includes('+') || name.includes('2') || name.includes('plus'));
-      }))
+      })
     );
     
     this.analysisType = isContrastData ? 'contrast-fel' : (isMemeData ? 'meme' : 'fel');
@@ -277,7 +296,7 @@ export class FELData {
     this.treeNewick = input.trees?.[0] || '';
 
     // Legacy site content
-    const headers = j.MLE?.headers || [];
+    const headers = orderedLegacyHeaders(j.MLE?.headers);
     let content = j.MLE?.content?.['by-site']?.['0'] || j.MLE?.content?.['0'] || [];
     if (!content.length && j.MLE?.content) {
       const firstKey = Object.keys(j.MLE.content)[0];
@@ -287,8 +306,8 @@ export class FELData {
     }
 
     const colIdx = {};
-    headers.forEach((h, idx) => {
-      const raw = (h[0] || '').toLowerCase();
+    headers.forEach((name, idx) => {
+      const raw = name.toLowerCase();
       colIdx[raw] = idx;
       if (raw.includes('alpha') && !raw.includes('fel') && colIdx['alpha'] === undefined) colIdx['alpha'] = idx;
       if ((raw === 'lrt' || (raw.includes('lrt') && !raw.includes('fel'))) && colIdx['lrt'] === undefined) colIdx['lrt'] = idx;
