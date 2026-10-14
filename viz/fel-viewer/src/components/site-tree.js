@@ -3,6 +3,8 @@
 
 import { translateCodon, SELECTION_COLORS } from '../data/genetic-code.js';
 import { PALETTE, withAlpha } from '../data/palette.js';
+import { formatEBF } from '../core/format.js';
+import { downloadSVG } from '../core/export.js';
 
 export class SiteTree {
   constructor(container, options = {}) {
@@ -324,14 +326,6 @@ export class SiteTree {
     svg += `  <circle cx="${tree.x}" cy="${tree.y}" r="4" fill="${PALETTE.ink}"/>\n`;
     svg += `  <text x="${tree.x - 8}" y="${tree.y}" text-anchor="end" class="tree-leaf-mono" fill="${PALETTE.stone}" dominant-baseline="middle">Root: ${rootCodon} (${rootAA})</text>\n`;
 
-    const formatEBF = (val) => {
-      if (val == null) return '—';
-      if (val >= 10000) return '≥10k';
-      if (val >= 1000) return `${(val / 1000).toFixed(1)}k`;
-      if (val >= 100) return val.toFixed(0);
-      return val.toFixed(1);
-    };
-
     // 2. Draw Branches & Nodes (Recursive)
     const drawBranches = (n) => {
       if (!n.children || n.children.length === 0) {
@@ -394,7 +388,7 @@ export class SiteTree {
           const mutLabel = isSyn
             ? `${c.event.parent_aa}→${c.event.child_aa} (syn)`
             : `${c.event.parent_aa}→${c.event.child_aa}${c.event.nt_distance > 1 ? '⚡' : ''}`;
-          const label = isEBF ? `${mutLabel} • ⚡ EBF ${formatEBF(ebf)}` : mutLabel;
+          const label = isEBF ? `${mutLabel} • ⚡ EBF ${formatEBF(ebf, '≥10k')}` : mutLabel;
           const bW = Math.max(48, label.length * 6.5 + 10);
 
           badgeHtml = `
@@ -406,7 +400,7 @@ export class SiteTree {
         } else if (isEBF) {
           branchClass += ' tree-branch-ebf';
           const midX = (n.x + c.x) / 2;
-          const label = `⚡ EBF ${formatEBF(ebf)}`;
+          const label = `⚡ EBF ${formatEBF(ebf, '≥10k')}`;
           const bW = Math.max(48, label.length * 6.5 + 10);
 
           badgeHtml = `
@@ -433,12 +427,6 @@ export class SiteTree {
 
   exportSVG() {
     if (!this.currentSVG) return;
-    const blob = new Blob([this.currentSVG], { type: 'image/svg+xml;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.download = `hyphy_site_${this.site}_phylogeny.svg`;
-    link.href = url;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadSVG(this.currentSVG, `hyphy_site_${this.site}_phylogeny.svg`);
   }
 }

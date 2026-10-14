@@ -6,6 +6,7 @@ import { KpiBar } from './components/kpi-bar.js';
 import { EvidencePlot } from './components/evidence-plot.js';
 import { CandidatesTable } from './components/candidates-table.js';
 import { SiteDrawer } from './components/site-drawer.js';
+import { formatOmegaInf } from './core/format.js';
 
 export class HyPhyFELViewer {
   constructor(container, options = {}) {
@@ -126,7 +127,7 @@ export class HyPhyFELViewer {
       </div>
       <div class="diag-item">
         <span class="diag-lbl">${isMeme ? 'Taxa / Sequences' : 'Global Mean dN/dS (ω)'}</span>
-        <span class="diag-val font-mono">${isMeme ? this.data.numTaxa : (this.data.globalOmega >= 100 ? '∞' : this.data.globalOmega.toFixed(3))}</span>
+        <span class="diag-val font-mono">${isMeme ? this.data.numTaxa : formatOmegaInf(this.data.globalOmega, 3)}</span>
       </div>
     `;
 

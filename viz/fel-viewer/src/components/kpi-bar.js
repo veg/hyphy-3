@@ -1,6 +1,8 @@
 // KPI Summary Bar & Reactive Threshold Controller
 // Dieter Rams / Braun Industrial aesthetic: clean cards, tactile presets, reactive slider
 
+import { formatThreshold, formatOmegaInf } from '../core/format.js';
+
 export class KpiBar {
   constructor(container, options = {}) {
     this.container = container;
@@ -88,7 +90,7 @@ export class KpiBar {
 
   setThreshold(p, triggerCallback = false) {
     this.threshold = p;
-    this.display.textContent = `p ≤ ${p.toFixed(p < 0.01 ? 3 : 2)}`;
+    this.display.textContent = `p ≤ ${formatThreshold(p)}`;
 
     // Update active preset button highlight
     this.presetBtns.forEach(btn => {
@@ -136,7 +138,7 @@ export class KpiBar {
       const purLabel = this.el.querySelector('#kpi-pur .kpi-label');
       purLabel.textContent = 'Neutral / Pervasive';
     } else {
-      omegaVal.textContent = omega >= 100 ? '∞' : omega.toFixed(2);
+      omegaVal.textContent = formatOmegaInf(omega);
       if (omega < 0.2) {
         omegaSub.textContent = 'Strong Purifying Constraint';
       } else if (omega < 0.7) {
@@ -163,7 +165,7 @@ export class KpiBar {
 
     if (this.data.isMEME) {
       divVal.textContent = `▲ ${stats.diversifying}`;
-      divSub.textContent = `${pctDiv}% of sites (p ≤ ${this.threshold < 0.01 ? this.threshold.toFixed(3) : this.threshold.toFixed(2)})`;
+      divSub.textContent = `${pctDiv}% of sites (p ≤ ${formatThreshold(this.threshold)})`;
 
       purVal.textContent = `${stats.neutral}`;
       purVal.className = 'kpi-value';

@@ -2,6 +2,8 @@
 // Dieter Rams minimalist data table with category pills, rate sparkbars, live search, and CSV export
 
 import { PALETTE } from '../data/palette.js';
+import { formatPValue, formatThreshold, formatOmegaInf } from '../core/format.js';
+import { downloadCSV, csvQuote } from '../core/export.js';
 
 export class CandidatesTable {
   constructor(container, options = {}) {
@@ -209,7 +211,7 @@ export class CandidatesTable {
 
     const filtered = this.data.getFilteredSites(this.threshold, this.filterType, this.searchQuery);
     const stats = this.data.getStats(this.threshold);
-    const threshStr = (this.threshold < 0.01 ? this.threshold.toFixed(3) : this.threshold.toFixed(2));
+    const threshStr = formatThreshold(this.threshold);
 
     // Update Subtitle
     if (this.data.isMEME) {
@@ -281,7 +283,7 @@ export class CandidatesTable {
       const isDiv = this.data.isMEME ? isSig : (isSig && r.beta > r.alpha);
       const isPur = !this.data.isMEME && isSig && r.alpha > r.beta;
 
-      const pStr = r.pValue < 0.0001 ? r.pValue.toExponential(2) : r.pValue.toFixed(4);
+      const pStr = formatPValue(r.pValue);
       const historyStr = r.history || (r.events?.length ? `${r.events.length} events` : '—');
 
       if (this.data.isMEME) {
@@ -329,7 +331,7 @@ export class CandidatesTable {
         const maxRate = Math.max(0.1, r.alpha + r.beta);
         const alphaPct = Math.round((r.alpha / maxRate) * 100);
         const betaPct = Math.round((r.beta / maxRate) * 100);
-        const omegaStr = r.omega >= 100 ? '∞' : r.omega.toFixed(2);
+        const omegaStr = formatOmegaInf(r.omega);
 
         html += `
           <tr data-site="${r.site}" class="${isSelected ? 'row-selected' : ''}">
@@ -409,8 +411,8 @@ export class CandidatesTable {
           r.lrt.toFixed(4),
           r.pValue,
           isSig ? 'Episodic Diversifying' : 'Neutral',
-          `"${(r.history || '').replace(/"/g, '""')}"`
-        ].join(',');
+          csvQuote(r.history)
+        ];
       } else {
         const isDiv = isSig && r.beta > r.alpha;
         const isPur = isSig && r.alpha > r.beta;
@@ -423,18 +425,11 @@ export class CandidatesTable {
           r.lrt.toFixed(4),
           r.pValue,
           regime,
-          `"${(r.history || '').replace(/"/g, '""')}"`
-        ].join(',');
+          csvQuote(r.history)
+        ];
       }
     });
 
-    const csvContent = [headers.join(','), ...rows].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.download = `hyphy_${isMEME ? 'meme' : 'fel'}_candidates_${this.filterType}.csv`;
-    link.href = url;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadCSV(headers, rows, `hyphy_${isMEME ? 'meme' : 'fel'}_candidates_${this.filterType}.csv`);
   }
 }

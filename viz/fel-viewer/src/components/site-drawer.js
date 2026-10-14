@@ -4,6 +4,7 @@
 import { SiteTree } from './site-tree.js';
 import { translateCodon } from '../data/genetic-code.js';
 import { PALETTE, withAlpha } from '../data/palette.js';
+import { formatEBF, formatOmegaInf, formatPValue } from '../core/format.js';
 
 export class SiteDrawer {
   constructor(container, options = {}) {
@@ -138,14 +139,6 @@ export class SiteDrawer {
     const r = this.data.getSite(siteNumber);
     if (!r) return;
 
-function formatEBF(val) {
-  if (val == null) return '—';
-  if (val >= 10000) return '≥10,000';
-  if (val >= 1000) return `${(val / 1000).toFixed(1)}k`;
-  if (val >= 100) return val.toFixed(0);
-  return val.toFixed(1);
-}
-
     this.currentSite = siteNumber;
     if (activeTab) {
       this.setTab(activeTab);
@@ -168,8 +161,8 @@ function formatEBF(val) {
       this.regimeBadge.textContent = this.data.isMEME ? 'Neutral / Constrained' : 'Neutral Evolution';
     }
 
-    const omegaStr = r.omega >= 100 ? '∞' : r.omega.toFixed(2);
-    const pStr = r.pValue < 0.0001 ? r.pValue.toExponential(3) : r.pValue.toFixed(4);
+    const omegaStr = formatOmegaInf(r.omega);
+    const pStr = formatPValue(r.pValue, 3);
 
     // Get substitution events
     const events = r.events || this.data.eventsBySite[r.site] || [];

@@ -2,6 +2,8 @@
 // Pure HTML5 Canvas with Retina scaling, responsive resize, threshold guide, hover tooltips, and click inspection
 
 import { PALETTE } from '../data/palette.js';
+import { formatPValue, formatThreshold, formatOmegaInf } from '../core/format.js';
+import { downloadPNG, downloadSVG } from '../core/export.js';
 
 export class EvidencePlot {
   constructor(container, options = {}) {
@@ -215,7 +217,7 @@ export class EvidencePlot {
       selBadge = '<span class="tip-badge tip-pur">▼ Purifying Selection</span>';
     }
 
-    const pStr = r.pValue < 0.0001 ? r.pValue.toExponential(2) : r.pValue.toFixed(4);
+    const pStr = formatPValue(r.pValue);
     const subStr = r.history ? `<div class="tip-row tip-sub"><span class="tip-lbl">Substitutions:</span> <span class="tip-val-sub">${r.history}</span></div>` : '';
 
     let statsRows = '';
@@ -232,7 +234,7 @@ export class EvidencePlot {
         <div class="tip-row"><span class="tip-lbl">Branches:</span> <span class="tip-val font-mono">${branches} (EBF≥100)</span></div>
       `;
     } else {
-      const omegaStr = r.omega >= 100 ? '∞' : r.omega.toFixed(2);
+      const omegaStr = formatOmegaInf(r.omega);
       statsRows = `
         <div class="tip-row"><span class="tip-lbl">p-value:</span> <span class="tip-val font-mono">${pStr}</span></div>
         <div class="tip-row"><span class="tip-lbl">LRT:</span> <span class="tip-val font-mono">${r.lrt.toFixed(2)}</span></div>
@@ -425,7 +427,7 @@ export class EvidencePlot {
       ctx.fillStyle = PALETTE.accent;
       ctx.font = 'bold 9px "SF Mono", Monaco, monospace';
       ctx.textAlign = 'left';
-      ctx.fillText(`p = ${this.threshold.toFixed(this.threshold < 0.01 ? 3 : 2)}`, padLeft + 6, threshY - 6);
+      ctx.fillText(`p = ${formatThreshold(this.threshold)}`, padLeft + 6, threshY - 6);
 
       // If signed, draw negative threshold line for purifying
       if (this.plotMode === 'signed') {
@@ -547,10 +549,7 @@ export class EvidencePlot {
   }
 
   exportPNG() {
-    const link = document.createElement('a');
-    link.download = `hyphy_fel_evidence_plot.png`;
-    link.href = this.canvas.toDataURL('image/png');
-    link.click();
+    downloadPNG(this.canvas, 'hyphy_fel_evidence_plot.png');
   }
 
   exportSVG() {
@@ -595,12 +594,6 @@ export class EvidencePlot {
     }
 
     svg += `</svg>`;
-    const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.download = `hyphy_fel_evidence_plot.svg`;
-    link.href = url;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadSVG(svg, 'hyphy_fel_evidence_plot.svg');
   }
 }
