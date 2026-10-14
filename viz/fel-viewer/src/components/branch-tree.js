@@ -11,10 +11,15 @@
 //   labelColor               defaults to the stroke
 // node is the parsed Newick node ({ name, tag, children, parent }) and meta is
 // nodeMeta[node.name]. Unset fields fall back to a plain ink branch.
+//
+// The hovered branch and the selected branch both draw in the hover colour. Hover follows
+// the pointer (or highlight(name) from a linked view); the selection is set by a click or
+// select(name) and stays until the next one. The tree redraws whenever its container's
+// width changes, so a tree built inside a hidden tab draws once the tab is shown.
 
 import { PALETTE } from '../data/palette.js';
 import { parseNewick, lengthFrom } from '../core/newick.js';
-import { downloadPNG, downloadSVG } from '../core/export.js';
+import { downloadPNG, downloadSVG, escapeSvgText } from '../core/export.js';
 
 const BRANCH_TREE_FONT = '-apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif';
 
@@ -66,10 +71,6 @@ export function branchTreeLayout(root, options = {}) {
   return { root, nodes, leaves, maxDepth, cladogram: byEdges };
 }
 
-function escapeSvgText(text) {
-  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 export class BranchTree {
   constructor(container, options = {}) {
     this.container = container;
@@ -81,6 +82,7 @@ export class BranchTree {
       ladderize: true,
       cladogram: false,
       internalLabels: false,    // draw internal node names next to their connector
+      leafLabel: null,          // (node, meta) => leaf text; defaults to the node name
       exportName: 'branch-tree',
       onSelect: null,           // (name, node) on click
       onHover: null             // (name, node), or (null, null) when the pointer leaves
@@ -103,9 +105,19 @@ export class BranchTree {
     this.nodesByName = {};
     this.edges = [];
     this.hovered = null;
+    this.selected = null;
     this.width = 0;
 
     this.setupEvents();
+    this.resizeObserver = new ResizeObserver(() => {
+      const width = this.container.clientWidth;
+      if (width !== this.width) this.resize(width);
+    });
+    this.resizeObserver.observe(this.container);
+  }
+
+  destroy() {
+    this.resizeObserver.disconnect();
   }
 
   setTree(newick, nodeMeta = {}) {
@@ -122,6 +134,7 @@ export class BranchTree {
       if (node.name) this.nodesByName[node.name] = node;
     }
     this.hovered = null;
+    this.selected = this.nodesByName[this.selected?.name] || null;
     this.resize(this.width || this.container.clientWidth);
   }
 
@@ -144,9 +157,20 @@ export class BranchTree {
     this.render();
   }
 
+  // Transient emphasis from a linked view; the next pointer move replaces it
   highlight(name) {
     this.hovered = (name && this.nodesByName[name]) || null;
     this.render();
+  }
+
+  // Persistent emphasis: survives hover until the next select or click
+  select(name) {
+    this.selected = (name && this.nodesByName[name]) || null;
+    this.render();
+  }
+
+  leafLabel(node) {
+    return this.options.leafLabel ? this.options.leafLabel(node, this.nodeMeta[node.name]) : node.name;
   }
 
   // The canvas is as tall as the tree needs; the container scrolls if it must
@@ -168,7 +192,7 @@ export class BranchTree {
     return `${bold ? 'bold ' : ''}${px}px ${BRANCH_TREE_FONT}`;
   }
 
-  // Lines, texts and dots for the current width and hover state. Also refreshes the
+  // Lines, texts and dots for the current width, hover and selection. Also refreshes the
   // hit-test edges: one per branch, reaching past the leaf label for leaves.
   scene() {
     const { nodes, leaves, maxDepth, root } = this.layout;
@@ -176,7 +200,7 @@ export class BranchTree {
     const hover = this.options.hoverColor;
 
     this.ctx.font = this.font(font, true);
-    const labelW = leaves.reduce((max, leaf) => Math.max(max, this.ctx.measureText(leaf.name).width), 0) + 8;
+    const labelW = leaves.reduce((max, leaf) => Math.max(max, this.ctx.measureText(this.leafLabel(leaf)).width), 0) + 8;
     const treeW = Math.max(this.width - padX * 2 - labelW, 40);
     const x = depth => padX + (depth / maxDepth) * treeW;
     const y = row => padY + row * rowHeight + rowHeight / 2;
@@ -187,7 +211,7 @@ export class BranchTree {
     this.edges = [];
 
     for (const node of nodes) {
-      const hovered = node === this.hovered;
+      const hovered = node === this.hovered || node === this.selected;
       const ny = y(node.row);
       const nx = x(node.depth);
 
@@ -221,7 +245,7 @@ export class BranchTree {
                        fill: hovered ? hover : PALETTE.stone, align: 'left', baseline: 'bottom' });
         }
       } else {
-        texts.push({ x: nx + 6, y: ny, text: node.name, size: font, bold: hovered,
+        texts.push({ x: nx + 6, y: ny, text: this.leafLabel(node), size: font, bold: hovered,
                      fill: hovered ? hover : PALETTE.ink, align: 'left', baseline: 'middle' });
       }
     }
@@ -326,9 +350,10 @@ export class BranchTree {
     this.canvas.addEventListener('mouseleave', () => this.setHovered(null));
 
     this.canvas.addEventListener('click', () => {
-      if (this.hovered && this.options.onSelect) {
-        this.options.onSelect(this.hovered.name, this.hovered);
-      }
+      if (!this.hovered) return;
+      this.selected = this.hovered;
+      this.render();
+      if (this.options.onSelect) this.options.onSelect(this.hovered.name, this.hovered);
     });
   }
 }

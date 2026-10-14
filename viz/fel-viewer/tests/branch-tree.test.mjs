@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseNewick, lengthFrom } from '../src/core/newick.js';
-import { branchTreeLayout } from '../src/components/branch-tree.js';
+import { BranchTree, branchTreeLayout } from '../src/components/branch-tree.js';
+import { FakeElement } from './fake-dom.mjs';
 import { nextSignificantSite } from '../src/components/overview-brush.js';
 
 const v3Newick = '((Pig{G2}:0,Cow{G2}:0,Horse:0)Node3{G2}:0,Rat{G3}:0,Mouse:0)END;';
@@ -74,4 +75,91 @@ test('nextSignificantSite steps forward and back with wrap-around', () => {
   assert.equal(nextSignificantSite(sites, 5, -1), 40);
   assert.equal(nextSignificantSite(sites, 0, -1), 40);
   assert.equal(nextSignificantSite([], 3, 1), null);
+});
+
+// A BranchTree over fake DOM: canvases get a context that measures 6px per character, and
+// each ResizeObserver is kept so a test can fire it
+function treeHarness(width) {
+  const observers = [];
+  globalThis.window = {};
+  globalThis.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; observers.push(this); }
+    observe(el) { this.target = el; }
+    disconnect() { this.disconnected = true; }
+  };
+  globalThis.document = {
+    createElement: () => Object.assign(new FakeElement(), {
+      append() {},
+      getContext: () => new Proxy({}, {
+        get: (target, key) => (key === 'measureText' ? (text) => ({ width: String(text).length * 6 }) : () => {}),
+        set: () => true
+      }),
+      getBoundingClientRect: () => ({ left: 0, top: 0 })
+    })
+  };
+  const container = new FakeElement();
+  container.clientWidth = width;
+  return { container, observers };
+}
+
+const emphasised = (tree, name) => tree.scene().texts.find(t => t.text === name).bold;
+
+test('a selected branch stays emphasised through hover and pointer leave', () => {
+  const { container } = treeHarness(400);
+  const selected = [];
+  const tree = new BranchTree(container, { lengthKey: 'full_adaptive', onSelect: name => selected.push(name) });
+  tree.setTree(v3Newick, v3Nodes);
+  tree.scene();
+  const pig = tree.edges.find(e => e.node.name === 'Pig');
+  tree.canvas.fire('mousemove', { clientX: pig.x1 - 2, clientY: pig.y });
+  tree.canvas.fire('click');
+  assert.deepEqual(selected, ['Pig']);
+
+  const rat = tree.edges.find(e => e.node.name === 'Rat');
+  tree.canvas.fire('mousemove', { clientX: rat.x1 - 2, clientY: rat.y });
+  assert.equal(emphasised(tree, 'Rat'), true);
+  assert.equal(emphasised(tree, 'Pig'), true);
+  tree.canvas.fire('mouseleave');
+  tree.highlight(null);
+  assert.equal(emphasised(tree, 'Rat'), false);
+  assert.equal(emphasised(tree, 'Pig'), true);
+
+  tree.select('Cow');
+  assert.equal(emphasised(tree, 'Pig'), false);
+  assert.equal(emphasised(tree, 'Cow'), true);
+  tree.setTree(v3Newick, v3Nodes);
+  assert.equal(tree.selected.name, 'Cow');
+});
+
+test('leaf labels come from the accessor; hit testing still uses node names', () => {
+  const { container } = treeHarness(400);
+  const meta = Object.assign({}, v3Nodes, { Pig: { ...v3Nodes.Pig, original_name: 'Sus scrofa' } });
+  const tree = new BranchTree(container, {
+    lengthKey: 'full_adaptive',
+    leafLabel: (node, m) => m?.original_name ?? node.name
+  });
+  tree.setTree(v3Newick, meta);
+  const texts = tree.scene().texts.map(t => t.text);
+  assert.ok(texts.includes('Sus scrofa'));
+  assert.ok(!texts.includes('Pig'));
+  assert.ok(tree.svg().includes('>Sus scrofa</text>'));
+  tree.select('Pig');
+  assert.equal(emphasised(tree, 'Sus scrofa'), true);
+});
+
+test('a tree built while hidden draws once its container gets a width', () => {
+  const { container, observers } = treeHarness(0);
+  const tree = new BranchTree(container, { lengthKey: 'full_adaptive' });
+  tree.setTree(v3Newick, v3Nodes);
+  assert.equal(tree.width, 0);
+  assert.equal(observers[0].target, container);
+
+  container.clientWidth = 320;
+  observers[0].callback();
+  assert.equal(tree.width, 320);
+  assert.equal(tree.canvas.style.width, '320px');
+  assert.equal(tree.edges.length, 6);
+
+  tree.destroy();
+  assert.equal(observers[0].disconnected, true);
 });

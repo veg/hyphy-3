@@ -46,7 +46,7 @@ export class EvidenceBand {
       ruleLabel: null,           // t => text; defaults to 'p = t' or 'P ≥ t'
       label: null,               // y caption, or [above zero, below zero] for a two-sided band
       shape: 'triangle',         // 'triangle' | 'dot'
-      tooltip: null              // (row, track) => HTML
+      tooltip: null              // (row, track, point) => HTML; point.series is 1 below zero
     }, options);
     this.points = [];
   }
@@ -143,13 +143,14 @@ export class EvidenceBand {
     ctx.restore();
   }
 
-  // Screen points for every plotted value, in row order (a mirrored row gives two)
+  // Screen points for every plotted value, in row order (a mirrored row gives two:
+  // series 0 above zero, series 1 below)
   computePoints(frame, track) {
     const points = [];
     const series = [[this.options, 1]];
     if (this.mirrored) series.push([this.options.mirror, -1]);
     for (const r of track.rows) {
-      for (const [s, sign] of series) {
+      for (const [index, [s, sign]] of series.entries()) {
         const v = s.value(r, track);
         if (v == null) continue;
         const yVal = sign * v;
@@ -159,11 +160,19 @@ export class EvidenceBand {
           y: frame.scaleY(yVal),
           yVal,
           raw: r,
+          series: index,
           tone: s.tone(r, track)
         });
       }
     }
     return points;
+  }
+
+  // The one point the selection ring goes on: the selected site's point in the series the
+  // selection came from, or its first point
+  selectedPoint(track) {
+    const candidates = this.points.filter(p => p.site === track.selectedSite);
+    return candidates.find(p => p.series === track.selectedSeries) ?? candidates[0] ?? null;
   }
 
   drawRules(ctx, frame, track) {
@@ -182,9 +191,10 @@ export class EvidenceBand {
     const order = this.points.slice().sort((a, b) =>
       (EVIDENCE_TONE_ORDER[a.tone] ?? 0) - (EVIDENCE_TONE_ORDER[b.tone] ?? 0));
     const zeroY = frame.scaleY(0);
+    const selected = this.selectedPoint(track);
 
     for (const pt of order) {
-      const isSelected = (track.selectedSite === pt.site);
+      const isSelected = (pt === selected);
       const isHovered = (track.hoveredSite === pt.site);
       if (this.mirrored) this.drawStem(ctx, pt, zeroY);
       if (this.options.shape === 'dot') {
@@ -259,8 +269,8 @@ export class EvidenceBand {
     ctx.fill();
   }
 
-  tooltip(row, track) {
-    return this.options.tooltip?.(row, track) ?? '';
+  tooltip(row, track, point) {
+    return this.options.tooltip?.(row, track, point) ?? '';
   }
 
   svg(frame, track) {

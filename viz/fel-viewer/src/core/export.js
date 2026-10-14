@@ -19,6 +19,11 @@ export function downloadPNG(canvas, filename) {
   clickDownload(canvas.toDataURL('image/png'), filename);
 }
 
+// Text for an SVG text node or attribute
+export function escapeSvgText(text) {
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 export function downloadSVG(svg, filename) {
   downloadBlob(svg, 'image/svg+xml;charset=utf-8', filename);
 }

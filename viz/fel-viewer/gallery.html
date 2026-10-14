@@ -18,6 +18,11 @@
     fixture when it has them): its columns come from the file's declared columns, some
     start hidden behind the column chooser, and the drawer steps through the visible rows.
     The virtual table draws 5000 synthetic rows a window at a time.
+    Site tracks with stacked, clickable bands load &prime=<PRIME v3 JSON> and
+    &contrast=<Contrast-FEL v3 JSON> (MatrixBand: click a row label to focus it, a cell to
+    select its site), &gard=<GARD v3 JSON> (SegmentBand: click a segment) and
+    &slac=<SLAC v3 JSON> (mirrored EvidenceBand: the series under the pointer is picked by y).
+    The hidden tab holds a BranchTree built while display:none; showing the tab draws it. Clicking a branch in the full tree selects it in the mini tree.
   -->
   <link rel="stylesheet" href="src/styles/viewer.css" />
   <style>
@@ -83,6 +88,10 @@
     .gallery-card-head .seg-btn {
       font-size: 10px;
     }
+    .gallery-track-tall .evidence-canvas-container {
+      height: 340px;
+    }
+
   </style>
 </head>
 <body>
@@ -105,6 +114,39 @@
       <div class="gallery-card-head"><span>BranchTree · mini</span></div>
       <div id="tree-mini"></div>
     </div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head">
+      <span>BranchTree · built inside a hidden tab, leaf labels from an accessor</span>
+      <button type="button" class="plot-tool-btn" id="tree-tab-btn">Show tab</button>
+    </div>
+    <div id="tree-hidden" hidden></div>
+    <div class="gallery-note" id="hidden-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>SiteTrackCanvas · MatrixBand, PRIME property × site λ (click a label to focus a property)</span></div>
+    <div id="track-prime" class="gallery-track-tall"></div>
+    <div class="gallery-note" id="prime-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>SiteTrackCanvas · MatrixBand, Contrast-FEL relative β by set, muted background row</span></div>
+    <div id="track-contrast" class="gallery-track-tall"></div>
+    <div class="gallery-note" id="contrast-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>SiteTrackCanvas · SegmentBand, GARD segments and breakpoints (click a segment)</span></div>
+    <div id="track-gard"></div>
+    <div class="gallery-note" id="gard-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>SiteTrackCanvas · mirrored EvidenceBand, SLAC (series picked by pointer y)</span></div>
+    <div id="track-slac"></div>
+    <div class="gallery-note" id="slac-note"></div>
   </div>
 
   <div class="gallery-card">
@@ -154,6 +196,10 @@
     import { Drawer } from './src/components/drawer.js';
     import { BranchTree } from './src/components/branch-tree.js';
     import { OverviewBrush } from './src/components/overview-brush.js';
+    import { SiteTrackCanvas } from './src/components/site-track.js';
+    import { EvidenceBand } from './src/components/evidence-band.js';
+    import { MatrixBand } from './src/components/matrix-band.js';
+    import { SegmentBand } from './src/components/segment-band.js';
     import { PALETTE } from './src/data/palette.js';
     import { formatPValue, formatThreshold } from './src/core/format.js';
 
@@ -202,8 +248,8 @@
 
       const full = new BranchTree(document.getElementById('tree-full'), {
         lengthKey, style, exportName: 'gallery-tree',
-        onHover: name => { note.textContent = name ? `hover: ${name}` : ''; },
-        onSelect: name => { mini.highlight(name); }
+        onHover: name => { note.textContent = name ? `hover: ${name}` : `selected: ${full.selected?.name ?? 'none'}`; },
+        onSelect: name => { mini.select(name); }
       });
       const mini = new BranchTree(document.getElementById('tree-mini'), { lengthKey, style, mini: true });
       full.setLegend([
@@ -216,9 +262,237 @@
       mini.setTree(phylogeny.newick, nodes);
       note.textContent = `branch lengths: ${lengthKey || 'newick'}`;
 
+      showHiddenTree(phylogeny, nodes, lengthKey);
       document.getElementById('tree-svg').addEventListener('click', () => full.exportSVG());
       document.getElementById('tree-png').addEventListener('click', () => full.exportPNG());
       return [full, mini];
+    }
+
+    // Built while its tab is display:none, so the container has no width yet; the tree's
+    // ResizeObserver draws it when the tab is shown. Significant leaves carry their Holm p.
+    function showHiddenTree(phylogeny, nodes, lengthKey) {
+      const note = document.getElementById('hidden-note');
+      const tab = document.getElementById('tree-hidden');
+      const tree = new BranchTree(tab, {
+        lengthKey,
+        mini: true,
+        leafLabel: (node, meta) => (meta?.is_positive ? `${node.name} · Holm p ${formatPValue(meta.corrected_p_value)}` : node.name)
+      });
+      tree.setTree(phylogeny.newick, nodes);
+      note.textContent = `built at width ${tree.width}`;
+      document.getElementById('tree-tab-btn').addEventListener('click', () => {
+        tab.hidden = !tab.hidden;
+        // The observer runs after the next layout, so read the width a frame later
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          note.textContent = `built at width 0; ${tab.hidden ? 'hidden' : `drawn at ${tree.width}px once shown`}`;
+        }));
+      });
+    }
+
+    const columnRows = table => {
+      const ids = Object.keys(table.data);
+      return table.data[ids[0]].map((_, i) => Object.fromEntries(ids.map(id => [id, table.data[id][i]])));
+    };
+    const negLog10 = p => (p == null ? null : -Math.log10(Math.max(p, 1e-15)));
+    const tipRows = pairs => pairs.map(([label, value]) =>
+      `<div class="tip-row"><span class="tip-lbl">${label}:</span> <span class="tip-val font-mono">${value}</span></div>`).join('');
+    const tip = (title, pairs, hint) =>
+      `<div class="tip-header"><span class="tip-title">${title}</span></div><div class="tip-grid">${tipRows(pairs)}</div>${hint ? `<div class="tip-hint">${hint}</div>` : ''}`;
+
+    // PRIME: omnibus evidence over a property x site lambda matrix (lambda > 0 conserved in
+    // blue, < 0 changing in orange). A cell is outlined when its property passes stage 2,
+    // half strength at raw p <= 0.05. Focusing a property swaps the top band to its raw p.
+    const PRIME_SHORT = {
+      AlphaHelix_Propensity_ChouFasman: 'α-helix',
+      BetaSheet_Propensity_ChouFasman: 'β-sheet',
+      Hydrophobicity_KyteDoolittle: 'Hydro',
+      Isoelectric_Point_pI: 'pI',
+      Volume_Angstrom3: 'Volume'
+    };
+
+    function showPrimeTrack(json) {
+      const note = document.getElementById('prime-note');
+      const props = json.properties.map(p => ({ key: p.name, label: PRIME_SHORT[p.name] || p.name, title: p.description }));
+      const stage2 = (r, key, t) => r.omnibus_q_value <= t && r[`class_${key}`] !== 'Neutral';
+      const omnibusTone = (r, track) => {
+        const lambdas = props.filter(p => stage2(r, p.key, track.threshold)).map(p => r[`lambda_${p.key}`]);
+        if (lambdas.some(l => l < 0)) return 'div';
+        return lambdas.length ? 'pur' : null;
+      };
+      let focus = null;
+      const band = new EvidenceBand({
+        value: r => (r.nonsynonymous_substitutions ? negLog10(focus ? r[`p_${focus}`] : r.omnibus_p_value) : null),
+        tone: (r, track) => {
+          if (!focus) return omnibusTone(r, track);
+          if (r[`p_${focus}`] > 0.05) return null;
+          return r[`lambda_${focus}`] < 0 ? 'div' : 'pur';
+        },
+        rule: null,
+        shape: 'dot',
+        label: '−log₁₀ p',
+        tooltip: r => tip(`Codon #${r.site}`, [['omnibus p', formatPValue(r.omnibus_p_value)], ['omnibus q', formatPValue(r.omnibus_q_value)]],
+          'Click to select this site')
+      });
+      const matrix = new MatrixBand({
+        rows: props,
+        value: (r, row) => (r.nonsynonymous_substitutions ? r[`lambda_${row.key}`] : null),
+        emphasis: (r, row, track) => (stage2(r, row.key, track.threshold) ? 2 : (r[`p_${row.key}`] <= 0.05 ? 1 : 0)),
+        positive: PALETTE.purifying,
+        negative: PALETTE.accent,
+        tooltip: (r, row) => tip(`Codon #${r.site} · ${row.label}`, [
+          ['λ', r[`lambda_${row.key}`].toFixed(3)],
+          ['raw p', formatPValue(r[`p_${row.key}`])],
+          ['Holm p', formatPValue(r[`adj_p_${row.key}`])],
+          ['call', r[`class_${row.key}`]]
+        ]),
+        rowTooltip: row => tip(row.title, [], focus === row.key ? 'Click to return to the omnibus test' : 'Click to focus this property'),
+        onFocus: key => {
+          focus = key;
+          track.subLabel.textContent = key ? `−log₁₀ raw p for ${key}` : '−log₁₀ omnibus p';
+          note.textContent = `focus: ${key ?? 'omnibus'}; λ extent ±${matrix.extent(track).toFixed(2)} from the file`;
+        }
+      });
+      const track = new SiteTrackCanvas(document.getElementById('track-prime'), {
+        title: 'Property Constraint Landscape',
+        subtitle: '−log₁₀ omnibus p',
+        band,
+        stack: [matrix],
+        threshold: json.statistical_tests.site_level_summary.threshold,
+        sites: d => d.rows,
+        siteCount: d => d.rows.length,
+        exportName: 'gallery_prime',
+        onSiteSelect: (site, row) => { note.textContent = `site-select: ${site} (omnibus p ${formatPValue(row.omnibus_p_value)})`; },
+        onRegionHover: region => { if (region?.kind === 'row') note.textContent = `hover label: ${region.key}`; }
+      });
+      track.setData({ rows: columnRows(json.site_results) });
+      note.textContent = `${props.length} properties; λ extent ±${matrix.extent(track).toFixed(2)} from the file`;
+      return track;
+    }
+
+    // Contrast-FEL: per-set beta relative to the site's geometric-mean centre, clamped at
+    // 4-fold; columns of sites that fail the cutoff fade, invariant sites stay blank, and
+    // the background set (never tested) is muted
+    function showContrastTrack(json) {
+      const note = document.getElementById('contrast-note');
+      const nodes = Object.values(json.phylogeny.nodes);
+      const columns = json.site_results.data;
+      const groups = [...new Set(nodes.filter(n => n.is_testable).map(n => n.group))].filter(g => `beta_${g}` in columns).sort();
+      const branches = g => nodes.filter(n => n.group === g).length;
+      const rows = groups.map(g => ({ key: `beta_${g}`, label: `${g} · ${branches(g)} br` }));
+      if ('beta_background' in columns) rows.push({ key: 'beta_background', label: 'Background', muted: true });
+      const floor = b => Math.max(b, 1e-4);
+      const centre = r => Math.exp(groups.reduce((sum, g) => sum + Math.log(floor(r[`beta_${g}`])), 0) / groups.length);
+      const invariant = r => r.contrast_tag === 'Invariant';
+
+      const band = new EvidenceBand({
+        value: r => (invariant(r) ? null : negLog10(r.p_value)),
+        tone: (r, track) => (r.p_value <= track.threshold ? 'div' : null),
+        label: '−log₁₀ p',
+        tooltip: r => tip(`Codon #${r.site}`, [['p', formatPValue(r.p_value)], ['q', formatPValue(r.q_value)], ['call (run)', r.contrast_tag]])
+      });
+      const matrix = new MatrixBand({
+        rows,
+        value: (r, row) => (invariant(r) ? null : Math.log2(floor(r[row.key]) / centre(r))),
+        emphasis: (r, row, track) => (r.p_value <= track.threshold ? 2 : 0),
+        extent: 2,
+        tierOpacity: [0.2, 0.2, 1],
+        tooltip: (r, row) => tip(`Codon #${r.site} · ${row.label}`, [
+          ['β', r[row.key].toFixed(3)],
+          ['log₂ β / centre', Math.log2(floor(r[row.key]) / centre(r)).toFixed(2)],
+          ['p', formatPValue(r.p_value)]
+        ]),
+        onFocus: key => { note.textContent = `focus group: ${key ?? 'none'}`; }
+      });
+      const track = new SiteTrackCanvas(document.getElementById('track-contrast'), {
+        title: 'Contrast-FEL Set Strip',
+        subtitle: `−log₁₀ p; gallery cutoff p ≤ 0.25 so a few columns pass`,
+        band,
+        stack: [matrix],
+        gutter: 84,
+        threshold: 0.25,
+        sites: d => d.rows,
+        siteCount: d => d.rows.length,
+        exportName: 'gallery_contrast_fel',
+        onSiteSelect: (site, row) => { note.textContent = `site-select: ${site} (p ${formatPValue(row.p_value)})`; }
+      });
+      track.setData({ rows: columnRows(json.site_results) });
+      note.textContent = `sets: ${rows.map(r => r.label).join(', ')}`;
+      return track;
+    }
+
+    // GARD: model-averaged breakpoint support over the best model's segments. Support keys
+    // map to 1-based sites with the file's own offset (left segment end - breakpoint key).
+    function showGardTrack(json) {
+      const note = document.getElementById('gard-note');
+      const parts = json.partitions;
+      const best = json.model_selection.best_model_breakpoints;
+      const offset = best.length ? parts[0].end_site - best[0] : 1;
+      const rows = Object.entries(json.site_breakpoint_support)
+        .map(([key, w]) => ({ site: Number(key) + offset, w }))
+        .sort((a, b) => a.site - b.site);
+      const ranked = rows.slice().sort((a, b) => b.w - a.w);
+      const band = new EvidenceBand({
+        value: r => r.w,
+        tone: (r, track) => (r.w >= track.threshold ? 'div' : null),
+        domain: (all, track) => [0, Math.max(track.threshold, Math.max(...all.map(r => r.w)) * 1.1)],
+        ticks: 4,
+        tickFormat: v => v.toFixed(2),
+        rule: 'ge',
+        ruleLabel: t => `support ≥ ${formatThreshold(t)}`,
+        shape: 'dot',
+        label: 'support',
+        tooltip: r => tip(`Site ${r.site}`, [['support', r.w < 1e-3 ? r.w.toExponential(2) : r.w.toFixed(3)], ['rank', `${ranked.indexOf(r) + 1} of ${rows.length}`]])
+      });
+      const segments = new SegmentBand({ segments: d => d.segments });
+      new SiteTrackCanvas(document.getElementById('track-gard'), {
+        title: 'Breakpoint Map',
+        subtitle: 'model-averaged support by nucleotide site',
+        band,
+        stack: [segments],
+        threshold: 0.05,
+        sites: d => d.rows,
+        siteCount: d => d.sites,
+        exportName: 'gallery_gard',
+        onSiteSelect: site => { note.textContent = `site-select: ${site}`; },
+        onRegionSelect: region => {
+          note.textContent = `region-select: segment ${region.index + 1}, sites ${region.segment.start}–${region.segment.end}`;
+        }
+      }).setData({
+        rows,
+        sites: json.dataset.sites_count,
+        segments: parts.map(p => ({ key: p.partition_index, start: p.start_site, end: p.end_site }))
+      });
+      note.textContent = `${parts.length} segments, breakpoints ${best.join(', ') || 'none'}, support offset ${offset}`;
+    }
+
+    // SLAC: positive selection above zero, negative below; the selected series gets the ring
+    function showSlacTrack(json) {
+      const note = document.getElementById('slac-note');
+      const band = new EvidenceBand({
+        value: r => negLog10(r.p_positive),
+        tone: (r, track) => (r.p_positive <= track.threshold ? 'div' : null),
+        mirror: {
+          value: r => negLog10(r.p_negative),
+          tone: (r, track) => (r.p_negative <= track.threshold ? 'pur' : null)
+        },
+        label: ['more non-synonymous ▲', 'more synonymous ▼'],
+        tooltip: (r, track, point) => tip(`Codon #${r.site}`, point.series
+          ? [['p (negative)', formatPValue(r.p_negative)]]
+          : [['p (positive)', formatPValue(r.p_positive)]])
+      });
+      const track = new SiteTrackCanvas(document.getElementById('track-slac'), {
+        title: 'SLAC Two-Sided Evidence',
+        subtitle: '−log₁₀ p, positive above zero and negative below',
+        band,
+        threshold: 0.1,
+        sites: d => d.rows,
+        siteCount: d => d.rows.length,
+        exportName: 'gallery_slac',
+        onSiteSelect: (site, row) => {
+          note.textContent = `site-select: ${site}, ${track.selectedSeries ? `negative series, p ${formatPValue(row.p_negative)}` : `positive series, p ${formatPValue(row.p_positive)}`}`;
+        }
+      });
+      track.setData({ rows: columnRows(json.site_results) });
     }
 
     function showBrush(json) {
@@ -627,6 +901,11 @@
       const fixture = params.get('fixture');
       const branches = params.get('branches') || fixture;
       if (branches) showAbsrelShell(await fetchJSON(branches));
+      const tracks = { prime: showPrimeTrack, contrast: showContrastTrack, gard: showGardTrack, slac: showSlacTrack };
+      for (const [param, show] of Object.entries(tracks)) {
+        if (params.get(param)) show(await fetchJSON(params.get(param)));
+        else document.getElementById(`${param}-note`).textContent = `pass &${param}=<v3 JSON> to draw this track`;
+      }
       if (!fixture) return;
       const sites = params.get('sites') || fixture;
       document.getElementById('gallery-source').textContent = `tree: ${fixture}   sites: ${sites}   branches: ${branches}`;

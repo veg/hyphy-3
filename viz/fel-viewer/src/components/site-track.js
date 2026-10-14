@@ -1,17 +1,25 @@
 // Site track: a HiDPI canvas with one codon x-scale shared by a main band and any
-// bands stacked under it. The track owns the plumbing (resize, codon axis, nearest-site
-// hit test, tooltip, selection ring, hover hairline, mode control, PNG/SVG export);
-// bands own their marks.
+// bands stacked under it. The track owns the plumbing (resize, codon axis, hit testing,
+// tooltip, selection ring, hover hairline, mode control, PNG/SVG export); bands own their
+// marks.
 //
 // A band implements:
 //   drawBackground(ctx, frame, track)   y grid under the codon axis (main band only)
 //   drawMarks(ctx, frame, track)        rules and marks; returns the hit points
-//                                       [{ site, x, y, raw }] (main band only)
-//   draw(ctx, frame, track)             the whole band (stacked bands)
+//                                       [{ site, x, y, raw, series }] (main band only)
+//   draw(ctx, frame, track)             the whole band (stacked bands); may return hit
+//                                       regions [{ x0, x1, y0, y1, key, kind }]
 //   svg(frame, track)                   SVG elements for the export
-//   tooltip(row, track)                 optional tooltip HTML (main band only)
-//   height                              fixed pixel height (stacked bands)
+//   tooltip(row, track, point)          optional tooltip HTML (main band only)
+//   regionTooltip(region, track)        optional tooltip HTML for a hit region
+//   select(region, track)               optional: a region of this band was clicked
+//   measure(track)                      optional: sizes the band before each layout
+//   height                              pixel height (stacked bands)
 // A frame is { left, top, width, height, scaleX(site) }.
+//
+// A region of kind 'site' (key = site) hovers and selects that site like a main-band
+// point; any other kind is the track's hoveredRegion/selectedRegion and goes to
+// onRegionHover/onRegionSelect.
 
 import { PALETTE } from '../data/palette.js';
 import { downloadPNG, downloadSVG } from '../core/export.js';
@@ -20,8 +28,8 @@ export const TRACK_PADDING = { left: 52, right: 24, top: 24, bottom: 38, axis: 2
 
 // Frames for the main band and each stacked band. The main band fills what the stack
 // leaves; stacked bands sit under the codon axis labels, one gap apart.
-export function stackBandFrames(width, height, stack) {
-  const { left, right, top, bottom, axis, gap } = TRACK_PADDING;
+export function stackBandFrames(width, height, stack, left = TRACK_PADDING.left) {
+  const { right, top, bottom, axis, gap } = TRACK_PADDING;
   const plotW = width - left - right;
   const stackH = stack.reduce((sum, band) => sum + band.height + gap, 0);
   const main = { left, top, width: plotW, height: height - top - bottom - stackH };
@@ -32,6 +40,32 @@ export function stackBandFrames(width, height, stack) {
     return frame;
   });
   return [main, ...frames];
+}
+
+// What the pointer at (mx, my) is over. Inside the frame of a stacked band that returned
+// hit regions, only that band's regions count; elsewhere it is the main band's nearest
+// point by x within the tolerance, and points sharing that x (a mirrored band's two
+// series) are told apart by y. Returns { point } or { region }, or null.
+export function resolveTrackHit({ points, regions, hitFrames }, mx, my, tolerance) {
+  const frame = hitFrames.find(f => my >= f.top && my < f.top + f.height);
+  if (frame) {
+    const region = regions.find(r => mx >= r.x0 && mx < r.x1 && my >= r.y0 && my < r.y1);
+    return region ? { region } : null;
+  }
+
+  let closest = null;
+  let minDx = Infinity;
+  let minDy = Infinity;
+  for (const pt of points) {
+    const dx = Math.abs(pt.x - mx);
+    const dy = Math.abs(pt.y - my);
+    if (dx < minDx || (dx === minDx && dy < minDy)) {
+      minDx = dx;
+      minDy = dy;
+      closest = pt;
+    }
+  }
+  return closest && minDx <= tolerance ? { point: closest } : null;
 }
 
 // Codon tick spacing for the shared x-axis
@@ -87,9 +121,12 @@ export class SiteTrackCanvas {
       threshold: 0.1,
       sites: (data) => data.siteResults,
       siteCount: (data) => data.numSites,
+      gutter: TRACK_PADDING.left, // left margin for y labels and stacked-band row labels
       exportName: 'hyphy_site_track',
       onSiteSelect: null,
-      onSiteHover: null
+      onSiteHover: null,
+      onRegionSelect: null, // (region) for a clicked region that is not a site
+      onRegionHover: null   // (region | null)
     }, options);
 
     this.threshold = this.options.threshold;
@@ -98,8 +135,13 @@ export class SiteTrackCanvas {
     this.stack = this.options.stack;
     this.data = null;
     this.selectedSite = null;
+    this.selectedSeries = null; // which series of a mirrored band the selection came from
     this.hoveredSite = null;
-    this.points = []; // Cached screen coordinates of the main band's marks
+    this.selectedRegion = null;
+    this.hoveredRegion = null;
+    this.points = [];    // Cached screen coordinates of the main band's marks
+    this.regions = [];   // Hit regions the stacked bands returned, each with its band
+    this.hitFrames = []; // Frames of the stacked bands that returned regions
 
     this.initDOM();
     this.initEvents();
@@ -212,6 +254,7 @@ export class SiteTrackCanvas {
 
   selectSite(siteNumber) {
     this.selectedSite = siteNumber;
+    this.selectedSeries = null;
     this.render();
   }
 
@@ -221,23 +264,26 @@ export class SiteTrackCanvas {
     this.canvas.addEventListener('click', (e) => this.handleClick(e));
   }
 
-  // Closest mark by x within the given pixel tolerance (wider when sites are sparse)
-  nearestPoint(clientX, minTolerance) {
-    if (!this.data || this.points.length === 0) return null;
-    const mouseX = clientX - this.canvas.getBoundingClientRect().left;
-
-    let closest = null;
-    let minDx = Infinity;
-    for (const pt of this.points) {
-      const dx = Math.abs(pt.x - mouseX);
-      if (dx < minDx) {
-        minDx = dx;
-        closest = pt;
-      }
-    }
-
+  // The point or region under the pointer; points match by x within the given pixel
+  // tolerance (wider when sites are sparse)
+  hitAt(e, minTolerance) {
+    if (!this.data) return null;
+    const rect = this.canvas.getBoundingClientRect();
     const tolerance = Math.max(minTolerance, this.plotWidth / Math.max(1, this.numSites) * 2);
-    return closest && minDx <= tolerance ? closest : null;
+    return resolveTrackHit(this, e.clientX - rect.left, e.clientY - rect.top, tolerance);
+  }
+
+  // The site row behind a site region
+  regionRow(region) {
+    return region.raw ?? this.rows.find(r => r.site === region.key) ?? null;
+  }
+
+  setHoveredRegion(region) {
+    const changed = region?.kind !== this.hoveredRegion?.kind || region?.key !== this.hoveredRegion?.key;
+    this.hoveredRegion = region;
+    if (changed && typeof this.options.onRegionHover === 'function') {
+      this.options.onRegionHover(region);
+    }
   }
 
   setHoveredSite(site) {
@@ -250,11 +296,16 @@ export class SiteTrackCanvas {
   }
 
   handleMouseMove(e) {
-    if (!this.data || this.points.length === 0) return;
-    const closest = this.nearestPoint(e.clientX, 12);
-    if (closest) {
-      this.setHoveredSite(closest.site);
-      this.showTooltip(closest, e.clientX, e.clientY);
+    if (!this.data) return;
+    const hit = this.hitAt(e, 12);
+    const { point, region } = hit || {};
+    this.setHoveredRegion(region ?? null);
+    if (point) {
+      this.setHoveredSite(point.site);
+      this.showTooltip(this.band.tooltip?.(point.raw, this, point), e.clientX, e.clientY);
+    } else if (region) {
+      this.setHoveredSite(region.kind === 'site' ? region.key : null);
+      this.showTooltip(region.band.regionTooltip?.(region, this), e.clientX, e.clientY);
     } else {
       this.setHoveredSite(null);
       this.hideTooltip();
@@ -262,23 +313,34 @@ export class SiteTrackCanvas {
   }
 
   handleMouseLeave() {
+    this.setHoveredRegion(null);
     this.setHoveredSite(null);
     this.hideTooltip();
   }
 
   handleClick(e) {
-    const closest = this.nearestPoint(e.clientX, 16);
-    if (closest) {
-      this.selectedSite = closest.site;
+    const hit = this.hitAt(e, 16);
+    if (!hit) return;
+    const { point, region } = hit;
+    if (point || region.kind === 'site') {
+      const site = point ? point.site : region.key;
+      this.selectedSite = site;
+      this.selectedSeries = point?.series ?? null;
       this.render();
       if (typeof this.options.onSiteSelect === 'function') {
-        this.options.onSiteSelect(closest.site, closest.raw);
+        this.options.onSiteSelect(site, point ? point.raw : this.regionRow(region));
       }
+      return;
+    }
+    this.selectedRegion = region;
+    region.band.select?.(region, this);
+    this.render();
+    if (typeof this.options.onRegionSelect === 'function') {
+      this.options.onRegionSelect(region);
     }
   }
 
-  showTooltip(pt, clientX, clientY) {
-    const html = this.band.tooltip?.(pt.raw, this);
+  showTooltip(html, clientX, clientY) {
     if (!html) {
       this.hideTooltip();
       return;
@@ -310,7 +372,8 @@ export class SiteTrackCanvas {
   // Frames for the current size, each with the shared codon x-scale
   layout() {
     const numSites = Math.max(1, this.numSites);
-    return stackBandFrames(this.width, this.height, this.stack).map(frame => Object.assign(frame, {
+    this.stack.forEach(b => b.measure?.(this));
+    return stackBandFrames(this.width, this.height, this.stack, this.options.gutter).map(frame => Object.assign(frame, {
       scaleX: (site) => frame.left + ((site - 1) / Math.max(1, numSites - 1)) * frame.width
     }));
   }
@@ -356,7 +419,14 @@ export class SiteTrackCanvas {
     band.drawBackground(ctx, main, this);
     this.drawCodonAxis(ctx, main);
     this.points = band.drawMarks(ctx, main, this);
-    this.stack.forEach((b, i) => b.draw(ctx, stacked[i], this));
+    this.regions = [];
+    this.hitFrames = [];
+    this.stack.forEach((b, i) => {
+      const regions = b.draw(ctx, stacked[i], this);
+      if (!Array.isArray(regions)) return;
+      this.hitFrames.push(stacked[i]);
+      for (const region of regions) this.regions.push(Object.assign(region, { band: b }));
+    });
 
     // Hover hairline through every band
     const hPt = this.hoveredSite ? this.points.find(p => p.site === this.hoveredSite) : null;
