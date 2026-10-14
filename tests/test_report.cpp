@@ -66,6 +66,17 @@ TEST_CASE("Report: FEL and MEME reports embed the viewer, stylesheet and data") 
     std::string meme = render_html(R"J({"analysis": {"id": "meme"}})J", "m.json");
     CHECK(meme.find("<hyphy-meme-viewer") != std::string::npos);
     CHECK(meme.find("MEME &bull; Episodic Selection") != std::string::npos);
+    CHECK(meme.find("whenDefined('hyphy-meme-viewer')") != std::string::npos);
+    CHECK(meme.find("hyphy-fel-viewer, hyphy-meme-viewer { width: 100%;") != std::string::npos);
+}
+
+TEST_CASE("Report: the viewer table drives the supported analyses") {
+    CHECK(supported_analyses() == std::vector<std::string>{"fel", "meme"});
+    CHECK(supported_analyses_text() == "FEL, MEME");
+    REQUIRE(find_viewer("meme") != nullptr);
+    CHECK(find_viewer("meme")->tag == "hyphy-meme-viewer");
+    CHECK(find_viewer("busted") == nullptr);
+    CHECK(find_viewer("") == nullptr);
 }
 
 TEST_CASE("Report: data cannot break out of the inline script") {

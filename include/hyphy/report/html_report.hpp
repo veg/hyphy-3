@@ -16,16 +16,38 @@
 
 namespace hyphy::report {
 
+// How the report presents one analysis: the nav badge (HTML) and the viewer element it mounts.
+struct ReportViewer {
+    std::string method;
+    std::string badge;
+    std::string tag;
+};
+
 // Analyses whose results the embedded viewer renders correctly. Extend as viewers are added.
+inline const std::vector<ReportViewer>& report_viewers() {
+    static const std::vector<ReportViewer> viewers = {
+        {"fel", "FEL &bull; Pervasive Selection", "hyphy-fel-viewer"},
+        {"meme", "MEME &bull; Episodic Selection", "hyphy-meme-viewer"},
+    };
+    return viewers;
+}
+
+inline const ReportViewer* find_viewer(const std::string& method) {
+    const auto& v = report_viewers();
+    auto it = std::find_if(v.begin(), v.end(), [&](const ReportViewer& r) { return r.method == method; });
+    return it == v.end() ? nullptr : &*it;
+}
+
 inline const std::vector<std::string>& supported_analyses() {
-    static const std::vector<std::string> methods = {"fel", "meme"};
+    static const std::vector<std::string> methods = [] {
+        std::vector<std::string> m;
+        for (const auto& v : report_viewers()) m.push_back(v.method);
+        return m;
+    }();
     return methods;
 }
 
-inline bool has_viewer(const std::string& method) {
-    const auto& m = supported_analyses();
-    return std::find(m.begin(), m.end(), method) != m.end();
-}
+inline bool has_viewer(const std::string& method) { return find_viewer(method) != nullptr; }
 
 namespace detail {
 
@@ -142,15 +164,17 @@ inline std::string render_html(const std::string& json_text, const std::string& 
         throw std::runtime_error("Cannot create HTML report: input is not valid JSON (" + std::string(e.what()) + ")");
     }
     const std::string method = detect_analysis(j);
-    if (!has_viewer(method)) {
+    const ReportViewer* viewer = find_viewer(method);
+    if (!viewer) {
         throw std::runtime_error("Cannot create HTML report: no HTML viewer for " +
                                  (method.empty() ? std::string("this result file") : "'" + method + "' results") +
                                  " yet (available for: " + supported_analyses_text() + ")");
     }
 
-    const bool is_meme = method == "meme";
-    const std::string badge = is_meme ? "MEME &bull; Episodic Selection" : "FEL &bull; Pervasive Selection";
-    const std::string tag = is_meme ? "hyphy-meme-viewer" : "hyphy-fel-viewer";
+    const std::string& badge = viewer->badge;
+    const std::string& tag = viewer->tag;
+    std::string viewer_tags;
+    for (const auto& v : report_viewers()) viewer_tags += (viewer_tags.empty() ? "" : ", ") + v.tag;
     const std::string name = detail::html_escape(detail::basename(source_name));
 
     std::ostringstream html;
@@ -191,7 +215,7 @@ inline std::string render_html(const std::string& json_text, const std::string& 
       flex: 1 1 0%; min-height: 0; display: flex; position: relative;
       overflow-y: auto; overflow-x: hidden;
     }
-    hyphy-fel-viewer, hyphy-meme-viewer { width: 100%; height: 100%; display: block; }
+    )" << viewer_tags << R"( { width: 100%; height: 100%; display: block; }
     /* Viewer stylesheet */
 )" << detail::css_for_style(assets::viewer_css()) << R"(
   </style>
