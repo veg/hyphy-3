@@ -507,39 +507,6 @@ export class FELData {
     };
   }
 
-  // Filter sites for candidate table display
-  getFilteredSites(threshold = 0.1, filterType = 'diversifying', query = '') {
-    const q = (query || '').toLowerCase().trim();
-
-    return this.siteResults.filter(r => {
-      // 1. Text Search Filter
-      if (q) {
-        const siteStr = String(r.site);
-        const histStr = (r.history || '').toLowerCase();
-        const rootStr = (r.rootAA || '').toLowerCase();
-        if (!siteStr.includes(q) && !histStr.includes(q) && !rootStr.includes(q)) {
-          return false;
-        }
-      }
-
-      const isSig = r.pValue <= threshold;
-      const isDiv = this.isMEME ? isSig : (isSig && r.beta > r.alpha);
-      const isPur = !this.isMEME && isSig && r.alpha > r.beta;
-
-      // 2. Category Tab Filter
-      if (filterType === 'diversifying') {
-        return isDiv;
-      } else if (filterType === 'purifying') {
-        return isPur;
-      } else if (filterType === 'significant') {
-        return isSig;
-      } else if (filterType === 'all') {
-        return true;
-      }
-      return true;
-    });
-  }
-
   // Get specific site result
   getSite(siteNumber) {
     return this.siteResults[siteNumber - 1] || null;

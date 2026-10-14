@@ -732,6 +732,29 @@
   margin: 6px 0 16px 0;
 }
 
+/* Closest calls under an empty filter: below the cutoff, so drawn dimmed */
+.empty-fallback {
+  margin-top: 16px;
+  text-align: left;
+}
+
+.empty-fallback-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--stone);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.candidates-fallback tbody tr {
+  opacity: 0.55;
+}
+
+.candidates-fallback tbody tr:hover {
+  opacity: 1;
+}
+
 /* 4. Slide-over Inspector Drawer */
 .hyphy-drawer-backdrop {
   position: fixed;
