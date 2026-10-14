@@ -97,3 +97,11 @@ function readNewickLabel(s, i, node, zeroLength, tags) {
   }
   return i;
 }
+
+// A branch length from one node's v3 metadata (phylogeny.nodes[name]) under the given
+// branch_lengths key, or null. v3 newick literals are input or zero lengths, so tree
+// views take lengths from here.
+export function lengthFrom(nodeMeta, key) {
+  const value = nodeMeta?.branch_lengths?.[key];
+  return Number.isFinite(value) ? value : null;
+}

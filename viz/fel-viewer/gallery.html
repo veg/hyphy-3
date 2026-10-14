@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Viewer Component Gallery</title>
+  <!--
+    Developer gallery for viewer components that FEL/MEME do not mount. It loads the src
+    modules directly (it is not embedded in hyphy3), so serve this directory over http:
+      gallery.html?fixture=<path to a v3 JSON>[&sites=<v3 JSON with site_results>][&length=<branch_lengths key>]
+    Paths are relative to this page. sites defaults to the fixture; length defaults to the
+    first branch_lengths key found in phylogeny.nodes.
+  -->
+  <link rel="stylesheet" href="src/styles/viewer.css" />
+  <style>
+    body {
+      margin: 0;
+      padding: 20px 24px 36px;
+      background-color: var(--chassis);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    h1 {
+      font-size: 13px;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      margin: 0 0 4px;
+    }
+    .gallery-source {
+      font-family: "SF Mono", Monaco, monospace;
+      font-size: 10px;
+      color: var(--stone);
+      margin-bottom: 16px;
+    }
+    .gallery-row {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .gallery-card {
+      background-color: var(--panel);
+      border: 1px solid var(--hairline);
+      border-radius: 4px;
+      padding: 14px 16px;
+      min-width: 0;
+    }
+    .gallery-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+    .gallery-card-head .plot-tool-btn {
+      margin-left: 6px;
+    }
+    .gallery-note {
+      font-family: "SF Mono", Monaco, monospace;
+      font-size: 10px;
+      color: var(--stone);
+      margin-top: 8px;
+      min-height: 12px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Viewer Component Gallery</h1>
+  <div class="gallery-source" id="gallery-source">No fixture: add ?fixture=&lt;path to a v3 JSON&gt;</div>
+
+  <div class="gallery-row">
+    <div class="gallery-card">
+      <div class="gallery-card-head">
+        <span>BranchTree</span>
+        <span>
+          <button type="button" class="plot-tool-btn" id="tree-svg">SVG</button>
+          <button type="button" class="plot-tool-btn" id="tree-png">PNG</button>
+        </span>
+      </div>
+      <div id="tree-full"></div>
+      <div class="gallery-note" id="tree-note"></div>
+    </div>
+    <div class="gallery-card">
+      <div class="gallery-card-head"><span>BranchTree · mini</span></div>
+      <div id="tree-mini"></div>
+    </div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>OverviewBrush</span></div>
+    <div id="brush"></div>
+    <div class="gallery-note" id="brush-note"></div>
+  </div>
+
+  <script type="module">
+    import { BranchTree } from './src/components/branch-tree.js';
+    import { OverviewBrush } from './src/components/overview-brush.js';
+    import { PALETTE } from './src/data/palette.js';
+    import { formatPValue, formatThreshold } from './src/core/format.js';
+
+    const params = new URLSearchParams(location.search);
+    const fetchJSON = path => fetch(path).then(r => {
+      if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+      return r.json();
+    });
+
+    // Sample style callback, shaped for aBSREL node metadata: significant branches are
+    // split into their omega classes by proportion and labelled with the corrected p;
+    // untested branches are dashed grey; everything else stays plain ink.
+    function sampleStyle(threshold) {
+      return (node, meta) => {
+        if (!meta) return null;
+        if (meta.is_tested === false) return { stroke: PALETTE.branchGrey, dash: [4, 3] };
+        const p = meta.corrected_p_value;
+        if (!(p <= threshold)) return null;
+        return {
+          stroke: PALETTE.accent,
+          width: 3,
+          segments: (meta.rate_distribution || []).map(c => ({
+            fraction: c.proportion,
+            stroke: c.omega > 1 ? PALETTE.accent : (c.omega < 1 ? PALETTE.purifying : PALETTE.ink)
+          })),
+          label: p === 0 ? 'p < 1e-16' : `p = ${formatPValue(p)}`
+        };
+      };
+    }
+
+    function firstLengthKey(nodes) {
+      for (const meta of Object.values(nodes)) {
+        const keys = Object.keys(meta.branch_lengths || {});
+        if (keys.length) return keys[0];
+      }
+      return null;
+    }
+
+    function showTrees(json) {
+      const phylogeny = json.phylogeny || {};
+      const nodes = phylogeny.nodes || {};
+      const lengthKey = params.get('length') || firstLengthKey(nodes);
+      const threshold = json.statistical_tests?.branch_level_summary?.threshold ?? json.analysis?.settings?.p_threshold ?? 0.05;
+      const style = sampleStyle(threshold);
+      const note = document.getElementById('tree-note');
+
+      const full = new BranchTree(document.getElementById('tree-full'), {
+        lengthKey, style, exportName: 'gallery-tree',
+        onHover: name => { note.textContent = name ? `hover: ${name}` : ''; },
+        onSelect: name => { mini.highlight(name); }
+      });
+      const mini = new BranchTree(document.getElementById('tree-mini'), { lengthKey, style, mini: true });
+      full.setLegend([
+        { label: `ω > 1 class, Holm p ≤ ${formatThreshold(threshold)}`, stroke: PALETTE.accent },
+        { label: 'ω < 1 class', stroke: PALETTE.purifying },
+        { label: 'Not significant', stroke: PALETTE.ink },
+        { label: 'Not tested', stroke: PALETTE.branchGrey, dash: true }
+      ]);
+      full.setTree(phylogeny.newick, nodes);
+      mini.setTree(phylogeny.newick, nodes);
+      note.textContent = `branch lengths: ${lengthKey || 'newick'}`;
+
+      document.getElementById('tree-svg').addEventListener('click', () => full.exportSVG());
+      document.getElementById('tree-png').addEventListener('click', () => full.exportPNG());
+      return [full, mini];
+    }
+
+    function showBrush(json) {
+      const note = document.getElementById('brush-note');
+      const data = json.site_results?.data;
+      const brush = new OverviewBrush(document.getElementById('brush'), {
+        minSites: 0,
+        threshold: json.analysis?.settings?.pvalue_threshold ?? 0.1,
+        tone: (row, t) => (row.p_value <= t ? (row.beta > row.alpha ? 'accent' : 'purifying') : null),
+        onSiteSelect: site => { note.textContent = `selected site ${site}`; },
+        onViewportChange: (start, end) => { note.textContent = `window ${start + 1}–${end}`; }
+      });
+      if (!data?.site || !data.p_value) {
+        note.textContent = 'This file has no site_results.p_value; pass &sites=<v3 JSON with site results>.';
+        return brush;
+      }
+      const rows = data.site.map((site, i) => ({ site, p_value: data.p_value[i], alpha: data.alpha?.[i], beta: data.beta?.[i] }));
+      brush.setData(rows, json.dataset?.codon_sites || rows.length);
+      brush.setViewport(0, Math.min(40, rows.length));
+      return brush;
+    }
+
+    async function main() {
+      const fixture = params.get('fixture');
+      if (!fixture) return;
+      const sites = params.get('sites') || fixture;
+      document.getElementById('gallery-source').textContent = `tree: ${fixture}   sites: ${sites}`;
+      const [treeJSON, sitesJSON] = await Promise.all([fetchJSON(fixture), fetchJSON(sites)]);
+
+      const trees = showTrees(treeJSON);
+      const brush = showBrush(sitesJSON);
+      const fit = () => {
+        for (const tree of trees) tree.resize(tree.container.clientWidth);
+        brush.resize(brush.container.clientWidth);
+      };
+      fit();
+      window.addEventListener('resize', fit);
+    }
+
+    main().catch(err => {
+      document.getElementById('gallery-source').textContent = String(err);
+      console.error(err);
+    });
+  </script>
+</body>
+</html>

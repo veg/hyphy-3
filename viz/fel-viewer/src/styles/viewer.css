@@ -1179,6 +1179,82 @@
   white-space: pre;
 }
 
+/* Branch Tree (whole-tree renderer) */
+.hyphy-branch-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.branch-tree-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 10px;
+  color: var(--stone);
+}
+
+.hyphy-branch-tree.mini .branch-tree-legend {
+  gap: 10px;
+  font-size: 9px;
+}
+
+.branch-tree-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.branch-tree-swatch {
+  display: inline-block;
+  width: 18px;
+}
+
+.hyphy-tree-canvas {
+  display: block;
+  cursor: pointer;
+}
+
+/* Overview Brush (whole-alignment strip with a draggable window) */
+.hyphy-overview-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hyphy-overview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.overview-left-group,
+.overview-nav-btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.overview-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.overview-status {
+  font-family: "SF Mono", Monaco, monospace;
+  font-size: 10px;
+  color: var(--stone);
+}
+
+.hyphy-overview-canvas {
+  display: block;
+  cursor: crosshair;
+}
+
 /* Dark Theme Overrides */
 .hyphy-theme-dark, :host([theme="dark"]) {
   background-color: #121212;

@@ -24,7 +24,6 @@ export const PALETTE = {
   cellBg: '#FAF9F6',          // Canvas cell and label backdrop
   trackBg: '#F8F8F6',
   overviewBg: '#F4F4F1',
-  overviewRow: '#FAFAF8',
 
   // Ink and lines
   ink: '#1A1A18',             // --ink: Rich charcoal
@@ -36,7 +35,6 @@ export const PALETTE = {
   dotMuted: '#B8B8B2',        // Muted consensus dots
   hairline: '#D1D1CB',        // --hairline: Precision 1px structural line
   overviewEmpty: '#D6D6D0',
-  overviewRule: '#E2E2DC',
   gridLine: '#EAEAE6',        // --grid-line: Subtle cell grid
 
   // Cool greys
