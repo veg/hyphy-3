@@ -3,7 +3,7 @@
 //
 // A method config describes the bar as data:
 //   cards: [{ id, label, value(stats, view), sub(stats, view), tone, widget?, ... }]
-//     view is { data, threshold }; stats is data.getStats(threshold).
+//     view is { data, threshold, statistic }; stats is data.getStats(threshold).
 //     tone colours the value: 'accent' | 'purifying' | 'ink' | 'muted'.
 //     widget(el, stats, view) draws into a slot below the sub line.
 //     Optional: placeholder (the sub line before any data), comment (the HTML
@@ -12,7 +12,8 @@
 //   blank: the cards drawn before data arrives, one per card (defaults to cards).
 //     Only their markup is used; label and tone switch to the cards' on setData.
 //   controller: { title, statistic, direction: 'le' | 'ge', min, max, step,
-//     presets, seed, format(t) }; seed is the starting cutoff.
+//     presets, seed, format(t) }; seed is the starting cutoff, and statistic the
+//     one the cutoff applies to until the shell switches it (options.statistic).
 
 const KPI_TONE_CLASSES = {
   accent: 'kpi-value kpi-text-orange',
@@ -35,19 +36,19 @@ function kpiCardMarkup(card, index) {
 `;
 }
 
-function thresholdControllerMarkup(controller, threshold, index) {
+function thresholdControllerMarkup(controller, threshold, statistic, index) {
   const { format } = controller;
   const pill = (p) => {
     const active = Math.abs(p - threshold) < 0.002 ? ' active' : '';
     return `
-            <button type="button" class="preset-pill${active}" data-p="${format(p)}">${thresholdLabel(controller, p)}</button>`;
+            <button type="button" class="preset-pill${active}" data-p="${format(p)}">${thresholdLabel(controller, p, statistic)}</button>`;
   };
   return `
         <!-- ${index + 1}. Interactive Threshold Controller -->
         <div class="kpi-card kpi-card-control" id="kpi-controller">
           <div class="kpi-control-header">
             <span class="kpi-label">${controller.title}</span>
-            <span class="kpi-thresh-display" id="kpi-thresh-display">${thresholdLabel(controller, threshold)}</span>
+            <span class="kpi-thresh-display" id="kpi-thresh-display">${thresholdLabel(controller, threshold, statistic)}</span>
           </div>
           <div class="kpi-slider-row">
             <input type="range" class="kpi-slider" id="kpi-thresh-slider" min="${format(controller.min)}" max="${format(controller.max)}" step="${format(controller.step)}" value="${format(threshold)}" />
@@ -59,9 +60,9 @@ function thresholdControllerMarkup(controller, threshold, index) {
 }
 
 // 'p ≤ 0.05', 'PP ≥ 0.90': the cutoff as the controller and its presets show it
-export function thresholdLabel(controller, t) {
+export function thresholdLabel(controller, t, statistic = controller.statistic) {
   const op = controller.direction === 'ge' ? '≥' : '≤';
-  return `${controller.statistic} ${op} ${controller.format(t)}`;
+  return `${statistic} ${op} ${controller.format(t)}`;
 }
 
 export class KpiBar {
@@ -72,6 +73,7 @@ export class KpiBar {
       blank: null,
       controller: null,
       threshold: null, // the controller's seed when unset
+      statistic: null, // the controller's statistic when unset
       onThresholdChange: null
     }, options);
 
@@ -79,6 +81,7 @@ export class KpiBar {
     this.blank = this.options.blank || this.cards;
     this.controller = this.options.controller;
     this.threshold = this.options.threshold ?? this.controller.seed;
+    this.statistic = this.options.statistic ?? this.controller.statistic;
     this.data = null;
     this.initDOM();
   }
@@ -88,7 +91,7 @@ export class KpiBar {
     this.el.className = 'hyphy-kpi-bar';
     this.el.innerHTML = `
       <div class="kpi-cards-grid">${this.blank.map(kpiCardMarkup).join('')}${
-        thresholdControllerMarkup(this.controller, this.threshold, this.blank.length)}</div>
+        thresholdControllerMarkup(this.controller, this.threshold, this.statistic, this.blank.length)}</div>
     `;
 
     this.container.appendChild(this.el);
@@ -126,7 +129,7 @@ export class KpiBar {
 
   setThreshold(p, triggerCallback = false) {
     this.threshold = p;
-    this.display.textContent = thresholdLabel(this.controller, p);
+    this.display.textContent = thresholdLabel(this.controller, p, this.statistic);
 
     // Update active preset button highlight
     this.presetBtns.forEach(btn => {
@@ -145,6 +148,16 @@ export class KpiBar {
     }
   }
 
+  // Relabel the cutoff and its presets for the statistic it now applies to
+  setStatistic(statistic) {
+    this.statistic = statistic;
+    this.display.textContent = thresholdLabel(this.controller, this.threshold, statistic);
+    this.presetBtns.forEach(btn => {
+      btn.textContent = thresholdLabel(this.controller, parseFloat(btn.dataset.p), statistic);
+    });
+    this.updateStats();
+  }
+
   setData(data) {
     this.data = data;
     this.cards.forEach((card, i) => {
@@ -157,7 +170,7 @@ export class KpiBar {
   updateStats() {
     if (!this.data) return;
     const stats = this.data.getStats(this.threshold);
-    const view = { data: this.data, threshold: this.threshold };
+    const view = { data: this.data, threshold: this.threshold, statistic: this.statistic };
 
     this.cards.forEach((card, i) => {
       const els = this.cardEls[i];

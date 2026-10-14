@@ -19,6 +19,13 @@ function orderedLegacyHeaders(headers) {
   return layout;
 }
 
+// The p-value cutoff the run itself used, or null when the file does not say: v3
+// writes analysis.settings.pvalue_threshold, legacy FEL 'pvalue' and legacy MEME 'p-value'
+export function runPThreshold(settings) {
+  const t = settings?.pvalue_threshold ?? settings?.pvalue ?? settings?.['p-value'];
+  return Number.isFinite(t) && t > 0 ? t : null;
+}
+
 export class FELData {
   constructor(json) {
     this.raw = json;
@@ -45,6 +52,7 @@ export class FELData {
     this.numBackground = 0;
     this.provenance = null;
     this.analysis = null;
+    this.runThreshold = null;     // the run's own p-value cutoff, the shell's starting threshold
     this.analysisType = 'fel';
     this.isMEME = false;
 
@@ -78,6 +86,7 @@ export class FELData {
     } else {
       throw new Error('Unrecognized HyPhy JSON format: missing site_results or MLE.');
     }
+    this.runThreshold = runPThreshold(this.analysis.settings);
 
     this.postProcess();
   }

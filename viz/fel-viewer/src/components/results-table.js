@@ -6,11 +6,11 @@
 //     carry it as data-<rowKey>, and selection reports it.
 //   rows(data): the parsed result's rows in their natural order.
 //   columns: [{ id, header, width?, align?, title?, cell(row, view), csv?, sort? }]
-//     cell returns the whole <td>; view is { data, threshold }.
+//     cell returns the whole <td>; view is { data, threshold, statistic }.
 //     csv: [{ header, value(row, view) }], the column's export fields at full precision.
 //     A column without a cell is export-only. sort(row) is the value a header click
 //     sorts by.
-//   filters: [{ id, key, glyph?, label, count(stats, view), test(row, t), subtitle(n, t) }]
+//   filters: [{ id, key, glyph?, label, count(stats, view), test(row, t, view), subtitle(n, t) }]
 //     drawn as a segmented control; key names the button and badge ids, and stats is
 //     data.getStats(t). The first filter names the method's finding, so its label is
 //     rewritten on load; the others keep the markup's label.
@@ -77,6 +77,7 @@ export class ResultsTable {
       emptyState: null,
       exportName: 'hyphy_results',
       threshold: 0.1,
+      statistic: null, // which statistic the threshold applies to ('p' | 'q'), for cells and filters
       filterType: null,
       onSelect: null
     }, options);
@@ -89,6 +90,7 @@ export class ResultsTable {
     this.defaultSort = this.options.defaultSort;
     this.sort = this.defaultSort;
     this.threshold = this.options.threshold;
+    this.statistic = this.options.statistic;
     this.filterType = this.knownFilter(this.options.filterType);
     this.data = null;
     this.rows = [];
@@ -194,6 +196,11 @@ export class ResultsTable {
     this.render();
   }
 
+  setStatistic(statistic) {
+    this.statistic = statistic;
+    this.render();
+  }
+
   // Unknown filters (another method's, or the API's) fall back to the default
   knownFilter(filterType) {
     return this.filters.some(f => f.id === filterType) ? filterType : this.defaultFilter;
@@ -229,7 +236,7 @@ export class ResultsTable {
   }
 
   view() {
-    return { data: this.data, threshold: this.threshold };
+    return { data: this.data, threshold: this.threshold, statistic: this.statistic };
   }
 
   displayColumns() {
@@ -257,8 +264,9 @@ export class ResultsTable {
   // The rows the filter and search pass, in the current sort order
   visibleRows() {
     const filter = this.activeFilter();
+    const view = this.view();
     const q = this.searchQuery.toLowerCase().trim();
-    const rows = this.rows.filter(r => (!q || this.options.search.match(r, q)) && filter.test(r, this.threshold));
+    const rows = this.rows.filter(r => (!q || this.options.search.match(r, q)) && filter.test(r, this.threshold, view));
     const column = this.sort && this.columns.find(c => c.id === this.sort.column);
     if (!column) return rows;
     const sign = this.sort.dir === 'desc' ? -1 : 1;

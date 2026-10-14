@@ -7,7 +7,7 @@
 //   availableWhen(data) -> false hides the tab for this result (default: always shown),
 //   unavailable: muted line explaining a hidden tab,
 //   mount(panel) -> view kept for the drawer's lifetime; its setData(data) runs on load,
-//   render(panel, row, { data, threshold, key, view })
+//   render(panel, row, { data, threshold, statistic, key, view })
 // }
 // options.row(data, key) looks up the inspected row; options.header(row, ctx) returns
 // { tag, tone: 'div' | 'pur' | 'neutral', badge }.
@@ -29,6 +29,7 @@ export class Drawer {
     this.container = container;
     this.options = Object.assign({
       threshold: 0.1,
+      statistic: null, // which statistic the threshold applies to ('p' | 'q')
       tabs: [],
       emptyTag: '—',
       row: () => null,
@@ -37,6 +38,7 @@ export class Drawer {
     }, options);
 
     this.threshold = this.options.threshold;
+    this.statistic = this.options.statistic;
     this.data = null;
     this.currentKey = null;
     this.tabs = this.options.tabs;
@@ -110,7 +112,7 @@ export class Drawer {
   renderTab({ tab, panel, view }) {
     const row = this.currentKey != null && this.data ? this.options.row(this.data, this.currentKey) : null;
     if (!row) return;
-    tab.render(panel, row, { data: this.data, threshold: this.threshold, key: this.currentKey, view });
+    tab.render(panel, row, { data: this.data, threshold: this.threshold, statistic: this.statistic, key: this.currentKey, view });
   }
 
   initKeyboardListener() {
@@ -172,6 +174,16 @@ export class Drawer {
 
   setThreshold(p) {
     this.threshold = p;
+    this.refresh();
+  }
+
+  setStatistic(statistic) {
+    this.statistic = statistic;
+    this.refresh();
+  }
+
+  // Redraw the open row after the threshold or statistic changes
+  refresh() {
     if (this.isOpen && this.currentKey != null) {
       this.inspectSite(this.currentKey, this.currentTab);
     }
@@ -201,7 +213,7 @@ export class Drawer {
     this.currentKey = key;
     this.open();
 
-    const { tag, tone, badge } = this.options.header(row, { data: this.data, threshold: this.threshold });
+    const { tag, tone, badge } = this.options.header(row, { data: this.data, threshold: this.threshold, statistic: this.statistic });
     this.siteTag.textContent = tag;
     this.regimeBadge.className = `drawer-regime-badge tag-${tone}`;
     this.regimeBadge.textContent = badge;

@@ -11,6 +11,7 @@
     Paths are relative to this page. sites defaults to the fixture; length defaults to the
     first branch_lengths key found in phylogeny.nodes. The unsupported-method notice loads
     &unsupported=<result JSON of a method without a viewer>, or a synthetic BUSTED result.
+    The branch-keyed shell runs a gallery-local config over synthetic branch rows.
   -->
   <link rel="stylesheet" href="src/styles/viewer.css" />
   <style>
@@ -73,6 +74,9 @@
     #shell-unsupported.hyphy-fel-container {
       min-height: 0;
     }
+    .gallery-card-head .seg-btn {
+      font-size: 10px;
+    }
   </style>
 </head>
 <body>
@@ -109,8 +113,23 @@
     <div class="gallery-note" id="shell-note"></div>
   </div>
 
+  <div class="gallery-card">
+    <div class="gallery-card-head">
+      <span>ViewerShell · branch rows, run threshold, p/q statistic</span>
+      <span class="segmented-control" id="branch-statistic">
+        <button type="button" class="seg-btn active" data-statistic="p">p</button>
+        <button type="button" class="seg-btn" data-statistic="q">q</button>
+      </span>
+    </div>
+    <div id="shell-branches"></div>
+    <div class="gallery-note" id="branch-note"></div>
+  </div>
+
   <script type="module">
     import { ViewerShell } from './src/shell/viewer-shell.js';
+    import { KpiBar } from './src/components/kpi-bar.js';
+    import { ResultsTable } from './src/components/results-table.js';
+    import { Drawer } from './src/components/drawer.js';
     import { BranchTree } from './src/components/branch-tree.js';
     import { OverviewBrush } from './src/components/overview-brush.js';
     import { PALETTE } from './src/data/palette.js';
@@ -211,8 +230,130 @@
       new ViewerShell(mount).load(json);
     }
 
+    // A gallery-local branch-keyed config: rows are keyed by branch name and the parser has
+    // no getSite, so the shell's site-select detail and the drawer go through config.row.
+    // The file's run threshold (0.05) seeds the shell over the controller's seed (0.1),
+    // and the p/q toggle switches the statistic every view tests and labels.
+    const BRANCH_ROWS = [
+      { branch: 'Node3', p: 0.002, q: 0.012 },
+      { branch: 'Pig', p: 0.011, q: 0.033 },
+      { branch: 'Cow', p: 0.031, q: 0.062 },
+      { branch: 'Node7', p: 0.048, q: 0.072 },
+      { branch: 'Human', p: 0.21, q: 0.25 },
+      { branch: 'Mouse', p: 0.64, q: 0.64 }
+    ];
+
+    class BranchRows {
+      constructor(json) {
+        this.branches = json.branches;
+        this.runThreshold = json.analysis.settings.pvalue_threshold;
+        this.numSites = 0;
+        this.numTaxa = json.branches.length;
+      }
+      getStats() {
+        return { totalBranches: this.branches.length };
+      }
+    }
+
+    const branchRow = (data, key) => data.branches.find(r => r.branch === key) || null;
+    const passes = (row, t, view) => row[view.statistic] <= t;
+    const significant = (view) => view.data.branches.filter(r => passes(r, view.threshold, view)).length;
+    const BRANCH_CONTROLLER = {
+      title: 'Significance Cutoff',
+      statistic: 'p',
+      direction: 'le',
+      min: 0.001,
+      max: 0.2,
+      step: 0.005,
+      presets: [0.1, 0.05, 0.01],
+      seed: 0.1,
+      format: formatThreshold
+    };
+    const statCell = (stat) => (r, view) =>
+      `<td class="font-mono pval-cell ${view.statistic === stat && r[stat] <= view.threshold ? 'pval-sig font-bold' : ''}">${formatPValue(r[stat])}</td>`;
+
+    const BRANCH_CONFIG = {
+      id: 'branch-demo',
+      Parser: BranchRows,
+      controller: BRANCH_CONTROLLER,
+      row: branchRow,
+      defaultFilter: 'significant',
+      kpis: (parent, hooks) => new KpiBar(parent, {
+        cards: [
+          { id: 'tested', label: 'Branches', value: stats => String(stats.totalBranches), sub: () => 'tested', tone: 'ink' },
+          { id: 'sig', label: 'Significant', value: (stats, view) => String(significant(view)),
+            sub: (stats, view) => `at ${view.statistic} ≤ ${formatThreshold(view.threshold)}`, tone: 'accent' }
+        ],
+        controller: BRANCH_CONTROLLER,
+        threshold: hooks.threshold,
+        statistic: hooks.statistic,
+        onThresholdChange: hooks.onThresholdChange
+      }),
+      hero: () => ({ setData() {} }),
+      table: (parent, hooks) => new ResultsTable(parent, {
+        title: 'Branches',
+        rowKey: 'branch',
+        rows: data => data.branches,
+        columns: [
+          { id: 'branch', header: 'Branch', cell: r => `<td class="font-mono">${r.branch}</td>` },
+          { id: 'p', header: 'p', cell: statCell('p') },
+          { id: 'q', header: 'q', cell: statCell('q') }
+        ],
+        filters: [
+          { id: 'significant', key: 'sig', label: 'Significant', count: (stats, view) => significant(view),
+            test: passes, subtitle: n => `${n} branches` },
+          { id: 'all', key: 'all', label: 'All', count: stats => stats.totalBranches,
+            test: () => true, subtitle: n => `${n} branches` }
+        ],
+        emptyState: () => ({ title: 'No branch passes the cutoff.' }),
+        threshold: hooks.threshold,
+        statistic: hooks.statistic,
+        filterType: hooks.filterType,
+        onSelect: (key, row, action) => hooks.onSiteSelect(key, action)
+      }),
+      drawer: (container, hooks) => new Drawer(container, {
+        emptyTag: 'Branch —',
+        row: branchRow,
+        header: (r, { threshold, statistic }) => r[statistic] <= threshold
+          ? { tag: r.branch, tone: 'div', badge: `Significant (${statistic})` }
+          : { tag: r.branch, tone: 'neutral', badge: 'Not significant' },
+        tabs: [{
+          id: 'summary',
+          label: 'Branch',
+          comment: 'Branch statistics',
+          render: (panel, r, { statistic, threshold }) => {
+            panel.textContent = `${r.branch}: ${statistic} = ${formatPValue(r[statistic])} against ${statistic} ≤ ${formatThreshold(threshold)}`;
+          }
+        }],
+        threshold: hooks.threshold,
+        statistic: hooks.statistic,
+        onClose: hooks.onClose
+      }),
+      diagnostics: data => `<div class="diag-item"><span class="diag-lbl">Run threshold</span><span class="diag-val font-mono">${data.runThreshold}</span></div>`
+    };
+
+    function showBranchShell() {
+      const mount = document.getElementById('shell-branches');
+      const note = document.getElementById('branch-note');
+      const shell = new ViewerShell(mount);
+      shell.mount(BRANCH_CONFIG);
+      mount.addEventListener('site-select', e => {
+        note.textContent = `site-select: ${e.detail.site} → ${JSON.stringify(e.detail.raw)}`;
+      });
+      shell.load({ branches: BRANCH_ROWS, analysis: { settings: { pvalue_threshold: 0.05 } } });
+      note.textContent = `threshold seeded from the run: ${shell.threshold} (controller seed ${BRANCH_CONTROLLER.seed})`;
+      const toggle = document.getElementById('branch-statistic');
+      toggle.addEventListener('click', e => {
+        const statistic = e.target.dataset?.statistic;
+        if (!statistic) return;
+        toggle.querySelectorAll('.seg-btn').forEach(btn => btn.classList.toggle('active', btn === e.target));
+        shell.setStatistic(statistic);
+      });
+    }
+
     async function main() {
       await showUnsupported();
+      showBranchShell();
       const fixture = params.get('fixture');
       if (!fixture) return;
       const sites = params.get('sites') || fixture;

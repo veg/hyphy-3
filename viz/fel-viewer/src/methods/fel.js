@@ -526,9 +526,14 @@ export const SITE_TREE_TAB = {
   render: (panel, r, { key, view }) => view.setSite(key, r)
 };
 
+// A site-keyed result's row: the shell's event detail and the drawer both look rows up here
+export function siteRow(data, site) {
+  return data.getSite(site);
+}
+
 export const FEL_DRAWER = {
   emptyTag: 'Codon #—',
-  row: (data, site) => data.getSite(site),
+  row: siteRow,
   header: felDrawerHeader,
   tabs: [siteOverviewTab(felRatesGrid), SITE_TREE_TAB]
 };
@@ -536,6 +541,7 @@ export const FEL_DRAWER = {
 export function siteDrawer(container, hooks, drawer) {
   return new Drawer(container, Object.assign({}, drawer, {
     threshold: hooks.threshold,
+    statistic: hooks.statistic,
     onClose: hooks.onClose
   }));
 }
@@ -543,21 +549,27 @@ export function siteDrawer(container, hooks, drawer) {
 export function siteResultsTable(parent, hooks, table) {
   return new ResultsTable(parent, Object.assign({}, table, {
     threshold: hooks.threshold,
+    statistic: hooks.statistic,
     filterType: hooks.filterType,
     onSelect: (site, row, action) => hooks.onSiteSelect(site, action)
   }));
 }
 
-// Each factory gets the shell's hooks: { threshold, filterType, onThresholdChange(p),
-// onSiteSelect(site, tab), onClose() }
+// controller seeds the shell's threshold and statistic when neither the caller nor the
+// run sets them; row(data, key) looks up the row an event or the drawer reports.
+// Each factory gets the shell's hooks: { threshold, statistic, filterType,
+// onThresholdChange(p), onSiteSelect(key, tab), onClose() }
 export const FEL_CONFIG = {
   id: 'fel',
   Parser: FELData,
+  controller: SITE_P_THRESHOLD,
+  row: siteRow,
   defaultFilter: FEL_TABLE.defaultFilter,
   kpis: (parent, hooks) => new KpiBar(parent, {
     cards: FEL_KPI_CARDS,
     controller: SITE_P_THRESHOLD,
     threshold: hooks.threshold,
+    statistic: hooks.statistic,
     onThresholdChange: hooks.onThresholdChange
   }),
   hero: (parent, hooks) => new EvidencePlot(parent, {

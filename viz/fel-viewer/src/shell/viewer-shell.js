@@ -1,10 +1,24 @@
 // ViewerShell: the layout every method shares, filled in by a method config
 // KPI bar, hero, results table and collapsed diagnostics stack in the layout; the
-// site drawer slides over it. The shell keeps the threshold and the focused site,
-// fans them out to the mounted views, and handles loading and drag & drop.
+// drawer slides over it. The shell keeps the threshold, the statistic it applies to
+// ('p' | 'q') and the focused row, fans them out to the mounted views, and handles
+// loading and drag & drop.
 
 import { METHOD_CONFIGS, methodConfig, resolveConfig } from '../methods/registry.js';
 import { unsupportedNotice } from '../components/unsupported-notice.js';
+
+// The cutoff a report starts at: the caller's own, else the cutoff the run used,
+// else the method controller's seed
+export function effectiveThreshold(explicit, data, config) {
+  return explicit ?? data?.runThreshold ?? config?.controller?.seed ?? null;
+}
+
+// A threshold attribute as an explicit cutoff, or null when it is absent or not a
+// positive number, so the report falls back to the run's own cutoff
+export function thresholdAttribute(value) {
+  const t = parseFloat(value);
+  return t > 0 ? t : null;
+}
 
 export class ViewerShell {
   constructor(container, options = {}) {
@@ -12,7 +26,8 @@ export class ViewerShell {
     this.options = Object.assign({
       method: null, // config to mount before any data arrives; otherwise the first load picks one
       theme: 'light',
-      threshold: 0.1,
+      threshold: null, // the run's own cutoff, else the method's seed
+      statistic: null, // the method controller's statistic when unset
       filterType: null, // the method's default filter when unset
       onSiteSelect: null,
       onThresholdChange: null
@@ -21,15 +36,25 @@ export class ViewerShell {
     this.data = null;
     this.config = null;
     this.views = [];
-    this.state = { threshold: this.options.threshold, focus: null };
+    this.state = { threshold: null, statistic: null, focus: null };
 
     this.initDOM();
     const config = methodConfig(this.options.method);
     if (config) this.mount(config);
   }
 
+  // The threshold and statistic a newly mounted config's views start from
+  seedState(config, data) {
+    this.state.threshold = effectiveThreshold(this.options.threshold, data, config);
+    this.state.statistic = this.options.statistic ?? config.controller?.statistic ?? null;
+  }
+
   get threshold() {
     return this.state.threshold;
+  }
+
+  get statistic() {
+    return this.state.statistic;
   }
 
   get selectedSite() {
@@ -52,12 +77,14 @@ export class ViewerShell {
   }
 
   // Build a method's views into the layout, replacing those of the previous method
-  mount(config) {
+  mount(config, data = null) {
     this.unmount();
     this.config = config;
+    this.seedState(config, data);
 
     const hooks = {
       threshold: this.state.threshold,
+      statistic: this.state.statistic,
       filterType: this.options.filterType || config.defaultFilter,
       onThresholdChange: (p) => this.setThreshold(p),
       onSiteSelect: (site, tab) => this.selectSite(site, tab),
@@ -178,14 +205,21 @@ export class ViewerShell {
   // Core API: load a parsed HyPhy result JSON. A result whose method is not
   // recognized falls back to the mounted config, or to FEL when nothing is mounted
   // yet; a recognized method without a viewer gets a notice instead of a report.
+  // Every load reseeds the threshold from the caller, the run or the method.
   load(json) {
     const { method, config } = resolveConfig(json, this.config || methodConfig('fel'));
     if (!config) {
       this.showUnsupported(method);
       return;
     }
-    if (config !== this.config) this.mount(config);
-    this.data = new config.Parser(json);
+    const data = new config.Parser(json);
+    if (config !== this.config) {
+      this.mount(config, data);
+    } else {
+      const threshold = effectiveThreshold(this.options.threshold, data, config);
+      if (threshold !== this.state.threshold) this.setState({ threshold });
+    }
+    this.data = data;
 
     // Propagate data to all subcomponents
     this.views.forEach(view => view.setData(this.data));
@@ -203,16 +237,24 @@ export class ViewerShell {
     }));
   }
 
-  // Shared view state fan-out: { threshold, focus } reach every mounted view
+  // Shared view state fan-out: { threshold, statistic, focus } reach every mounted view
   setState(patch) {
     Object.assign(this.state, patch);
     if ('threshold' in patch) {
       this.views.forEach(view => view.setThreshold?.(this.state.threshold));
       this.updateDiagnostics();
     }
+    if ('statistic' in patch) {
+      this.views.forEach(view => view.setStatistic?.(this.state.statistic));
+    }
     if ('focus' in patch) {
       this.views.forEach(view => view.selectSite?.(this.state.focus));
     }
+  }
+
+  // The cutoff a load would start from now: the caller's, the run's or the method's
+  seedThreshold() {
+    return effectiveThreshold(this.options.threshold, this.data, this.config);
   }
 
   // Reactive Threshold Controller API
@@ -230,14 +272,20 @@ export class ViewerShell {
     }
   }
 
-  // Site Selection & Drawer Inspector API
+  // Which statistic the cutoff applies to, for methods that report both p and q
+  setStatistic(statistic) {
+    this.setState({ statistic });
+  }
+
+  // Row Selection & Drawer Inspector API: the key is a site, branch or segment,
+  // looked up through the method config's row(data, key)
   selectSite(siteNumber, activeTab = null) {
     this.setState({ focus: siteNumber });
 
     if (siteNumber != null) {
       this.drawer?.inspectSite(siteNumber, activeTab);
 
-      const r = this.data ? this.data.getSite(siteNumber) : null;
+      const r = this.data ? this.config.row(this.data, siteNumber) : null;
       this.container.dispatchEvent(new CustomEvent('site-select', {
         bubbles: true,
         composed: true,

@@ -1,7 +1,7 @@
 // Main Entry Point: viewer classes & web components (<hyphy-viewer>, <hyphy-fel-viewer>, ...)
 // ViewerShell owns the layout; the method registry picks what fills it for each result
 
-import { ViewerShell } from './shell/viewer-shell.js';
+import { ViewerShell, thresholdAttribute } from './shell/viewer-shell.js';
 
 // Neutral viewer: mounts whichever method the loaded result (or `method` option) names
 export class HyPhyViewer extends ViewerShell {}
@@ -32,7 +32,7 @@ export class HyPhyViewerElement extends HTMLElement {
   connectedCallback() {
     if (!this.viewer) {
       const theme = this.getAttribute('theme') || 'light';
-      const threshold = parseFloat(this.getAttribute('threshold')) || 0.1;
+      const threshold = thresholdAttribute(this.getAttribute('threshold'));
       const filter = this.getAttribute('filter') || 'diversifying';
 
       this.viewer = this.createViewer({
@@ -57,7 +57,9 @@ export class HyPhyViewerElement extends HTMLElement {
     if (name === 'src' && newVal) {
       this.viewer.loadFromUrl(newVal);
     } else if (name === 'threshold') {
-      this.viewer.setThreshold(parseFloat(newVal) || 0.1);
+      this.viewer.options.threshold = thresholdAttribute(newVal);
+      const threshold = this.viewer.seedThreshold();
+      if (threshold != null) this.viewer.setThreshold(threshold);
     } else if (name === 'theme') {
       this.viewer.setTheme(newVal);
     } else if (name === 'filter') {

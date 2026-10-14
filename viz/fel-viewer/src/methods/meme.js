@@ -286,6 +286,7 @@ export const MEME_CONFIG = Object.assign({}, FEL_CONFIG, {
     blank: FEL_KPI_CARDS,
     controller: SITE_P_THRESHOLD,
     threshold: hooks.threshold,
+    statistic: hooks.statistic,
     onThresholdChange: hooks.onThresholdChange
   }),
   table: (parent, hooks) => siteResultsTable(parent, hooks, MEME_TABLE),

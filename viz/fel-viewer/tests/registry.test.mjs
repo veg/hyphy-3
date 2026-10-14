@@ -11,9 +11,11 @@ test('every config supplies what the shell mounts', () => {
     assert.equal(config.id, id);
     assert.equal(typeof config.Parser, 'function');
     assert.equal(typeof config.defaultFilter, 'string');
-    for (const part of ['kpis', 'hero', 'table', 'drawer', 'diagnostics']) {
+    for (const part of ['kpis', 'hero', 'table', 'drawer', 'diagnostics', 'row']) {
       assert.equal(typeof config[part], 'function', `${id}.${part}`);
     }
+    assert.equal(typeof config.controller.seed, 'number', `${id}.controller.seed`);
+    assert.ok(['p', 'q'].includes(config.controller.statistic), `${id}.controller.statistic`);
   }
 });
 
