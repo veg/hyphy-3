@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { stackBandFrames, codonTickStep, TRACK_PADDING } from '../src/components/site-track.js';
 import { EvidenceBand, autoEvidenceDomain, evidenceRuleValue } from '../src/components/evidence-band.js';
 import { TickStripBand, tickStripCeiling } from '../src/components/tick-strip-band.js';
-import { evidencePlotModes, evidenceTone } from '../src/components/evidence-plot.js';
+import { evidencePlotModes } from '../src/components/evidence-plot.js';
+import { FEL_EVIDENCE, felEvidenceTone, FEL_CONFIG } from '../src/methods/fel.js';
+import { MEME_EVIDENCE, memeEvidenceTone, memeRateRatio, MEME_CONFIG } from '../src/methods/meme.js';
 
 // Canvas context that records the calls bands make
 function recordingContext() {
@@ -27,7 +29,7 @@ const frameFor = (numSites, top = 24, height = 200) => ({
 });
 
 const track = (rows, extra = {}) => Object.assign({
-  rows, threshold: 0.1, data: { isMEME: false }, selectedSite: null, hoveredSite: null
+  rows, threshold: 0.1, data: {}, selectedSite: null, hoveredSite: null
 }, extra);
 
 test('the main band keeps the full plot when nothing is stacked', () => {
@@ -139,14 +141,44 @@ test('the tick strip clamps tick heights at the 95th percentile of counts', () =
 });
 
 test('the FEL preset calls sites by direction and MEME sites as episodic', () => {
-  const fel = track([], { data: { isMEME: false } });
-  const meme = track([], { data: { isMEME: true } });
+  const t = track([]);
   const site = (alpha, beta, pValue) => ({ alpha, beta, pValue });
-  assert.equal(evidenceTone(site(0.1, 2, 0.05), fel), 'div');
-  assert.equal(evidenceTone(site(2, 0.1, 0.05), fel), 'pur');
-  assert.equal(evidenceTone(site(1, 1, 0.05), fel), null);
-  assert.equal(evidenceTone(site(2, 0.1, 0.5), fel), null);
-  assert.equal(evidenceTone(site(2, 0.1, 0.05), meme), 'div');
+  assert.equal(felEvidenceTone(site(0.1, 2, 0.05), t), 'div');
+  assert.equal(felEvidenceTone(site(2, 0.1, 0.05), t), 'pur');
+  assert.equal(felEvidenceTone(site(1, 1, 0.05), t), null);
+  assert.equal(felEvidenceTone(site(2, 0.1, 0.5), t), null);
+  assert.equal(memeEvidenceTone(site(2, 0.1, 0.05), t), 'div');
+  assert.equal(memeEvidenceTone(site(2, 0.1, 0.5), t), null);
+});
+
+test('each method config owns its hero preset; the data no longer decides', () => {
+  const memeData = { isMEME: true };
+  const fel = evidencePlotModes(FEL_EVIDENCE);
+  const meme = evidencePlotModes(MEME_EVIDENCE);
+  assert.equal(fel[0].subtitle(memeData), '−log₁₀(p) vs Codon Position');
+  assert.equal(meme[0].subtitle(null), '−log₁₀(p) Evidence for Episodic Diversifying Selection');
+  assert.equal(meme[1].subtitle(null), 'Episodic Rate Ratio: β⁺ / α');
+  assert.notEqual(MEME_CONFIG.hero, FEL_CONFIG.hero);
+
+  const r = { site: 7, alpha: 0.5, beta: 0.2, beta_plus: 3, p_plus: 0.25, negLogP: 2, pValue: 0.01, lrt: 4.5, omega: 6,
+    branchEBF: { a: 150, b: 20, c: 300 } };
+  const t = track([r], { data: memeData });
+  assert.equal(fel[1].band.options.value(r, t), -2);
+  assert.equal(meme[1].band.options.value(r, t), 6);
+  assert.equal(fel[2].band.options.value(r, t), -0.3);
+  assert.equal(meme[2].band.options.value(r, t), 2.5);
+  assert.equal(memeRateRatio({ alpha: 0, beta: 0, beta_plus: 2 }), 10);
+  assert.equal(memeRateRatio({ alpha: 0, beta: 0, beta_plus: 0 }), 1);
+
+  const memeTip = meme[0].band.tooltip(r, t);
+  assert.ok(memeTip.includes('<span class="tip-badge tip-div">▲ Episodic Diversifying</span>'));
+  assert.ok(memeTip.includes('β⁺ (dN):</span> <span class="tip-val font-mono">3.00'));
+  assert.ok(memeTip.includes('25%'));
+  assert.ok(memeTip.includes('2 (EBF≥100)'));
+  const felTip = fel[0].band.tooltip(r, t);
+  assert.ok(felTip.includes('<span class="tip-badge tip-pur">▼ Purifying Selection</span>'));
+  assert.ok(felTip.includes('dN/dS (ω)'));
+  assert.ok(!felTip.includes('β⁺'));
 });
 
 test('the FEL preset keeps its three modes and their domains', () => {
@@ -154,9 +186,8 @@ test('the FEL preset keeps its three modes and their domains', () => {
     { site: 1, negLogP: 0.2, alpha: 1, beta: 0.5, pValue: 0.6 },
     { site: 2, negLogP: 5.0, alpha: 0.1, beta: 6, pValue: 1e-5 }
   ];
-  const modes = evidencePlotModes();
+  const modes = evidencePlotModes(FEL_EVIDENCE);
   assert.deepEqual(modes.map(m => m.id), ['manhattan', 'signed', 'diff']);
-  assert.equal(modes[0].subtitle({ isMEME: true }), '−log₁₀(p) Evidence for Episodic Diversifying Selection');
   const t = track(rows);
   assert.deepEqual(modes[0].band.domain(rows, t), [0, 6]);
   assert.deepEqual(modes[1].band.domain(rows, t), [-6, 6]);

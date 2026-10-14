@@ -1,57 +1,35 @@
-// Evidence Plot: the FEL/MEME preset of the site track (Manhattan -log10 p, signed
-// evidence and rate difference modes, ▲/▼ glyphs by direction at the live threshold)
+// Evidence Plot: the site track preset for alpha/beta site methods (Manhattan -log10 p,
+// signed evidence and rate difference modes, ▲/▼ glyphs by direction at the live threshold).
+// The method config supplies the wording and the per-site values through a preset:
+// { tone(r, track), badges: { div, pur }, rows(r), signed(r), diff(r), subtitles: { manhattan, signed, diff } }
 
-import { formatPValue, formatOmegaInf } from '../core/format.js';
+import { formatPValue } from '../core/format.js';
 import { SiteTrackCanvas } from './site-track.js';
 import { EvidenceBand } from './evidence-band.js';
 
-// FEL calls a significant site by direction; MEME's test is one-sided, so every
-// significant site is episodic diversifying
-export function evidenceTone(r, track) {
-  if (r.pValue > track.threshold) return null;
-  if (track.data.isMEME || r.beta > r.alpha) return 'div';
-  return r.alpha > r.beta ? 'pur' : null;
+// Tooltip row for a label and its monospaced value
+export function evidenceTipRow(label, value) {
+  return `<div class="tip-row"><span class="tip-lbl">${label}:</span> <span class="tip-val font-mono">${value}</span></div>`;
 }
 
-function evidenceTooltip(r, track) {
-  const isMEME = track.data.isMEME;
-  const tone = evidenceTone(r, track);
+// p-value, LRT and α lead every tooltip; the preset adds its own rates after them
+function evidenceTooltip(preset, r, track) {
+  const tone = preset.tone(r, track);
+  const badge = tone ? preset.badges[tone] : null;
+  const selBadge = badge
+    ? `<span class="tip-badge tip-${tone}">${badge}</span>`
+    : '<span class="tip-badge tip-neutral">Neutral</span>';
 
-  let selBadge = '<span class="tip-badge tip-neutral">Neutral</span>';
-  if (tone === 'div') {
-    selBadge = isMEME
-      ? '<span class="tip-badge tip-div">▲ Episodic Diversifying</span>'
-      : '<span class="tip-badge tip-div">▲ Diversifying Selection</span>';
-  } else if (tone === 'pur') {
-    selBadge = '<span class="tip-badge tip-pur">▼ Purifying Selection</span>';
-  }
-
-  const pStr = formatPValue(r.pValue);
   const subStr = r.history ? `<div class="tip-row tip-sub"><span class="tip-lbl">Substitutions:</span> <span class="tip-val-sub">${r.history}</span></div>` : '';
-
-  let statsRows = '';
-  if (isMEME) {
-    const betaPlus = r.beta_plus ?? r.beta;
-    const pPlusPct = Math.round((r.p_plus ?? 0) * 100);
-    const branches = r.branchesUnderSelection || (r.branchEBF ? Object.values(r.branchEBF).filter(v => v >= 100).length : 0);
-    statsRows = `
-        <div class="tip-row"><span class="tip-lbl">p-value:</span> <span class="tip-val font-mono">${pStr}</span></div>
-        <div class="tip-row"><span class="tip-lbl">LRT:</span> <span class="tip-val font-mono">${r.lrt.toFixed(2)}</span></div>
-        <div class="tip-row"><span class="tip-lbl">α (dS):</span> <span class="tip-val font-mono">${r.alpha.toFixed(2)}</span></div>
-        <div class="tip-row"><span class="tip-lbl">β⁺ (dN):</span> <span class="tip-val font-mono">${betaPlus.toFixed(2)}</span></div>
-        <div class="tip-row"><span class="tip-lbl">p⁺ (% branches):</span> <span class="tip-val font-mono">${pPlusPct}%</span></div>
-        <div class="tip-row"><span class="tip-lbl">Branches:</span> <span class="tip-val font-mono">${branches} (EBF≥100)</span></div>
+  const rows = [
+    evidenceTipRow('p-value', formatPValue(r.pValue)),
+    evidenceTipRow('LRT', r.lrt.toFixed(2)),
+    evidenceTipRow('α (dS)', r.alpha.toFixed(2)),
+    ...preset.rows(r)
+  ];
+  const statsRows = rows.map(row => `
+        ${row}`).join('') + `
       `;
-  } else {
-    const omegaStr = formatOmegaInf(r.omega);
-    statsRows = `
-        <div class="tip-row"><span class="tip-lbl">p-value:</span> <span class="tip-val font-mono">${pStr}</span></div>
-        <div class="tip-row"><span class="tip-lbl">LRT:</span> <span class="tip-val font-mono">${r.lrt.toFixed(2)}</span></div>
-        <div class="tip-row"><span class="tip-lbl">α (dS):</span> <span class="tip-val font-mono">${r.alpha.toFixed(2)}</span></div>
-        <div class="tip-row"><span class="tip-lbl">β (dN):</span> <span class="tip-val font-mono">${r.beta.toFixed(2)}</span></div>
-        <div class="tip-row"><span class="tip-lbl">dN/dS (ω):</span> <span class="tip-val font-mono">${omegaStr}</span></div>
-      `;
-  }
 
   return `
       <div class="tip-header">
@@ -97,48 +75,30 @@ function rateDiffDomain(rows) {
   return [Math.floor(minD - margin), Math.ceil(maxD + margin)];
 }
 
-// MEME plots its episodic rate ratio in signed mode
-function signedEvidence(r, track) {
-  if (track.data.isMEME) {
-    const bp = r.beta_plus ?? r.beta;
-    return r.alpha > 1e-4 ? (bp / r.alpha) : (bp > 0 ? 10 : 1);
-  }
-  const sign = r.beta >= r.alpha ? 1 : -1;
-  return sign * r.negLogP;
-}
-
-function rateDiff(r, track) {
-  const b = track.data.isMEME ? (r.beta_plus ?? r.beta) : r.beta;
-  return b - r.alpha;
-}
-
 // Fresh bands per plot, since a band caches the points it last drew
-export function evidencePlotModes() {
-  const band = (options) => new EvidenceBand(Object.assign({ tone: evidenceTone, tooltip: evidenceTooltip }, options));
+export function evidencePlotModes(preset) {
+  const band = (options) => new EvidenceBand(Object.assign({
+    tone: preset.tone,
+    tooltip: (r, track) => evidenceTooltip(preset, r, track)
+  }, options));
   return [
     {
       id: 'manhattan',
       label: 'Evidence (−log₁₀ p)',
-      subtitle: (data) => data?.isMEME
-        ? '−log₁₀(p) Evidence for Episodic Diversifying Selection'
-        : '−log₁₀(p) vs Codon Position',
+      subtitle: () => preset.subtitles.manhattan,
       band: band({ value: (r) => r.negLogP, domain: manhattanDomain })
     },
     {
       id: 'signed',
       label: 'Signed Evidence',
-      subtitle: (data) => data?.isMEME
-        ? 'Episodic Rate Ratio: β⁺ / α'
-        : 'Signed Evidence: +Diversifying / −Purifying',
-      band: band({ value: signedEvidence, domain: signedDomain, mirrorRule: true })
+      subtitle: () => preset.subtitles.signed,
+      band: band({ value: (r) => preset.signed(r), domain: signedDomain, mirrorRule: true })
     },
     {
       id: 'diff',
       label: 'Rate Diff (β − α)',
-      subtitle: (data) => data?.isMEME
-        ? 'Episodic Rate Difference: β⁺ − α'
-        : 'Absolute Rate Difference: β (dN) − α (dS)',
-      band: band({ value: rateDiff, domain: rateDiffDomain, rule: null })
+      subtitle: () => preset.subtitles.diff,
+      band: band({ value: (r) => preset.diff(r), domain: rateDiffDomain, rule: null })
     }
   ];
 }
@@ -148,8 +108,7 @@ export class EvidencePlot extends SiteTrackCanvas {
     super(container, Object.assign({
       title: 'Selection Evidence Landscape',
       subtitle: '−log₁₀(p) vs Codon Position',
-      modes: evidencePlotModes(),
       exportName: 'hyphy_fel_evidence_plot'
-    }, options));
+    }, options, { modes: evidencePlotModes(options.preset) }));
   }
 }

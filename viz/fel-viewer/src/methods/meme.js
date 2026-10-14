@@ -1,11 +1,13 @@
 // MEME method config: episodic diversifying selection (beta+ vs alpha) per codon
-// Shares FEL's site components and parser; the KPI cards, table, drawer and diagnostics differ here
+// Shares FEL's site components and parser; the KPI cards, hero preset, table, drawer and
+// diagnostics differ here
 
 import { FEL_CONFIG, mg94FitItems, SITE_P_THRESHOLD, FEL_KPI_CARDS, ALIGNMENT_KPI, sitePercent } from './fel.js';
 import { CODON_COLUMN, LRT_COLUMN, SUBSTITUTIONS_COLUMN, SITE_ACTIONS_COLUMN, FEL_COLUMNS, FEL_FILTERS, FEL_TABLE, siteResultsTable } from './fel.js';
-import { FEL_DRAWER, SITE_TREE_TAB, siteOverviewTab, siteDrawer } from './fel.js';
+import { FEL_DRAWER, SITE_TREE_TAB, siteOverviewTab, siteDrawer, siteEvidencePlot } from './fel.js';
 import { KpiBar } from '../components/kpi-bar.js';
 import { closestCalls } from '../components/results-table.js';
+import { evidenceTipRow } from '../components/evidence-plot.js';
 import { PALETTE, withAlpha } from '../data/palette.js';
 import { formatThreshold, formatPValue, formatOmegaInf, formatEBF } from '../core/format.js';
 
@@ -41,6 +43,34 @@ function memeBranchCount(r) {
 }
 
 const memeBetaPlus = (r) => r.beta_plus ?? r.beta;
+
+// MEME's test is one-sided, so every significant site is episodic diversifying
+export function memeEvidenceTone(r, track) {
+  return r.pValue <= track.threshold ? 'div' : null;
+}
+
+// The signed mode plots the episodic rate ratio, capped at 10 when alpha vanishes
+export function memeRateRatio(r) {
+  const bp = memeBetaPlus(r);
+  return r.alpha > 1e-4 ? (bp / r.alpha) : (bp > 0 ? 10 : 1);
+}
+
+export const MEME_EVIDENCE = {
+  tone: memeEvidenceTone,
+  badges: { div: '▲ Episodic Diversifying' },
+  rows: (r) => [
+    evidenceTipRow('β⁺ (dN)', memeBetaPlus(r).toFixed(2)),
+    evidenceTipRow('p⁺ (% branches)', `${Math.round((r.p_plus ?? 0) * 100)}%`),
+    evidenceTipRow('Branches', `${memeBranchCount(r)} (EBF≥100)`)
+  ],
+  signed: memeRateRatio,
+  diff: (r) => memeBetaPlus(r) - r.alpha,
+  subtitles: {
+    manhattan: '−log₁₀(p) Evidence for Episodic Diversifying Selection',
+    signed: 'Episodic Rate Ratio: β⁺ / α',
+    diff: 'Episodic Rate Difference: β⁺ − α'
+  }
+};
 
 export const MEME_COLUMNS = [
   CODON_COLUMN,
@@ -290,6 +320,7 @@ export const MEME_CONFIG = Object.assign({}, FEL_CONFIG, {
     onThresholdChange: hooks.onThresholdChange,
     onStatisticChange: hooks.onStatisticChange
   }),
+  hero: (parent, hooks) => siteEvidencePlot(parent, hooks, MEME_EVIDENCE),
   table: (parent, hooks) => siteResultsTable(parent, hooks, MEME_TABLE),
   drawer: (container, hooks) => siteDrawer(container, hooks, MEME_DRAWER),
   diagnostics: memeDiagnostics

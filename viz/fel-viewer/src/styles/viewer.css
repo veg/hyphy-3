@@ -22,7 +22,9 @@
 
   /* Ink and lines */
   --ink: #1A1A18;                  /* Rich charcoal ink */
-  --knockout: #FFFFFF;             /* Text on filled ink or signal backgrounds */
+  --knockout: #FFFFFF;             /* Text on signal backgrounds and the tooltip */
+  --ink-fill: var(--ink);          /* Filled controls: active pills, hovered buttons */
+  --on-ink-fill: var(--knockout);  /* Text on filled controls */
   --stone: #767672;                /* Secondary warm stone label */
   --hairline: #D1D1CB;             /* Precision 1px structural line */
   --grid-line: #EAEAE6;            /* Subtle cell grid */
@@ -157,8 +159,8 @@
   font-family: "SF Mono", Monaco, monospace;
   font-size: 11px;
   font-weight: 700;
-  background-color: var(--ink);
-  color: var(--knockout);
+  background-color: var(--ink-fill);
+  color: var(--on-ink-fill);
   padding: 2px 6px;
   border-radius: 3px;
 }
@@ -210,9 +212,9 @@
 }
 
 .preset-pill.active {
-  background-color: var(--ink);
-  border-color: var(--ink);
-  color: var(--knockout);
+  background-color: var(--ink-fill);
+  border-color: var(--ink-fill);
+  color: var(--on-ink-fill);
 }
 
 /* 2. Evidence Plot Card (Hero Visual) */
@@ -306,8 +308,8 @@
 }
 
 .seg-btn.active .badge-count {
-  background-color: var(--ink);
-  color: var(--knockout);
+  background-color: var(--ink-fill);
+  color: var(--on-ink-fill);
 }
 
 .plot-export-group {
@@ -330,9 +332,9 @@
 }
 
 .plot-tool-btn:hover {
-  background-color: var(--ink);
-  color: var(--knockout);
-  border-color: var(--ink);
+  background-color: var(--ink-fill);
+  color: var(--on-ink-fill);
+  border-color: var(--ink-fill);
 }
 
 .evidence-canvas-container {
@@ -523,9 +525,9 @@
 }
 
 .column-chooser[open] > summary {
-  background-color: var(--ink);
-  color: var(--knockout);
-  border-color: var(--ink);
+  background-color: var(--ink-fill);
+  color: var(--on-ink-fill);
+  border-color: var(--ink-fill);
 }
 
 .column-chooser-menu {
@@ -744,9 +746,9 @@
 }
 
 .btn-inspect:hover {
-  background-color: var(--ink);
-  color: var(--knockout);
-  border-color: var(--ink);
+  background-color: var(--ink-fill);
+  color: var(--on-ink-fill);
+  border-color: var(--ink-fill);
 }
 
 .btn-tree {
@@ -1364,104 +1366,21 @@
   cursor: crosshair;
 }
 
-/* Dark Theme Overrides */
+/* Dark theme: the same rules over dark surfaces and light ink. Signal hues, their
+   tints and the tooltip keep their light-theme values. */
 .hyphy-theme-dark, :host([theme="dark"]) {
-  background-color: #121212;
-  color: #E2E8F0;
-}
-
-.hyphy-theme-dark .kpi-card,
-.hyphy-theme-dark .hyphy-evidence-plot-card,
-.hyphy-theme-dark .hyphy-candidates-card,
-.hyphy-theme-dark .hyphy-diagnostics-card,
-.hyphy-theme-dark .hyphy-site-drawer {
-  background-color: #1E1E1E;
-  border-color: #333333;
-}
-
-.hyphy-theme-dark .kpi-card-control,
-.hyphy-theme-dark .evidence-plot-header,
-.hyphy-theme-dark .candidates-header,
-.hyphy-theme-dark .drawer-header,
-.hyphy-theme-dark .diagnostics-toggle-btn {
-  background-color: #252525;
-  border-color: #333333;
-}
-
-.hyphy-theme-dark .kpi-value,
-.hyphy-theme-dark .plot-title,
-.hyphy-theme-dark .candidates-title,
-.hyphy-theme-dark .candidates-table td,
-.hyphy-theme-dark .site-number,
-.hyphy-theme-dark .dstat-value,
-.hyphy-theme-dark .drawer-site-tag,
-.hyphy-theme-dark .extant-codon,
-.hyphy-theme-dark .diag-val {
-  color: #F8FAFC;
-}
-
-.hyphy-theme-dark .candidates-table th,
-.hyphy-theme-dark .events-table th {
-  background-color: #2D2D2D;
-  border-color: #404040;
-  color: #94A3B8;
-}
-
-.hyphy-theme-dark .candidates-table td,
-.hyphy-theme-dark .events-table td {
-  border-color: #2D2D2D;
-}
-
-.hyphy-theme-dark .candidates-table tr:hover {
-  background-color: #262626;
-}
-
-.hyphy-theme-dark .candidates-table tr.row-selected {
-  background-color: #3A2F1D !important;
-}
-
-.hyphy-theme-dark .evidence-canvas-container {
-  background-color: #1E1E1E;
-}
-
-.hyphy-theme-dark .segmented-control,
-.hyphy-theme-dark .column-chooser-menu,
-.hyphy-theme-dark .candidates-search-input,
-.hyphy-theme-dark .plot-tool-btn,
-.hyphy-theme-dark .btn-inspect,
-.hyphy-theme-dark .preset-pill,
-.hyphy-theme-dark .extant-chip,
-.hyphy-theme-dark .drawer-stat-card,
-.hyphy-theme-dark .sub-history-callout,
-.hyphy-theme-dark .newick-box {
-  background-color: #2D2D2D;
-  border-color: #404040;
-  color: #E2E8F0;
-}
-
-.hyphy-theme-dark .seg-btn.active {
-  background-color: #3B82F6;
-  color: #FFFFFF;
-}
-
-.hyphy-theme-dark .omega-badge {
-  background-color: #2D2D2D;
-  color: #F8FAFC;
-}
-
-.hyphy-theme-dark .meme-weight-label {
-  color: #F8FAFC;
-}
-
-.hyphy-theme-dark .ebf-branch-badge {
-  background-color: #2D2D2D;
-  color: #94A3B8;
-}
-
-.hyphy-theme-dark .ebf-branch-badge.ebf-active {
-  background-color: rgba(235, 94, 40, 0.25);
-  color: #FB923C;
-  border-color: rgba(235, 94, 40, 0.5);
+  --chassis: #121212;
+  --panel: #1E1E1E;
+  --panel-header: #252525;
+  --inset: #2D2D2D;
+  --row-hover: #262626;
+  --row-selected: #3A2F1D;
+  --ink: #F8FAFC;
+  --stone: #94A3B8;
+  --hairline: #333333;
+  --grid-line: #2D2D2D;
+  --ink-fill: #F8FAFC;
+  --on-ink-fill: #121212;
 }
 
 /* Notice shown for a recognized method that has no viewer yet */
@@ -1493,14 +1412,4 @@
 .unsupported-notice-body {
   font-size: 12px;
   color: var(--stone);
-}
-
-.hyphy-theme-dark .hyphy-unsupported-notice {
-  background-color: #1E1E1E;
-  border-color: #333333;
-  border-left-color: var(--accent);
-}
-
-.hyphy-theme-dark .unsupported-notice-title {
-  color: #F8FAFC;
 }

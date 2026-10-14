@@ -189,6 +189,12 @@
     <div class="gallery-note" id="posterior-note"></div>
   </div>
 
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>ViewerShell · dark theme (tokens overridden by .hyphy-theme-dark)</span></div>
+    <div id="shell-dark"></div>
+    <div class="gallery-note" id="dark-note"></div>
+  </div>
+
   <script type="module">
     import { ViewerShell } from './src/shell/viewer-shell.js';
     import { KpiBar, thresholdPasses, thresholdRelation } from './src/components/kpi-bar.js';
@@ -524,6 +530,15 @@
       const note = document.getElementById('shell-note');
       mount.addEventListener('data-unsupported', e => { note.textContent = `data-unsupported: ${e.detail.method}`; });
       new ViewerShell(mount).load(json);
+    }
+
+    // The dark theme only overrides the :root tokens, so any method's report follows it
+    function showDarkShell(json) {
+      const mount = document.getElementById('shell-dark');
+      const shell = new ViewerShell(mount, { theme: 'dark' });
+      shell.load(json);
+      document.getElementById('dark-note').textContent = `${shell.config.id} report, theme: dark`;
+      return shell;
     }
 
     // A gallery-local branch-keyed config: rows are keyed by branch name and the parser has
@@ -901,6 +916,8 @@
       const fixture = params.get('fixture');
       const branches = params.get('branches') || fixture;
       if (branches) showAbsrelShell(await fetchJSON(branches));
+      if (params.get('dark')) showDarkShell(await fetchJSON(params.get('dark')));
+      else document.getElementById('dark-note').textContent = 'pass &dark=<FEL or MEME JSON> to draw a dark report';
       const tracks = { prime: showPrimeTrack, contrast: showContrastTrack, gard: showGardTrack, slac: showSlacTrack };
       for (const [param, show] of Object.entries(tracks)) {
         if (params.get(param)) show(await fetchJSON(params.get(param)));

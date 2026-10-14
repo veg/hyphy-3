@@ -1,9 +1,9 @@
 // FEL method config: site-level pervasive selection, alpha vs beta per codon
-// The site components below also serve MEME; the hero reads data.isMEME for its wording
+// The site components below also serve MEME, which supplies its own evidence preset
 
 import { FELData } from '../data/fel-data.js';
 import { KpiBar } from '../components/kpi-bar.js';
-import { EvidencePlot } from '../components/evidence-plot.js';
+import { EvidencePlot, evidenceTipRow } from '../components/evidence-plot.js';
 import { ResultsTable, closestCalls } from '../components/results-table.js';
 import { Drawer } from '../components/drawer.js';
 import { SiteTree } from '../components/site-tree.js';
@@ -538,6 +538,38 @@ export const FEL_DRAWER = {
   tabs: [siteOverviewTab(felRatesGrid), SITE_TREE_TAB]
 };
 
+// The hero calls a significant site by direction: diversifying when beta > alpha,
+// purifying when alpha > beta
+export function felEvidenceTone(r, track) {
+  if (r.pValue > track.threshold) return null;
+  if (r.beta > r.alpha) return 'div';
+  return r.alpha > r.beta ? 'pur' : null;
+}
+
+export const FEL_EVIDENCE = {
+  tone: felEvidenceTone,
+  badges: { div: '▲ Diversifying Selection', pur: '▼ Purifying Selection' },
+  rows: (r) => [
+    evidenceTipRow('β (dN)', r.beta.toFixed(2)),
+    evidenceTipRow('dN/dS (ω)', formatOmegaInf(r.omega))
+  ],
+  signed: (r) => (r.beta >= r.alpha ? 1 : -1) * r.negLogP,
+  diff: (r) => r.beta - r.alpha,
+  subtitles: {
+    manhattan: '−log₁₀(p) vs Codon Position',
+    signed: 'Signed Evidence: +Diversifying / −Purifying',
+    diff: 'Absolute Rate Difference: β (dN) − α (dS)'
+  }
+};
+
+export function siteEvidencePlot(parent, hooks, preset) {
+  return new EvidencePlot(parent, {
+    preset,
+    threshold: hooks.threshold,
+    onSiteSelect: (site) => hooks.onSiteSelect(site)
+  });
+}
+
 export function siteDrawer(container, hooks, drawer) {
   return new Drawer(container, Object.assign({}, drawer, {
     threshold: hooks.threshold,
@@ -573,10 +605,7 @@ export const FEL_CONFIG = {
     onThresholdChange: hooks.onThresholdChange,
     onStatisticChange: hooks.onStatisticChange
   }),
-  hero: (parent, hooks) => new EvidencePlot(parent, {
-    threshold: hooks.threshold,
-    onSiteSelect: (site) => hooks.onSiteSelect(site)
-  }),
+  hero: (parent, hooks) => siteEvidencePlot(parent, hooks, FEL_EVIDENCE),
   table: (parent, hooks) => siteResultsTable(parent, hooks, FEL_TABLE),
   drawer: (container, hooks) => siteDrawer(container, hooks, FEL_DRAWER),
   diagnostics: felDiagnostics

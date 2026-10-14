@@ -1,4 +1,4 @@
-// Genetic code tables, biophysical chemistry palettes, and selection colour schemes
+// Genetic code tables and selection colour schemes
 
 import { PALETTE, withAlpha } from './palette.js';
 
@@ -77,36 +77,6 @@ export function translateCodon(codon) {
   if (possibleAAs.size > 1) return Array.from(possibleAAs).join('/');
   return '?';
 }
-
-// Calibrated Matte Zappo Palette (Dieter Rams aesthetic: desaturated, tactile industrial tones)
-export const ZAPPO_COLORS = {
-  // Aliphatic / hydrophobic (matte stone chalk)
-  'A': '#E2DDD9', 'I': '#D6CFCA', 'L': '#D6CFCA', 'M': '#D6CFCA', 'V': '#D6CFCA',
-  // Aromatic (warm raw sienna)
-  'F': '#D97706', 'W': '#B45309', 'Y': '#D97706',
-  // Positive / basic (Braun technical cobalt)
-  'K': '#1E40AF', 'R': '#1E40AF', 'H': '#3B82F6',
-  // Negative / acidic (Braun matte vermilion)
-  'D': '#DC2626', 'E': '#DC2626',
-  // Conformationally special (warm burnt umber)
-  'P': '#9A3412', 'G': '#9A3412',
-  // Cysteine (matte brass)
-  'C': '#CA8A04',
-  // Hydrophilic / polar (slate graphite)
-  'S': '#4B5563', 'T': '#4B5563', 'N': '#4B5563', 'Q': '#4B5563',
-  // Stop / Gap / Unknown
-  '*': '#6B7280', '-': '#E5E7EB', '?': '#D1D5DB'
-};
-
-export const NUCLEOTIDE_COLORS = {
-  'A': '#1E40AF', // Cobalt
-  'C': '#047857', // Sage green
-  'G': '#EB5E28', // Braun Orange
-  'T': '#DC2626', // Vermilion
-  'U': '#DC2626',
-  '-': '#D1D5DB',
-  'N': '#9CA3AF'
-};
 
 // Selection Palette (Disciplined Braun signal colors on neutral ground)
 export const SELECTION_COLORS = {
