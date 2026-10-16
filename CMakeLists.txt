@@ -149,6 +149,10 @@ add_executable(hyphy_report_test tests/test_report.cpp)
 target_link_libraries(hyphy_report_test PRIVATE hyphy3_report)
 add_test(NAME ReportTest COMMAND hyphy_report_test)
 
+add_executable(hyphy_expcm_test tests/test_expcm.cpp)
+target_link_libraries(hyphy_expcm_test PRIVATE hyphy3_core)
+add_test(NAME ExpcmTest COMMAND hyphy_expcm_test)
+
 add_test(NAME HTMLReportEndToEndTest
     COMMAND ${CMAKE_COMMAND}
         -DHYPHY3=$<TARGET_FILE:hyphy3>
