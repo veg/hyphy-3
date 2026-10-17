@@ -95,7 +95,9 @@ public:
     Matrix4 transition_matrix(Scalar branch_length) const {
         Vector4 exp_lambda = (eigenvalues * branch_length).array().exp();
         Matrix4 P = (U_pi * exp_lambda.asDiagonal()) * V_pi;
-        return P;
+        // Eigendecomposition noise can yield small negative entries for
+        // near-zero-probability transitions; probabilities cannot be negative.
+        return P.cwiseMax(0.0);
     }
 };
 
@@ -240,7 +242,9 @@ public:
     Matrix transition_matrix(Scalar branch_length) const {
         Vector exp_lambda = (eigenvalues * branch_length).array().exp();
         Matrix P = (U_pi * exp_lambda.asDiagonal()) * V_pi;
-        return P;
+        // Eigendecomposition noise can yield small negative entries for
+        // near-zero-probability transitions; probabilities cannot be negative.
+        return P.cwiseMax(0.0);
     }
 };
 

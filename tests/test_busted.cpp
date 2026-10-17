@@ -235,7 +235,11 @@ TEST_CASE("BUSTED-E: Saturation Error Sink (Option A) Quarantines Misalignment A
 
     std::cout << "\n[BUSTED vs BUSTED-E on Corrupted Purifying Alignment]\n"
               << "  Standard BUSTED : LRT = " << res_std.lrt << ", p = " << res_std.p_value
-              << ", omega_3 = " << res_std.unconstrained.test_distribution.omegas.back() << "\n"
+              << ", omega_3 = " << res_std.unconstrained.test_distribution.omegas.back()
+              << ", is_failed = " << res_std.is_failed
+              << ", unc_ll = " << res_std.unconstrained.log_likelihood
+              << ", con_ll = " << res_std.constrained.log_likelihood << "\n"
+              << "  error_message: " << res_std.error_message << "\n"
               << "  BUSTED-E (Sink) : LRT = " << res_sink.lrt << ", p = " << res_sink.p_value
               << ", omega_3 = " << res_sink.unconstrained.test_distribution.omegas.back()
               << ", eps_sink = " << res_sink.unconstrained.error_sink_weight

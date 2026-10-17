@@ -257,31 +257,31 @@ add_executable(hyphy3-fel src/apps/hyphy_fel.cpp)
 target_link_libraries(hyphy3-fel PRIVATE hyphy3_report)
 
 add_executable(hyphy3-contrast-fel src/apps/hyphy_contrast_fel.cpp)
-target_link_libraries(hyphy3-contrast-fel PRIVATE hyphy3_core)
+target_link_libraries(hyphy3-contrast-fel PRIVATE hyphy3_report)
 
 add_executable(hyphy3-meme src/apps/hyphy_meme.cpp)
 target_link_libraries(hyphy3-meme PRIVATE hyphy3_report)
 
 add_executable(hyphy3-busted src/apps/hyphy_busted.cpp)
-target_link_libraries(hyphy3-busted PRIVATE hyphy3_core)
+target_link_libraries(hyphy3-busted PRIVATE hyphy3_report)
 
 add_executable(hyphy3-absrel src/apps/hyphy_absrel.cpp)
-target_link_libraries(hyphy3-absrel PRIVATE hyphy3_core)
+target_link_libraries(hyphy3-absrel PRIVATE hyphy3_report)
 
 add_executable(hyphy3-relax src/apps/hyphy_relax.cpp)
-target_link_libraries(hyphy3-relax PRIVATE hyphy3_core)
+target_link_libraries(hyphy3-relax PRIVATE hyphy3_report)
 
 add_executable(hyphy3-fubar src/apps/hyphy_fubar.cpp)
-target_link_libraries(hyphy3-fubar PRIVATE hyphy3_core)
+target_link_libraries(hyphy3-fubar PRIVATE hyphy3_report)
 
 add_executable(hyphy3-prime src/apps/hyphy_prime.cpp)
-target_link_libraries(hyphy3-prime PRIVATE hyphy3_core)
+target_link_libraries(hyphy3-prime PRIVATE hyphy3_report)
 
 add_executable(hyphy3-gard src/apps/hyphy_gard.cpp)
 target_link_libraries(hyphy3-gard PRIVATE hyphy3_core)
 
 add_executable(hyphy3-slac src/apps/hyphy_slac.cpp)
-target_link_libraries(hyphy3-slac PRIVATE hyphy3_core)
+target_link_libraries(hyphy3-slac PRIVATE hyphy3_report)
 
 add_executable(hyphy3-dfel src/apps/hyphy_dfel.cpp)
 target_link_libraries(hyphy3-dfel PRIVATE hyphy3_report)
