@@ -436,12 +436,7 @@ public:
         }
         tree.scale_bridge_lengths(conversion_factor);
 
-        branch_transition_matrices.resize(tree.num_nodes());
-        for (const auto& node : tree.nodes) {
-            if (node.id != tree.root_id) {
-                branch_transition_matrices[node.id] = base_mg94_matrix.transition_matrix(node.branch_length);
-            }
-        }
+        branch_transition_matrices = LikelihoodEngine::build_P_branches<Matrix>(tree, base_mg94_matrix);
     }
 
     // Static factory that performs Phase 1 GTR and Phase 2 MG94 fitting automatically
@@ -492,61 +487,6 @@ public:
         return analyzer;
     }
 
-    // Pattern log-likelihood evaluator with scaling for underflow protection
-    static Scalar compute_pattern_log_likelihood(
-        const Tree& tree,
-        const SitePattern& pattern,
-        const std::vector<size_t>& leaf_to_taxon,
-        const MG94Matrix& mg94_model,
-        const std::vector<Matrix>& P_branches,
-        std::vector<Vector>& node_L,
-        std::vector<double>& node_log_scale
-    ) {
-        int S = mg94_model.pi.size();
-        const double SCALER_THRESH = 1e-150;
-        const double SCALER_UP = 1e150;
-        const double LOG_SCALER = std::log(SCALER_UP);
-
-        for (int32_t node_id : tree.post_order) {
-            const auto& node = tree.nodes[node_id];
-
-            if (node.is_leaf) {
-                size_t t_idx = leaf_to_taxon[node_id];
-                if (t_idx != static_cast<size_t>(-1)) {
-                    int8_t state = pattern.states[t_idx];
-                    if (state >= 0 && state < S) {
-                        node_L[node_id].setZero();
-                        node_L[node_id](state) = 1.0;
-                    } else {
-                        node_L[node_id].setOnes();
-                    }
-                } else {
-                    node_L[node_id].setOnes();
-                }
-                node_log_scale[node_id] = 0.0;
-            } else {
-                double child_scale_sum = 0.0;
-                tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
-
-                double max_val = node_L[node_id].maxCoeff();
-                int boost_count = 0;
-                while (max_val < SCALER_THRESH && max_val > 0.0) {
-                    node_L[node_id] *= SCALER_UP;
-                    max_val *= SCALER_UP;
-                    boost_count++;
-                }
-                node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
-            }
-        }
-
-        Scalar pat_l = mg94_model.pi.dot(node_L[tree.root_id]);
-        if (pat_l > 0.0) {
-            return std::log(pat_l) + node_log_scale[tree.root_id];
-        } else {
-            return -1e20;
-        }
-    }
-
     // Single site optimization with Empirical Bayes Ridge Shrinkage
     ContrastSiteResult analyze_pattern(size_t p_idx, const std::vector<size_t>& leaf_to_taxon) const {
         const auto& pattern = aln.patterns[p_idx];
@@ -587,8 +527,7 @@ public:
             return res;
         }
 
-        std::vector<Vector> thread_node_L(tree.num_nodes(), Vector::Zero(S));
-        std::vector<double> thread_node_scale(tree.num_nodes(), 0.0);
+        auto [thread_node_L, thread_node_scale] = LikelihoodEngine::make_pattern_scratch<Vector>(tree.num_nodes(), S);
         std::vector<Matrix> P_branches(tree.num_nodes());
 
         // Pre-allocate matrices per group
@@ -623,7 +562,7 @@ public:
                 }
             }
 
-            return compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg_groups[0], P_branches, thread_node_L, thread_node_scale);
+            return LikelihoodEngine::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg_groups[0], P_branches, thread_node_L, thread_node_scale);
         };
 
         // Ridge Shrinkage Penalty Calculation
@@ -1061,15 +1000,7 @@ public:
             .enable_chart = true
         });
 
-        std::vector<size_t> leaf_to_taxon(tree.num_nodes(), static_cast<size_t>(-1));
-        for (const auto& node : tree.nodes) {
-            if (node.is_leaf) {
-                auto it = aln.taxon_to_index.find(node.name);
-                if (it != aln.taxon_to_index.end()) {
-                    leaf_to_taxon[node.id] = it->second;
-                }
-            }
-        }
+        std::vector<size_t> leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(tree, aln);
 
         std::vector<ContrastSiteResult> pattern_results(num_patterns);
 

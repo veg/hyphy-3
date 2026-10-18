@@ -696,15 +696,7 @@ public:
         size_t num_nodes = tree.num_nodes();
         size_t num_patterns = aln.patterns.size();
 
-        std::vector<size_t> leaf_to_taxon(num_nodes, static_cast<size_t>(-1));
-        for (size_t i = 0; i < num_nodes; ++i) {
-            if (tree.nodes[i].is_leaf) {
-                auto it = aln.taxon_to_index.find(tree.nodes[i].name);
-                if (it != aln.taxon_to_index.end()) {
-                    leaf_to_taxon[i] = it->second;
-                }
-            }
-        }
+        std::vector<size_t> leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(tree, aln);
 
         // Parameter vector: [omega, lambda_0, ..., lambda_{K-1}]
         size_t dim = 1 + K;
@@ -723,22 +715,16 @@ public:
             PRIMEMatrix pm;
             pm.update(1.0, omega, lams, codon_prop_diffs, gtr_rates, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, code, settings.max_bound);
 
-            std::vector<Matrix> P_branches(num_nodes);
-            for (size_t i = 0; i < num_nodes; ++i) {
-                if (tree.nodes[i].id != tree.root_id) {
-                    P_branches[i] = pm.transition_matrix(tree.nodes[i].branch_length);
-                }
-            }
+            auto P_branches = LikelihoodEngine::build_P_branches<Matrix>(tree, pm);
 
             Scalar total_lnl = 0.0;
             #pragma omp parallel
             {
-                std::vector<Vector> thread_node_L(num_nodes, Vector::Zero(S));
-                std::vector<double> thread_node_scale(num_nodes, 0.0);
+                auto [thread_node_L, thread_node_scale] = LikelihoodEngine::make_pattern_scratch<Vector>(num_nodes, S);
 
                 #pragma omp for reduction(+:total_lnl) schedule(dynamic, 8)
                 for (size_t p = 0; p < num_patterns; ++p) {
-                    Scalar lnl = FELAnalyzer::compute_pattern_log_likelihood(
+                    Scalar lnl = LikelihoodEngine::compute_pattern_log_likelihood(
                         tree, aln.patterns[p], leaf_to_taxon,
                         // Passing dummy MG94 with same pi
                         static_cast<const MG94Matrix&>(pm),
@@ -786,15 +772,7 @@ public:
         const auto& code = *(aln.code ? aln.code : GeneticCode::universal());
         int S = code.num_sense_codons;
 
-        std::vector<size_t> leaf_to_taxon(num_nodes, static_cast<size_t>(-1));
-        for (size_t i = 0; i < num_nodes; ++i) {
-            if (tree.nodes[i].is_leaf) {
-                auto it = aln.taxon_to_index.find(tree.nodes[i].name);
-                if (it != aln.taxon_to_index.end()) {
-                    leaf_to_taxon[i] = it->second;
-                }
-            }
-        }
+        std::vector<size_t> leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(tree, aln);
 
         // First: Compute site-level FEL baseline for all patterns
         FELAnalyzer fel_analyzer(tree, aln, base_params);
@@ -824,8 +802,7 @@ public:
 
         #pragma omp parallel
         {
-            std::vector<Vector> thread_node_L(num_nodes, Vector::Zero(S));
-            std::vector<double> thread_node_scale(num_nodes, 0.0);
+            auto [thread_node_L, thread_node_scale] = LikelihoodEngine::make_pattern_scratch<Vector>(num_nodes, S);
             std::vector<Matrix> P_branches(num_nodes);
 
             #pragma omp for schedule(dynamic, 4)
@@ -1070,7 +1047,7 @@ private:
                 }
             }
 
-            return FELAnalyzer::compute_pattern_log_likelihood(
+            return LikelihoodEngine::compute_pattern_log_likelihood(
                 tree, pattern, leaf_to_taxon,
                 static_cast<const MG94Matrix&>(pm),
                 P_branches, thread_node_L, thread_node_scale

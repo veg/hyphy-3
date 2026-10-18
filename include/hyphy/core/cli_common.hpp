@@ -9,7 +9,11 @@
 #include "hyphy/core/progress_bar.hpp"
 #include "hyphy/core/provenance.hpp"
 #include "hyphy/analyses/tree_engine.hpp"
-#if __has_include("hyphy/report/html_report.hpp")
+#if __has_include("hyphy/report/viewer_assets.hpp")
+// viewer_assets.hpp is generated into the build tree by hyphy3_viewer_assets and
+// is only on the include path of targets linking hyphy3_report. html_report.hpp
+// itself is static, so probing it would always succeed even for consumers that
+// cannot resolve its generated dependency.
 #include "hyphy/report/html_report.hpp"
 #define HYPHY3_HAS_HTML_REPORT 1
 #endif

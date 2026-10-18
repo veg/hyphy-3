@@ -500,12 +500,7 @@ public:
 
         std::vector<std::vector<Matrix4>> P_branches(K_rates, std::vector<Matrix4>(num_nodes, Matrix4::Identity()));
         for (size_t k = 0; k < K_rates; ++k) {
-            Scalar r_k = effective_rates[k];
-            for (const auto& node : tree.nodes) {
-                if (node.id != tree.root_id) {
-                    P_branches[k][node.id] = gtr_model.transition_matrix(node.branch_length * r_k);
-                }
-            }
+            P_branches[k] = LikelihoodEngine::build_P_branches<Matrix4>(tree, gtr_model, effective_rates[k]);
         }
 
         std::vector<size_t> local_map;
@@ -519,67 +514,26 @@ public:
         auto eval_pattern = [&](size_t p, std::vector<Vector4>& node_L, std::vector<double>& node_log_scale) -> Scalar {
             const auto& pattern = aln.patterns[p];
 
-            // Initialize leaf states once for this pattern
-            for (int32_t node_id : tree.post_order) {
-                const auto& node = tree.nodes[node_id];
-                if (node.is_leaf) {
-                    size_t t_idx = leaf_to_taxon[node_id];
-                    if (t_idx != static_cast<size_t>(-1)) {
-                        int8_t state = pattern.states[t_idx];
-                        if (state >= 0 && state < 4) {
-                            node_L[node_id].setZero();
-                            node_L[node_id](state) = 1.0;
-                        } else {
-                            node_L[node_id].setOnes();
-                        }
-                    } else {
-                        node_L[node_id].setOnes();
-                    }
-                    node_log_scale[node_id] = 0.0;
-                }
-            }
-
-            Scalar max_log = -1e300;
-            std::vector<Scalar> log_terms(K_rates, -1e300);
+            std::vector<Scalar> log_terms(K_rates, -std::numeric_limits<Scalar>::infinity());
 
             for (size_t k = 0; k < K_rates; ++k) {
                 Scalar w_k = effective_weights[k];
                 const auto& P_k = P_branches[k];
 
-                for (int32_t node_id : tree.post_order) {
-                    const auto& node = tree.nodes[node_id];
-                    if (!node.is_leaf) {
-                        double child_scale_sum = 0.0;
-                        tree.eval_internal_node(node_id, P_k, node_L, node_log_scale, node_L[node_id], child_scale_sum);
-                        node_log_scale[node_id] = child_scale_sum;
-                    }
-                }
-
+                // First pass initializes leaf states; later passes reuse them.
+                LikelihoodEngine::eval_pattern_postorder(tree, pattern, leaf_to_taxon, P_k, 4, node_L, node_log_scale, k == 0);
                 Scalar cond_l = gtr_model.pi.dot(node_L[tree.root_id]);
                 if (cond_l > 0.0) {
                     log_terms[k] = std::log(w_k) + std::log(cond_l) + node_log_scale[tree.root_id];
-                    if (log_terms[k] > max_log) max_log = log_terms[k];
                 }
             }
 
-            Scalar pat_lnl = -690.7755;
-            if (max_log > -1e200) {
-                Scalar sum_exp = 0.0;
-                for (size_t k = 0; k < K_rates; ++k) {
-                    if (log_terms[k] > -1e200) {
-                        sum_exp += std::exp(log_terms[k] - max_log);
-                    }
-                }
-                if (sum_exp > 0.0) {
-                    pat_lnl = max_log + std::log(sum_exp);
-                }
-            }
-            return pat_lnl;
+            Scalar lse = LikelihoodEngine::logsumexp(log_terms);
+            return std::isfinite(lse) ? lse : static_cast<Scalar>(-690.7755);
         };
 
         if (omp_in_parallel()) {
-            std::vector<Vector4> node_L(num_nodes);
-            std::vector<double> node_log_scale(num_nodes, 0.0);
+            auto [node_L, node_log_scale] = LikelihoodEngine::make_pattern_scratch<Vector4>(num_nodes, 4);
             for (size_t p = 0; p < num_patterns; ++p) {
                 Scalar pat_lnl = eval_pattern(p, node_L, node_log_scale);
                 pattern_log_l[p] = pat_lnl;
@@ -588,8 +542,7 @@ public:
         } else {
             #pragma omp parallel
             {
-                std::vector<Vector4> node_L(num_nodes);
-                std::vector<double> node_log_scale(num_nodes, 0.0);
+                auto [node_L, node_log_scale] = LikelihoodEngine::make_pattern_scratch<Vector4>(num_nodes, 4);
                 #pragma omp for reduction(+:total_log_l) schedule(static)
                 for (size_t p = 0; p < num_patterns; ++p) {
                     Scalar pat_lnl = eval_pattern(p, node_L, node_log_scale);

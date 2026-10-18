@@ -10,6 +10,22 @@
 
 namespace hyphy::core {
 
+// P(t) = U_pi * diag(exp(lambda * t)) * V_pi for a symmetrized
+// eigendecomposition S = diag(sqrt(pi)) * Q * diag(1/sqrt(pi)).
+// Eigendecomposition noise can yield small negative entries for
+// near-zero-probability transitions; probabilities cannot be negative.
+template <typename MatType, typename VecType>
+MatType transition_matrix_from_eigen(
+    const MatType& U_pi,
+    const VecType& eigenvalues,
+    const MatType& V_pi,
+    Scalar branch_length
+) {
+    VecType exp_lambda = (eigenvalues * branch_length).array().exp();
+    MatType P = (U_pi * exp_lambda.asDiagonal()) * V_pi;
+    return P.cwiseMax(0.0);
+}
+
 struct GTRParameters {
     Scalar theta_AC = 1.0;
     Scalar theta_AT = 1.0;
@@ -93,9 +109,7 @@ public:
     }
 
     Matrix4 transition_matrix(Scalar branch_length) const {
-        Vector4 exp_lambda = (eigenvalues * branch_length).array().exp();
-        Matrix4 P = (U_pi * exp_lambda.asDiagonal()) * V_pi;
-        return P;
+        return transition_matrix_from_eigen(U_pi, eigenvalues, V_pi, branch_length);
     }
 };
 
@@ -238,9 +252,7 @@ public:
     }
 
     Matrix transition_matrix(Scalar branch_length) const {
-        Vector exp_lambda = (eigenvalues * branch_length).array().exp();
-        Matrix P = (U_pi * exp_lambda.asDiagonal()) * V_pi;
-        return P;
+        return transition_matrix_from_eigen(U_pi, eigenvalues, V_pi, branch_length);
     }
 };
 

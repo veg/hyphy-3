@@ -237,61 +237,6 @@ public:
         setup_regimes_and_matrices();
     }
 
-    // Evaluate single pattern log-likelihood with underflow protection
-    static Scalar compute_pattern_log_likelihood(
-        const Tree& tree,
-        const SitePattern& pattern,
-        const std::vector<size_t>& leaf_to_taxon,
-        const MG94Matrix& mg94_model,
-        const std::vector<Matrix>& P_branches,
-        std::vector<Vector>& node_L,
-        std::vector<double>& node_log_scale
-    ) {
-        int S = mg94_model.pi.size();
-        const double SCALER_THRESH = 1e-150;
-        const double SCALER_UP = 1e150;
-        const double LOG_SCALER = std::log(SCALER_UP);
-
-        for (int32_t node_id : tree.post_order) {
-            const auto& node = tree.nodes[node_id];
-
-            if (node.is_leaf) {
-                size_t t_idx = leaf_to_taxon[node_id];
-                if (t_idx != static_cast<size_t>(-1)) {
-                    int8_t state = pattern.states[t_idx];
-                    if (state >= 0 && state < S) {
-                        node_L[node_id].setZero();
-                        node_L[node_id](state) = 1.0;
-                    } else {
-                        node_L[node_id].setOnes();
-                    }
-                } else {
-                    node_L[node_id].setOnes();
-                }
-                node_log_scale[node_id] = 0.0;
-            } else {
-                double child_scale_sum = 0.0;
-                tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
-
-                double max_val = node_L[node_id].maxCoeff();
-                int boost_count = 0;
-                while (max_val < SCALER_THRESH && max_val > 0.0) {
-                    node_L[node_id] *= SCALER_UP;
-                    max_val *= SCALER_UP;
-                    boost_count++;
-                }
-                node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
-            }
-        }
-
-        Scalar pat_l = mg94_model.pi.dot(node_L[tree.root_id]);
-        if (pat_l > 0.0) {
-            return std::log(pat_l) + node_log_scale[tree.root_id];
-        } else {
-            return -1e20;
-        }
-    }
-
     // ========================================================================
     // 1. Upfront Compositional Heterogeneity Test
     // ========================================================================
@@ -725,12 +670,11 @@ public:
             // Pattern likelihood evaluation
             Scalar tree_lnl = 0.0;
             int S = gcode.num_sense_codons;
-            std::vector<Vector> node_L(num_nodes, Vector(S));
-            std::vector<double> node_log_scale(num_nodes, 0.0);
+            auto [node_L, node_log_scale] = LikelihoodEngine::make_pattern_scratch<Vector>(num_nodes, S);
 
             for (size_t p = 0; p < aln.patterns.size(); ++p) {
                 const auto& pat = aln.patterns[p];
-                Scalar pat_l = compute_pattern_log_likelihood(
+                Scalar pat_l = LikelihoodEngine::compute_pattern_log_likelihood(
                     cand_tree, pat, leaf_to_taxon, base_matrix, P_branches, node_L, node_log_scale
                 );
                 tree_lnl += pat.weight * pat_l;
@@ -1121,8 +1065,7 @@ public:
         }
 
         // Thread-local likelihood scratchpad
-        std::vector<Vector> thread_node_L(num_nodes, Vector(S));
-        std::vector<double> thread_node_scale(num_nodes, 0.0);
+        auto [thread_node_L, thread_node_scale] = LikelihoodEngine::make_pattern_scratch<Vector>(num_nodes, S);
         std::vector<Matrix> P_branches(num_nodes);
         std::vector<MG94Matrix> regime_matrices(K);
 
@@ -1158,7 +1101,7 @@ public:
             }
 
             const auto& mg_root = (K == 3) ? regime_matrices[1] : regime_matrices[0];
-            return compute_pattern_log_likelihood(
+            return LikelihoodEngine::compute_pattern_log_likelihood(
                 tree, pattern, leaf_to_taxon, mg_root, P_branches, thread_node_L, thread_node_scale
             );
         };

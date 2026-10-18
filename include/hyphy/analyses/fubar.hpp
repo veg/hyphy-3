@@ -309,22 +309,16 @@ public:
             MG94Matrix mg;
             mg.update(params, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
 
-            std::vector<Matrix> P_branches(num_nodes);
-            for (const auto& node : tree.nodes) {
-                if (node.id != tree.root_id) {
-                    P_branches[node.id] = mg.transition_matrix(node.branch_length);
-                }
-            }
+            auto P_branches = LikelihoodEngine::build_P_branches<Matrix>(tree, mg);
 
-            std::vector<Vector> thread_node_L(num_nodes, Vector::Zero(S_codons));
-            std::vector<double> thread_node_scale(num_nodes, 0.0);
+            auto [thread_node_L, thread_node_scale] = LikelihoodEngine::make_pattern_scratch<Vector>(num_nodes, S_codons);
 
             std::vector<Scalar> pattern_lnl(num_patterns, -1e20);
             Scalar total_ll = 0.0;
 
             for (size_t p = 0; p < num_patterns; ++p) {
-                Scalar lnl = compute_pattern_log_likelihood(
-                    tree, aln.patterns[p], leaf_to_taxon, mg, P_branches, thread_node_L, thread_node_scale, S_codons
+                Scalar lnl = LikelihoodEngine::compute_pattern_log_likelihood(
+                    tree, aln.patterns[p], leaf_to_taxon, mg, P_branches, thread_node_L, thread_node_scale
                 );
                 pattern_lnl[p] = lnl;
                 total_ll += aln.patterns[p].weight * lnl;
@@ -405,21 +399,15 @@ public:
                 MG94Matrix mg;
                 mg.update(params, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
 
-                std::vector<Matrix> P_branches(num_nodes);
-                for (const auto& node : tree.nodes) {
-                    if (node.id != tree.root_id) {
-                        P_branches[node.id] = mg.transition_matrix(node.branch_length);
-                    }
-                }
+                auto P_branches = LikelihoodEngine::build_P_branches<Matrix>(tree, mg);
 
-                std::vector<Vector> thread_node_L(num_nodes, Vector::Zero(S_codons));
-                std::vector<double> thread_node_scale(num_nodes, 0.0);
+                auto [thread_node_L, thread_node_scale] = LikelihoodEngine::make_pattern_scratch<Vector>(num_nodes, S_codons);
 
                 std::vector<Scalar> pattern_lnl(num_patterns, -1e20);
 
                 for (size_t p = 0; p < num_patterns; ++p) {
-                    Scalar lnl = compute_pattern_log_likelihood(
-                        tree, aln.patterns[p], leaf_to_taxon, mg, P_branches, thread_node_L, thread_node_scale, S_codons
+                    Scalar lnl = LikelihoodEngine::compute_pattern_log_likelihood(
+                        tree, aln.patterns[p], leaf_to_taxon, mg, P_branches, thread_node_L, thread_node_scale
                     );
                     pattern_lnl[p] = lnl;
                 }
@@ -962,59 +950,6 @@ std::string to_legacy_json(const FUBARResult& res, const std::string& input_file
     }
 
 private:
-    static Scalar compute_pattern_log_likelihood(
-        const Tree& tree,
-        const SitePattern& pattern,
-        const std::vector<size_t>& leaf_to_taxon,
-        const MG94Matrix& mg94_model,
-        const std::vector<Matrix>& P_branches,
-        std::vector<Vector>& node_L,
-        std::vector<double>& node_log_scale,
-        int S
-    ) {
-        const double SCALER_THRESH = 1e-150;
-        const double SCALER_UP = 1e150;
-        const double LOG_SCALER = std::log(SCALER_UP);
-
-        for (int32_t node_id : tree.post_order) {
-            const auto& node = tree.nodes[node_id];
-
-            if (node.is_leaf) {
-                size_t t_idx = leaf_to_taxon[node_id];
-                if (t_idx != static_cast<size_t>(-1)) {
-                    int8_t state = pattern.states[t_idx];
-                    if (state >= 0 && state < S) {
-                        node_L[node_id].setZero();
-                        node_L[node_id](state) = 1.0;
-                    } else {
-                        node_L[node_id].setOnes();
-                    }
-                } else {
-                    node_L[node_id].setOnes();
-                }
-                node_log_scale[node_id] = 0.0;
-            } else {
-                double child_scale_sum = 0.0;
-                tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
-
-                double max_val = node_L[node_id].maxCoeff();
-                int boost_count = 0;
-                while (max_val < SCALER_THRESH && max_val > 0.0) {
-                    node_L[node_id] *= SCALER_UP;
-                    max_val *= SCALER_UP;
-                    boost_count++;
-                }
-                node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
-            }
-        }
-
-        Scalar pat_l = mg94_model.pi.dot(node_L[tree.root_id]);
-        if (pat_l > 0.0) {
-            return std::log(pat_l) + node_log_scale[tree.root_id];
-        } else {
-            return -1e20;
-        }
-    }
 };
 
 } // namespace hyphy::analyses
