@@ -644,6 +644,237 @@ public:
 
         return res;
     }
+
+    /**
+     * Compute stationary distribution for ExpCM at a single site.
+     *
+     * p_{r,x} = (π_{r,A(x)})^β · φ_{x1} φ_{x2} φ_{x3} / Z_r
+     *
+     * @param gcode        Genetic code
+     * @param prefs        Site preferences (20 AAs)
+     * @param site         Site index (0-based)
+     * @param beta         Stringency parameter
+     * @param phi          Nucleotide frequencies (4-element vector)
+     * @return             Stationary distribution (61 codons)
+     */
+    static Eigen::Matrix<Scalar, 61, 1> compute_expcm_stationary(
+        const GeneticCode& gcode,
+        const Preferences& prefs,
+        size_t site,
+        Scalar beta,
+        const Vector4& phi
+    ) {
+        Eigen::Matrix<Scalar, 61, 1> p = Eigen::Matrix<Scalar, 61, 1>::Zero();
+        Scalar Z = 0.0;
+
+        for (int x = 0; x < gcode.num_sense_codons; ++x) {
+            char aa = gcode.sense_codon_aa[x];
+            Scalar pref_beta = std::pow(prefs.at(site, aa), beta);
+
+            // Nucleotide product: φ_{x1} · φ_{x2} · φ_{x3}
+            const std::string& codon = gcode.sense_codons[x];
+            int8_t n1 = char_to_nuc(codon[0]);
+            int8_t n2 = char_to_nuc(codon[1]);
+            int8_t n3 = char_to_nuc(codon[2]);
+            Scalar nuc_freq = phi(n1) * phi(n2) * phi(n3);
+
+            p(x) = pref_beta * nuc_freq;
+            Z += p(x);
+        }
+
+        if (Z > 0.0) {
+            p /= Z;  // Normalize
+        }
+
+        return p;
+    }
+
+    /**
+     * Compute ExpCM log-likelihood at fixed parameters.
+     *
+     * Iterates over sites, building per-site P matrices and computing likelihoods
+     * via Felsenstein pruning. Uses scaled matrix exponential for transition matrices.
+     *
+     * @param tree         Phylogenetic tree (with branch lengths)
+     * @param aln          Codon alignment
+     * @param gcode        Genetic code
+     * @param prefs        Site-specific preferences
+     * @param params       ExpCM parameters (beta, omega, kappa, phi)
+     * @param branch_scale Factor to scale all branch lengths (default 1.0)
+     * @return             Log-likelihood
+     */
+    static Scalar compute_expcm_log_likelihood(
+        const Tree& tree,
+        const Alignment& aln,
+        const GeneticCode& gcode,
+        const Preferences& prefs,
+        const ExpCMParameters& params,
+        Scalar branch_scale = 1.0
+    ) {
+        params.validate();
+
+        size_t num_nodes = tree.num_nodes();
+        size_t num_patterns = aln.patterns.size();
+        size_t num_sites = prefs.num_sites();
+
+        std::vector<size_t> local_map;
+        const std::vector<size_t>& leaf_to_taxon = build_leaf_to_taxon_map(tree, aln);
+
+        // Build Q matrix (shared across all sites)
+        ExpCMQMatrix Q_matrix;
+        Q_matrix.build(gcode, params);
+        const Matrix61Codon& Q = Q_matrix.Q;
+
+        Scalar total_log_l = 0.0;
+        const double SCALER_THRESH = 1e-150;
+        const double SCALER_UP = 1e150;
+        const double LOG_SCALER = std::log(SCALER_UP);
+
+        // For each site, build F, compute P, and accumulate likelihood
+        for (size_t site = 0; site < num_sites; ++site) {
+            // 1. Build F matrix for this site
+            ExpCMFMatrix F_matrix;
+            F_matrix.build(gcode, prefs, site, params);
+
+            // 2. Compute P = F ⊙ Q (element-wise product)
+            Matrix61Codon P = F_matrix.F.cwiseProduct(Q);
+
+            // 3. Set diagonals so rows sum to 0
+            for (int x = 0; x < 61; ++x) {
+                P(x, x) = -P.row(x).sum();
+            }
+
+            // 4. Compute stationary distribution for this site
+            Eigen::Matrix<Scalar, 61, 1> pi_site = compute_expcm_stationary(
+                gcode, prefs, site, params.beta, params.phi
+            );
+
+            // 5. Compute transition matrices for each branch using scaled matrix exponential
+            std::vector<Matrix61Codon> P_branches(num_nodes);
+            for (const auto& node : tree.nodes) {
+                if (node.id != tree.root_id) {
+                    Scalar scaled_bl = node.branch_length * branch_scale;
+                    // Compute exp(P · scaled_bl) via scaling and squaring
+                    P_branches[node.id] = matrix_exp_scaling_squaring(P * scaled_bl);
+                }
+            }
+
+            // 6. Compute site likelihood via Felsenstein pruning, parallel over patterns
+            #pragma omp parallel reduction(+:total_log_l)
+            {
+                std::vector<Eigen::Matrix<Scalar, 61, 1>> node_L(num_nodes);
+                std::vector<double> node_log_scale(num_nodes, 0.0);
+
+                #pragma omp for schedule(dynamic)
+                for (size_t p = 0; p < num_patterns; ++p) {
+                    const auto& pattern = aln.patterns[p];
+
+                    for (int32_t node_id : tree.post_order) {
+                        const auto& node = tree.nodes[node_id];
+
+                        if (node.is_leaf) {
+                            size_t t_idx = leaf_to_taxon[node_id];
+                            if (t_idx != static_cast<size_t>(-1)) {
+                                int8_t state = pattern.states[t_idx];
+                                if (state >= 0 && state < 61) {
+                                    node_L[node_id].setZero();
+                                    node_L[node_id](state) = 1.0;
+                                } else {
+                                    node_L[node_id].setOnes();
+                                }
+                            } else {
+                                node_L[node_id].setOnes();
+                            }
+                            node_log_scale[node_id] = 0.0;
+                        } else {
+                            // Internal node: use tree's eval_internal_node function
+                            double child_scale_sum = 0.0;
+                            tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
+
+                            // Rescale if underflow
+                            double max_val = node_L[node_id].maxCoeff();
+                            int boost_count = 0;
+                            while (max_val < SCALER_THRESH && max_val > 0.0) {
+                                node_L[node_id] *= SCALER_UP;
+                                max_val *= SCALER_UP;
+                                boost_count++;
+                            }
+                            node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
+                        }
+                    }
+
+                    // Compute pattern likelihood: pi_site · node_L[root]
+                    Scalar pattern_likelihood = pi_site.dot(node_L[tree.root_id]);
+                    if (pattern_likelihood > 0.0) {
+                        total_log_l += pattern.weight * (std::log(pattern_likelihood) + node_log_scale[tree.root_id]);
+                    } else {
+                        total_log_l += pattern.weight * (-1e20);
+                    }
+                }
+            }
+        }
+
+        return total_log_l;
+    }
+
+private:
+    /**
+     * Compute matrix exponential using scaling and squaring method.
+     * Robust for general matrices, including those with complex eigenvalues.
+     */
+    static Matrix61Codon matrix_exp_scaling_squaring(const Matrix61Codon& M) {
+        // Scaling and squaring method from EXPOKIT
+        // For simplicity, use repeated squaring with scaling
+
+        const int max_scale = 30;
+        Scalar norm_inf = M.rowwise().lpNorm<1>().maxCoeff();
+
+        if (norm_inf < 1e-10) {
+            // For very small matrices, use I + M
+            return Matrix61Codon::Identity() + M;
+        }
+
+        // Find s such that ||M/2^s|| < 1
+        int s = 0;
+        Scalar one_half_power = 1.0;
+        while (norm_inf > 1.0 && s < max_scale) {
+            norm_inf *= 0.5;
+            one_half_power *= 0.5;
+            s++;
+        }
+
+        // Compute exp(M/2^s) using Padé approximation
+        Matrix61Codon M_scaled = M * one_half_power;
+        Matrix61Codon result = pade_exp(M_scaled);
+
+        // Square result s times to get exp(M)
+        for (int i = 0; i < s; ++i) {
+            result = result * result;
+        }
+
+        return result;
+    }
+
+    /**
+     * Padé (3,3) approximation for matrix exponential.
+     * For ||X|| < 1, exp(X) ≈ (N + D)^{-1} · (D - N) is accurate.
+     */
+    static Matrix61Codon pade_exp(const Matrix61Codon& X) {
+        Matrix61Codon I = Matrix61Codon::Identity();
+        Matrix61Codon X2 = X * X;
+        Matrix61Codon X3 = X2 * X;
+
+        // (3,3) Padé: coefficients from rational approximation
+        // exp(X) ≈ [I + X/2 + X²/9 + X³/72] / [I - X/2 + X²/9 - X³/72]
+        // Rearranging to avoid division by 9, 72:
+        // numerator:   72*I + 36*X + 8*X² + X³
+        // denominator: 72*I - 36*X + 8*X² - X³
+
+        Matrix61Codon num = 72.0 * I + 36.0 * X + 8.0 * X2 + X3;
+        Matrix61Codon den = 72.0 * I - 36.0 * X + 8.0 * X2 - X3;
+
+        return den.inverse() * num;
+    }
 };
 
 } // namespace hyphy::core
