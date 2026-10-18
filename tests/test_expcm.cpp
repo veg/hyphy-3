@@ -691,6 +691,132 @@ TEST_SUITE("ExpCM: Step 3 - Fixed-Parameter Likelihood") {
         CHECK(lnL > -100.0);  // Should not be too negative
     }
 
+    TEST_CASE("Debug: Verify matrix exponential accuracy") {
+        auto gcode = hyphy::core::GeneticCode::universal();
+
+        // Test simple case: two identical sequences
+        hyphy::core::Alignment aln;
+        aln.add_sequence("seq1", "ATG");
+        aln.add_sequence("seq2", "ATG");
+        aln.finalize(gcode);
+
+        // Create tree with varying branch lengths
+        std::string newick = "(seq1:0.01,seq2:0.01);";
+        auto tree = hyphy::core::Tree::from_newick(newick);
+
+        hyphy::core::Preferences prefs;
+        prefs.nsites = 1;
+        prefs.prefs = Eigen::Matrix<hyphy::core::Scalar, Eigen::Dynamic, 20>::Ones(1, 20) / 20.0;
+
+        hyphy::core::ExpCMParameters params;
+        params.beta = 1.0;
+        params.omega = 1.0;
+        params.kappa = 2.0;
+        params.phi = hyphy::core::Vector4(0.25, 0.25, 0.25, 0.25);
+
+        // Compute likelihood at different scales
+        std::cerr << "\n=== MATRIX EXPONENTIAL ACCURACY TEST ===" << std::endl;
+        std::cerr << "Small branch case (t=0.01, identical sequences)" << std::endl;
+
+        for (double scale : {0.1, 0.373, 1.0, 2.68}) {
+            double lnL = hyphy::core::LikelihoodEngine::compute_expcm_log_likelihood(
+                tree, aln, *gcode, prefs, params, scale
+            );
+            std::cerr << "  Scale=" << std::fixed << std::setprecision(3) << scale
+                      << " → ln L = " << std::setprecision(6) << lnL << std::endl;
+        }
+
+        // Now test with reference parameters
+        params.beta = 3.38189;
+        params.kappa = 8.75598;
+        params.omega = 0.977468;
+
+        std::cerr << std::endl << "With reference parameters (β, κ, ω):" << std::endl;
+        double lnL_ref = hyphy::core::LikelihoodEngine::compute_expcm_log_likelihood(
+            tree, aln, *gcode, prefs, params, 1.0
+        );
+        std::cerr << "  Scale=1.0 → ln L = " << std::fixed << std::setprecision(6) << lnL_ref << std::endl;
+        std::cerr << "  (Expected ≈ -9 to -10 for small branches, identical seqs)" << std::endl;
+
+        CHECK(std::isfinite(lnL_ref));
+    }
+
+    TEST_CASE("Debug: Search for optimal scale factor") {
+        auto gcode = hyphy::core::GeneticCode::universal();
+
+        // Load real test data
+        std::string aln_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/alignment.fasta";
+        std::string prefs_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/prefs.csv";
+        std::string tree_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/tree.newick";
+
+        if (std::filesystem::exists(aln_file) &&
+            std::filesystem::exists(prefs_file) &&
+            std::filesystem::exists(tree_file)) {
+
+            auto aln = hyphy::core::Alignment::from_fasta(aln_file);
+            auto prefs = hyphy::core::Preferences::from_csv(prefs_file);
+            auto tree = hyphy::core::Tree::from_newick_file(tree_file);
+
+            hyphy::core::ExpCMParameters params;
+            params.beta = 3.38189;
+            params.kappa = 8.75598;
+            params.omega = 0.977468;
+            params.phi = hyphy::core::Vector4(0.355409, 0.201765, 0.249379,
+                                              1.0 - 0.355409 - 0.201765 - 0.249379);
+
+            std::cerr << "\n=== OPTIMAL SCALE FACTOR SEARCH ===" << std::endl;
+            std::cerr << "Expected likelihood: -775.21" << std::endl;
+            std::cerr << "Searching for scale factor that gives correct likelihood..." << std::endl;
+
+            double expected = -775.21;
+            double best_error = std::numeric_limits<double>::infinity();
+            double best_scale = 1.0;
+
+            // Binary search for optimal scale factor
+            double scale_min = 0.01;
+            double scale_max = 10.0;
+
+            for (int iteration = 0; iteration < 20; ++iteration) {
+                double scale_mid = (scale_min + scale_max) / 2.0;
+                double lnL = hyphy::core::LikelihoodEngine::compute_expcm_log_likelihood(
+                    tree, aln, *gcode, prefs, params, scale_mid
+                );
+
+                double error = std::abs(lnL - expected);
+                if (error < best_error) {
+                    best_error = error;
+                    best_scale = scale_mid;
+                }
+
+                std::cerr << "Iteration " << iteration << ": scale=" << std::fixed << std::setprecision(6)
+                          << scale_mid << " → ln L = " << std::setprecision(2) << lnL
+                          << " (error=" << std::setprecision(2) << error << ")" << std::endl;
+
+                // Adjust search range
+                if (lnL < expected) {
+                    // Need smaller scale (less negative)
+                    scale_max = scale_mid;
+                } else {
+                    // Need larger scale (more negative)
+                    scale_min = scale_mid;
+                }
+            }
+
+            std::cerr << std::endl << "Best scale found: " << std::fixed << std::setprecision(8) << best_scale << std::endl;
+            std::cerr << "Best error: " << best_error << std::endl;
+
+            // Verify the best scale
+            double final_lnL = hyphy::core::LikelihoodEngine::compute_expcm_log_likelihood(
+                tree, aln, *gcode, prefs, params, best_scale
+            );
+            std::cerr << "Final ln L with best scale: " << std::fixed << std::setprecision(2) << final_lnL << std::endl;
+            std::cerr << "Expected: " << expected << std::endl;
+            std::cerr << "Ratio: " << (final_lnL / expected) << std::endl;
+
+            CHECK(true);  // Diagnostic only
+        }
+    }
+
     TEST_CASE("Fixed-parameter likelihood: smoke test") {
         auto gcode = hyphy::core::GeneticCode::universal();
 
