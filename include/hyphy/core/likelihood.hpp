@@ -730,26 +730,32 @@ public:
         const double SCALER_UP = 1e150;
         const double LOG_SCALER = std::log(SCALER_UP);
 
-        // For each site, build F, compute P, and accumulate likelihood
+        // Process each alignment site (codon position)
+        // Each site has a specific pattern and requires its own P matrix
+        #pragma omp parallel for reduction(+:total_log_l) schedule(dynamic)
         for (size_t site = 0; site < num_sites; ++site) {
-            // 1. Build F matrix for this site
+            // 1. Get the pattern for this site
+            size_t pattern_idx = aln.site_to_pattern[site];
+            const auto& pattern = aln.patterns[pattern_idx];
+
+            // 2. Build F matrix for this site
             ExpCMFMatrix F_matrix;
             F_matrix.build(gcode, prefs, site, params);
 
-            // 2. Compute P = F ⊙ Q (element-wise product)
+            // 3. Compute P = F ⊙ Q (element-wise product)
             Matrix61Codon P = F_matrix.F.cwiseProduct(Q);
 
-            // 3. Set diagonals so rows sum to 0
+            // 4. Set diagonals so rows sum to 0
             for (int x = 0; x < 61; ++x) {
                 P(x, x) = -P.row(x).sum();
             }
 
-            // 4. Compute stationary distribution for this site
+            // 5. Compute stationary distribution for this site
             Eigen::Matrix<Scalar, 61, 1> pi_site = compute_expcm_stationary(
                 gcode, prefs, site, params.beta, params.phi
             );
 
-            // 5. Compute transition matrices for each branch using scaled matrix exponential
+            // 6. Compute transition matrices for each branch using scaled matrix exponential
             std::vector<Matrix61Codon> P_branches(num_nodes);
             for (const auto& node : tree.nodes) {
                 if (node.id != tree.root_id) {
@@ -759,58 +765,50 @@ public:
                 }
             }
 
-            // 6. Compute site likelihood via Felsenstein pruning, parallel over patterns
-            #pragma omp parallel reduction(+:total_log_l)
-            {
-                std::vector<Eigen::Matrix<Scalar, 61, 1>> node_L(num_nodes);
-                std::vector<double> node_log_scale(num_nodes, 0.0);
+            // 7. Compute site likelihood via Felsenstein pruning
+            std::vector<Eigen::Matrix<Scalar, 61, 1>> node_L(num_nodes);
+            std::vector<double> node_log_scale(num_nodes, 0.0);
 
-                #pragma omp for schedule(dynamic)
-                for (size_t p = 0; p < num_patterns; ++p) {
-                    const auto& pattern = aln.patterns[p];
+            for (int32_t node_id : tree.post_order) {
+                const auto& node = tree.nodes[node_id];
 
-                    for (int32_t node_id : tree.post_order) {
-                        const auto& node = tree.nodes[node_id];
-
-                        if (node.is_leaf) {
-                            size_t t_idx = leaf_to_taxon[node_id];
-                            if (t_idx != static_cast<size_t>(-1)) {
-                                int8_t state = pattern.states[t_idx];
-                                if (state >= 0 && state < 61) {
-                                    node_L[node_id].setZero();
-                                    node_L[node_id](state) = 1.0;
-                                } else {
-                                    node_L[node_id].setOnes();
-                                }
-                            } else {
-                                node_L[node_id].setOnes();
-                            }
-                            node_log_scale[node_id] = 0.0;
+                if (node.is_leaf) {
+                    size_t t_idx = leaf_to_taxon[node_id];
+                    if (t_idx != static_cast<size_t>(-1)) {
+                        int8_t state = pattern.states[t_idx];
+                        if (state >= 0 && state < 61) {
+                            node_L[node_id].setZero();
+                            node_L[node_id](state) = 1.0;
                         } else {
-                            // Internal node: use tree's eval_internal_node function
-                            double child_scale_sum = 0.0;
-                            tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
-
-                            // Rescale if underflow
-                            double max_val = node_L[node_id].maxCoeff();
-                            int boost_count = 0;
-                            while (max_val < SCALER_THRESH && max_val > 0.0) {
-                                node_L[node_id] *= SCALER_UP;
-                                max_val *= SCALER_UP;
-                                boost_count++;
-                            }
-                            node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
+                            node_L[node_id].setOnes();
                         }
-                    }
-
-                    // Compute pattern likelihood: pi_site · node_L[root]
-                    Scalar pattern_likelihood = pi_site.dot(node_L[tree.root_id]);
-                    if (pattern_likelihood > 0.0) {
-                        total_log_l += pattern.weight * (std::log(pattern_likelihood) + node_log_scale[tree.root_id]);
                     } else {
-                        total_log_l += pattern.weight * (-1e20);
+                        node_L[node_id].setOnes();
                     }
+                    node_log_scale[node_id] = 0.0;
+                } else {
+                    // Internal node: use tree's eval_internal_node function
+                    double child_scale_sum = 0.0;
+                    tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
+
+                    // Rescale if underflow
+                    double max_val = node_L[node_id].maxCoeff();
+                    int boost_count = 0;
+                    while (max_val < SCALER_THRESH && max_val > 0.0) {
+                        node_L[node_id] *= SCALER_UP;
+                        max_val *= SCALER_UP;
+                        boost_count++;
+                    }
+                    node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
                 }
+            }
+
+            // Compute site likelihood: pi_site · node_L[root]
+            Scalar site_likelihood = pi_site.dot(node_L[tree.root_id]);
+            if (site_likelihood > 0.0) {
+                total_log_l += std::log(site_likelihood) + node_log_scale[tree.root_id];
+            } else {
+                total_log_l += (-1e20);
             }
         }
 
@@ -856,22 +854,29 @@ private:
     }
 
     /**
-     * Padé (3,3) approximation for matrix exponential.
-     * For ||X|| < 1, exp(X) ≈ (N + D)^{-1} · (D - N) is accurate.
+     * Padé (5,5) approximation for matrix exponential.
+     * Higher-order approximation for better accuracy with scaled matrices.
      */
     static Matrix61Codon pade_exp(const Matrix61Codon& X) {
         Matrix61Codon I = Matrix61Codon::Identity();
         Matrix61Codon X2 = X * X;
         Matrix61Codon X3 = X2 * X;
+        Matrix61Codon X4 = X3 * X;
+        Matrix61Codon X5 = X4 * X;
 
-        // (3,3) Padé: coefficients from rational approximation
-        // exp(X) ≈ [I + X/2 + X²/9 + X³/72] / [I - X/2 + X²/9 - X³/72]
-        // Rearranging to avoid division by 9, 72:
-        // numerator:   72*I + 36*X + 8*X² + X³
-        // denominator: 72*I - 36*X + 8*X² - X³
+        // (5,5) Padé approximation coefficients
+        // exp(X) ≈ N(X) / D(X)
+        // N(X) = I + c1*X + c2*X² + c3*X³ + c4*X⁴ + c5*X⁵
+        // D(X) = I - c1*X + c2*X² - c3*X³ + c4*X⁴ - c5*X⁵
+        // where: c1=1/2, c2=1/9, c3=1/72, c4=1/1008, c5=1/30240
 
-        Matrix61Codon num = 72.0 * I + 36.0 * X + 8.0 * X2 + X3;
-        Matrix61Codon den = 72.0 * I - 36.0 * X + 8.0 * X2 - X3;
+        // Using integer arithmetic to avoid floating point errors:
+        // Multiply everything by 30240 (LCM of denominators)
+        // N = 30240*I + 15120*X + 3360*X² + 420*X³ + 30*X⁴ + X⁵
+        // D = 30240*I - 15120*X + 3360*X² - 420*X³ + 30*X⁴ - X⁵
+
+        Matrix61Codon num = 30240.0 * I + 15120.0 * X + 3360.0 * X2 + 420.0 * X3 + 30.0 * X4 + X5;
+        Matrix61Codon den = 30240.0 * I - 15120.0 * X + 3360.0 * X2 - 420.0 * X3 + 30.0 * X4 - X5;
 
         return den.inverse() * num;
     }

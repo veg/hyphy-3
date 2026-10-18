@@ -367,6 +367,55 @@ TEST_SUITE("ExpCM: Step 3 - Fixed-Parameter Likelihood") {
         CHECK((pi.array() >= -1e-10).all());
     }
 
+    TEST_CASE("Debug: Print Q matrix for comparison with phydms") {
+        auto gcode = hyphy::core::GeneticCode::universal();
+
+        hyphy::core::ExpCMParameters params;
+        params.beta = 3.38189;
+        params.kappa = 8.75598;
+        params.omega = 0.977468;
+        params.phi = hyphy::core::Vector4(0.355409, 0.201765, 0.249379,
+                                          1.0 - 0.355409 - 0.201765 - 0.249379);
+
+        hyphy::core::ExpCMQMatrix Q_matrix;
+        Q_matrix.build(*gcode, params);
+
+        // Print Q matrix in a format that's easy to compare
+        std::cerr << std::endl << "=== Q MATRIX ===" << std::endl;
+        std::cerr << "First 10x10 submatrix:" << std::endl;
+        for (int i = 0; i < 10; ++i) {
+            for (int j = 0; j < 10; ++j) {
+                std::cerr << std::fixed << std::setprecision(10) << std::setw(15) << Q_matrix.Q(i, j);
+            }
+            std::cerr << std::endl;
+        }
+
+        // Check specific properties
+        std::cerr << std::endl << "Q Matrix Properties:" << std::endl;
+        std::cerr << "Codon 0 (" << gcode->sense_codons[0] << "): ";
+        for (int j = 0; j < 61; ++j) {
+            if (Q_matrix.Q(0, j) != 0.0 && j != 0) {
+                std::cerr << "Q[0," << j << "]=" << std::fixed << std::setprecision(6) << Q_matrix.Q(0, j) << " ";
+            }
+        }
+        std::cerr << std::endl;
+
+        // Check a few specific rates
+        std::cerr << std::endl << "Sample Q values:" << std::endl;
+        int count = 0;
+        for (int i = 0; i < 61 && count < 20; ++i) {
+            for (int j = 0; j < 61 && count < 20; ++j) {
+                if (i != j && Q_matrix.Q(i, j) != 0.0) {
+                    std::cerr << "Q[" << i << "," << j << "]=" << Q_matrix.Q(i, j) << " ";
+                    count++;
+                }
+            }
+        }
+        std::cerr << std::endl;
+
+        CHECK(true);  // Just diagnostic, always passes
+    }
+
     TEST_CASE("Debug: Check Q matrix properties") {
         auto gcode = hyphy::core::GeneticCode::universal();
 
@@ -402,12 +451,56 @@ TEST_SUITE("ExpCM: Step 3 - Fixed-Parameter Likelihood") {
         std::cerr << "  Min: " << min_val << ", Max: " << max_val << std::endl;
     }
 
+    TEST_CASE("Debug: Per-site likelihood contribution analysis") {
+        auto gcode = hyphy::core::GeneticCode::universal();
+
+        // Load real test data
+        std::string aln_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/alignment.fasta";
+        std::string prefs_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/prefs.csv";
+        std::string tree_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/tree.newick";
+
+        if (std::filesystem::exists(aln_file) &&
+            std::filesystem::exists(prefs_file) &&
+            std::filesystem::exists(tree_file)) {
+
+            auto aln = hyphy::core::Alignment::from_fasta(aln_file);
+            auto prefs = hyphy::core::Preferences::from_csv(prefs_file);
+            auto tree = hyphy::core::Tree::from_newick_file(tree_file);
+
+            hyphy::core::ExpCMParameters params;
+            params.beta = 3.38189;
+            params.kappa = 8.75598;
+            params.omega = 0.977468;
+            params.phi = hyphy::core::Vector4(0.355409, 0.201765, 0.249379, 0.192447);
+
+            // Debug: Check pattern structure
+            std::cerr << "\n=== PATTERN STRUCTURE ===" << std::endl;
+            std::cerr << "Num sites: " << aln.num_codons << std::endl;
+            std::cerr << "Num patterns: " << aln.patterns.size() << std::endl;
+
+            double total_weight = 0.0;
+            for (size_t p = 0; p < aln.patterns.size(); ++p) {
+                total_weight += aln.patterns[p].weight;
+            }
+            std::cerr << "Total pattern weight: " << total_weight << std::endl;
+            std::cerr << "Expected total (sum of weights): " << aln.num_codons << std::endl;
+
+            // Check if site_to_pattern mapping is consistent
+            std::cerr << "\nSite to pattern mapping check (first 10 sites):" << std::endl;
+            for (size_t site = 0; site < std::min(size_t(10), aln.num_codons); ++site) {
+                size_t pattern_idx = aln.site_to_pattern[site];
+                std::cerr << "  Site " << site << " → Pattern " << pattern_idx
+                          << " (weight=" << aln.patterns[pattern_idx].weight << ")" << std::endl;
+            }
+        }
+    }
+
     TEST_CASE("Debug: Simple likelihood on single codon") {
         auto gcode = hyphy::core::GeneticCode::universal();
 
         // Create a simple 2-taxon alignment with just 1 pattern
         hyphy::core::Alignment aln;
-        aln.add_sequence("seq1", "ATG");  // Codon 0 (Met)
+        aln.add_sequence("seq1", "ATG");  // Codon 40 (Met)
         aln.add_sequence("seq2", "ATG");  // Same codon
         aln.finalize(gcode);
 
@@ -427,12 +520,35 @@ TEST_SUITE("ExpCM: Step 3 - Fixed-Parameter Likelihood") {
         params.kappa = 2.0;
         params.phi = hyphy::core::Vector4(0.25, 0.25, 0.25, 0.25);
 
+        // Debug: Compute stationary distribution
+        auto pi = hyphy::core::LikelihoodEngine::compute_expcm_stationary(
+            *gcode, prefs, 0, params.beta, params.phi
+        );
+        std::cerr << "\nStationary distribution at ATG codon (index 40): "
+                  << std::fixed << std::setprecision(10) << pi(40) << std::endl;
+        std::cerr << "ln(pi[40]) = " << std::log(pi(40)) << std::endl;
+
+        // Debug: Build P matrix
+        hyphy::core::ExpCMQMatrix Q_matrix;
+        Q_matrix.build(*gcode, params);
+        hyphy::core::ExpCMFMatrix F_matrix;
+        F_matrix.build(*gcode, prefs, 0, params);
+        hyphy::core::Matrix61Codon P = F_matrix.F.cwiseProduct(Q_matrix.Q);
+        for (int x = 0; x < 61; ++x) {
+            P(x, x) = -P.row(x).sum();
+        }
+
+        std::cerr << "P[40,40] (diagonal) = " << std::fixed << std::setprecision(10) << P(40, 40) << std::endl;
+
         // Compute likelihood
         double lnL = hyphy::core::LikelihoodEngine::compute_expcm_log_likelihood(
             tree, aln, *gcode, prefs, params
         );
 
         std::cerr << "Simple 2-taxon likelihood: " << std::fixed << std::setprecision(6) << lnL << std::endl;
+        std::cerr << "Expected ln L ≈ 2*ln(pi[40]) + 2*ln(exp(P[40,40]*0.1)[40,40])" << std::endl;
+        std::cerr << "  ≈ 2*" << std::log(pi(40)) << " + 2*ln(exp("
+                  << P(40, 40) * 0.1 << ")) ≈ " << (2*std::log(pi(40)) + 2*std::log(std::exp(P(40,40)*0.1))) << std::endl;
         std::cerr << "  (both sequences identical ATG, should be high likelihood)" << std::endl;
 
         // For identical sequences, likelihood should be reasonably high
@@ -473,16 +589,6 @@ TEST_SUITE("ExpCM: Step 3 - Fixed-Parameter Likelihood") {
             params.phi = hyphy::core::Vector4(0.355409, 0.201765, 0.249379,
                                               1.0 - 0.355409 - 0.201765 - 0.249379);
 
-            // Compute likelihood
-            double lnL = hyphy::core::LikelihoodEngine::compute_expcm_log_likelihood(
-                tree, aln, *gcode, prefs, params
-            );
-
-            // Should be finite
-            CHECK(std::isfinite(lnL));
-            // Should be negative (it's a log-likelihood)
-            CHECK(lnL < 0.0);
-
             // Expected: -775.21 (from phydms)
             double expected = -775.21;
 
@@ -500,17 +606,56 @@ TEST_SUITE("ExpCM: Step 3 - Fixed-Parameter Likelihood") {
             std::cerr << "Total pattern weight: " << std::fixed << std::setprecision(2) << total_weight << std::endl;
             std::cerr << "Average pattern weight: " << (total_weight / aln.patterns.size()) << std::endl;
 
-            std::cerr << "Computed ln L = " << std::fixed << std::setprecision(2) << lnL << std::endl;
-            std::cerr << "Expected ln L = " << expected << std::endl;
-            std::cerr << "Difference = " << (lnL - expected) << std::endl;
-            std::cerr << "Ratio (computed/expected) = " << (lnL / expected) << std::endl;
-            std::cerr << "Ratio / num_sites = " << ((lnL / expected) / (double)aln.num_codons) << std::endl;
-            std::cerr << "Ratio / num_patterns = " << ((lnL / expected) / (double)aln.patterns.size()) << std::endl;
-            std::cerr << "NOTE: Likelihood computation needs debugging" << std::endl;
+            // Try "as_is" convention (branch lengths used directly)
+            double lnL_as_is = hyphy::core::LikelihoodEngine::compute_expcm_log_likelihood(
+                tree, aln, *gcode, prefs, params, 1.0
+            );
 
-            // For now, loose tolerance while debugging
-            // TODO: Fix matrix exponential or algorithm to match phydms to |Δ ln L| < 1e-6
-            CHECK(std::fabs(lnL) > 0.0);  // Just check it's computed
+            std::cerr << std::endl << "Convention 'as_is' (branch_scale=1.0):" << std::endl;
+            std::cerr << "  Computed ln L = " << std::fixed << std::setprecision(2) << lnL_as_is << std::endl;
+            std::cerr << "  Ratio to expected = " << (lnL_as_is / expected) << std::endl;
+
+            // Try to estimate the branchScale (expected substitution rate)
+            // Formula from phydms: branchScale = Σ_r[ Σ_x π_r[x] * (-P_r[x,x]) ] / nsites
+            size_t num_sites_test = prefs.num_sites();
+            hyphy::core::ExpCMQMatrix Q_test;
+            Q_test.build(*gcode, params);
+
+            double expected_sub_rate_sum = 0.0;
+            for (size_t site = 0; site < num_sites_test; ++site) {
+                hyphy::core::ExpCMFMatrix F_matrix;
+                F_matrix.build(*gcode, prefs, site, params);
+                hyphy::core::Matrix61Codon P = F_matrix.F.cwiseProduct(Q_test.Q);
+                for (int x = 0; x < 61; ++x) {
+                    P(x, x) = -P.row(x).sum();
+                }
+                auto pi_site = hyphy::core::LikelihoodEngine::compute_expcm_stationary(
+                    *gcode, prefs, site, params.beta, params.phi
+                );
+                // Sum: π[x] * |P[x,x]|
+                for (int x = 0; x < 61; ++x) {
+                    expected_sub_rate_sum += pi_site(x) * (-P(x, x));
+                }
+            }
+            double estimated_branchScale = expected_sub_rate_sum / num_sites_test;
+            std::cerr << std::endl << "Estimated branchScale = " << std::fixed << std::setprecision(8)
+                      << estimated_branchScale << std::endl;
+
+            // Try dividing branch lengths by estimated branchScale
+            double lnL_scaled = hyphy::core::LikelihoodEngine::compute_expcm_log_likelihood(
+                tree, aln, *gcode, prefs, params, 1.0 / estimated_branchScale
+            );
+            std::cerr << "With branch_scale = 1/" << std::fixed << std::setprecision(8)
+                      << estimated_branchScale << ":" << std::endl;
+            std::cerr << "  Computed ln L = " << std::fixed << std::setprecision(2) << lnL_scaled << std::endl;
+            std::cerr << "  Ratio to expected = " << (lnL_scaled / expected) << std::endl;
+            std::cerr << "  Difference from expected = " << std::fabs(lnL_scaled - expected) << std::endl;
+
+            std::cerr << std::endl << "Expected ln L = " << expected << std::endl;
+            std::cerr << "NOTE: Need to determine correct branch convention and handle systematic error" << std::endl;
+
+            CHECK(std::isfinite(lnL_as_is));
+            CHECK(lnL_as_is < 0.0);
         }
     }
 }
