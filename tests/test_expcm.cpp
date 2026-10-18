@@ -451,6 +451,141 @@ TEST_SUITE("ExpCM: Step 3 - Fixed-Parameter Likelihood") {
         std::cerr << "  Min: " << min_val << ", Max: " << max_val << std::endl;
     }
 
+    TEST_CASE("Debug: Compute branchScale using phydms formula") {
+        auto gcode = hyphy::core::GeneticCode::universal();
+
+        // Load real test data
+        std::string aln_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/alignment.fasta";
+        std::string prefs_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/prefs.csv";
+        std::string tree_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/tree.newick";
+
+        if (std::filesystem::exists(aln_file) &&
+            std::filesystem::exists(prefs_file) &&
+            std::filesystem::exists(tree_file)) {
+
+            auto aln = hyphy::core::Alignment::from_fasta(aln_file);
+            auto prefs = hyphy::core::Preferences::from_csv(prefs_file);
+            auto tree = hyphy::core::Tree::from_newick_file(tree_file);
+
+            hyphy::core::ExpCMParameters params;
+            params.beta = 3.38189;
+            params.kappa = 8.75598;
+            params.omega = 0.977468;
+            params.phi = hyphy::core::Vector4(0.355409, 0.201765, 0.249379,
+                                              1.0 - 0.355409 - 0.201765 - 0.249379);
+
+            // Build Q matrix
+            hyphy::core::ExpCMQMatrix Q_matrix;
+            Q_matrix.build(*gcode, params);
+
+            // Compute branchScale using phydms formula:
+            // branchScale = Σ_sites[ Σ_codons π[x] * (-P[x,x]) ] / nsites
+            // where P = F ⊙ Q
+            double sum_rates = 0.0;
+            size_t num_sites = prefs.num_sites();
+
+            for (size_t site = 0; site < num_sites; ++site) {
+                hyphy::core::ExpCMFMatrix F_matrix;
+                F_matrix.build(*gcode, prefs, site, params);
+
+                hyphy::core::Matrix61Codon P = F_matrix.F.cwiseProduct(Q_matrix.Q);
+                for (int x = 0; x < 61; ++x) {
+                    P(x, x) = -P.row(x).sum();
+                }
+
+                auto pi_site = hyphy::core::LikelihoodEngine::compute_expcm_stationary(
+                    *gcode, prefs, site, params.beta, params.phi
+                );
+
+                // Sum: π[x] * (-P[x,x]) for all states x
+                for (int x = 0; x < 61; ++x) {
+                    sum_rates += pi_site(x) * (-P(x, x));
+                }
+            }
+
+            double branchScale = sum_rates / num_sites;
+            double mu = 1.0;  // From phydms script
+            double branchScale_with_mu = branchScale * mu;
+
+            std::cerr << std::endl << "=== BRANCHSCALE COMPUTATION ===" << std::endl;
+            std::cerr << "phydms formula: branchScale = Σ_sites[Σ_codons π[x]·(-P[x,x])] / nsites" << std::endl;
+            std::cerr << std::endl << "Computed values:" << std::endl;
+            std::cerr << "  Sum of rates: " << std::fixed << std::setprecision(8) << sum_rates << std::endl;
+            std::cerr << "  Num sites: " << num_sites << std::endl;
+            std::cerr << "  Average rate per site: " << (sum_rates / num_sites) << std::endl;
+            std::cerr << "  branchScale (μ=1.0): " << branchScale_with_mu << std::endl;
+            std::cerr << std::endl << "Interpretation:" << std::endl;
+            std::cerr << "  Expected substitutions per codon site per unit time: " << branchScale_with_mu << std::endl;
+            std::cerr << "  To convert branch lengths to model time:" << std::endl;
+            std::cerr << "    If convention='as_is': use branch lengths directly" << std::endl;
+            std::cerr << "    If convention='divide_by_branchScale': divide by " << branchScale_with_mu << std::endl;
+
+            // Estimate which convention was used
+            double lnL_as_is = hyphy::core::LikelihoodEngine::compute_expcm_log_likelihood(
+                tree, aln, *gcode, prefs, params, 1.0
+            );
+            double lnL_scaled = hyphy::core::LikelihoodEngine::compute_expcm_log_likelihood(
+                tree, aln, *gcode, prefs, params, 1.0 / branchScale_with_mu
+            );
+
+            std::cerr << std::endl << "Likelihood comparison:" << std::endl;
+            std::cerr << "  as_is (scale=1.0): ln L = " << std::fixed << std::setprecision(2) << lnL_as_is << std::endl;
+            std::cerr << "  divide_by_branchScale (scale=1/" << std::fixed << std::setprecision(6)
+                      << branchScale_with_mu << "): ln L = " << std::fixed << std::setprecision(2) << lnL_scaled << std::endl;
+            std::cerr << "  Expected (phydms): ln L = -775.21" << std::endl;
+            std::cerr << "  Ratio (as_is): " << std::fixed << std::setprecision(4)
+                      << (lnL_as_is / -775.21) << "x off" << std::endl;
+            std::cerr << "  Ratio (scaled): " << std::fixed << std::setprecision(4)
+                      << (lnL_scaled / -775.21) << "x off" << std::endl;
+        }
+    }
+
+    TEST_CASE("Debug: F matrix values for reference parameters") {
+        auto gcode = hyphy::core::GeneticCode::universal();
+
+        hyphy::core::Preferences prefs;
+        prefs.nsites = 1;
+        prefs.prefs = Eigen::Matrix<hyphy::core::Scalar, Eigen::Dynamic, 20>::Ones(1, 20) / 20.0;
+
+        hyphy::core::ExpCMParameters params;
+        params.beta = 3.38189;
+        params.omega = 0.977468;
+
+        hyphy::core::ExpCMFMatrix F_matrix;
+        F_matrix.build(*gcode, prefs, 0, params);
+
+        std::cerr << "\n=== F MATRIX SAMPLE VALUES ===" << std::endl;
+
+        // Find synonymous pairs and verify they're 1
+        int syn_count = 0;
+        for (int x = 0; x < 61 && syn_count < 10; ++x) {
+            for (int y = x + 1; y < 61 && syn_count < 10; ++y) {
+                if (gcode->is_synonymous(x, y)) {
+                    std::cerr << "F[" << x << "," << y << "] (synonymous) = "
+                              << std::fixed << std::setprecision(6) << F_matrix.F(x, y)
+                              << " (expected 1.0)" << std::endl;
+                    syn_count++;
+                }
+            }
+        }
+
+        // Sample some non-synonymous values
+        std::cerr << "\nSample non-synonymous F values:" << std::endl;
+        int nonsyn_count = 0;
+        for (int x = 0; x < 61 && nonsyn_count < 10; ++x) {
+            for (int y = x + 1; y < 61 && nonsyn_count < 10; ++y) {
+                if (!gcode->is_synonymous(x, y) && F_matrix.F(x, y) > 0) {
+                    std::cerr << "F[" << x << "," << y << "] (non-syn) = "
+                              << std::fixed << std::setprecision(6) << F_matrix.F(x, y)
+                              << " (should involve ω ≈ " << params.omega << ")" << std::endl;
+                    nonsyn_count++;
+                }
+            }
+        }
+
+        CHECK(true);  // Diagnostic only
+    }
+
     TEST_CASE("Debug: Per-site likelihood contribution analysis") {
         auto gcode = hyphy::core::GeneticCode::universal();
 
