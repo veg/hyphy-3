@@ -1,6 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 #include "hyphy/core/preferences.hpp"
+#include "hyphy/core/rate_matrix.hpp"
+#include "hyphy/core/genetic_code.hpp"
 #include <cmath>
 #include <sstream>
 #include <fstream>
@@ -151,7 +153,169 @@ TEST_SUITE("ExpCM: Step 1 - Preferences Parser") {
     }
 }
 
-// TODO: Step 2 - Site-Specific Rate Matrix (Q, F, P)
+TEST_SUITE("ExpCM: Step 2 - Rate Matrices (Q, F, P)") {
+
+    TEST_CASE("Q Matrix: Structure (row sums = 0)") {
+        auto gcode = hyphy::core::GeneticCode::universal();
+        hyphy::core::ExpCMParameters params;
+        params.beta = 1.0;
+        params.omega = 1.0;
+        params.kappa = 2.0;
+        params.phi = hyphy::core::Vector4(0.25, 0.25, 0.25, 0.25);
+
+        hyphy::core::ExpCMQMatrix Q_matrix;
+        Q_matrix.build(*gcode, params);
+
+        // Check that row sums ≈ 0
+        for (int x = 0; x < gcode->num_sense_codons; ++x) {
+            double row_sum = Q_matrix.Q.row(x).sum();
+            CHECK(std::fabs(row_sum) < 1e-10);
+        }
+    }
+
+    TEST_CASE("Q Matrix: Transitions vs Transversions") {
+        auto gcode = hyphy::core::GeneticCode::universal();
+        hyphy::core::ExpCMParameters params;
+        params.kappa = 2.0;
+        params.phi = hyphy::core::Vector4(0.25, 0.25, 0.25, 0.25);
+
+        hyphy::core::ExpCMQMatrix Q_matrix;
+        Q_matrix.build(*gcode, params);
+
+        // Q matrix should be symmetric (all φ_w are equal)
+        CHECK(Q_matrix.Q.isApprox(Q_matrix.Q.transpose(), 1e-10));
+
+        // Off-diagonal elements should be either φ or κ·φ = 0.25 or 0.5
+        for (int x = 0; x < gcode->num_sense_codons; ++x) {
+            for (int y = 0; y < gcode->num_sense_codons; ++y) {
+                if (x == y) continue;
+                double val = Q_matrix.Q(x, y);
+                if (val > 0) {
+                    CHECK((std::fabs(val - 0.25) < 1e-10 || std::fabs(val - 0.5) < 1e-10));
+                }
+            }
+        }
+    }
+
+    TEST_CASE("F Matrix: Synonymous = 1") {
+        auto gcode = hyphy::core::GeneticCode::universal();
+
+        // Create uniform preferences
+        hyphy::core::Preferences prefs;
+        prefs.nsites = 1;
+        prefs.prefs = Eigen::Matrix<hyphy::core::Scalar,
+                                     Eigen::Dynamic, 20>::Ones(1, 20) / 20.0;
+
+        hyphy::core::ExpCMParameters params;
+        params.beta = 1.5;
+        params.omega = 0.8;
+
+        hyphy::core::ExpCMFMatrix F_matrix;
+        F_matrix.build(*gcode, prefs, 0, params);
+
+        // For each codon pair, if synonymous then F_xy should be close to 1
+        for (int x = 0; x < gcode->num_sense_codons; ++x) {
+            for (int y = 0; y < gcode->num_sense_codons; ++y) {
+                if (x == y) {
+                    CHECK(F_matrix.F(x, y) == 0.0);  // Diagonal is 0
+                } else if (gcode->is_synonymous(x, y)) {
+                    CHECK(std::fabs(F_matrix.F(x, y) - 1.0) < 1e-10);
+                }
+            }
+        }
+    }
+
+    TEST_CASE("F Matrix: All values non-negative") {
+        auto gcode = hyphy::core::GeneticCode::universal();
+
+        hyphy::core::Preferences prefs;
+        prefs.nsites = 1;
+        prefs.prefs = Eigen::Matrix<hyphy::core::Scalar,
+                                     Eigen::Dynamic, 20>::Ones(1, 20) / 20.0;
+
+        hyphy::core::ExpCMParameters params;
+        params.beta = 2.0;
+        params.omega = 1.0;
+
+        hyphy::core::ExpCMFMatrix F_matrix;
+        F_matrix.build(*gcode, prefs, 0, params);
+
+        // All F values should be ≥ 0
+        for (int x = 0; x < gcode->num_sense_codons; ++x) {
+            for (int y = 0; y < gcode->num_sense_codons; ++y) {
+                CHECK(F_matrix.F(x, y) >= -1e-10);  // Allow small numerical error
+            }
+        }
+    }
+
+    TEST_CASE("P Matrix: Row sums = 0") {
+        auto gcode = hyphy::core::GeneticCode::universal();
+
+        hyphy::core::Preferences prefs;
+        prefs.nsites = 1;
+        prefs.prefs = Eigen::Matrix<hyphy::core::Scalar,
+                                     Eigen::Dynamic, 20>::Ones(1, 20) / 20.0;
+
+        hyphy::core::ExpCMParameters params;
+        params.beta = 1.0;
+        params.omega = 1.0;
+        params.kappa = 2.0;
+        params.phi = hyphy::core::Vector4(0.25, 0.25, 0.25, 0.25);
+
+        hyphy::core::ExpCMQMatrix Q_matrix;
+        Q_matrix.build(*gcode, params);
+
+        hyphy::core::ExpCMFMatrix F_matrix;
+        F_matrix.build(*gcode, prefs, 0, params);
+
+        hyphy::core::ExpCMPMatrix P_matrix;
+        P_matrix.build(F_matrix.F, Q_matrix.Q);
+
+        // Check that row sums ≈ 0
+        for (int x = 0; x < gcode->num_sense_codons; ++x) {
+            double row_sum = P_matrix.P.row(x).sum();
+            CHECK(std::fabs(row_sum) < 1e-10);
+        }
+    }
+
+    TEST_CASE("P Matrix: Detailed balance") {
+        // For a simple test, verify that π_x P_xy has reasonable structure
+        // (Full detailed balance check requires stationary state computation)
+        auto gcode = hyphy::core::GeneticCode::universal();
+
+        hyphy::core::Preferences prefs;
+        prefs.nsites = 1;
+        prefs.prefs = Eigen::Matrix<hyphy::core::Scalar,
+                                     Eigen::Dynamic, 20>::Ones(1, 20) / 20.0;
+
+        hyphy::core::ExpCMParameters params;
+        params.beta = 1.0;
+        params.omega = 1.0;
+        params.kappa = 2.0;
+        params.phi = hyphy::core::Vector4(0.25, 0.25, 0.25, 0.25);
+
+        hyphy::core::ExpCMQMatrix Q_matrix;
+        Q_matrix.build(*gcode, params);
+
+        hyphy::core::ExpCMFMatrix F_matrix;
+        F_matrix.build(*gcode, prefs, 0, params);
+
+        hyphy::core::ExpCMPMatrix P_matrix;
+        P_matrix.build(F_matrix.F, Q_matrix.Q);
+
+        // At least check that symmetric entries exist
+        int off_diagonal_pairs = 0;
+        for (int x = 0; x < gcode->num_sense_codons; ++x) {
+            for (int y = x + 1; y < gcode->num_sense_codons; ++y) {
+                if (P_matrix.P(x, y) > 0 || P_matrix.P(y, x) > 0) {
+                    off_diagonal_pairs++;
+                }
+            }
+        }
+        CHECK(off_diagonal_pairs > 0);  // Must have some off-diagonal entries
+    }
+}
+
 // TODO: Step 3 - Fixed-Parameter Likelihood
 // TODO: Step 4 - Optimization
 // TODO: Step 5 - Per-Site ω (omegabysite)

@@ -2,6 +2,7 @@
 
 #include "hyphy/core/types.hpp"
 #include "hyphy/core/genetic_code.hpp"
+#include "hyphy/core/preferences.hpp"
 #include <Eigen/Core>
 #include <Eigen/Dense>
 #include <Eigen/Eigenvalues>
@@ -241,6 +242,214 @@ public:
         Vector exp_lambda = (eigenvalues * branch_length).array().exp();
         Matrix P = (U_pi * exp_lambda.asDiagonal()) * V_pi;
         return P;
+    }
+};
+
+/**
+ * ExpCM (Experimentally informed Codon Model) Parameters
+ *
+ * Parameters for ExpCM: HKY-like mutation rates combined with
+ * site-specific selection based on amino-acid preferences.
+ */
+struct ExpCMParameters {
+    Scalar beta = 1.0;        // Stringency (preference exponent)
+    Scalar omega = 0.5;       // Non-synonymous / synonymous rate ratio
+    Scalar kappa = 2.0;       // Transition / transversion ratio
+    Vector4 phi = Vector4::Ones() / 4.0;  // Nucleotide frequencies (must sum to 1)
+
+    ExpCMParameters() = default;
+
+    ExpCMParameters(Scalar b, Scalar w, Scalar k, const Vector4& p)
+        : beta(b), omega(w), kappa(k), phi(p) {}
+
+    void validate() const {
+        if (beta <= 0.0 || beta > 10.0) {
+            throw std::invalid_argument("beta must be in (0, 10]");
+        }
+        if (omega <= 0.0 || omega > 100.0) {
+            throw std::invalid_argument("omega must be in (0, 100]");
+        }
+        if (kappa <= 0.0 || kappa > 100.0) {
+            throw std::invalid_argument("kappa must be in (0, 100]");
+        }
+        Scalar phi_sum = phi.sum();
+        if (std::fabs(phi_sum - 1.0) > 1e-6) {
+            throw std::invalid_argument("phi must sum to 1.0");
+        }
+        if ((phi.array() <= 0.0).any()) {
+            throw std::invalid_argument("phi values must be positive");
+        }
+    }
+};
+
+/**
+ * ExpCM Matrices
+ *
+ * Size: 61 × 61 (sense codons)
+ */
+// Fixed-size 61x61 matrix for codon substitution rates
+using Matrix61Codon = Eigen::Matrix<Scalar, 61, 61>;
+static constexpr Scalar EXPCM_ALMOST_ZERO = 1e-8;
+
+/**
+ * ExpCM Q Matrix (Mutation Term)
+ *
+ * HKY-like substitution rates for codons. Independent of site-specific
+ * preferences. Size: 61 × 61 (sense codons).
+ */
+class ExpCMQMatrix {
+public:
+    Matrix61Codon Q = Matrix61Codon::Zero();
+
+    /**
+     * Build Q matrix for ExpCM.
+     *
+     * Q_xy = 0                if codons x,y differ at >1 position
+     *      = φ_w              if x→y is transversion to nucleotide w
+     *      = κ·φ_w            if x→y is transition to nucleotide w
+     *
+     * @param gcode            Genetic code (defines codons and syn/nonsyn)
+     * @param params           ExpCM parameters (kappa, phi)
+     */
+    void build(const GeneticCode& gcode, const ExpCMParameters& params) {
+        Q.setZero();
+
+        // For each codon pair (x, y)
+        for (int x = 0; x < gcode.num_sense_codons; ++x) {
+            for (int y = 0; y < gcode.num_sense_codons; ++y) {
+                if (x == y) continue;
+
+                // Use precomputed diff_matrix for efficiency
+                const auto& diff = gcode.diff_matrix[x][y];
+
+                // Only single nucleotide mutations
+                if (diff.num_diffs != 1) continue;
+
+                // Get mutating nucleotide
+                int8_t nuc_to = diff.nuc_to;  // 0-3 (A,C,G,T)
+
+                // Set Q_xy = φ_w
+                Q(x, y) = params.phi(nuc_to);
+
+                // Multiply by κ if transition
+                int8_t nuc_from = diff.nuc_from;
+                if (is_transition(nuc_from, nuc_to)) {
+                    Q(x, y) *= params.kappa;
+                }
+            }
+        }
+
+        // Set diagonals: Q_xx = −Σ_{y≠x} Q_xy
+        for (int x = 0; x < gcode.num_sense_codons; ++x) {
+            Q(x, x) = -Q.row(x).sum();
+        }
+    }
+
+private:
+    /**
+     * Check if nucleotide substitution is a transition.
+     * Transitions: A↔G or C↔T
+     */
+    static bool is_transition(int8_t nuc_from, int8_t nuc_to) {
+        return (nuc_from == 0 && nuc_to == 2) ||  // A→G
+               (nuc_from == 2 && nuc_to == 0) ||  // G→A
+               (nuc_from == 1 && nuc_to == 3) ||  // C→T
+               (nuc_from == 3 && nuc_to == 1);    // T→C
+    }
+};
+
+/**
+ * ExpCM F Matrix (Fixation Term)
+ *
+ * Site-specific selection based on amino-acid preferences.
+ * For each site, creates a 61 × 61 matrix with selection values.
+ *
+ * F_xy = 1                                            (synonymous)
+ *      = ω                                            (nonsynonymous, equal prefs)
+ *      = ω·[−ln(π_y/π_x)^β] / [1 − (π_y/π_x)^β]     (nonsynonymous, diff prefs)
+ */
+class ExpCMFMatrix {
+public:
+    Matrix61Codon F = Matrix61Codon::Zero();
+
+    /**
+     * Build F matrix for a single site.
+     *
+     * @param gcode            Genetic code
+     * @param prefs            Site-specific preferences (20 AAs)
+     * @param params           ExpCM parameters (beta, omega)
+     */
+    void build(const GeneticCode& gcode, const Preferences& prefs,
+               size_t site, const ExpCMParameters& params) {
+        if (site >= prefs.num_sites()) {
+            throw std::out_of_range("Site index out of range");
+        }
+
+        F.setOnes();  // Start with 1 (synonymous)
+
+        // For each codon pair (x, y)
+        for (int x = 0; x < gcode.num_sense_codons; ++x) {
+            for (int y = 0; y < gcode.num_sense_codons; ++y) {
+                if (x == y) continue;
+
+                char aa_x = gcode.sense_codon_aa[x];
+                char aa_y = gcode.sense_codon_aa[y];
+
+                if (aa_x == aa_y) {
+                    F(x, y) = 1.0;  // Synonymous
+                } else {
+                    // Non-synonymous: compute preference-dependent factor
+                    Scalar pi_x = prefs.at(site, aa_x);
+                    Scalar pi_y = prefs.at(site, aa_y);
+
+                    // Compute (π_y / π_x)^β
+                    Scalar ratio = pi_y / pi_x;
+                    Scalar ratio_beta = std::pow(ratio, params.beta);
+
+                    // Check for numerical stability
+                    if (std::fabs(1.0 - ratio_beta) < EXPCM_ALMOST_ZERO) {
+                        // Near-equal preferences: use limit = ω
+                        F(x, y) = params.omega;
+                    } else {
+                        // General formula: ω · [−ln(r^β)] / [1 − r^β]
+                        Scalar ln_ratio_beta = std::log(ratio_beta);
+                        Scalar numerator = -ln_ratio_beta;
+                        Scalar denominator = 1.0 - ratio_beta;
+                        F(x, y) = params.omega * (numerator / denominator);
+                    }
+                }
+            }
+        }
+
+        // Set diagonals to 0 (will be filled when combined with Q)
+        F.diagonal().setZero();
+    }
+};
+
+/**
+ * ExpCM P Matrix (Combined Rate Matrix)
+ *
+ * Final substitution rate matrix: P = F ⊙ Q (element-wise multiplication).
+ * Diagonals set so that row sums = 0.
+ */
+class ExpCMPMatrix {
+public:
+    Matrix61Codon P = Matrix61Codon::Zero();
+
+    /**
+     * Build P matrix as element-wise product of F and Q.
+     *
+     * @param F                Fixation matrix (per-site selection)
+     * @param Q                Mutation matrix (shared across sites)
+     */
+    void build(const Matrix61Codon& F, const Matrix61Codon& Q) {
+        // Element-wise multiplication
+        P = F.cwiseProduct(Q);
+
+        // Set diagonals: P_xx = −Σ_{y≠x} P_xy
+        for (int x = 0; x < 61; ++x) {
+            P(x, x) = -P.row(x).sum();
+        }
     }
 };
 
