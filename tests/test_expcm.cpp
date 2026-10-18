@@ -323,7 +323,7 @@ TEST_SUITE("ExpCM: Step 2 - Rate Matrices (Q, F, P)") {
 
 TEST_SUITE("ExpCM: Step 3 - Fixed-Parameter Likelihood") {
 
-    TEST_CASE("Stationary distribution sums to 1") {
+    TEST_CASE("Debug: Stationary distribution sums to 1") {
         auto gcode = hyphy::core::GeneticCode::universal();
         hyphy::core::Preferences prefs;
         prefs.nsites = 1;
@@ -365,6 +365,79 @@ TEST_SUITE("ExpCM: Step 3 - Fixed-Parameter Likelihood") {
 
         CHECK(std::fabs(pi.sum() - 1.0) < 1e-6);
         CHECK((pi.array() >= -1e-10).all());
+    }
+
+    TEST_CASE("Debug: Check Q matrix properties") {
+        auto gcode = hyphy::core::GeneticCode::universal();
+
+        hyphy::core::ExpCMParameters params;
+        params.beta = 1.0;
+        params.omega = 1.0;
+        params.kappa = 2.0;
+        params.phi = hyphy::core::Vector4(0.25, 0.25, 0.25, 0.25);
+
+        hyphy::core::ExpCMQMatrix Q_matrix;
+        Q_matrix.build(*gcode, params);
+
+        // Check Q matrix properties
+        std::cerr << "Q matrix diagonal check:" << std::endl;
+        Scalar max_diag_error = 0.0;
+        for (int x = 0; x < 10; ++x) {  // Check first 10 codons
+            Scalar row_sum = Q_matrix.Q.row(x).sum();
+            max_diag_error = std::max(max_diag_error, std::fabs(row_sum));
+            std::cerr << "  Codon " << x << ": row sum = " << row_sum << std::endl;
+        }
+        CHECK(max_diag_error < 1e-10);
+
+        std::cerr << "Q matrix off-diagonal range:" << std::endl;
+        Scalar min_val = 0.0, max_val = 0.0;
+        for (int i = 0; i < 61; ++i) {
+            for (int j = 0; j < 61; ++j) {
+                if (i != j && Q_matrix.Q(i, j) != 0.0) {
+                    min_val = std::min(min_val, Q_matrix.Q(i, j));
+                    max_val = std::max(max_val, Q_matrix.Q(i, j));
+                }
+            }
+        }
+        std::cerr << "  Min: " << min_val << ", Max: " << max_val << std::endl;
+    }
+
+    TEST_CASE("Debug: Simple likelihood on single codon") {
+        auto gcode = hyphy::core::GeneticCode::universal();
+
+        // Create a simple 2-taxon alignment with just 1 pattern
+        hyphy::core::Alignment aln;
+        aln.add_sequence("seq1", "ATG");  // Codon 0 (Met)
+        aln.add_sequence("seq2", "ATG");  // Same codon
+        aln.finalize(gcode);
+
+        // Create simple tree: (seq1:0.1, seq2:0.1);
+        std::string newick = "(seq1:0.1,seq2:0.1);";
+        auto tree = hyphy::core::Tree::from_newick(newick);
+
+        // Simple uniform preferences
+        hyphy::core::Preferences prefs;
+        prefs.nsites = 1;
+        prefs.prefs = Eigen::Matrix<hyphy::core::Scalar,
+                                     Eigen::Dynamic, 20>::Ones(1, 20) / 20.0;
+
+        hyphy::core::ExpCMParameters params;
+        params.beta = 1.0;
+        params.omega = 1.0;
+        params.kappa = 2.0;
+        params.phi = hyphy::core::Vector4(0.25, 0.25, 0.25, 0.25);
+
+        // Compute likelihood
+        double lnL = hyphy::core::LikelihoodEngine::compute_expcm_log_likelihood(
+            tree, aln, *gcode, prefs, params
+        );
+
+        std::cerr << "Simple 2-taxon likelihood: " << std::fixed << std::setprecision(6) << lnL << std::endl;
+        std::cerr << "  (both sequences identical ATG, should be high likelihood)" << std::endl;
+
+        // For identical sequences, likelihood should be reasonably high
+        CHECK(std::isfinite(lnL));
+        CHECK(lnL > -100.0);  // Should not be too negative
     }
 
     TEST_CASE("Fixed-parameter likelihood: smoke test") {
@@ -413,10 +486,27 @@ TEST_SUITE("ExpCM: Step 3 - Fixed-Parameter Likelihood") {
             // Expected: -775.21 (from phydms)
             double expected = -775.21;
 
+            std::cerr << std::endl << "=== FULL LIKELIHOOD TEST ===" << std::endl;
+            std::cerr << "Alignment: " << aln.num_taxa << " taxa, " << aln.num_codons << " codon sites" << std::endl;
+            std::cerr << "Tree nodes: " << tree.num_nodes() << std::endl;
+            std::cerr << "Patterns: " << aln.patterns.size() << std::endl;
+            std::cerr << "Preferences sites: " << prefs.num_sites() << std::endl;
+
+            // Debug: Print pattern weights
+            double total_weight = 0.0;
+            for (const auto& p : aln.patterns) {
+                total_weight += p.weight;
+            }
+            std::cerr << "Total pattern weight: " << std::fixed << std::setprecision(2) << total_weight << std::endl;
+            std::cerr << "Average pattern weight: " << (total_weight / aln.patterns.size()) << std::endl;
+
             std::cerr << "Computed ln L = " << std::fixed << std::setprecision(2) << lnL << std::endl;
             std::cerr << "Expected ln L = " << expected << std::endl;
             std::cerr << "Difference = " << (lnL - expected) << std::endl;
-            std::cerr << "NOTE: Likelihood computation needs debugging (matrix exp or stationary dist issue)" << std::endl;
+            std::cerr << "Ratio (computed/expected) = " << (lnL / expected) << std::endl;
+            std::cerr << "Ratio / num_sites = " << ((lnL / expected) / (double)aln.num_codons) << std::endl;
+            std::cerr << "Ratio / num_patterns = " << ((lnL / expected) / (double)aln.patterns.size()) << std::endl;
+            std::cerr << "NOTE: Likelihood computation needs debugging" << std::endl;
 
             // For now, loose tolerance while debugging
             // TODO: Fix matrix exponential or algorithm to match phydms to |Δ ln L| < 1e-6
