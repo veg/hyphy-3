@@ -161,6 +161,18 @@ add_executable(hyphy_optimizer_quick_test tests/test_optimizer_quick.cpp src/ana
 target_link_libraries(hyphy_optimizer_quick_test PRIVATE hyphy3_core)
 add_test(NAME OptimizerQuickTest COMMAND hyphy_optimizer_quick_test)
 
+add_executable(hyphy_phase4_persite_test tests/test_phase4_persite.cpp)
+target_link_libraries(hyphy_phase4_persite_test PRIVATE hyphy3_core)
+add_test(NAME Phase4PersiteTest COMMAND hyphy_phase4_persite_test)
+
+add_executable(hyphy_phase4_optimizer_test tests/test_phase4_optimizer.cpp src/analyses/persite_optimizer.cpp)
+target_link_libraries(hyphy_phase4_optimizer_test PRIVATE hyphy3_core)
+add_test(NAME Phase4OptimizerTest COMMAND hyphy_phase4_optimizer_test)
+
+add_executable(hyphy_phase4_validation_test tests/test_phase4_validation.cpp src/analyses/persite_optimizer.cpp)
+target_link_libraries(hyphy_phase4_validation_test PRIVATE hyphy3_core)
+add_test(NAME Phase4ValidationTest COMMAND hyphy_phase4_validation_test)
+
 add_test(NAME HTMLReportEndToEndTest
     COMMAND ${CMAKE_COMMAND}
         -DHYPHY3=$<TARGET_FILE:hyphy3>

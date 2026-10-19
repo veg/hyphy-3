@@ -816,6 +816,156 @@ public:
     }
 
     /**
+     * Compute log-likelihood for a single site.
+     * Used for per-site analysis and site-specific parameter estimation.
+     *
+     * @param tree        Phylogenetic tree with branch lengths
+     * @param aln         Multiple sequence alignment
+     * @param gcode       Genetic code
+     * @param prefs       Site-specific preferences
+     * @param site        Site index (0 to num_sites-1)
+     * @param params      ExpCM parameters
+     * @param branch_scale Scaling factor for branch lengths (default 1.0)
+     * @return            Log-likelihood for single site
+     */
+    static Scalar compute_expcm_site_log_likelihood(
+        const Tree& tree,
+        const Alignment& aln,
+        const GeneticCode& gcode,
+        const Preferences& prefs,
+        size_t site,
+        const ExpCMParameters& params,
+        Scalar branch_scale = 1.0
+    ) {
+        params.validate();
+        if (site >= prefs.num_sites()) {
+            throw std::out_of_range("Site index " + std::to_string(site) +
+                                   " exceeds num_sites " + std::to_string(prefs.num_sites()));
+        }
+
+        size_t num_nodes = tree.num_nodes();
+        std::vector<size_t> leaf_to_taxon = build_leaf_to_taxon_map(tree, aln);
+
+        // Build global Q matrix
+        ExpCMQMatrix Q_matrix;
+        Q_matrix.build(gcode, params);
+        const Matrix61Codon& Q = Q_matrix.Q;
+
+        const double SCALER_THRESH = 1e-150;
+        const double SCALER_UP = 1e150;
+        const double LOG_SCALER = std::log(SCALER_UP);
+
+        // Get pattern for this site
+        size_t pattern_idx = aln.site_to_pattern[site];
+        const auto& pattern = aln.patterns[pattern_idx];
+
+        // Build F matrix for this site
+        ExpCMFMatrix F_matrix;
+        F_matrix.build(gcode, prefs, site, params);
+
+        // Compute P = F ⊙ Q (element-wise product)
+        Matrix61Codon P = F_matrix.F.cwiseProduct(Q);
+
+        // Set diagonals so rows sum to 0
+        for (int x = 0; x < 61; ++x) {
+            P(x, x) = -P.row(x).sum();
+        }
+
+        // Compute stationary distribution for this site
+        Eigen::Matrix<Scalar, 61, 1> pi_site = compute_expcm_stationary(
+            gcode, prefs, site, params.beta, params.phi
+        );
+
+        // Compute transition matrices for each branch
+        std::vector<Matrix61Codon> P_branches(num_nodes);
+        for (const auto& node : tree.nodes) {
+            if (node.id != tree.root_id) {
+                Scalar scaled_bl = node.branch_length * branch_scale;
+                P_branches[node.id] = matrix_exp_scaling_squaring(P * scaled_bl);
+            }
+        }
+
+        // Compute site likelihood via Felsenstein pruning
+        std::vector<Eigen::Matrix<Scalar, 61, 1>> node_L(num_nodes);
+        std::vector<double> node_log_scale(num_nodes, 0.0);
+
+        for (int32_t node_id : tree.post_order) {
+            const auto& node = tree.nodes[node_id];
+
+            if (node.is_leaf) {
+                size_t t_idx = leaf_to_taxon[node_id];
+                if (t_idx != static_cast<size_t>(-1)) {
+                    int8_t state = pattern.states[t_idx];
+                    if (state >= 0 && state < 61) {
+                        node_L[node_id].setZero();
+                        node_L[node_id](state) = 1.0;
+                    } else {
+                        node_L[node_id].setOnes();
+                    }
+                } else {
+                    node_L[node_id].setOnes();
+                }
+                node_log_scale[node_id] = 0.0;
+            } else {
+                // Internal node computation
+                double child_scale_sum = 0.0;
+                tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
+
+                // Rescale if underflow
+                double max_val = node_L[node_id].maxCoeff();
+                int boost_count = 0;
+                while (max_val < SCALER_THRESH && max_val > 0.0) {
+                    node_L[node_id] *= SCALER_UP;
+                    max_val *= SCALER_UP;
+                    boost_count++;
+                }
+                node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
+            }
+        }
+
+        // Compute site likelihood: pi_site · node_L[root]
+        Scalar site_likelihood = pi_site.dot(node_L[tree.root_id]);
+        if (site_likelihood > 0.0) {
+            return std::log(site_likelihood) + node_log_scale[tree.root_id];
+        } else {
+            return -1e20;
+        }
+    }
+
+    /**
+     * Compute log-likelihood for all sites individually.
+     * Returns vector of per-site log-likelihoods.
+     *
+     * @param tree        Phylogenetic tree with branch lengths
+     * @param aln         Multiple sequence alignment
+     * @param gcode       Genetic code
+     * @param prefs       Site-specific preferences
+     * @param params      ExpCM parameters
+     * @param branch_scale Scaling factor for branch lengths (default 1.0)
+     * @return            Vector of per-site log-likelihoods
+     */
+    static std::vector<Scalar> compute_expcm_all_sites_log_likelihood(
+        const Tree& tree,
+        const Alignment& aln,
+        const GeneticCode& gcode,
+        const Preferences& prefs,
+        const ExpCMParameters& params,
+        Scalar branch_scale = 1.0
+    ) {
+        size_t num_sites = prefs.num_sites();
+        std::vector<Scalar> site_likelihoods(num_sites);
+
+        #pragma omp parallel for schedule(dynamic)
+        for (size_t site = 0; site < num_sites; ++site) {
+            site_likelihoods[site] = compute_expcm_site_log_likelihood(
+                tree, aln, gcode, prefs, site, params, branch_scale
+            );
+        }
+
+        return site_likelihoods;
+    }
+
+    /**
      * Compute analytical gradient of log-likelihood w.r.t. β (preference stringency).
      *
      * Uses finite difference approximation: dL/dβ ≈ (L(β+ε) - L(β-ε)) / (2ε)
