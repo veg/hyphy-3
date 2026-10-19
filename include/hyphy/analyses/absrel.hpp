@@ -153,12 +153,7 @@ public:
         is_test_branch = std::move(sel.is_selected);
 
         size_t num_nodes = tree.num_nodes();
-        leaf_to_taxon.assign(num_nodes, static_cast<size_t>(-1));
-        for (const auto& node : tree.nodes) {
-            if (node.is_leaf) {
-                leaf_to_taxon[node.id] = LikelihoodEngine::find_taxon_index(aln, node.name);
-            }
-        }
+        leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(tree, aln);
 
         branch_alpha.assign(num_nodes, 0.01);
         branch_omegas.resize(num_nodes);

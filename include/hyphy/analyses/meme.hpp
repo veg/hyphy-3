@@ -209,8 +209,7 @@ public:
             return res;
         }
 
-        std::vector<Vector> thread_node_L(num_nodes, Vector::Zero(S));
-        std::vector<double> thread_node_scale(num_nodes, 0.0);
+        auto [thread_node_L, thread_node_scale] = LikelihoodEngine::make_pattern_scratch<Vector>(num_nodes, S);
         std::vector<Matrix> P_branches(num_nodes);
 
         bool has_bg = (num_background > 0);
@@ -247,7 +246,7 @@ public:
                 }
             }
 
-            return FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_branches, thread_node_L, thread_node_scale);
+            return LikelihoodEngine::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_branches, thread_node_L, thread_node_scale);
         };
 
         // Construct grid starting points matching HyPhy 2.5 MEME.bf
@@ -373,11 +372,11 @@ public:
                     }
                     // Conditional on branch node.id being in class 1
                     P_temp[node.id] = P1[node.id];
-                    Scalar log_L1 = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale);
+                    Scalar log_L1 = LikelihoodEngine::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale);
 
                     // Conditional on branch node.id being in class +
                     P_temp[node.id] = P_plus[node.id];
-                    Scalar log_L_plus = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale);
+                    Scalar log_L_plus = LikelihoodEngine::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale);
 
                     P_temp[node.id] = P_mix[node.id]; // restore
 

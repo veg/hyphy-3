@@ -6,6 +6,8 @@
 #include "hyphy/core/rate_matrix.hpp"
 #include <vector>
 #include <cmath>
+#include <limits>
+#include <utility>
 #include <iostream>
 #include <cctype>
 #include <algorithm>
@@ -52,6 +54,114 @@ public:
         return leaf_to_taxon;
     }
 
+    // Per-thread traversal scratch: node likelihood vectors + per-node log
+    // scales, destructured at each call site to keep the usual local names:
+    //   auto [node_L, node_log_scale] = make_pattern_scratch<Vector>(n, S);
+    template <typename VecType>
+    static std::pair<std::vector<VecType>, std::vector<double>>
+    make_pattern_scratch(size_t num_nodes, int S) {
+        return {std::vector<VecType>(num_nodes, VecType::Zero(S)),
+                std::vector<double>(num_nodes, 0.0)};
+    }
+
+    // Max-shifted log-sum-exp over a container of log-domain terms (each term
+    // already folds in log class weight and node log-scale). Entries equal to
+    // -infinity mark absent or degenerate classes; -infinity is returned when
+    // no term is finite so callers keep their own sentinel.
+    template <typename Terms>
+    static Scalar logsumexp(const Terms& terms) {
+        Scalar max_t = -std::numeric_limits<Scalar>::infinity();
+        for (const Scalar t : terms) {
+            if (t > max_t) max_t = t;
+        }
+        if (!std::isfinite(max_t)) return max_t;
+        Scalar sum_exp = 0.0;
+        for (const Scalar t : terms) {
+            if (std::isfinite(t)) sum_exp += std::exp(t - max_t);
+        }
+        return (sum_exp > 0.0)
+            ? max_t + std::log(sum_exp)
+            : -std::numeric_limits<Scalar>::infinity();
+    }
+
+    // Standard per-branch transition set: P[node.id] =
+    // model.transition_matrix(node.branch_length * branch_scale) for every
+    // non-root node. The root entry stays default-constructed; traversals
+    // never read it.
+    template <typename MatType, typename Model>
+    static std::vector<MatType> build_P_branches(
+        const Tree& tree, const Model& model, Scalar branch_scale = 1.0
+    ) {
+        std::vector<MatType> P(tree.nodes.size());
+        for (const auto& node : tree.nodes) {
+            if (node.id != tree.root_id) {
+                P[node.id] = model.transition_matrix(node.branch_length * branch_scale);
+            }
+        }
+        return P;
+    }
+
+    // One post-order pass over the tree for a single site pattern: leaf
+    // likelihoods are initialized from pattern.states and internal-node
+    // partials are computed via eval_internal_node (which rescales underflowing
+    // partials internally and folds the result into node_log_scale).
+    // Pass init_leaves=false on repeat traversals of the same pattern when leaf
+    // likelihoods are already populated — e.g. rate-class/mixture loops that
+    // re-evaluate internals under a different P_branches set.
+    template <typename VecType, typename MatType>
+    static void eval_pattern_postorder(
+        const Tree& tree,
+        const SitePattern& pattern,
+        const std::vector<size_t>& leaf_to_taxon,
+        const std::vector<MatType>& P_branches,
+        int S,
+        std::vector<VecType>& node_L,
+        std::vector<double>& node_log_scale,
+        bool init_leaves = true
+    ) {
+        for (int32_t node_id : tree.post_order) {
+            const auto& node = tree.nodes[node_id];
+            if (node.is_leaf) {
+                if (!init_leaves) continue;
+                size_t t_idx = leaf_to_taxon[node_id];
+                if (t_idx != static_cast<size_t>(-1)) {
+                    int8_t state = pattern.states[t_idx];
+                    if (state >= 0 && state < S) {
+                        node_L[node_id].setZero();
+                        node_L[node_id](state) = 1.0;
+                    } else {
+                        node_L[node_id].setOnes();
+                    }
+                } else {
+                    node_L[node_id].setOnes();
+                }
+                node_log_scale[node_id] = 0.0;
+            } else {
+                double child_scale_sum = 0.0;
+                tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
+                node_log_scale[node_id] = child_scale_sum;
+            }
+        }
+    }
+
+    // Per-pattern log-likelihood under an MG94 model: postorder pass, root
+    // mixture over equilibrium frequencies, -1e20 sentinel when the root
+    // conditional likelihood is not positive.
+    static Scalar compute_pattern_log_likelihood(
+        const Tree& tree,
+        const SitePattern& pattern,
+        const std::vector<size_t>& leaf_to_taxon,
+        const MG94Matrix& mg94_model,
+        const std::vector<Matrix>& P_branches,
+        std::vector<Vector>& node_L,
+        std::vector<double>& node_log_scale
+    ) {
+        eval_pattern_postorder(tree, pattern, leaf_to_taxon, P_branches,
+                               static_cast<int>(mg94_model.pi.size()), node_L, node_log_scale);
+        Scalar pat_l = mg94_model.pi.dot(node_L[tree.root_id]);
+        return (pat_l > 0.0) ? std::log(pat_l) + node_log_scale[tree.root_id] : -1e20;
+    }
+
     // Nucleotide GTR Tree Likelihood
     static Scalar compute_gtr_log_likelihood(
         const Tree& tree,
@@ -63,12 +173,7 @@ public:
         size_t num_patterns = aln.patterns.size();
 
         // Precompute transition matrices for all branches
-        std::vector<Matrix4> P_branches(num_nodes);
-        for (const auto& node : tree.nodes) {
-            if (node.id != tree.root_id) {
-                P_branches[node.id] = gtr_model.transition_matrix(node.branch_length);
-            }
-        }
+        auto P_branches = build_P_branches<Matrix4>(tree, gtr_model);
 
         std::vector<size_t> local_map;
         const std::vector<size_t>& leaf_to_taxon = custom_leaf_to_taxon
@@ -79,35 +184,12 @@ public:
 
         #pragma omp parallel
         {
-            std::vector<Vector4> node_L(num_nodes);
-            std::vector<double> node_log_scale(num_nodes, 0.0);
+            auto [node_L, node_log_scale] = make_pattern_scratch<Vector4>(num_nodes, 4);
             #pragma omp for reduction(+:total_log_l) schedule(dynamic)
             for (size_t p = 0; p < num_patterns; ++p) {
                 const auto& pattern = aln.patterns[p];
 
-                for (int32_t node_id : tree.post_order) {
-                    const auto& node = tree.nodes[node_id];
-
-                    if (node.is_leaf) {
-                        size_t t_idx = leaf_to_taxon[node_id];
-                        if (t_idx != static_cast<size_t>(-1)) {
-                            int8_t state = pattern.states[t_idx];
-                            if (state >= 0 && state < 4) {
-                                node_L[node_id].setZero();
-                                node_L[node_id](state) = 1.0;
-                            } else {
-                                node_L[node_id].setOnes();
-                            }
-                        } else {
-                            node_L[node_id].setOnes();
-                        }
-                        node_log_scale[node_id] = 0.0;
-                    } else {
-                        double child_scale_sum = 0.0;
-                        tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
-                        node_log_scale[node_id] = child_scale_sum;
-                    }
-                }
+                eval_pattern_postorder(tree, pattern, leaf_to_taxon, P_branches, 4, node_L, node_log_scale);
 
                 Scalar pattern_likelihood = gtr_model.pi.dot(node_L[tree.root_id]);
                 if (pattern_likelihood > 0.0) {
@@ -129,16 +211,10 @@ public:
         const std::vector<size_t>* custom_leaf_to_taxon = nullptr,
         Scalar branch_scale = 1.0
     ) {
-        size_t num_nodes = tree.num_nodes();
         int S = mg94_model.pi.size();
 
         // Precompute transition matrices for all branches
-        std::vector<Matrix> P_branches(num_nodes);
-        for (const auto& node : tree.nodes) {
-            if (node.id != tree.root_id) {
-                P_branches[node.id] = mg94_model.transition_matrix(node.branch_length * branch_scale);
-            }
-        }
+        auto P_branches = build_P_branches<Matrix>(tree, mg94_model, branch_scale);
 
         return compute_tree_log_likelihood_from_P(tree, aln, P_branches, mg94_model.pi, S, custom_leaf_to_taxon);
     }
@@ -161,52 +237,17 @@ public:
             ? *custom_leaf_to_taxon
             : (local_map = build_leaf_to_taxon_map(tree, aln));
 
-        const double SCALER_THRESH = 1e-150;
-        const double SCALER_UP = 1e150;
-        const double LOG_SCALER = std::log(SCALER_UP);
-
         Scalar total_log_l = 0.0;
 
         #pragma omp parallel
         {
-            std::vector<Vector> node_L(num_nodes, Vector::Zero(S));
-            std::vector<double> node_log_scale(num_nodes, 0.0);
+            auto [node_L, node_log_scale] = make_pattern_scratch<Vector>(num_nodes, S);
 
             #pragma omp for reduction(+:total_log_l) schedule(dynamic)
             for (size_t p = 0; p < num_patterns; ++p) {
                 const auto& pattern = aln.patterns[p];
 
-                for (int32_t node_id : tree.post_order) {
-                    const auto& node = tree.nodes[node_id];
-
-                    if (node.is_leaf) {
-                        size_t t_idx = leaf_to_taxon[node_id];
-                        if (t_idx != static_cast<size_t>(-1)) {
-                            int8_t state = pattern.states[t_idx];
-                            if (state >= 0 && state < S) {
-                                node_L[node_id].setZero();
-                                node_L[node_id](state) = 1.0;
-                            } else {
-                                node_L[node_id].setOnes();
-                            }
-                        } else {
-                            node_L[node_id].setOnes();
-                        }
-                        node_log_scale[node_id] = 0.0;
-                    } else {
-                        double child_scale_sum = 0.0;
-                        tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
-
-                        double max_val = node_L[node_id].maxCoeff();
-                        int boost_count = 0;
-                        while (max_val < SCALER_THRESH && max_val > 0.0) {
-                            node_L[node_id] *= SCALER_UP;
-                            max_val *= SCALER_UP;
-                            boost_count++;
-                        }
-                        node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
-                    }
-                }
+                eval_pattern_postorder(tree, pattern, leaf_to_taxon, P_branches, S, node_L, node_log_scale);
 
                 Scalar pattern_likelihood = pi.dot(node_L[tree.root_id]);
                 if (pattern_likelihood > 0.0) {
@@ -222,32 +263,38 @@ public:
 
     // Inside-Outside two-pass traversal for a single site pattern
     // Returns downward vectors D, parent-sibling context vectors V, and total likelihood L
-    struct InsideOutsideResult {
-        std::vector<Vector> D; // Downward subtree likelihoods D[node]
-        std::vector<Vector> V; // Upward parent-sibling messages V[node]
+    template <typename VecType>
+    struct InsideOutsideResultT {
+        std::vector<VecType> D; // Downward subtree likelihoods D[node]
+        std::vector<VecType> V; // Upward parent-sibling messages V[node]
         Scalar likelihood = 0.0;
         Scalar log_likelihood = 0.0;
     };
+    using InsideOutsideResult = InsideOutsideResultT<Vector>;
 
-    static InsideOutsideResult compute_inside_outside(
+    // Inside-outside (sum-product) pass for one pattern. When out_P_D is
+    // non-null it is filled with the per-child messages P_b[c] * D[c] computed
+    // during the inside pass — callers needing pairwise child products (e.g.
+    // polytomy resolution) reuse them instead of recomputing.
+    template <typename VecType, typename MatType>
+    static InsideOutsideResultT<VecType> compute_inside_outside(
         const Tree& tree,
         const SitePattern& pattern,
         const std::vector<size_t>& leaf_to_taxon,
-        const std::vector<Matrix>& P_branches,
-        const Vector& pi,
-        int S
+        const std::vector<MatType>& P_branches,
+        const VecType& pi,
+        int S,
+        std::vector<VecType>* out_P_D = nullptr
     ) {
         size_t num_nodes = tree.num_nodes();
-        InsideOutsideResult res;
-        res.D.assign(num_nodes, Vector::Zero(S));
-        res.V.assign(num_nodes, Vector::Zero(S));
-        std::vector<Vector> P_D(num_nodes, Vector::Zero(S));
+        InsideOutsideResultT<VecType> res;
+        res.D.assign(num_nodes, VecType::Zero(S));
+        res.V.assign(num_nodes, VecType::Zero(S));
+        std::vector<VecType> local_P_D;
+        std::vector<VecType>& P_D = out_P_D ? *out_P_D : local_P_D;
+        P_D.assign(num_nodes, VecType::Zero(S));
         std::vector<double> B(num_nodes, 1.0);
         std::vector<double> node_log_scale(num_nodes, 0.0);
-
-        const double SCALER_THRESH = 1e-150;
-        const double SCALER_UP = 1e150;
-        const double LOG_SCALER = std::log(SCALER_UP);
 
         // 1. Post-order (bottom-up) pass to compute D and cache P_D
         for (int32_t nid : tree.post_order) {
@@ -269,22 +316,15 @@ public:
                 B[nid] = 1.0;
             } else {
                 double child_scale_sum = 0.0;
+                double boost_mult = 1.0;
                 for (int32_t cid : node.children) {
                     P_D[cid] = P_branches[cid] * res.D[cid];
                 }
-                tree.eval_internal_node(nid, P_branches, res.D, node_log_scale, res.D[nid], child_scale_sum);
-
-                double max_val = res.D[nid].maxCoeff();
-                int boost_count = 0;
-                double boost_mult = 1.0;
-                while (max_val < SCALER_THRESH && max_val > 0.0) {
-                    res.D[nid] *= SCALER_UP;
-                    max_val *= SCALER_UP;
-                    boost_mult *= SCALER_UP;
-                    boost_count++;
-                }
+                tree.eval_internal_node(nid, P_branches, res.D, node_log_scale, res.D[nid], child_scale_sum, &boost_mult);
+                // B[nid] must record the node's own boost so the pre-order pass
+                // re-applies the same scaling to outside messages (v_msg *= B[uid]).
                 B[nid] = boost_mult;
-                node_log_scale[nid] = child_scale_sum - boost_count * LOG_SCALER;
+                node_log_scale[nid] = child_scale_sum;
             }
         }
 
@@ -296,7 +336,7 @@ public:
         }
 
         // 2. Pre-order (top-down) pass to compute U and V reusing cached P_D
-        std::vector<Vector> U(num_nodes, Vector::Zero(S));
+        std::vector<VecType> U(num_nodes, VecType::Zero(S));
         U[tree.root_id] = pi;
 
         for (auto it = tree.post_order.rbegin(); it != tree.post_order.rend(); ++it) {
@@ -307,7 +347,7 @@ public:
             size_t num_children = node.children.size();
             for (size_t i = 0; i < num_children; ++i) {
                 int32_t vid = node.children[i];
-                Vector v_msg = U[uid];
+                VecType v_msg = U[uid];
                 for (size_t j = 0; j < num_children; ++j) {
                     if (i != j) {
                         v_msg.array() *= P_D[node.children[j]].array();

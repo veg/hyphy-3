@@ -83,6 +83,7 @@ public:
         const std::vector<double>& node_log_scale,
         VecType& out_L,
         double& out_child_scale_sum,
+        double* out_boost_mult = nullptr,
         const std::vector<std::array<MatType, 3>>* P_bridges = nullptr
     ) const {
         int32_t b_idx = bridge_index(nid);
@@ -140,12 +141,17 @@ public:
 
         double max_val = out_L.maxCoeff();
         int boost_count = 0;
+        double boost_mult = 1.0;
         while (max_val < SCALER_THRESH && max_val > 0.0) {
             out_L *= SCALER_UP;
             max_val *= SCALER_UP;
+            boost_mult *= SCALER_UP;
             boost_count++;
         }
         out_child_scale_sum -= boost_count * LOG_SCALER;
+        if (out_boost_mult != nullptr) {
+            *out_boost_mult = boost_mult;
+        }
     }
 
     template <typename VecType, typename MatType, typename ModelType>
@@ -157,7 +163,8 @@ public:
         const std::vector<double>& node_log_scale,
         VecType& out_L,
         double& out_child_scale_sum,
-        Scalar branch_scale = 1.0
+        Scalar branch_scale = 1.0,
+        double* out_boost_mult = nullptr
     ) const {
         int32_t b_idx = bridge_index(nid);
         if (b_idx >= 0) {
@@ -205,12 +212,17 @@ public:
 
         double max_val = out_L.maxCoeff();
         int boost_count = 0;
+        double boost_mult = 1.0;
         while (max_val < SCALER_THRESH && max_val > 0.0) {
             out_L *= SCALER_UP;
             max_val *= SCALER_UP;
+            boost_mult *= SCALER_UP;
             boost_count++;
         }
         out_child_scale_sum -= boost_count * LOG_SCALER;
+        if (out_boost_mult != nullptr) {
+            *out_boost_mult = boost_mult;
+        }
     }
 
     static Tree from_newick_file(const std::string& filepath) {

@@ -395,91 +395,22 @@ public:
                 #pragma omp parallel if(!omp_in_parallel())
                 #endif
                 {
-                    std::vector<Vector4> node_L(n_nodes);
-                    std::vector<double> node_log_scale(n_nodes, 0.0);
-                    std::vector<Vector4> P_D(n_nodes);
-                    std::vector<double> B(n_nodes, 1.0);
-                    std::vector<Vector4> U(n_nodes, Vector4::Zero());
-                    std::vector<Vector4> V(n_nodes, Vector4::Zero());
-
                     Scalar local_ll = 0.0;
                     std::vector<Scalar> local_dL(n_nodes, 0.0);
-
-                    const double SCALER_THRESH = 1e-150;
-                    const double SCALER_UP = 1e150;
-                    const double LOG_SCALER = 345.38776394910684;
 
                     #pragma omp for schedule(dynamic)
                     for (size_t p = 0; p < n_pat; ++p) {
                         const auto& pattern = aln_ref.patterns[p];
 
-                        // 1. Post-order traversal (Inside pass)
-                        for (int32_t nid : tree_ref.post_order) {
-                            const auto& node = tree_ref.nodes[nid];
-                            if (node.is_leaf) {
-                                size_t t_idx = l2t[nid];
-                                if (t_idx != static_cast<size_t>(-1)) {
-                                    int8_t s = pattern.states[t_idx];
-                                    if (s >= 0 && s < 4) {
-                                        node_L[nid].setZero();
-                                        node_L[nid](s) = 1.0;
-                                    } else {
-                                        node_L[nid].setOnes();
-                                    }
-                                } else {
-                                    node_L[nid].setOnes();
-                                }
-                                node_log_scale[nid] = 0.0;
-                                B[nid] = 1.0;
-                            } else {
-                                double child_scale_sum = 0.0;
-                                for (int32_t cid : node.children) {
-                                    P_D[cid] = P_b[cid] * node_L[cid];
-                                }
-                                tree_ref.eval_internal_node(nid, P_b, node_L, node_log_scale, node_L[nid], child_scale_sum);
-
-                                double max_val = node_L[nid].maxCoeff();
-                                int boost_count = 0;
-                                double boost_mult = 1.0;
-                                while (max_val < SCALER_THRESH && max_val > 0.0) {
-                                    node_L[nid] *= SCALER_UP;
-                                    max_val *= SCALER_UP;
-                                    boost_mult *= SCALER_UP;
-                                    boost_count++;
-                                }
-                                B[nid] = boost_mult;
-                                node_log_scale[nid] = child_scale_sum - boost_count * LOG_SCALER;
-                            }
-                        }
-
-                        Scalar pat_l = gtr_ref.pi.dot(node_L[tree_ref.root_id]);
-                        if (pat_l > 0.0) {
-                            local_ll += pattern.weight * (std::log(pat_l) + node_log_scale[tree_ref.root_id]);
-                            Scalar inv_L = pattern.weight / pat_l;
-
-                            // 2. Pre-order traversal (Outside pass)
-                            U[tree_ref.root_id] = gtr_ref.pi;
-                            for (auto it = tree_ref.post_order.rbegin(); it != tree_ref.post_order.rend(); ++it) {
-                                int32_t uid = *it;
-                                const auto& node = tree_ref.nodes[uid];
-                                if (node.is_leaf) continue;
-
-                                size_t num_children = node.children.size();
-                                for (size_t i = 0; i < num_children; ++i) {
-                                    int32_t vid = node.children[i];
-                                    Vector4 v_msg = U[uid];
-                                    for (size_t j = 0; j < num_children; ++j) {
-                                        if (i != j) {
-                                            v_msg.array() *= P_D[node.children[j]].array();
-                                        }
-                                    }
-                                    v_msg *= B[uid];
-                                    V[vid] = v_msg;
-                                    U[vid] = P_b[vid].transpose() * v_msg;
-
-                                    Scalar dL = v_msg.dot(dP_b[vid] * node_L[vid]);
-                                    local_dL[vid] += inv_L * dL;
-                                }
+                        auto io = LikelihoodEngine::compute_inside_outside(
+                            tree_ref, pattern, l2t, P_b, gtr_ref.pi, 4);
+                        if (io.likelihood > 0.0) {
+                            local_ll += pattern.weight * io.log_likelihood;
+                            Scalar inv_L = pattern.weight / io.likelihood;
+                            // Only optimized branches consume gradients; dP_b
+                            // is uninitialized on the others.
+                            for (int32_t vid : brs) {
+                                local_dL[vid] += inv_L * io.V[vid].dot(dP_b[vid] * io.D[vid]);
                             }
                         }
                     }
@@ -628,12 +559,7 @@ public:
         std::vector<size_t> leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(tree, aln);
 
         // Precompute P and dP for current branch lengths
-        std::vector<Matrix4> P_b(num_nodes);
-        for (const auto& node : tree.nodes) {
-            if (node.id != tree.root_id && node.parent_id != INVALID_INDEX) {
-                P_b[node.id] = gtr.transition_matrix(node.branch_length);
-            }
-        }
+        auto P_b = LikelihoodEngine::build_P_branches<Matrix4>(tree, gtr);
 
         // Find internal nodes with >= 3 children (polytomies)
         std::vector<int32_t> polytomies;
@@ -645,16 +571,9 @@ public:
 
         if (polytomies.empty()) return 0;
 
-        // Inside-Outside pass to get partials at all nodes
-        std::vector<Vector4> D_all(num_nodes);
-        std::vector<Vector4> V_all(num_nodes);
-        std::vector<double> node_log_scale(num_nodes, 0.0);
+        // Inside-outside partials at all nodes; P_D keeps the per-child
+        // messages P_b[c] * D[c] for the pairwise child screening below.
         std::vector<Vector4> P_D(num_nodes);
-        std::vector<double> B(num_nodes, 1.0);
-
-        const double SCALER_THRESH = 1e-150;
-        const double SCALER_UP = 1e150;
-        const double LOG_SCALER = 345.38776394910684;
 
         for (int32_t poly_id : polytomies) {
             const auto& pnode = tree.nodes[poly_id];
@@ -668,73 +587,12 @@ public:
             for (size_t p = 0; p < num_patterns; ++p) {
                 const auto& pattern = aln.patterns[p];
 
-                // Inside pass for pattern
-                for (int32_t nid : tree.post_order) {
-                    const auto& node = tree.nodes[nid];
-                    if (node.is_leaf) {
-                        size_t t_idx = leaf_to_taxon[nid];
-                        if (t_idx != static_cast<size_t>(-1)) {
-                            int8_t s = pattern.states[t_idx];
-                            if (s >= 0 && s < 4) {
-                                D_all[nid].setZero();
-                                D_all[nid](s) = 1.0;
-                            } else {
-                                D_all[nid].setOnes();
-                            }
-                        } else {
-                            D_all[nid].setOnes();
-                        }
-                        node_log_scale[nid] = 0.0;
-                        B[nid] = 1.0;
-                    } else {
-                        double child_scale_sum = 0.0;
-                        for (int32_t cid : node.children) {
-                            P_D[cid] = P_b[cid] * D_all[cid];
-                        }
-                        tree.eval_internal_node(nid, P_b, D_all, node_log_scale, D_all[nid], child_scale_sum);
+                auto io = LikelihoodEngine::compute_inside_outside(
+                    tree, pattern, leaf_to_taxon, P_b, gtr.pi, 4, &P_D);
+                if (io.likelihood <= 0.0) continue;
+                Scalar inv_L = pattern.weight / io.likelihood;
 
-                        double max_val = D_all[nid].maxCoeff();
-                        int boost_count = 0;
-                        double boost_mult = 1.0;
-                        while (max_val < SCALER_THRESH && max_val > 0.0) {
-                            D_all[nid] *= SCALER_UP;
-                            max_val *= SCALER_UP;
-                            boost_mult *= SCALER_UP;
-                            boost_count++;
-                        }
-                        B[nid] = boost_mult;
-                        node_log_scale[nid] = child_scale_sum - boost_count * LOG_SCALER;
-                    }
-                }
-
-                Scalar pat_l = gtr.pi.dot(D_all[tree.root_id]);
-                if (pat_l <= 0.0) continue;
-                Scalar inv_L = pattern.weight / pat_l;
-
-                // Outside pass
-                std::vector<Vector4> U(num_nodes, Vector4::Zero());
-                U[tree.root_id] = gtr.pi;
-                for (auto it = tree.post_order.rbegin(); it != tree.post_order.rend(); ++it) {
-                    int32_t uid = *it;
-                    const auto& node = tree.nodes[uid];
-                    if (node.is_leaf) continue;
-
-                    size_t num_children = node.children.size();
-                    for (size_t i = 0; i < num_children; ++i) {
-                        int32_t vid = node.children[i];
-                        Vector4 v_msg = U[uid];
-                        for (size_t j = 0; j < num_children; ++j) {
-                            if (i != j) {
-                                v_msg.array() *= P_D[node.children[j]].array();
-                            }
-                        }
-                        v_msg *= B[uid];
-                        V_all[vid] = v_msg;
-                        U[vid] = P_b[vid].transpose() * v_msg;
-                    }
-                }
-
-                Vector4 V_poly = (poly_id == tree.root_id) ? gtr.pi : V_all[poly_id];
+                Vector4 V_poly = (poly_id == tree.root_id) ? gtr.pi : io.V[poly_id];
 
                 // Screen all pairs of children
                 for (size_t i = 0; i < k; ++i) {

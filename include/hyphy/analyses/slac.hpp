@@ -576,22 +576,7 @@ public:
     }
 
     void init_leaf_mapping() {
-        leaf_to_taxon.assign(tree.num_nodes(), static_cast<size_t>(-1));
-        for (const auto& node : tree.nodes) {
-            if (node.is_leaf) {
-                auto it = aln.taxon_to_index.find(node.name);
-                if (it != aln.taxon_to_index.end()) {
-                    leaf_to_taxon[node.id] = it->second;
-                } else {
-                    std::string lower = node.name;
-                    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-                    auto it_lower = aln.lower_taxon_to_index.find(lower);
-                    if (it_lower != aln.lower_taxon_to_index.end()) {
-                        leaf_to_taxon[node.id] = it_lower->second;
-                    }
-                }
-            }
-        }
+        leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(tree, aln);
     }
 
     void partition_branches() {
@@ -623,13 +608,7 @@ public:
         }
 
         // Branch transition matrices for ancestral reconstruction
-        branch_transition_matrices.resize(tree.num_nodes());
-        for (const auto& node : tree.nodes) {
-            if (node.id != tree.root_id) {
-                Scalar bl_scaled = node.branch_length * conversion_factor;
-                branch_transition_matrices[node.id] = base_mg94_matrix.transition_matrix(bl_scaled);
-            }
-        }
+        branch_transition_matrices = LikelihoodEngine::build_P_branches<Matrix>(tree, base_mg94_matrix, conversion_factor);
     }
 
     /**
