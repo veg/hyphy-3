@@ -402,8 +402,8 @@ public:
                     Scalar pi_x = prefs.at(site, aa_x);
                     Scalar pi_y = prefs.at(site, aa_y);
 
-                    // Compute (π_y / π_x)^β
-                    Scalar ratio = pi_y / pi_x;
+                    // Compute (π_x / π_y)^β (FROM / TO ratio, as per phydms)
+                    Scalar ratio = pi_x / pi_y;
                     Scalar ratio_beta = std::pow(ratio, params.beta);
 
                     // Check for numerical stability
@@ -412,6 +412,7 @@ public:
                         F(x, y) = params.omega;
                     } else {
                         // General formula: ω · [−ln(r^β)] / [1 − r^β]
+                        // where r = π_x / π_y (FROM / TO), matching phydms ExpCM
                         Scalar ln_ratio_beta = std::log(ratio_beta);
                         Scalar numerator = -ln_ratio_beta;
                         Scalar denominator = 1.0 - ratio_beta;
