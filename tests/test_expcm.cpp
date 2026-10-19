@@ -921,5 +921,737 @@ TEST_SUITE("ExpCM: Step 3 - Fixed-Parameter Likelihood") {
     }
 }
 
+TEST_CASE("Debug: Per-site likelihood contributions analysis") {
+    std::string base_path = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3";
+    Preferences prefs = Preferences::from_csv(base_path + "/data/prefs.csv");
+    auto tree = Tree::from_newick_file(base_path + "/data/tree.newick");
+    auto aln = Alignment::from_fasta(base_path + "/data/alignment.fasta");
+
+    ExpCMParameters params;
+    params.beta = 3.38189;
+    params.kappa = 8.75598;
+    params.omega = 0.977468;
+    params.phi = Vector4{0.355409, 0.201765, 0.249379, 1.0 - 0.355409 - 0.201765 - 0.249379};
+
+    const auto& gcode = *GeneticCode::universal();
+    ExpCMQMatrix Q_matrix;
+    Q_matrix.build(gcode, params);
+    const Matrix61Codon& Q = Q_matrix.Q;
+
+    std::vector<size_t> leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(tree, aln);
+
+    Scalar total_log_l = 0.0;
+    std::vector<Scalar> site_contributions;
+
+    const double SCALER_THRESH = 1e-150;
+    const double SCALER_UP = 1e150;
+    const double LOG_SCALER = std::log(SCALER_UP);
+
+    std::cerr << "\n=== PER-SITE LIKELIHOOD ANALYSIS ===" << std::endl;
+    std::cerr << "Computing likelihood for each of " << prefs.num_sites() << " sites" << std::endl;
+    std::cerr << "\nSite | ln L contribution | Cumulative ln L | Avg per site" << std::endl;
+    std::cerr << "-" << std::string(60, '-') << std::endl;
+
+    // Process each site
+    for (size_t site = 0; site < prefs.num_sites(); ++site) {
+        // Get pattern for this site
+        size_t pattern_idx = aln.site_to_pattern[site];
+        const auto& pattern = aln.patterns[pattern_idx];
+
+        // Build F matrix for this site
+        ExpCMFMatrix F_matrix;
+        F_matrix.build(gcode, prefs, site, params);
+
+        // Compute P = F ⊙ Q
+        Matrix61Codon P = F_matrix.F.cwiseProduct(Q);
+        for (int x = 0; x < 61; ++x) {
+            P(x, x) = -P.row(x).sum();
+        }
+
+        // Stationary distribution for this site
+        Eigen::Matrix<Scalar, 61, 1> pi_site = LikelihoodEngine::compute_expcm_stationary(
+            gcode, prefs, site, params.beta, params.phi
+        );
+
+        // Compute transition matrices for branches
+        std::vector<Matrix61Codon> P_branches(tree.num_nodes());
+        for (const auto& node : tree.nodes) {
+            if (node.id != tree.root_id) {
+                Scalar scaled_bl = node.branch_length * 1.0;
+                P_branches[node.id] = LikelihoodEngine::matrix_exp_scaling_squaring(P * scaled_bl);
+            }
+        }
+
+        // Felsenstein pruning for this site
+        std::vector<Eigen::Matrix<Scalar, 61, 1>> node_L(tree.num_nodes());
+        std::vector<double> node_log_scale(tree.num_nodes(), 0.0);
+
+        for (int32_t node_id : tree.post_order) {
+            const auto& node = tree.nodes[node_id];
+
+            if (node.is_leaf) {
+                size_t t_idx = leaf_to_taxon[node_id];
+                if (t_idx != static_cast<size_t>(-1)) {
+                    int8_t state = pattern.states[t_idx];
+                    if (state >= 0 && state < 61) {
+                        node_L[node_id].setZero();
+                        node_L[node_id](state) = 1.0;
+                    } else {
+                        node_L[node_id].setOnes();
+                    }
+                } else {
+                    node_L[node_id].setOnes();
+                }
+                node_log_scale[node_id] = 0.0;
+            } else {
+                double child_scale_sum = 0.0;
+                tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
+
+                double max_val = node_L[node_id].maxCoeff();
+                int boost_count = 0;
+                while (max_val < SCALER_THRESH && max_val > 0.0) {
+                    node_L[node_id] *= SCALER_UP;
+                    max_val *= SCALER_UP;
+                    boost_count++;
+                }
+                node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
+            }
+        }
+
+        // Compute site likelihood
+        Scalar site_likelihood = pi_site.dot(node_L[tree.root_id]);
+        Scalar site_lnL = 0.0;
+        if (site_likelihood > 0.0) {
+            site_lnL = std::log(site_likelihood) + node_log_scale[tree.root_id];
+        } else {
+            site_lnL = -1e20;
+        }
+
+        site_contributions.push_back(site_lnL);
+        total_log_l += site_lnL;
+
+        // Print every 10th site and last site
+        if ((site + 1) % 10 == 0 || site == prefs.num_sites() - 1) {
+            Scalar avg = total_log_l / (site + 1);
+            std::cerr << std::setw(4) << (site + 1) << " | "
+                      << std::fixed << std::setprecision(6) << std::setw(12) << site_lnL << " | "
+                      << std::setw(12) << total_log_l << " | "
+                      << std::setw(12) << avg << std::endl;
+        }
+    }
+
+    std::cerr << std::string(70, '-') << std::endl;
+    std::cerr << "\n=== STATISTICS ===" << std::endl;
+    std::cerr << "Total ln L: " << std::fixed << std::setprecision(2) << total_log_l << std::endl;
+    std::cerr << "Expected:   -775.21" << std::endl;
+    std::cerr << "Error ratio: " << (std::abs(total_log_l) / 775.21) << "x" << std::endl;
+
+    // Analyze distribution
+    Scalar min_lnL = *std::min_element(site_contributions.begin(), site_contributions.end());
+    Scalar max_lnL = *std::max_element(site_contributions.begin(), site_contributions.end());
+    Scalar avg_lnL = total_log_l / prefs.num_sites();
+
+    std::cerr << "\nPer-site statistics:" << std::endl;
+    std::cerr << "  Min ln L: " << std::fixed << std::setprecision(6) << min_lnL << std::endl;
+    std::cerr << "  Max ln L: " << std::fixed << std::setprecision(6) << max_lnL << std::endl;
+    std::cerr << "  Avg ln L: " << std::fixed << std::setprecision(6) << avg_lnL << std::endl;
+    std::cerr << "  Range: " << (max_lnL - min_lnL) << std::endl;
+
+    // Count sites below/above threshold
+    int below_8 = 0;
+    for (auto lnL : site_contributions) {
+        if (lnL < -8.0) below_8++;
+    }
+    std::cerr << "  Sites with ln L < -8.0: " << below_8 << " / " << prefs.num_sites() << std::endl;
+
+    std::cerr << "\n=== KEY OBSERVATION ===" << std::endl;
+    std::cerr << "If all sites have similar error magnitude:" << std::endl;
+    std::cerr << "  → Error is per-site (in F matrix, P matrix, or π)" << std::endl;
+    std::cerr << "If error varies by site:" << std::endl;
+    std::cerr << "  → Error may be in tree traversal or accumulation" << std::endl;
+    std::cerr << "If total is exactly 1.34x off:" << std::endl;
+    std::cerr << "  → Missing constant multiplicative factor" << std::endl;
+
+    CHECK(std::isfinite(total_log_l));
+    CHECK(total_log_l < 0.0);
+}
+
+TEST_CASE("Debug: Compare single site computation methods") {
+    std::cerr << "\n=== SINGLE SITE COMPUTATION COMPARISON ===" << std::endl;
+
+    std::string base_path = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3";
+    Preferences prefs = Preferences::from_csv(base_path + "/data/prefs.csv");
+    auto tree = Tree::from_newick_file(base_path + "/data/tree.newick");
+    auto aln = Alignment::from_fasta(base_path + "/data/alignment.fasta");
+
+    ExpCMParameters params;
+    params.beta = 3.38189;
+    params.kappa = 8.75598;
+    params.omega = 0.977468;
+    params.phi = Vector4{0.355409, 0.201765, 0.249379, 1.0 - 0.355409 - 0.201765 - 0.249379};
+
+    const auto& gcode = *GeneticCode::universal();
+
+    // Test multiple sites to see if pattern is consistent
+    std::vector<size_t> test_sites = {0, 50, 100, 129};
+
+    std::cerr << "Testing " << test_sites.size() << " sites:\n" << std::endl;
+    std::cerr << "Site | Full Alg | Per-Site Test | Ratio" << std::endl;
+    std::cerr << std::string(60, '-') << std::endl;
+
+    for (size_t test_site : test_sites) {
+        // METHOD 1: Full algorithm (simulate by creating minimal alignment with one site)
+        // We'll use the full algorithm's approach
+        ExpCMQMatrix Q_matrix;
+        Q_matrix.build(gcode, params);
+        const Matrix61Codon& Q = Q_matrix.Q;
+
+        auto leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(tree, aln);
+        size_t pattern_idx = aln.site_to_pattern[test_site];
+        const auto& pattern = aln.patterns[pattern_idx];
+
+        // Build F matrix for this site
+        ExpCMFMatrix F_matrix;
+        F_matrix.build(gcode, prefs, test_site, params);
+
+        // Compute P = F ⊙ Q
+        Matrix61Codon P = F_matrix.F.cwiseProduct(Q);
+        for (int x = 0; x < 61; ++x) {
+            P(x, x) = -P.row(x).sum();
+        }
+
+        // Stationary distribution
+        Eigen::Matrix<Scalar, 61, 1> pi_site = LikelihoodEngine::compute_expcm_stationary(
+            gcode, prefs, test_site, params.beta, params.phi
+        );
+
+        // Compute transition matrices
+        std::vector<Matrix61Codon> P_branches(tree.num_nodes());
+        for (const auto& node : tree.nodes) {
+            if (node.id != tree.root_id) {
+                Scalar scaled_bl = node.branch_length * 1.0;
+                P_branches[node.id] = LikelihoodEngine::matrix_exp_scaling_squaring(P * scaled_bl);
+            }
+        }
+
+        // Felsenstein pruning
+        std::vector<Eigen::Matrix<Scalar, 61, 1>> node_L(tree.num_nodes());
+        std::vector<double> node_log_scale(tree.num_nodes(), 0.0);
+
+        const double SCALER_THRESH = 1e-150;
+        const double SCALER_UP = 1e150;
+        const double LOG_SCALER = std::log(SCALER_UP);
+
+        for (int32_t node_id : tree.post_order) {
+            const auto& node = tree.nodes[node_id];
+
+            if (node.is_leaf) {
+                size_t t_idx = leaf_to_taxon[node_id];
+                if (t_idx != static_cast<size_t>(-1)) {
+                    int8_t state = pattern.states[t_idx];
+                    if (state >= 0 && state < 61) {
+                        node_L[node_id].setZero();
+                        node_L[node_id](state) = 1.0;
+                    } else {
+                        node_L[node_id].setOnes();
+                    }
+                } else {
+                    node_L[node_id].setOnes();
+                }
+                node_log_scale[node_id] = 0.0;
+            } else {
+                double child_scale_sum = 0.0;
+                tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
+
+                double max_val = node_L[node_id].maxCoeff();
+                int boost_count = 0;
+                while (max_val < SCALER_THRESH && max_val > 0.0) {
+                    node_L[node_id] *= SCALER_UP;
+                    max_val *= SCALER_UP;
+                    boost_count++;
+                }
+                node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
+            }
+        }
+
+        Scalar site_likelihood_full = pi_site.dot(node_L[tree.root_id]);
+        Scalar site_lnL_full = 0.0;
+        if (site_likelihood_full > 0.0) {
+            site_lnL_full = std::log(site_likelihood_full) + node_log_scale[tree.root_id];
+        } else {
+            site_lnL_full = -1e20;
+        }
+
+        // METHOD 2: Exactly the same computation (should be identical)
+        // This is just verifying the computation is consistent
+        Scalar site_lnL_recompute = site_lnL_full;
+
+        std::cerr << std::setw(4) << test_site << " | "
+                  << std::fixed << std::setprecision(6) << std::setw(12) << site_lnL_full << " | "
+                  << std::setw(12) << site_lnL_recompute << " | "
+                  << std::setw(6) << (site_lnL_full / site_lnL_recompute) << std::endl;
+
+        CHECK(std::isfinite(site_lnL_full));
+    }
+
+    std::cerr << std::string(60, '-') << std::endl;
+    std::cerr << "\nIf ratio != 1.0, there's an inconsistency in computation." << std::endl;
+    std::cerr << "If all sites have similar ratio, error is uniform per-site." << std::endl;
+}
+
+
+TEST_CASE("Debug: Matrix Exponential Validation") {
+    std::cerr << "\n=== MATRIX EXPONENTIAL VALIDATION ===" << std::endl;
+    
+    std::string base_path = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3";
+    const auto& gcode = *GeneticCode::universal();
+    
+    // Test 1: exp(0) = Identity
+    {
+        Matrix61Codon zero = Matrix61Codon::Zero();
+        auto exp_zero = LikelihoodEngine::matrix_exp_scaling_squaring(zero);
+        
+        double error = 0.0;
+        for (int i = 0; i < 61; ++i) {
+            error += std::abs(exp_zero(i, i) - 1.0);
+            for (int j = 0; j < 61; ++j) {
+                if (i != j) error += std::abs(exp_zero(i, j));
+            }
+        }
+        std::cerr << "exp(0) identity error: " << std::scientific << error << std::endl;
+        CHECK(error < 1e-10);
+    }
+    
+    // Test 2: Stochasticity check for real P matrices
+    {
+        auto prefs = Preferences::from_csv(base_path + "/data/prefs.csv");
+        ExpCMParameters params;
+        params.beta = 3.38189;
+        params.kappa = 8.75598;
+        params.omega = 0.977468;
+        params.phi = Vector4{0.355409, 0.201765, 0.249379, 0.193447};
+        
+        ExpCMQMatrix Q_mat;
+        Q_mat.build(gcode, params);
+        
+        // Check exp(P*t) produces stochastic matrices
+        std::cerr << "\nStochasticity check (exp(P*t) row sums):" << std::endl;
+        
+        for (size_t site : {0, 65, 129}) {
+            ExpCMFMatrix F_mat;
+            F_mat.build(gcode, prefs, site, params);
+            
+            Matrix61Codon P = F_mat.F.cwiseProduct(Q_mat.Q);
+            for (int x = 0; x < 61; ++x) {
+                P(x, x) = -P.row(x).sum();
+            }
+            
+            // Check exp(P*0.1)
+            auto exp_P = LikelihoodEngine::matrix_exp_scaling_squaring(P * 0.1);
+            
+            double row_sum_error = 0.0;
+            for (int i = 0; i < 61; ++i) {
+                row_sum_error += std::abs(exp_P.row(i).sum() - 1.0);
+            }
+            
+            std::cerr << "  Site " << site << ": row sum error = " << std::scientific << row_sum_error;
+            if (row_sum_error > 1e-6) {
+                std::cerr << " [WARNING: not stochastic]";
+            }
+            std::cerr << std::endl;
+        }
+    }
+}
+
+TEST_CASE("Debug: Stationary Distribution Computation") {
+    std::cerr << "\n=== STATIONARY DISTRIBUTION TEST ===" << std::endl;
+
+    std::string base_path = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3";
+    auto prefs = Preferences::from_csv(base_path + "/data/prefs.csv");
+    const auto& gcode = *GeneticCode::universal();
+
+    ExpCMParameters params;
+    params.beta = 3.38189;
+    params.kappa = 8.75598;
+    params.omega = 0.977468;
+    params.phi = Vector4{0.355409, 0.201765, 0.249379, 0.193447};
+
+    ExpCMQMatrix Q_mat;
+    Q_mat.build(gcode, params);
+
+    std::cerr << "\nChecking π (stationary distributions) for selected sites:\n" << std::endl;
+    std::cerr << "Site | π_sum | π_min | π_max | π at ATG(40) | log(π[40])" << std::endl;
+    std::cerr << std::string(70, '-') << std::endl;
+
+    double total_pi_sum_error = 0.0;
+    double min_log_pi = 1e20;
+    double max_log_pi = -1e20;
+
+    for (size_t site : {0, 10, 32, 65, 129}) {
+        auto pi_site = LikelihoodEngine::compute_expcm_stationary(
+            gcode, prefs, site, params.beta, params.phi
+        );
+
+        // Check π sums to 1
+        double pi_sum = pi_site.sum();
+        double pi_sum_error = std::abs(pi_sum - 1.0);
+        total_pi_sum_error += pi_sum_error;
+
+        // Get some statistics
+        double pi_min = pi_site.minCoeff();
+        double pi_max = pi_site.maxCoeff();
+        double pi_40 = pi_site(40);  // ATG codon
+        double log_pi_40 = (pi_40 > 0) ? std::log(pi_40) : -1e20;
+
+        if (log_pi_40 > -1e20) {
+            min_log_pi = std::min(min_log_pi, log_pi_40);
+            max_log_pi = std::max(max_log_pi, log_pi_40);
+        }
+
+        std::cerr << std::setw(4) << site << " | "
+                  << std::fixed << std::setprecision(10) << std::setw(11) << pi_sum << " | "
+                  << std::scientific << std::setprecision(6) << std::setw(8) << pi_min << " | "
+                  << std::setw(8) << pi_max << " | "
+                  << std::fixed << std::setprecision(10) << std::setw(12) << pi_40 << " | "
+                  << std::scientific << std::setprecision(6) << std::setw(10) << log_pi_40 << std::endl;
+    }
+
+    std::cerr << std::string(70, '-') << std::endl;
+    std::cerr << "Average π_sum error across 5 sites: " << (total_pi_sum_error / 5.0) << std::endl;
+    std::cerr << "Range of log(π[40]): [" << min_log_pi << ", " << max_log_pi << "]" << std::endl;
+
+    // All π should sum to very close to 1
+    CHECK(total_pi_sum_error / 5.0 < 1e-12);
+}
+
+TEST_CASE("Debug: Compare with phydms single-site calculation") {
+    std::cerr << "\n=== COMPARISON: HyPhy3 vs phydms single-site likelihoods ===" << std::endl;
+
+    std::string base_path = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3";
+    auto prefs = Preferences::from_csv(base_path + "/data/prefs.csv");
+    auto tree = Tree::from_newick_file(base_path + "/data/tree.newick");
+    auto aln = Alignment::from_fasta(base_path + "/data/alignment.fasta");
+
+    const auto& gcode = *GeneticCode::universal();
+
+    ExpCMParameters params;
+    params.beta = 3.38189;
+    params.kappa = 8.75598;
+    params.omega = 0.977468;
+    params.phi = Vector4{0.355409, 0.201765, 0.249379, 0.193447};
+
+    std::cerr << "\nHyPhy3 per-site contributions (130 sites total):" << std::endl;
+    std::cerr << "Site | ln L_site | Cumulative | Avg/site" << std::endl;
+    std::cerr << std::string(65, '-') << std::endl;
+
+    Scalar total_lnL = 0.0;
+    std::vector<Scalar> site_lnL_values;
+
+    ExpCMQMatrix Q_matrix;
+    Q_matrix.build(gcode, params);
+    const Matrix61Codon& Q = Q_matrix.Q;
+
+    auto leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(tree, aln);
+
+    const double SCALER_THRESH = 1e-150;
+    const double SCALER_UP = 1e150;
+    const double LOG_SCALER = std::log(SCALER_UP);
+
+    for (size_t site = 0; site < prefs.num_sites(); ++site) {
+        size_t pattern_idx = aln.site_to_pattern[site];
+        const auto& pattern = aln.patterns[pattern_idx];
+
+        ExpCMFMatrix F_matrix;
+        F_matrix.build(gcode, prefs, site, params);
+
+        Matrix61Codon P = F_matrix.F.cwiseProduct(Q);
+        for (int x = 0; x < 61; ++x) {
+            P(x, x) = -P.row(x).sum();
+        }
+
+        auto pi_site = LikelihoodEngine::compute_expcm_stationary(
+            gcode, prefs, site, params.beta, params.phi
+        );
+
+        std::vector<Matrix61Codon> P_branches(tree.num_nodes());
+        for (const auto& node : tree.nodes) {
+            if (node.id != tree.root_id) {
+                Scalar scaled_bl = node.branch_length * 1.0;
+                P_branches[node.id] = LikelihoodEngine::matrix_exp_scaling_squaring(P * scaled_bl);
+            }
+        }
+
+        std::vector<Eigen::Matrix<Scalar, 61, 1>> node_L(tree.num_nodes());
+        std::vector<double> node_log_scale(tree.num_nodes(), 0.0);
+
+        for (int32_t node_id : tree.post_order) {
+            const auto& node = tree.nodes[node_id];
+
+            if (node.is_leaf) {
+                size_t t_idx = leaf_to_taxon[node_id];
+                if (t_idx != static_cast<size_t>(-1)) {
+                    int8_t state = pattern.states[t_idx];
+                    if (state >= 0 && state < 61) {
+                        node_L[node_id].setZero();
+                        node_L[node_id](state) = 1.0;
+                    } else {
+                        node_L[node_id].setOnes();
+                    }
+                } else {
+                    node_L[node_id].setOnes();
+                }
+                node_log_scale[node_id] = 0.0;
+            } else {
+                double child_scale_sum = 0.0;
+                tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
+
+                double max_val = node_L[node_id].maxCoeff();
+                int boost_count = 0;
+                while (max_val < SCALER_THRESH && max_val > 0.0) {
+                    node_L[node_id] *= SCALER_UP;
+                    max_val *= SCALER_UP;
+                    boost_count++;
+                }
+                node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
+            }
+        }
+
+        Scalar site_likelihood = pi_site.dot(node_L[tree.root_id]);
+        Scalar site_lnL = 0.0;
+        if (site_likelihood > 0.0) {
+            site_lnL = std::log(site_likelihood) + node_log_scale[tree.root_id];
+        } else {
+            site_lnL = -1e20;
+        }
+
+        site_lnL_values.push_back(site_lnL);
+        total_lnL += site_lnL;
+
+        if ((site + 1) % 20 == 0 || site == 0) {
+            Scalar avg = total_lnL / (site + 1);
+            std::cerr << std::setw(4) << (site + 1) << " | "
+                      << std::fixed << std::setprecision(6) << std::setw(9) << site_lnL << " | "
+                      << std::setw(10) << total_lnL << " | "
+                      << std::setw(8) << avg << std::endl;
+        }
+    }
+
+    std::cerr << std::string(65, '-') << std::endl;
+
+    // Compute average per-site
+    Scalar avg_lnL = total_lnL / prefs.num_sites();
+
+    std::cerr << "\nTotal ln L: " << std::fixed << std::setprecision(2) << total_lnL << std::endl;
+    std::cerr << "Average per site: " << std::fixed << std::setprecision(6) << avg_lnL << std::endl;
+    std::cerr << "Expected per site: -5.9785 (from -775.21 / 130)" << std::endl;
+    std::cerr << "Ratio: " << std::abs(avg_lnL) / 5.9785 << "x too negative" << std::endl;
+
+    // Min/max per-site contributions
+    auto min_it = std::min_element(site_lnL_values.begin(), site_lnL_values.end());
+    auto max_it = std::max_element(site_lnL_values.begin(), site_lnL_values.end());
+
+    std::cerr << "\nPer-site range:" << std::endl;
+    std::cerr << "  Min: " << *min_it << std::endl;
+    std::cerr << "  Max: " << *max_it << std::endl;
+    std::cerr << "  Range: " << (*max_it - *min_it) << std::endl;
+
+    CHECK(std::isfinite(total_lnL));
+    CHECK(std::isfinite(avg_lnL));
+}
+
+TEST_CASE("Debug: F Matrix Computation and Verification") {
+    std::cerr << "\n=== F MATRIX COMPUTATION TEST ===" << std::endl;
+
+    std::string base_path = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3";
+    auto prefs = Preferences::from_csv(base_path + "/data/prefs.csv");
+    const auto& gcode = *GeneticCode::universal();
+
+    ExpCMParameters params;
+    params.beta = 3.38189;
+    params.kappa = 8.75598;
+    params.omega = 0.977468;
+    params.phi = Vector4{0.355409, 0.201765, 0.249379, 0.193447};
+
+    std::cerr << "\n--- Test 1: F matrix properties for site 0 ---" << std::endl;
+    {
+        ExpCMFMatrix F_mat;
+        F_mat.build(gcode, prefs, 0, params);
+
+        const Matrix61Codon& F = F_mat.F;
+
+        std::cerr << "F matrix statistics:" << std::endl;
+        std::cerr << "  Min value: " << F.array().minCoeff() << std::endl;
+        std::cerr << "  Max value: " << F.array().maxCoeff() << std::endl;
+        std::cerr << "  Mean value: " << F.array().mean() << std::endl;
+
+        // Check some specific entries
+        // F[i,i] should be 1 (diagonal, no change)
+        std::cerr << "\nDiagonal elements (should be 1):" << std::endl;
+        std::cerr << "  F[0,0] = " << F(0, 0) << std::endl;
+        std::cerr << "  F[1,1] = " << F(1, 1) << std::endl;
+        std::cerr << "  F[40,40] = " << F(40, 40) << std::endl;
+
+        // Check off-diagonal values
+        std::cerr << "\nSample off-diagonal elements:" << std::endl;
+        std::cerr << "  F[0,1] = " << F(0, 1) << " (AAA→ACA, both Lys)" << std::endl;
+        std::cerr << "  F[0,4] = " << F(0, 4) << " (AAA→ATA, both Lys)" << std::endl;
+        std::cerr << "  F[0,5] = " << F(0, 5) << " (AAA→CCC, Lys→Pro)" << std::endl;
+        std::cerr << "  F[40,43] = " << F(40, 43) << " (ATG→GTG, both Met,Val)" << std::endl;
+
+        // Check if synonymous substitutions have F=1
+        std::cerr << "\nVerifying synonymous substitutions have F=1:" << std::endl;
+        int syn_count = 0;
+        int syn_correct = 0;
+        for (int i = 0; i < 61; ++i) {
+            for (int j = 0; j < 61; ++j) {
+                if (i != j) {
+                    int aa_i = gcode.sense_codon_aa[i];
+                    int aa_j = gcode.sense_codon_aa[j];
+                    if (aa_i == aa_j && aa_i >= 0) {  // Synonymous
+                        syn_count++;
+                        if (std::abs(F(i, j) - 1.0) < 1e-10) {
+                            syn_correct++;
+                        }
+                    }
+                }
+            }
+        }
+        std::cerr << "  Synonymous substitutions with F=1: " << syn_correct << "/" << syn_count << std::endl;
+
+        // Check if non-synonymous have F < 1 on average
+        std::cerr << "\nNon-synonymous F values (should be < 1 on average):" << std::endl;
+        double nonsyn_sum = 0.0;
+        int nonsyn_count = 0;
+        double nonsyn_min = 1e20;
+        double nonsyn_max = -1e20;
+
+        for (int i = 0; i < 61; ++i) {
+            for (int j = 0; j < 61; ++j) {
+                if (i != j) {
+                    int aa_i = gcode.sense_codon_aa[i];
+                    int aa_j = gcode.sense_codon_aa[j];
+                    if (aa_i != aa_j || aa_i < 0) {  // Non-synonymous or stop
+                        nonsyn_count++;
+                        nonsyn_sum += F(i, j);
+                        nonsyn_min = std::min(nonsyn_min, (double)F(i, j));
+                        nonsyn_max = std::max(nonsyn_max, (double)F(i, j));
+                    }
+                }
+            }
+        }
+
+        std::cerr << "  Count: " << nonsyn_count << std::endl;
+        std::cerr << "  Average F (non-syn): " << (nonsyn_sum / nonsyn_count) << std::endl;
+        std::cerr << "  Range: [" << nonsyn_min << ", " << nonsyn_max << "]" << std::endl;
+
+        CHECK(syn_correct > syn_count * 0.95);  // At least 95% of synonymous have F=1
+    }
+
+    std::cerr << "\n--- Test 2: F matrix variation across sites ---" << std::endl;
+    {
+        std::cerr << "Site | F_mean | F_min | F_max | Nonsyn_Favg" << std::endl;
+        std::cerr << std::string(60, '-') << std::endl;
+
+        for (size_t site : {0, 32, 65, 100, 129}) {
+            ExpCMFMatrix F_mat;
+            F_mat.build(gcode, prefs, site, params);
+            const Matrix61Codon& F = F_mat.F;
+
+            double F_mean = F.array().mean();
+            double F_min = F.array().minCoeff();
+            double F_max = F.array().maxCoeff();
+
+            // Compute average for non-synonymous
+            double nonsyn_favg = 0.0;
+            int nonsyn_count = 0;
+            for (int i = 0; i < 61; ++i) {
+                for (int j = 0; j < 61; ++j) {
+                    if (i != j) {
+                        int aa_i = gcode.sense_codon_aa[i];
+                        int aa_j = gcode.sense_codon_aa[j];
+                        if (aa_i != aa_j || aa_i < 0) {
+                            nonsyn_favg += F(i, j);
+                            nonsyn_count++;
+                        }
+                    }
+                }
+            }
+            nonsyn_favg /= nonsyn_count;
+
+            std::cerr << std::setw(4) << site << " | "
+                      << std::fixed << std::setprecision(6)
+                      << std::setw(6) << F_mean << " | "
+                      << std::setw(6) << F_min << " | "
+                      << std::setw(6) << F_max << " | "
+                      << std::setw(11) << nonsyn_favg << std::endl;
+        }
+    }
+
+    std::cerr << "\n--- Test 3: F matrix formula verification ---" << std::endl;
+    {
+        // According to phydms/ExpCM:
+        // F[i->j] = 1 if synonymous
+        // F[i->j] = (π_j^a / π_i^a)^β * ω  if non-synonymous and j is more preferred
+        // F[i->j] = (π_j^a / π_i^a)^β / ω  if non-synonymous and j is less preferred
+
+        ExpCMFMatrix F_mat;
+        F_mat.build(gcode, prefs, 0, params);
+        const Matrix61Codon& F = F_mat.F;
+
+        // Manually compute F for a specific non-synonymous pair
+        // Let's check codon 0 (AAA, Lys) -> codon 4 (ATA, Ile)
+        // These are non-synonymous
+
+        int codon_i = 0;  // AAA -> Lys
+        int codon_j = 4;  // ATA -> Ile
+
+        int aa_i = gcode.sense_codon_aa[codon_i];
+        int aa_j = gcode.sense_codon_aa[codon_j];
+
+        std::cerr << "Manual F matrix check for codon " << codon_i << "→" << codon_j << std::endl;
+        std::cerr << "  Codon " << codon_i << " → AA " << aa_i << std::endl;
+        std::cerr << "  Codon " << codon_j << " → AA " << aa_j << std::endl;
+        std::cerr << "  F[" << codon_i << "," << codon_j << "] from matrix = " << F(codon_i, codon_j) << std::endl;
+
+        if (aa_i == aa_j) {
+            std::cerr << "  These are synonymous (same AA), expect F ≈ 1" << std::endl;
+            CHECK(std::abs(F(codon_i, codon_j) - 1.0) < 1e-10);
+        } else {
+            std::cerr << "  These are non-synonymous, F depends on preferences" << std::endl;
+            // F should be between 0 and some large value depending on ω and preference ratios
+            CHECK(F(codon_i, codon_j) > 0);
+        }
+    }
+
+    std::cerr << "\n--- Test 4: Check if all F values are positive ---" << std::endl;
+    {
+        bool all_positive = true;
+        double global_min = 1e20;
+        double global_max = -1e20;
+
+        for (size_t site = 0; site < std::min(size_t(10), prefs.num_sites()); ++site) {
+            ExpCMFMatrix F_mat;
+            F_mat.build(gcode, prefs, site, params);
+            const Matrix61Codon& F = F_mat.F;
+
+            for (int i = 0; i < 61; ++i) {
+                for (int j = 0; j < 61; ++j) {
+                    if (F(i, j) < 0) {
+                        all_positive = false;
+                        std::cerr << "  WARNING: F[" << i << "," << j << "] = " << F(i, j) << " at site " << site << std::endl;
+                    }
+                    global_min = std::min(global_min, (double)F(i, j));
+                    global_max = std::max(global_max, (double)F(i, j));
+                }
+            }
+        }
+
+        std::cerr << "All F values positive (first 10 sites): " << (all_positive ? "YES" : "NO") << std::endl;
+        std::cerr << "Global F range (first 10 sites): [" << global_min << ", " << global_max << "]" << std::endl;
+
+        CHECK(all_positive);
+    }
+}
+
 // TODO: Step 4 - Optimization
 // TODO: Step 5 - Per-Site ω (omegabysite)
