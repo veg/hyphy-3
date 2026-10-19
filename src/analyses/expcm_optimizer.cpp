@@ -106,12 +106,33 @@ double ExpCMOptimizer::line_search_strong_wolfe(
 ) {
     const double c1 = 1e-4;
     const double c2 = 0.9;
-    const int max_evals = 10;
+    const int max_evals = 20;
 
-    double step_size = 1.0;
+    // Start with smaller step size for safer bounds handling
+    double step_size = 0.1;
+
+    // Compute maximum safe step size based on bounds
+    double max_step = 10.0;  // Default large value
+    for (int i = 0; i < 3; ++i) {
+        if (direction(i) > 1e-10) {
+            // Moving in positive direction
+            double bound_log = std::log(std::vector<double>{bounds_.beta_max, bounds_.omega_max, bounds_.kappa_max}[i]);
+            double max_step_i = (bound_log - current_log_params_(i)) / direction(i);
+            max_step = std::min(max_step, max_step_i * 0.95);  // Conservative: 95% of bound
+        } else if (direction(i) < -1e-10) {
+            // Moving in negative direction
+            double bound_log = std::log(std::vector<double>{bounds_.beta_min, bounds_.omega_min, bounds_.kappa_min}[i]);
+            double max_step_i = (bound_log - current_log_params_(i)) / direction(i);
+            max_step = std::min(max_step, max_step_i * 0.95);  // Conservative: 95% of bound
+        }
+    }
+
+    // Ensure step size doesn't exceed safe bounds
+    step_size = std::min(step_size, max_step);
 
     for (int i = 0; i < max_evals; ++i) {
         Eigen::Vector3d new_params = current_log_params_ + step_size * direction;
+        Eigen::Vector3d pre_clamp = new_params;  // For debugging
         enforce_bounds(new_params);
 
         Scalar f_new = evaluate_objective(new_params);
@@ -125,6 +146,9 @@ double ExpCMOptimizer::line_search_strong_wolfe(
         }
 
         step_size *= 0.5;
+
+        // Stop if step becomes too small
+        if (step_size < 1e-10) break;
     }
 
     return step_size;
