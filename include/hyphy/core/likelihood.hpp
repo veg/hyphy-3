@@ -815,7 +815,6 @@ public:
         return total_log_l;
     }
 
-private:
     /**
      * Compute matrix exponential using scaling and squaring method.
      * Robust for general matrices, including those with complex eigenvalues.
