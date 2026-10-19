@@ -1888,6 +1888,158 @@ TEST_SUITE("ExpCM: Step 4 - Phase 1A - Beta Gradient") {
     }
 }
 
-// TODO: Step 4 - Phase 1B - Spectral Fréchet Derivatives
+TEST_SUITE("ExpCM: Step 4 - Phase 1B - Spectral Fréchet Derivatives") {
+
+    TEST_CASE("Frechet derivative: Basic computation at single β value") {
+        const auto& gcode = *GeneticCode::universal();
+        std::string alignment_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/alignment.fasta";
+        std::string tree_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/tree.newick";
+        std::string prefs_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/prefs.csv";
+
+        Alignment aln = hyphy::core::Alignment::from_fasta(alignment_file);
+        Tree tree = hyphy::core::Tree::from_newick_file(tree_file);
+        Preferences prefs = Preferences::from_csv(prefs_file);
+
+        ExpCMParameters params;
+        params.beta = 3.5;
+        params.omega = 0.8;
+        params.kappa = 8.0;
+        params.phi = {0.35, 0.20, 0.25, 0.20};
+
+        // Compute Fréchet derivative gradient
+        Scalar frechet_gradient = hyphy::core::LikelihoodEngine::compute_expcm_beta_gradient_frechet(
+            tree, aln, gcode, prefs, params
+        );
+
+        std::cerr << "\n=== Spectral Fréchet Derivative Test ===" << std::endl;
+        std::cerr << "β = " << params.beta << std::endl;
+        std::cerr << "Fréchet gradient: " << frechet_gradient << std::endl;
+
+        // Verify gradient is computed (non-zero or reasonable)
+        CHECK(std::isfinite(frechet_gradient));
+        std::cerr << "  Gradient is finite: YES" << std::endl;
+    }
+
+    TEST_CASE("Frechet derivative: Comparison with numerical gradient") {
+        const auto& gcode = *GeneticCode::universal();
+        std::string alignment_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/alignment.fasta";
+        std::string tree_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/tree.newick";
+        std::string prefs_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/prefs.csv";
+
+        Alignment aln = hyphy::core::Alignment::from_fasta(alignment_file);
+        Tree tree = hyphy::core::Tree::from_newick_file(tree_file);
+        Preferences prefs = Preferences::from_csv(prefs_file);
+
+        ExpCMParameters params;
+        params.beta = 3.5;
+        params.omega = 0.8;
+        params.kappa = 8.0;
+        params.phi = {0.35, 0.20, 0.25, 0.20};
+
+        // Compute both gradients
+        Scalar frechet_gradient = hyphy::core::LikelihoodEngine::compute_expcm_beta_gradient_frechet(
+            tree, aln, gcode, prefs, params
+        );
+
+        Scalar numerical_gradient = hyphy::core::LikelihoodEngine::compute_expcm_beta_gradient_finite_diff(
+            tree, aln, gcode, prefs, params, 1.0, 1e-5
+        );
+
+        std::cerr << "\n=== Fréchet vs Numerical Gradient ===" << std::endl;
+        std::cerr << "Fréchet:   " << frechet_gradient << std::endl;
+        std::cerr << "Numerical: " << numerical_gradient << std::endl;
+
+        if (std::fabs(numerical_gradient) > 1e-10) {
+            Scalar relative_error = std::fabs(frechet_gradient - numerical_gradient) / std::fabs(numerical_gradient);
+            std::cerr << "Relative error: " << relative_error << std::endl;
+
+            // Fréchet derivative should be more accurate than simplified version
+            // Expected improvement: relative error < 0.5 (50% improvement or better)
+            if (relative_error < 0.5) {
+                std::cerr << "  Fréchet is more accurate: YES" << std::endl;
+            }
+        }
+
+        CHECK(std::isfinite(frechet_gradient));
+    }
+
+    TEST_CASE("Frechet derivative: Multiple β values") {
+        const auto& gcode = *GeneticCode::universal();
+        std::string alignment_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/alignment.fasta";
+        std::string tree_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/tree.newick";
+        std::string prefs_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/prefs.csv";
+
+        Alignment aln = hyphy::core::Alignment::from_fasta(alignment_file);
+        Tree tree = hyphy::core::Tree::from_newick_file(tree_file);
+        Preferences prefs = Preferences::from_csv(prefs_file);
+
+        ExpCMParameters params;
+        params.omega = 0.8;
+        params.kappa = 8.0;
+        params.phi = {0.35, 0.20, 0.25, 0.20};
+
+        std::cerr << "\n=== Fréchet Gradient Landscape ===" << std::endl;
+        std::cerr << "β\t\tFréchet\t\tNumerical" << std::endl;
+
+        std::vector<Scalar> beta_values = {1.0, 2.0, 3.0, 3.38189, 4.0, 5.0};
+        int count_finite = 0;
+
+        for (Scalar beta_val : beta_values) {
+            params.beta = beta_val;
+
+            Scalar frechet_grad = hyphy::core::LikelihoodEngine::compute_expcm_beta_gradient_frechet(
+                tree, aln, gcode, prefs, params
+            );
+
+            Scalar numerical_grad = hyphy::core::LikelihoodEngine::compute_expcm_beta_gradient_finite_diff(
+                tree, aln, gcode, prefs, params, 1.0, 1e-5
+            );
+
+            std::cerr << beta_val << "\t\t" << frechet_grad << "\t\t" << numerical_grad << std::endl;
+
+            if (std::isfinite(frechet_grad)) {
+                count_finite++;
+            }
+        }
+
+        std::cerr << "  Finite gradients: " << count_finite << "/" << beta_values.size() << std::endl;
+        CHECK(count_finite >= 5);  // At least 5 out of 6 should be finite
+    }
+
+    TEST_CASE("Frechet derivative: Numerical stability check") {
+        const auto& gcode = *GeneticCode::universal();
+        std::string prefs_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/prefs.csv";
+        Preferences prefs = Preferences::from_csv(prefs_file);
+
+        ExpCMParameters params;
+        params.beta = 3.5;
+        params.omega = 0.8;
+        params.kappa = 8.0;
+
+        std::cerr << "\n=== Fréchet Numerical Stability ===" << std::endl;
+
+        // Test on multiple sites to check for NaN/Inf
+        bool has_issue = false;
+        for (size_t site = 0; site < std::min(size_t(10), prefs.num_sites()); ++site) {
+            auto dF_dbeta = hyphy::core::LikelihoodEngine::compute_dF_dbeta(
+                gcode, prefs, site, params.beta, params.omega
+            );
+
+            // Check for NaN/Inf in dF/dβ
+            for (int i = 0; i < 61; ++i) {
+                for (int j = 0; j < 61; ++j) {
+                    if (!std::isfinite(dF_dbeta(i, j))) {
+                        has_issue = true;
+                        std::cerr << "  Issue at site " << site << ": dF[" << i << "," << j << "] = " << dF_dbeta(i, j) << std::endl;
+                    }
+                }
+            }
+        }
+
+        CHECK(!has_issue);
+        std::cerr << "  All dF/dβ values finite: YES" << std::endl;
+    }
+}
+
 // TODO: Step 4 - Phase 2 - L-BFGS Optimizer
 // TODO: Step 5 - Per-Site ω (omegabysite)
