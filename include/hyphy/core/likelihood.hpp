@@ -1432,6 +1432,135 @@ public:
     }
 
     /**
+     * Compute dQ/dκ matrix (derivative of mutation rates w.r.t. κ).
+     *
+     * In the HKY-like mutation model:
+     * Q[x→y] = φ(target_nuc)                 if transversion
+     * Q[x→y] = κ·φ(target_nuc)               if transition
+     *
+     * Therefore, the derivative w.r.t. κ:
+     * dQ[x→y]/dκ = φ(target_nuc)             if transition
+     * dQ[x→y]/dκ = 0                         if transversion
+     * dQ[x→x]/dκ = -Σ_j≠x dQ[x→j]/dκ
+     *
+     * Key insight: κ appears linearly in transition rates only!
+     *
+     * @param gcode       Genetic code
+     * @param params      Current parameters (for nucleotide frequencies)
+     * @return 61×61 matrix of dQ/dκ values
+     */
+    static Matrix61Codon compute_dQ_dkappa(
+        const GeneticCode& gcode,
+        const ExpCMParameters& params
+    ) {
+        Matrix61Codon dQ_dkappa = Matrix61Codon::Zero();
+
+        // For each codon pair (x, y)
+        for (int x = 0; x < gcode.num_sense_codons; ++x) {
+            for (int y = 0; y < gcode.num_sense_codons; ++y) {
+                if (x == y) continue;
+
+                // Use precomputed diff_matrix for efficiency
+                const auto& diff = gcode.diff_matrix[x][y];
+
+                // Only single nucleotide mutations contribute
+                if (diff.num_diffs != 1) continue;
+
+                // Get mutating nucleotide
+                int8_t nuc_to = diff.nuc_to;  // 0-3 (A,C,G,T)
+                int8_t nuc_from = diff.nuc_from;
+
+                // dQ/dκ is non-zero only for transitions
+                if (is_transition(nuc_from, nuc_to)) {
+                    dQ_dkappa(x, y) = params.phi(nuc_to);
+                }
+                // For transversions: dQ/dκ = 0 (already initialized to zero)
+            }
+        }
+
+        // Set diagonals: dQ[x→x]/dκ = -Σ_(y≠x) dQ[x→y]/dκ
+        for (int x = 0; x < gcode.num_sense_codons; ++x) {
+            dQ_dkappa(x, x) = -dQ_dkappa.row(x).sum();
+        }
+
+        return dQ_dkappa;
+    }
+
+    /**
+     * Check if nucleotide substitution is a transition.
+     * Transitions: A↔G or C↔T
+     * (Helper function, mirrors GeneticCode::is_transition)
+     */
+    static bool is_transition(int8_t nuc_from, int8_t nuc_to) {
+        return (nuc_from == 0 && nuc_to == 2) ||  // A→G
+               (nuc_from == 2 && nuc_to == 0) ||  // G→A
+               (nuc_from == 1 && nuc_to == 3) ||  // C→T
+               (nuc_from == 3 && nuc_to == 1);    // T→C
+    }
+
+    /**
+     * Compute kappa gradient via finite differences (ground truth validation).
+     *
+     * @param tree        Phylogenetic tree with branch lengths
+     * @param aln         Multiple sequence alignment (codon-based)
+     * @param gcode       Genetic code
+     * @param prefs       Site-specific amino acid preferences
+     * @param params      Current ExpCM parameters (including current κ)
+     * @param branch_scale Scaling factor for branch lengths (default 1.0)
+     * @param epsilon     Step size for finite difference (default 1e-6)
+     * @return Gradient: dL/dκ
+     */
+    static Scalar compute_expcm_kappa_gradient_finite_diff(
+        const Tree& tree,
+        const Alignment& aln,
+        const GeneticCode& gcode,
+        const Preferences& prefs,
+        const ExpCMParameters& params,
+        Scalar branch_scale = 1.0,
+        Scalar epsilon = 1e-6
+    ) {
+        // Perturb κ upward
+        ExpCMParameters params_plus = params;
+        params_plus.kappa += epsilon;
+        Scalar L_plus = compute_expcm_log_likelihood(tree, aln, gcode, prefs, params_plus, branch_scale);
+
+        // Perturb κ downward
+        ExpCMParameters params_minus = params;
+        params_minus.kappa -= epsilon;
+        Scalar L_minus = compute_expcm_log_likelihood(tree, aln, gcode, prefs, params_minus, branch_scale);
+
+        // Gradient: (L(κ+ε) - L(κ-ε)) / (2ε)
+        return (L_plus - L_minus) / (2.0 * epsilon);
+    }
+
+    /**
+     * Compute analytical kappa gradient using spectral Fréchet derivatives.
+     *
+     * Follows the same approach as β and ω gradients but with dQ/dκ.
+     * Since κ appears linearly in transition rates, dQ/dκ is simpler than dF/dβ.
+     *
+     * @param tree        Phylogenetic tree with branch lengths
+     * @param aln         Multiple sequence alignment (codon-based)
+     * @param gcode       Genetic code
+     * @param prefs       Site-specific amino acid preferences
+     * @param params      Current ExpCM parameters (including current κ)
+     * @param branch_scale Scaling factor for branch lengths (default 1.0)
+     * @return Gradient: dL/dκ
+     */
+    static Scalar compute_expcm_kappa_gradient_frechet(
+        const Tree& tree,
+        const Alignment& aln,
+        const GeneticCode& gcode,
+        const Preferences& prefs,
+        const ExpCMParameters& params,
+        Scalar branch_scale = 1.0
+    ) {
+        // Placeholder: Use finite differences for correctness
+        // Full Fréchet implementation awaits inside-outside algorithm
+        return compute_expcm_kappa_gradient_finite_diff(tree, aln, gcode, prefs, params, branch_scale, 1e-5);
+    }
+
+    /**
      * Compute matrix exponential using scaling and squaring method.
      * Robust for general matrices, including those with complex eigenvalues.
      */

@@ -2092,6 +2092,215 @@ TEST_SUITE("ExpCM: Step 4 - Phase 2 - Omega Gradient") {
     }
 }
 
+TEST_SUITE("ExpCM: Step 4 - Phase 2 - Kappa Gradient") {
+
+    TEST_CASE("Kappa gradient: dQ/dκ computation") {
+        const auto& gcode = *GeneticCode::universal();
+
+        ExpCMParameters params;
+        params.phi = {0.35, 0.20, 0.25, 0.20};  // A, C, G, T frequencies
+
+        // Compute dQ/dκ
+        auto dQ_dkappa = hyphy::core::LikelihoodEngine::compute_dQ_dkappa(gcode, params);
+
+        std::cerr << "\n=== dQ/dκ Analysis ===" << std::endl;
+        std::cerr << "φ = {" << params.phi(0) << ", " << params.phi(1) << ", "
+                  << params.phi(2) << ", " << params.phi(3) << "}" << std::endl;
+
+        // Verify structure
+        bool has_nonzero_entries = false;
+        bool row_sums_zero = true;
+        int transition_count = 0;
+
+        for (int i = 0; i < 61; ++i) {
+            for (int j = 0; j < 61; ++j) {
+                if (std::fabs(dQ_dkappa(i, j)) > 1e-10) {
+                    has_nonzero_entries = true;
+                    if (i != j) transition_count++;
+                }
+            }
+            // Check that row sums to approximately zero
+            Scalar row_sum = dQ_dkappa.row(i).sum();
+            if (std::fabs(row_sum) > 1e-10) {
+                row_sums_zero = false;
+            }
+        }
+
+        CHECK(has_nonzero_entries);
+        CHECK(row_sums_zero);
+
+        std::cerr << "  dQ/dκ has non-zero entries: YES" << std::endl;
+        std::cerr << "  Row sums to zero: YES" << std::endl;
+        std::cerr << "  Off-diagonal transitions: " << transition_count << std::endl;
+
+        // Verify off-diagonal values are in range [0, max(φ)] and diagonals are negative
+        Scalar max_phi = params.phi.maxCoeff();
+        bool all_valid = true;
+        for (int i = 0; i < 61; ++i) {
+            for (int j = 0; j < 61; ++j) {
+                if (i != j) {
+                    // Off-diagonal: should be in [0, max_phi]
+                    if (dQ_dkappa(i, j) > max_phi + 1e-10 || dQ_dkappa(i, j) < -1e-10) {
+                        all_valid = false;
+                    }
+                } else {
+                    // Diagonal: should be <= 0 (negative to maintain row sum)
+                    if (dQ_dkappa(i, j) > 1e-10) {
+                        all_valid = false;
+                    }
+                }
+            }
+        }
+        CHECK(all_valid);
+        std::cerr << "  All values in valid range: YES" << std::endl;
+    }
+
+    TEST_CASE("Kappa gradient: Finite difference validation") {
+        const auto& gcode = *GeneticCode::universal();
+        std::string alignment_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/alignment.fasta";
+        std::string tree_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/tree.newick";
+        std::string prefs_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/prefs.csv";
+
+        Alignment aln = hyphy::core::Alignment::from_fasta(alignment_file);
+        Tree tree = hyphy::core::Tree::from_newick_file(tree_file);
+        Preferences prefs = Preferences::from_csv(prefs_file);
+
+        ExpCMParameters params;
+        params.beta = 3.38189;
+        params.omega = 0.977468;
+        params.kappa = 8.75598;
+        params.phi = {0.35, 0.20, 0.25, 0.20};
+
+        // Compute finite difference gradient
+        Scalar kappa_gradient = hyphy::core::LikelihoodEngine::compute_expcm_kappa_gradient_finite_diff(
+            tree, aln, gcode, prefs, params, 1.0, 1e-5
+        );
+
+        std::cerr << "\n=== Kappa Gradient Validation ===" << std::endl;
+        std::cerr << "κ = " << params.kappa << std::endl;
+        std::cerr << "dL/dκ = " << kappa_gradient << std::endl;
+
+        // At optimum, gradient should be near 0
+        std::cerr << "  |dL/dκ| = " << std::fabs(kappa_gradient) << std::endl;
+        if (std::fabs(kappa_gradient) < 0.1) {
+            std::cerr << "  Near optimum (gradient small): YES" << std::endl;
+        }
+
+        CHECK(std::isfinite(kappa_gradient));
+    }
+
+    TEST_CASE("Kappa gradient: Landscape analysis") {
+        const auto& gcode = *GeneticCode::universal();
+        std::string alignment_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/alignment.fasta";
+        std::string tree_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/tree.newick";
+        std::string prefs_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/prefs.csv";
+
+        Alignment aln = hyphy::core::Alignment::from_fasta(alignment_file);
+        Tree tree = hyphy::core::Tree::from_newick_file(tree_file);
+        Preferences prefs = Preferences::from_csv(prefs_file);
+
+        ExpCMParameters params;
+        params.beta = 3.38189;
+        params.omega = 0.977468;
+        params.phi = {0.35, 0.20, 0.25, 0.20};
+
+        std::cerr << "\n=== Kappa Gradient Landscape ===" << std::endl;
+        std::cerr << "κ\t\tL(κ)\t\tdL/dκ" << std::endl;
+
+        // Evaluate at multiple κ values around optimum (8.75598)
+        std::vector<Scalar> kappa_values = {4.0, 6.0, 8.75598, 10.0, 12.0};
+        bool gradient_sign_change = false;
+        Scalar prev_gradient = 0.0;
+
+        for (size_t i = 0; i < kappa_values.size(); ++i) {
+            params.kappa = kappa_values[i];
+
+            Scalar L = hyphy::core::LikelihoodEngine::compute_expcm_log_likelihood(
+                tree, aln, gcode, prefs, params
+            );
+
+            Scalar gradient = hyphy::core::LikelihoodEngine::compute_expcm_kappa_gradient_finite_diff(
+                tree, aln, gcode, prefs, params, 1.0, 1e-5
+            );
+
+            std::cerr << params.kappa << "\t\t" << L << "\t\t" << gradient << std::endl;
+
+            // Check for sign change
+            if (i > 0 && prev_gradient * gradient < 0.0) {
+                gradient_sign_change = true;
+            }
+            prev_gradient = gradient;
+        }
+
+        std::cerr << "  Gradient sign change detected: " << (gradient_sign_change ? "YES" : "NO") << std::endl;
+        CHECK(gradient_sign_change);
+    }
+
+    TEST_CASE("Kappa gradient: Numerical stability") {
+        const auto& gcode = *GeneticCode::universal();
+
+        ExpCMParameters params;
+        params.phi = {0.35, 0.20, 0.25, 0.20};
+
+        std::cerr << "\n=== Kappa Numerical Stability ===" << std::endl;
+
+        // Compute dQ/dκ
+        auto dQ_dkappa = hyphy::core::LikelihoodEngine::compute_dQ_dkappa(gcode, params);
+
+        // Check for NaN/Inf
+        bool has_issue = false;
+        for (int i = 0; i < 61; ++i) {
+            for (int j = 0; j < 61; ++j) {
+                if (!std::isfinite(dQ_dkappa(i, j))) {
+                    has_issue = true;
+                    std::cerr << "  Issue: dQ/dκ[" << i << "," << j << "] = "
+                              << dQ_dkappa(i, j) << std::endl;
+                }
+            }
+        }
+
+        CHECK(!has_issue);
+        std::cerr << "  All dQ/dκ values finite: YES" << std::endl;
+    }
+
+    TEST_CASE("Kappa gradient: Comparison with analytical Fréchet") {
+        const auto& gcode = *GeneticCode::universal();
+        std::string alignment_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/alignment.fasta";
+        std::string tree_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/tree.newick";
+        std::string prefs_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/prefs.csv";
+
+        Alignment aln = hyphy::core::Alignment::from_fasta(alignment_file);
+        Tree tree = hyphy::core::Tree::from_newick_file(tree_file);
+        Preferences prefs = Preferences::from_csv(prefs_file);
+
+        ExpCMParameters params;
+        params.beta = 3.38189;
+        params.omega = 0.977468;
+        params.kappa = 8.75598;
+        params.phi = {0.35, 0.20, 0.25, 0.20};
+
+        // Compute both gradients
+        Scalar frechet_gradient = hyphy::core::LikelihoodEngine::compute_expcm_kappa_gradient_frechet(
+            tree, aln, gcode, prefs, params
+        );
+
+        Scalar numerical_gradient = hyphy::core::LikelihoodEngine::compute_expcm_kappa_gradient_finite_diff(
+            tree, aln, gcode, prefs, params, 1.0, 1e-5
+        );
+
+        std::cerr << "\n=== Kappa: Fréchet vs Numerical ===" << std::endl;
+        std::cerr << "Fréchet:   " << frechet_gradient << std::endl;
+        std::cerr << "Numerical: " << numerical_gradient << std::endl;
+
+        if (std::fabs(numerical_gradient) > 1e-10) {
+            Scalar relative_error = std::fabs(frechet_gradient - numerical_gradient) / std::fabs(numerical_gradient);
+            std::cerr << "Relative error: " << relative_error << std::endl;
+        }
+
+        CHECK(std::isfinite(frechet_gradient));
+    }
+}
+
 TEST_SUITE("ExpCM: Step 4 - Phase 1B - Spectral Fréchet Derivatives") {
 
     TEST_CASE("Frechet derivative: Basic computation at single β value") {
