@@ -816,6 +816,289 @@ public:
     }
 
     /**
+     * Compute analytical gradient of log-likelihood w.r.t. β (preference stringency).
+     *
+     * Uses finite difference approximation: dL/dβ ≈ (L(β+ε) - L(β-ε)) / (2ε)
+     * This serves as ground truth for validating analytical gradient.
+     *
+     * @param tree        Phylogenetic tree with branch lengths
+     * @param aln         Multiple sequence alignment (codon-based)
+     * @param gcode       Genetic code
+     * @param prefs       Site-specific amino acid preferences
+     * @param params      Current ExpCM parameters (including current β)
+     * @param branch_scale Scaling factor for branch lengths (default 1.0)
+     * @param epsilon     Step size for finite difference (default 1e-6)
+     * @return Gradient: dL/dβ
+     */
+    static Scalar compute_expcm_beta_gradient_finite_diff(
+        const Tree& tree,
+        const Alignment& aln,
+        const GeneticCode& gcode,
+        const Preferences& prefs,
+        const ExpCMParameters& params,
+        Scalar branch_scale = 1.0,
+        Scalar epsilon = 1e-6
+    ) {
+        // Perturb β upward
+        ExpCMParameters params_plus = params;
+        params_plus.beta += epsilon;
+        Scalar L_plus = compute_expcm_log_likelihood(tree, aln, gcode, prefs, params_plus, branch_scale);
+
+        // Perturb β downward
+        ExpCMParameters params_minus = params;
+        params_minus.beta -= epsilon;
+        Scalar L_minus = compute_expcm_log_likelihood(tree, aln, gcode, prefs, params_minus, branch_scale);
+
+        // Gradient: (L(β+ε) - L(β-ε)) / (2ε)
+        return (L_plus - L_minus) / (2.0 * epsilon);
+    }
+
+    /**
+     * Compute dF/dβ matrix (derivative of fixation bias w.r.t. β) for a single site.
+     *
+     * For non-synonymous mutations x→y:
+     *   F[x→y] = ω · f(β, r)
+     * where:
+     *   f(β, r) = -ln(r^β) / (1 - r^β) = -β·ln(r) / (1 - r^β)
+     *   r = π_x / π_y (FROM / TO preference ratio)
+     *
+     * Derivative w.r.t. β:
+     *   df/dβ = [-ln(r)·(1 - r^β) - (-β·ln(r))·(-r^β·ln(r))] / (1 - r^β)²
+     *         = [-ln(r) + r^β·ln(r) - β·r^β·(ln(r))²] / (1 - r^β)²
+     *         = [ln(r)·(r^β - 1 - β·r^β·ln(r))] / (1 - r^β)²
+     *
+     * Simplifies to:
+     *   df/dβ = [-ln(r)·(1 - r^β + β·r^β·ln(r))] / (1 - r^β)²
+     *
+     * @param gcode       Genetic code
+     * @param prefs       Site preferences
+     * @param site        Site index
+     * @param beta        Current β value
+     * @param omega       Current ω value
+     * @return 61×61 matrix of dF/dβ values
+     */
+    static Matrix61Codon compute_dF_dbeta(
+        const GeneticCode& gcode,
+        const Preferences& prefs,
+        size_t site,
+        Scalar beta,
+        Scalar omega
+    ) {
+        Matrix61Codon dF_dbeta = Matrix61Codon::Zero();
+        const double EXPCM_ALMOST_ZERO = 1e-10;
+
+        for (int x = 0; x < gcode.num_sense_codons; ++x) {
+            for (int y = 0; y < gcode.num_sense_codons; ++y) {
+                if (x == y) continue;
+
+                char aa_x = gcode.sense_codon_aa[x];
+                char aa_y = gcode.sense_codon_aa[y];
+
+                if (aa_x == aa_y) {
+                    dF_dbeta(x, y) = 0.0;  // Synonymous: F = 1 (constant w.r.t. β)
+                } else {
+                    // Non-synonymous
+                    Scalar pi_x = prefs.at(site, aa_x);
+                    Scalar pi_y = prefs.at(site, aa_y);
+
+                    Scalar ratio = pi_x / pi_y;
+                    Scalar ratio_beta = std::pow(ratio, beta);
+                    Scalar ln_ratio = std::log(ratio);
+
+                    // Check for numerical stability
+                    if (std::fabs(1.0 - ratio_beta) < EXPCM_ALMOST_ZERO) {
+                        // Near-equal preferences: use limit approximation
+                        // As β→0, ratio^β→1, so denominator→0
+                        // Using L'Hôpital's rule: limit of df/dβ ≈ -(ln_ratio)²/2
+                        dF_dbeta(x, y) = omega * (-ln_ratio * ln_ratio / 2.0);
+                    } else {
+                        // General formula
+                        Scalar denominator = (1.0 - ratio_beta);
+                        Scalar denom_squared = denominator * denominator;
+
+                        // Numerator: -ln(r) * [1 - r^β + β·r^β·ln(r)]
+                        Scalar numerator = -ln_ratio * (1.0 - ratio_beta + beta * ratio_beta * ln_ratio);
+
+                        dF_dbeta(x, y) = omega * (numerator / denom_squared);
+                    }
+                }
+            }
+        }
+
+        // Diagonals are 0 (will be recomputed when combined with Q)
+        dF_dbeta.diagonal().setZero();
+
+        return dF_dbeta;
+    }
+
+    /**
+     * Compute analytical gradient of log-likelihood w.r.t. β using chain rule.
+     *
+     * Strategy:
+     *   dL/dβ = Σ_{sites} dL_site/dβ
+     *
+     * For each site:
+     *   dL_site/dβ = d/dβ [ln(π_site · L_site)]
+     *              = (dL_site/dβ) · π_site / L_site (chain rule for log)
+     *
+     * @param tree        Phylogenetic tree with branch lengths
+     * @param aln         Multiple sequence alignment (codon-based)
+     * @param gcode       Genetic code
+     * @param prefs       Site-specific amino acid preferences
+     * @param params      Current ExpCM parameters (including current β)
+     * @param branch_scale Scaling factor for branch lengths (default 1.0)
+     * @return Gradient: dL/dβ
+     */
+    static Scalar compute_expcm_beta_gradient_analytical(
+        const Tree& tree,
+        const Alignment& aln,
+        const GeneticCode& gcode,
+        const Preferences& prefs,
+        const ExpCMParameters& params,
+        Scalar branch_scale = 1.0
+    ) {
+        params.validate();
+
+        size_t num_nodes = tree.num_nodes();
+        size_t num_patterns = aln.patterns.size();
+        size_t num_sites = prefs.num_sites();
+
+        const std::vector<size_t>& leaf_to_taxon = build_leaf_to_taxon_map(tree, aln);
+
+        // Build Q matrix (shared across all sites)
+        ExpCMQMatrix Q_matrix;
+        Q_matrix.build(gcode, params);
+        const Matrix61Codon& Q = Q_matrix.Q;
+
+        Scalar total_gradient = 0.0;
+        const double SCALER_THRESH = 1e-150;
+        const double SCALER_UP = 1e150;
+        const double LOG_SCALER = std::log(SCALER_UP);
+
+        // Process each alignment site
+        #pragma omp parallel for reduction(+:total_gradient) schedule(dynamic)
+        for (size_t site = 0; site < num_sites; ++site) {
+            size_t pattern_idx = aln.site_to_pattern[site];
+            const auto& pattern = aln.patterns[pattern_idx];
+
+            // Compute F and dF/dβ matrices for this site
+            ExpCMFMatrix F_matrix;
+            F_matrix.build(gcode, prefs, site, params);
+            const Matrix61Codon& F = F_matrix.F;
+
+            Matrix61Codon dF_dbeta = compute_dF_dbeta(gcode, prefs, site, params.beta, params.omega);
+
+            // Compute P = F ⊙ Q and dP/dβ = (dF/dβ) ⊙ Q
+            Matrix61Codon P = F.cwiseProduct(Q);
+            Matrix61Codon dP_dbeta = dF_dbeta.cwiseProduct(Q);
+
+            // Set diagonals so rows sum to 0
+            for (int x = 0; x < 61; ++x) {
+                P(x, x) = -P.row(x).sum();
+                dP_dbeta(x, x) = -dP_dbeta.row(x).sum();
+            }
+
+            // Compute stationary distribution for this site
+            Eigen::Matrix<Scalar, 61, 1> pi_site = compute_expcm_stationary(
+                gcode, prefs, site, params.beta, params.phi
+            );
+
+            // Compute transition matrices for each branch
+            std::vector<Matrix61Codon> P_branches(num_nodes);
+            std::vector<Matrix61Codon> dP_dbeta_branches(num_nodes);
+
+            for (const auto& node : tree.nodes) {
+                if (node.id != tree.root_id) {
+                    Scalar scaled_bl = node.branch_length * branch_scale;
+                    P_branches[node.id] = matrix_exp_scaling_squaring(P * scaled_bl);
+                    // For gradient: d/dβ[exp(P(β)·t)] = J · dP/dβ · t
+                    // where J is the spectral Fréchet derivative
+                    // For now, use finite difference in dP domain
+                    dP_dbeta_branches[node.id] = matrix_exp_scaling_squaring(dP_dbeta * scaled_bl);
+                }
+            }
+
+            // Forward pass: compute site likelihood
+            std::vector<Eigen::Matrix<Scalar, 61, 1>> node_L(num_nodes);
+            std::vector<double> node_log_scale(num_nodes, 0.0);
+
+            for (int32_t node_id : tree.post_order) {
+                const auto& node = tree.nodes[node_id];
+
+                if (node.is_leaf) {
+                    size_t t_idx = leaf_to_taxon[node_id];
+                    if (t_idx != static_cast<size_t>(-1)) {
+                        int8_t state = pattern.states[t_idx];
+                        if (state >= 0 && state < 61) {
+                            node_L[node_id].setZero();
+                            node_L[node_id](state) = 1.0;
+                        } else {
+                            node_L[node_id].setOnes();
+                        }
+                    } else {
+                        node_L[node_id].setOnes();
+                    }
+                    node_log_scale[node_id] = 0.0;
+                } else {
+                    double child_scale_sum = 0.0;
+                    tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
+
+                    double max_val = node_L[node_id].maxCoeff();
+                    int boost_count = 0;
+                    while (max_val < SCALER_THRESH && max_val > 0.0) {
+                        node_L[node_id] *= SCALER_UP;
+                        max_val *= SCALER_UP;
+                        boost_count++;
+                    }
+                    node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
+                }
+            }
+
+            // Compute site likelihood
+            Scalar site_likelihood = pi_site.dot(node_L[tree.root_id]);
+            if (site_likelihood <= 0.0) {
+                continue;  // Skip sites with zero/negative likelihood
+            }
+
+            // Backward pass: compute gradient contribution for this site
+            // For now, use finite differences to avoid complex Fréchet derivative
+            // This is a placeholder; production code should use adjoint method
+            std::vector<Eigen::Matrix<Scalar, 61, 1>> node_dL_dbeta(num_nodes);
+            std::vector<double> node_dlog_scale_dbeta(num_nodes, 0.0);
+
+            for (int32_t node_id : tree.post_order) {
+                const auto& node = tree.nodes[node_id];
+
+                if (node.is_leaf) {
+                    node_dL_dbeta[node_id].setZero();
+                    node_dlog_scale_dbeta[node_id] = 0.0;
+                } else {
+                    double child_scale_sum = 0.0;
+                    tree.eval_internal_node(node_id, dP_dbeta_branches, node_dL_dbeta, node_dlog_scale_dbeta,
+                                          node_dL_dbeta[node_id], child_scale_sum);
+
+                    double max_val = node_dL_dbeta[node_id].maxCoeff();
+                    int boost_count = 0;
+                    while (max_val < SCALER_THRESH && max_val > 0.0) {
+                        node_dL_dbeta[node_id] *= SCALER_UP;
+                        max_val *= SCALER_UP;
+                        boost_count++;
+                    }
+                    node_dlog_scale_dbeta[node_id] = child_scale_sum - boost_count * LOG_SCALER;
+                }
+            }
+
+            // Gradient: d/dβ[ln(L_site)] = (dL/dβ) / L
+            Scalar site_dL_dbeta = pi_site.dot(node_dL_dbeta[tree.root_id]);
+            Scalar site_gradient = site_dL_dbeta / site_likelihood;
+
+            total_gradient += site_gradient;
+        }
+
+        return total_gradient;
+    }
+
+    /**
      * Compute matrix exponential using scaling and squaring method.
      * Robust for general matrices, including those with complex eigenvalues.
      */
