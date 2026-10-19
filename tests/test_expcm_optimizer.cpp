@@ -269,4 +269,44 @@ TEST_SUITE("ExpCM L-BFGS Optimizer") {
         CHECK(std::fabs(final_params(2) - KAPPA_REF) < 0.05);
         CHECK(std::fabs(result.optimal_likelihood - LNL_REF) < 0.2);
     }
+
+    TEST_CASE("Likelihood landscape check") {
+        auto aln = Alignment::from_fasta(ALIGNMENT_FILE);
+        auto tree = Tree::from_newick_file(TREE_FILE);
+        auto prefs = Preferences::from_csv(PREFS_FILE);
+        auto gcode = *GeneticCode::universal();
+
+        std::cout << "\n=== LIKELIHOOD LANDSCAPE CHECK ===\n";
+
+        // Test at reference point
+        ExpCMParameters ref_params{BETA_REF, OMEGA_REF, KAPPA_REF, {0.35, 0.20, 0.25, 0.20}};
+        auto lnl_ref = LikelihoodEngine::compute_expcm_log_likelihood(tree, aln, gcode, prefs, ref_params);
+
+        // Test at starting point
+        ExpCMParameters start_params{3.0, 0.8, 7.0, {0.35, 0.20, 0.25, 0.20}};
+        auto lnl_start = LikelihoodEngine::compute_expcm_log_likelihood(tree, aln, gcode, prefs, start_params);
+
+        // Test at convergence point
+        ExpCMParameters conv_params{3.76814, 0.888331, 9.72467, {0.35, 0.20, 0.25, 0.20}};
+        auto lnl_conv = LikelihoodEngine::compute_expcm_log_likelihood(tree, aln, gcode, prefs, conv_params);
+
+        std::cout << "Reference (3.382, 0.977, 8.756): ln L = " << -lnl_ref << "\n";
+        std::cout << "Starting (3.0, 0.8, 7.0):         ln L = " << -lnl_start << "\n";
+        std::cout << "Convergence (3.768, 0.888, 9.725): ln L = " << -lnl_conv << "\n\n";
+
+        std::cout << "Comparison:\n";
+        std::cout << "  Start > Reference? " << (-lnl_start > -lnl_ref ? "YES" : "NO") << "\n";
+        std::cout << "  Conv > Reference? " << (-lnl_conv > -lnl_ref ? "YES" : "NO") << "\n";
+        std::cout << "  Conv > Start? " << (-lnl_conv > -lnl_start ? "YES" : "NO") << "\n\n";
+
+        if (-lnl_ref < -lnl_conv) {
+            std::cout << "✓ Reference IS at a better minimum than convergence point.\n";
+            std::cout << "  This means the optimizer got stuck at a local minimum!\n";
+            std::cout << "  Root cause: Likely gradient or line search issue.\n";
+        } else {
+            std::cout << "✗ Convergence point is BETTER than reference!\n";
+            std::cout << "  This means the reference values may be wrong, or\n";
+            std::cout << "  the likelihood function differs from phydms.\n";
+        }
+    }
 }

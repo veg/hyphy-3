@@ -52,8 +52,8 @@ public:
         size_t memory_size;
 
         ConvergenceCriteria()
-            : gradient_tolerance(1e-5),
-              relative_tol(1e-9),
+            : gradient_tolerance(1e-6),
+              relative_tol(1e-10),
               max_iterations(1000),
               line_search_tolerance(1e-4),
               memory_size(10) {}

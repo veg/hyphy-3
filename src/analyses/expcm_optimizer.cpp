@@ -106,10 +106,10 @@ double ExpCMOptimizer::line_search_strong_wolfe(
 ) {
     const double c1 = 1e-4;
     const double c2 = 0.9;
-    const int max_evals = 20;
+    const int max_evals = 30;
 
-    // Start with smaller step size for safer bounds handling
-    double step_size = 0.1;
+    // Start with more aggressive step size for better exploration
+    double step_size = 0.5;
 
     // Compute maximum safe step size based on bounds
     double max_step = 10.0;  // Default large value
@@ -118,12 +118,12 @@ double ExpCMOptimizer::line_search_strong_wolfe(
             // Moving in positive direction
             double bound_log = std::log(std::vector<double>{bounds_.beta_max, bounds_.omega_max, bounds_.kappa_max}[i]);
             double max_step_i = (bound_log - current_log_params_(i)) / direction(i);
-            max_step = std::min(max_step, max_step_i * 0.95);  // Conservative: 95% of bound
+            max_step = std::min(max_step, max_step_i * 0.90);  // Less conservative: 90% of bound
         } else if (direction(i) < -1e-10) {
             // Moving in negative direction
             double bound_log = std::log(std::vector<double>{bounds_.beta_min, bounds_.omega_min, bounds_.kappa_min}[i]);
             double max_step_i = (bound_log - current_log_params_(i)) / direction(i);
-            max_step = std::min(max_step, max_step_i * 0.95);  // Conservative: 95% of bound
+            max_step = std::min(max_step, max_step_i * 0.90);  // Less conservative: 90% of bound
         }
     }
 
