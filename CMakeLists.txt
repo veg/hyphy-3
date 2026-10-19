@@ -153,6 +153,10 @@ add_executable(hyphy_expcm_test tests/test_expcm.cpp)
 target_link_libraries(hyphy_expcm_test PRIVATE hyphy3_core)
 add_test(NAME ExpcmTest COMMAND hyphy_expcm_test)
 
+add_executable(hyphy_expcm_optimizer_test tests/test_expcm_optimizer.cpp src/analyses/expcm_optimizer.cpp)
+target_link_libraries(hyphy_expcm_optimizer_test PRIVATE hyphy3_core)
+add_test(NAME ExpcmOptimizerTest COMMAND hyphy_expcm_optimizer_test)
+
 add_test(NAME HTMLReportEndToEndTest
     COMMAND ${CMAKE_COMMAND}
         -DHYPHY3=$<TARGET_FILE:hyphy3>
