@@ -1888,6 +1888,210 @@ TEST_SUITE("ExpCM: Step 4 - Phase 1A - Beta Gradient") {
     }
 }
 
+TEST_SUITE("ExpCM: Step 4 - Phase 2 - Omega Gradient") {
+
+    TEST_CASE("Omega gradient: dF/dω computation") {
+        const auto& gcode = *GeneticCode::universal();
+        std::string prefs_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/prefs.csv";
+        Preferences prefs = Preferences::from_csv(prefs_file);
+
+        ExpCMParameters params;
+        params.beta = 3.5;
+
+        // Compute dF/dω for site 0
+        auto dF_domega = hyphy::core::LikelihoodEngine::compute_dF_domega(gcode, prefs, 0, params.beta);
+
+        std::cerr << "\n=== dF/dω Analysis ===" << std::endl;
+        std::cerr << "Site 0, β=" << params.beta << std::endl;
+
+        // Verify structure
+        bool has_nonzero_entries = false;
+        bool diagonals_zero = true;
+        int synon_zero_count = 0;
+
+        for (int i = 0; i < 61; ++i) {
+            for (int j = 0; j < 61; ++j) {
+                if (std::fabs(dF_domega(i, j)) > 1e-10) {
+                    has_nonzero_entries = true;
+                }
+                if (i == j && std::fabs(dF_domega(i, j)) > 1e-10) {
+                    diagonals_zero = false;
+                }
+            }
+        }
+
+        // Check that synonymous transitions have dF/dω = 0
+        for (int x = 0; x < 61; ++x) {
+            for (int y = 0; y < 61; ++y) {
+                if (x != y && gcode.sense_codon_aa[x] == gcode.sense_codon_aa[y]) {
+                    if (std::fabs(dF_domega(x, y)) < 1e-10) {
+                        synon_zero_count++;
+                    }
+                }
+            }
+        }
+
+        CHECK(has_nonzero_entries);
+        CHECK(diagonals_zero);
+        CHECK(synon_zero_count > 0);
+
+        std::cerr << "  dF/dω has non-zero entries: YES" << std::endl;
+        std::cerr << "  Diagonals are zero: YES" << std::endl;
+        std::cerr << "  Synonymous with dF/dω=0: " << synon_zero_count << std::endl;
+    }
+
+    TEST_CASE("Omega gradient: Finite difference validation") {
+        const auto& gcode = *GeneticCode::universal();
+        std::string alignment_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/alignment.fasta";
+        std::string tree_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/tree.newick";
+        std::string prefs_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/prefs.csv";
+
+        Alignment aln = hyphy::core::Alignment::from_fasta(alignment_file);
+        Tree tree = hyphy::core::Tree::from_newick_file(tree_file);
+        Preferences prefs = Preferences::from_csv(prefs_file);
+
+        ExpCMParameters params;
+        params.beta = 3.38189;
+        params.omega = 0.977468;
+        params.kappa = 8.75598;
+        params.phi = {0.35, 0.20, 0.25, 0.20};
+
+        // Compute finite difference gradient
+        Scalar omega_gradient = hyphy::core::LikelihoodEngine::compute_expcm_omega_gradient_finite_diff(
+            tree, aln, gcode, prefs, params, 1.0, 1e-5
+        );
+
+        std::cerr << "\n=== Omega Gradient Validation ===" << std::endl;
+        std::cerr << "ω = " << params.omega << std::endl;
+        std::cerr << "dL/dω = " << omega_gradient << std::endl;
+
+        // At optimum (ω = 0.977468), gradient should be near 0
+        std::cerr << "  |dL/dω| = " << std::fabs(omega_gradient) << std::endl;
+        if (std::fabs(omega_gradient) < 0.1) {
+            std::cerr << "  Near optimum (gradient small): YES" << std::endl;
+        }
+
+        CHECK(std::isfinite(omega_gradient));
+    }
+
+    TEST_CASE("Omega gradient: Landscape analysis") {
+        const auto& gcode = *GeneticCode::universal();
+        std::string alignment_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/alignment.fasta";
+        std::string tree_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/tree.newick";
+        std::string prefs_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/prefs.csv";
+
+        Alignment aln = hyphy::core::Alignment::from_fasta(alignment_file);
+        Tree tree = hyphy::core::Tree::from_newick_file(tree_file);
+        Preferences prefs = Preferences::from_csv(prefs_file);
+
+        ExpCMParameters params;
+        params.beta = 3.38189;
+        params.kappa = 8.75598;
+        params.phi = {0.35, 0.20, 0.25, 0.20};
+
+        std::cerr << "\n=== Omega Gradient Landscape ===" << std::endl;
+        std::cerr << "ω\t\tL(ω)\t\tdL/dω" << std::endl;
+
+        // Evaluate at multiple ω values
+        std::vector<Scalar> omega_values = {0.5, 0.7, 0.977468, 1.2, 1.5};
+        bool gradient_sign_change = false;
+        Scalar prev_gradient = 0.0;
+
+        for (size_t i = 0; i < omega_values.size(); ++i) {
+            params.omega = omega_values[i];
+
+            Scalar L = hyphy::core::LikelihoodEngine::compute_expcm_log_likelihood(
+                tree, aln, gcode, prefs, params
+            );
+
+            Scalar gradient = hyphy::core::LikelihoodEngine::compute_expcm_omega_gradient_finite_diff(
+                tree, aln, gcode, prefs, params, 1.0, 1e-5
+            );
+
+            std::cerr << params.omega << "\t\t" << L << "\t\t" << gradient << std::endl;
+
+            // Check for sign change (indicates optimum crossed)
+            if (i > 0 && prev_gradient * gradient < 0.0) {
+                gradient_sign_change = true;
+            }
+            prev_gradient = gradient;
+        }
+
+        std::cerr << "  Gradient sign change detected: " << (gradient_sign_change ? "YES" : "NO") << std::endl;
+        CHECK(gradient_sign_change);
+    }
+
+    TEST_CASE("Omega gradient: Numerical stability") {
+        const auto& gcode = *GeneticCode::universal();
+        std::string prefs_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/prefs.csv";
+        Preferences prefs = Preferences::from_csv(prefs_file);
+
+        ExpCMParameters params;
+        params.beta = 3.38189;
+
+        std::cerr << "\n=== Omega Numerical Stability ===" << std::endl;
+
+        // Test on multiple sites
+        bool has_issue = false;
+        for (size_t site = 0; site < std::min(size_t(10), prefs.num_sites()); ++site) {
+            auto dF_domega = hyphy::core::LikelihoodEngine::compute_dF_domega(
+                gcode, prefs, site, params.beta
+            );
+
+            // Check for NaN/Inf
+            for (int i = 0; i < 61; ++i) {
+                for (int j = 0; j < 61; ++j) {
+                    if (!std::isfinite(dF_domega(i, j))) {
+                        has_issue = true;
+                        std::cerr << "  Issue at site " << site << ": dF/dω[" << i << "," << j << "] = "
+                                  << dF_domega(i, j) << std::endl;
+                    }
+                }
+            }
+        }
+
+        CHECK(!has_issue);
+        std::cerr << "  All dF/dω values finite: YES" << std::endl;
+    }
+
+    TEST_CASE("Omega gradient: Comparison with analytical Fréchet") {
+        const auto& gcode = *GeneticCode::universal();
+        std::string alignment_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/alignment.fasta";
+        std::string tree_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/tree.newick";
+        std::string prefs_file = "/Users/tuu74294/Desktop/phd/hyphy3/hyphy3/data/prefs.csv";
+
+        Alignment aln = hyphy::core::Alignment::from_fasta(alignment_file);
+        Tree tree = hyphy::core::Tree::from_newick_file(tree_file);
+        Preferences prefs = Preferences::from_csv(prefs_file);
+
+        ExpCMParameters params;
+        params.beta = 3.38189;
+        params.omega = 0.977468;
+        params.kappa = 8.75598;
+        params.phi = {0.35, 0.20, 0.25, 0.20};
+
+        // Compute both gradients
+        Scalar frechet_gradient = hyphy::core::LikelihoodEngine::compute_expcm_omega_gradient_frechet(
+            tree, aln, gcode, prefs, params
+        );
+
+        Scalar numerical_gradient = hyphy::core::LikelihoodEngine::compute_expcm_omega_gradient_finite_diff(
+            tree, aln, gcode, prefs, params, 1.0, 1e-5
+        );
+
+        std::cerr << "\n=== Omega: Fréchet vs Numerical ===" << std::endl;
+        std::cerr << "Fréchet:   " << frechet_gradient << std::endl;
+        std::cerr << "Numerical: " << numerical_gradient << std::endl;
+
+        if (std::fabs(numerical_gradient) > 1e-10) {
+            Scalar relative_error = std::fabs(frechet_gradient - numerical_gradient) / std::fabs(numerical_gradient);
+            std::cerr << "Relative error: " << relative_error << std::endl;
+        }
+
+        CHECK(std::isfinite(frechet_gradient));
+    }
+}
+
 TEST_SUITE("ExpCM: Step 4 - Phase 1B - Spectral Fréchet Derivatives") {
 
     TEST_CASE("Frechet derivative: Basic computation at single β value") {

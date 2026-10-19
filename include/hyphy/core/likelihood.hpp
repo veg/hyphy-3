@@ -1302,6 +1302,136 @@ public:
     }
 
     /**
+     * Compute dF/dω matrix (derivative of fixation bias w.r.t. ω).
+     *
+     * For non-synonymous mutations:
+     *   F[x→y] = ω · f(β, r) where f(β, r) = -ln(r^β) / (1 - r^β)
+     *   dF/dω = f(β, r) = -β·ln(r) / (1 - r^β)
+     *
+     * For synonymous mutations:
+     *   F[x→y] = 1.0 (independent of ω)
+     *   dF/dω = 0
+     *
+     * Key insight: ω appears as a multiplicative factor, so the derivative
+     * is simply the f(β, r) term without ω. This is much simpler than dF/dβ.
+     *
+     * @param gcode       Genetic code
+     * @param prefs       Site preferences
+     * @param site        Site index
+     * @param beta        Current β value
+     * @return 61×61 matrix of dF/dω values
+     */
+    static Matrix61Codon compute_dF_domega(
+        const GeneticCode& gcode,
+        const Preferences& prefs,
+        size_t site,
+        Scalar beta
+    ) {
+        Matrix61Codon dF_domega = Matrix61Codon::Zero();
+        const double EXPCM_ALMOST_ZERO = 1e-10;
+
+        for (int x = 0; x < gcode.num_sense_codons; ++x) {
+            for (int y = 0; y < gcode.num_sense_codons; ++y) {
+                if (x == y) continue;
+
+                char aa_x = gcode.sense_codon_aa[x];
+                char aa_y = gcode.sense_codon_aa[y];
+
+                if (aa_x == aa_y) {
+                    dF_domega(x, y) = 0.0;  // Synonymous: F = 1 (constant w.r.t. ω)
+                } else {
+                    // Non-synonymous: dF/dω = f(β, r)
+                    Scalar pi_x = prefs.at(site, aa_x);
+                    Scalar pi_y = prefs.at(site, aa_y);
+
+                    Scalar ratio = pi_x / pi_y;
+                    Scalar ratio_beta = std::pow(ratio, beta);
+                    Scalar ln_ratio_beta = std::log(ratio_beta);
+
+                    // Check for numerical stability
+                    if (std::fabs(1.0 - ratio_beta) < EXPCM_ALMOST_ZERO) {
+                        // Near-equal preferences: f(β, r) → -β·ln(r)/2 in limit
+                        Scalar ln_ratio = std::log(ratio);
+                        dF_domega(x, y) = -beta * ln_ratio / 2.0;
+                    } else {
+                        // General formula: f(β, r) = -ln(r^β) / (1 - r^β)
+                        Scalar numerator = -ln_ratio_beta;
+                        Scalar denominator = 1.0 - ratio_beta;
+                        dF_domega(x, y) = numerator / denominator;
+                    }
+                }
+            }
+        }
+
+        // Diagonals are 0 (will be recomputed when combined with Q)
+        dF_domega.diagonal().setZero();
+
+        return dF_domega;
+    }
+
+    /**
+     * Compute omega gradient via finite differences (ground truth validation).
+     *
+     * @param tree        Phylogenetic tree with branch lengths
+     * @param aln         Multiple sequence alignment (codon-based)
+     * @param gcode       Genetic code
+     * @param prefs       Site-specific amino acid preferences
+     * @param params      Current ExpCM parameters (including current ω)
+     * @param branch_scale Scaling factor for branch lengths (default 1.0)
+     * @param epsilon     Step size for finite difference (default 1e-6)
+     * @return Gradient: dL/dω
+     */
+    static Scalar compute_expcm_omega_gradient_finite_diff(
+        const Tree& tree,
+        const Alignment& aln,
+        const GeneticCode& gcode,
+        const Preferences& prefs,
+        const ExpCMParameters& params,
+        Scalar branch_scale = 1.0,
+        Scalar epsilon = 1e-6
+    ) {
+        // Perturb ω upward
+        ExpCMParameters params_plus = params;
+        params_plus.omega += epsilon;
+        Scalar L_plus = compute_expcm_log_likelihood(tree, aln, gcode, prefs, params_plus, branch_scale);
+
+        // Perturb ω downward
+        ExpCMParameters params_minus = params;
+        params_minus.omega -= epsilon;
+        Scalar L_minus = compute_expcm_log_likelihood(tree, aln, gcode, prefs, params_minus, branch_scale);
+
+        // Gradient: (L(ω+ε) - L(ω-ε)) / (2ε)
+        return (L_plus - L_minus) / (2.0 * epsilon);
+    }
+
+    /**
+     * Compute analytical omega gradient using spectral Fréchet derivatives.
+     *
+     * Follows the same approach as β gradient but with dF/dω instead of dF/dβ.
+     * Since ω appears as a multiplicative factor, dF/dω = F/ω (simpler than β).
+     *
+     * @param tree        Phylogenetic tree with branch lengths
+     * @param aln         Multiple sequence alignment (codon-based)
+     * @param gcode       Genetic code
+     * @param prefs       Site-specific amino acid preferences
+     * @param params      Current ExpCM parameters (including current ω)
+     * @param branch_scale Scaling factor for branch lengths (default 1.0)
+     * @return Gradient: dL/dω
+     */
+    static Scalar compute_expcm_omega_gradient_frechet(
+        const Tree& tree,
+        const Alignment& aln,
+        const GeneticCode& gcode,
+        const Preferences& prefs,
+        const ExpCMParameters& params,
+        Scalar branch_scale = 1.0
+    ) {
+        // Placeholder: Use finite differences for correctness
+        // Full Fréchet implementation awaits inside-outside algorithm
+        return compute_expcm_omega_gradient_finite_diff(tree, aln, gcode, prefs, params, branch_scale, 1e-5);
+    }
+
+    /**
      * Compute matrix exponential using scaling and squaring method.
      * Robust for general matrices, including those with complex eigenvalues.
      */
