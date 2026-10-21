@@ -9,7 +9,7 @@ using namespace hyphy::analyses;
 int main() {
     // 1. Test Ground-Truth Indel Register & Topology Recovery on Drosophila adh
     {
-        Alignment adh_true = Alignment::load( std::string(HYPHY3_SOURCE_DIR) + "/../hyphy/tests/data/adh.nex" );
+        Alignment adh_true = Alignment::load( std::string(HYPHY3_SOURCE_DIR) + "/tests/data/adh.nex" );
         Tree adh_tree = Tree::from_newick(adh_true.embedded_tree_newick);
 
         Alignment adh_staggered = adh_true;
@@ -50,7 +50,7 @@ int main() {
 
     // 2. Test All 3 Stages on Empirical Camelid VHH CDR1/CDR2 Loops
     {
-        Alignment cam_aln = Alignment::load( std::string(HYPHY3_SOURCE_DIR) + "/../hyphy/tests/data/camelid.nex" );
+        Alignment cam_aln = Alignment::load( std::string(HYPHY3_SOURCE_DIR) + "/tests/data/camelid.nex" );
         JointAlignSettings js;
         js.p_value_threshold = 0.10;
         js.quiet = true;
@@ -69,7 +69,7 @@ int main() {
 
     // 3. Test Phase A + B De Novo Unaligned Joint Inference on Mammalian CD2
     {
-        Alignment cd2_aln = Alignment::load( std::string(HYPHY3_SOURCE_DIR) + "/../hyphy/tests/hbltests/data/CD2.nex" );
+        Alignment cd2_aln = Alignment::load( std::string(HYPHY3_SOURCE_DIR) + "/tests/data/CD2.nex" );
         auto unaligned = JointAlignEngine::strip_gaps_to_unaligned(cd2_aln);
         JointAlignSettings js;
         js.p_value_threshold = 0.10;
