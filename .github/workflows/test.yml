@@ -1,32 +1,133 @@
 name: Build and Test
 
+# Two tiers:
+# - fast: every PR and every push to main. Cached build plus the tests that take
+#   under a minute (`ctest -LE deep`). Skips the Python bindings, which only the
+#   deep tests use.
+# - deep: the full suite, including the slow tests labelled "deep" in
+#   CMakeLists.txt. Runs nightly (skipped when main has not changed since the last
+#   successful nightly), on manual dispatch, and on PRs labelled full-ci. It never
+#   gates an ordinary PR.
+
 on:
   push:
+    branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    - cron: "0 7 * * *"
   workflow_dispatch:
 
+# A new push to a PR cancels that PR's older runs. Label events get their own group, so adding
+# full-ci never cancels the fast run of the code it labels.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ github.event.action == 'labeled' && 'label' || 'code' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  # The commit is a compile definition of every target; pinning it lets ccache
+  # reuse objects across commits.
+  CMAKE_ARGS: -DCMAKE_BUILD_TYPE=Release -DHYPHY3_GIT_COMMIT=ci
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 2G
+  # Needed for ccache to cache translation units that use the shared precompiled header
+  CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime,include_file_ctime
+
 jobs:
-  build-and-test:
+  fast:
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'labeled')
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ libomp-dev
+          sudo apt-get install -y cmake g++ libomp-dev ccache
+
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-fast-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-fast-${{ runner.os }}-
+
+      - name: Configure
+        run: cmake -S . -B build $CMAKE_ARGS
+
+      - name: Build
+        run: |
+          ccache --zero-stats
+          cmake --build build -j"$(nproc)"
+          ccache --show-stats
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -LE deep -j2
+
+  deep:
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'full-ci') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'full-ci'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Skip unchanged nightly
+        id: changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=true
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            last=$(gh run list -R "${{ github.repository }}" --workflow "${{ github.workflow }}" \
+                     --event schedule --status success --limit 1 --json headSha -q '.[0].headSha')
+            if [ "$last" = "${{ github.sha }}" ]; then
+              echo "main unchanged since the last successful nightly ($last); skipping"
+              run=false
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.changed.outputs.run == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.changed.outputs.run == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.changed.outputs.run == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libomp-dev ccache
           python -m pip install --upgrade pip
           python -m pip install pytest nanobind jsonschema
 
+      - uses: actions/cache@v4
+        if: steps.changed.outputs.run == 'true'
+        with:
+          path: .ccache
+          key: ccache-deep-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-deep-${{ runner.os }}-
+
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        if: steps.changed.outputs.run == 'true'
+        run: cmake -S . -B build $CMAKE_ARGS
 
       - name: Build
-        run: cmake --build build -j"$(nproc)"
+        if: steps.changed.outputs.run == 'true'
+        run: |
+          ccache --zero-stats
+          cmake --build build -j"$(nproc)"
+          ccache --show-stats
 
       - name: Test
+        if: steps.changed.outputs.run == 'true'
         run: ctest --test-dir build --output-on-failure
