@@ -1643,25 +1643,33 @@ public:
                     compute_syn_scale();
                 }
 
-                // F-080: If null_ll > full_ll + 1e-4 and a restart round remains, warm-start the full model
-                // from the null configuration and restart Phase 5 so all branches are tested against a single
+                // F-080: If null_ll > full_ll + 1e-4, warm-start the full model from the null configuration
+                // (and restart Phase 5 if a restart round remains) so all branches are tested against a single
                 // consistent full model. Since the null configuration is itself a valid point in the unconstrained
-                // Full Model space, if the unconstrained polish does not beat null_ll, adopt the null configuration
-                // directly so null_ll > full_ll is always reconciled.
-                if (std::isfinite(null_ll) && null_ll > full_ll + 1e-4 && (p5_restart + 1 < max_p5_restarts)) {
+                // Full Model space, if the unconstrained polish does not beat null_ll (or on the final round),
+                // adopt the null configuration directly; if recomputed new_full_ll still fails to beat full_ll,
+                // restore the saved full model state and transition matrices.
+                if (std::isfinite(null_ll) && null_ll > -1e19 && null_ll > full_ll + 1e-4) {
+                    auto saved_alpha = branch_alpha;
+                    auto saved_omegas = branch_omegas;
+                    auto saved_weights = branch_weights;
+                    GTRParameters saved_gtr = gtr_params;
+
                     branch_alpha = null_alpha;
                     branch_omegas = null_omegas;
                     branch_weights = null_weights;
                     gtr_params = null_gtr;
                     compute_syn_scale();
 
-                    Scalar prev_ws_ll = null_ll;
-                    for (int ws_pass = 0; ws_pass < 15; ++ws_pass) {
-                        run_joint_branch_length_lbfgs();
-                        run_gtr_optimization();
-                        Scalar cur_ws_ll = run_mixture_refinement();
-                        if (std::abs(cur_ws_ll - prev_ws_ll) < 1e-3) break;
-                        prev_ws_ll = cur_ws_ll;
+                    if (p5_restart + 1 < max_p5_restarts) {
+                        Scalar prev_ws_ll = null_ll;
+                        for (int ws_pass = 0; ws_pass < 15; ++ws_pass) {
+                            run_joint_branch_length_lbfgs();
+                            run_gtr_optimization();
+                            Scalar cur_ws_ll = run_mixture_refinement();
+                            if (std::abs(cur_ws_ll - prev_ws_ll) < 1e-3) break;
+                            prev_ws_ll = cur_ws_ll;
+                        }
                     }
                     P_branches = compute_all_branch_transition_matrices();
                     Scalar new_full_ll = compute_tree_log_likelihood(P_branches);
@@ -1674,24 +1682,33 @@ public:
                         P_branches = compute_all_branch_transition_matrices();
                         new_full_ll = compute_tree_log_likelihood(P_branches);
                     }
-                    if (new_full_ll > full_ll) {
+                    if (std::isfinite(new_full_ll) && new_full_ll > full_ll) {
                         full_ll = new_full_ll;
                         full_aicc = compute_aicc(full_ll, current_params);
                         result.full_adaptive_fit = {full_ll, current_params, full_aicc};
                         update_full_branch_summaries();
                         recompute_full_io_cache();
-                        full_model_improved = true;
-                        break; // Restart Phase 5 so all branches are tested against the improved full model
+                        if (p5_restart + 1 < max_p5_restarts) {
+                            full_model_improved = true;
+                            break; // Restart Phase 5 so all branches are tested against the improved full model
+                        }
+                    } else {
+                        branch_alpha = std::move(saved_alpha);
+                        branch_omegas = std::move(saved_omegas);
+                        branch_weights = std::move(saved_weights);
+                        gtr_params = saved_gtr;
+                        compute_syn_scale();
+                        P_branches = compute_all_branch_transition_matrices();
                     }
                 }
 
                 const Matrix& V_branch_full = V_full_all[bid];
                 const Matrix& D_branch_full = D_full_all[bid];
 
-                Scalar lrt = (std::isfinite(null_ll) && std::isfinite(full_ll))
-                    ? 2.0 * (full_ll - null_ll)
-                    : 0.0;
-                if (lrt <= 0.0 || !std::isfinite(lrt)) {
+                const bool valid_lls = std::isfinite(null_ll) && std::isfinite(full_ll) &&
+                                       null_ll > -1e19 && full_ll > -1e19;
+                Scalar lrt = valid_lls ? 2.0 * (full_ll - null_ll) : 0.0;
+                if (!valid_lls || lrt <= 0.0 || !std::isfinite(lrt)) {
                     lrt = 0.0;
                     bres.lrt = 0.0;
                     // F-080: When a tested branch had unconstrained omega_K > 1 and lrt == 0.0, set p_value = 0.5 (matching aBSREL.bf:938)

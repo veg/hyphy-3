@@ -241,7 +241,7 @@ This allows joint L-BFGS optimization across all branch lengths simultaneously i
 #### 3. **BUSTED & Variants (Branch-site Unrestricted Statistical Test)**
 - **Standard BUSTED**:
   - Tests for alignment-wide evidence of episodic diversifying positive selection across both sites and branches.
-  - Fits a 3-category discrete distribution of non-synonymous rates: ω₁ ≤ ω₂ ≤ 1 ≤ ω₃ with mixture weights (p₁, p₂, p₃).
+  - Fits a 3-category discrete distribution of non-synonymous rates: ω₁ ≤ ω₂ ≤ 1 ≤ ω₃ with mixture weights (p₁, p₂, p₃) (with default upper bound ω_K ≤ 10,000 when `--error-sink` is inactive, vs. HyPhy 2.5's `range_gte1` cap of 10¹⁰, and ω_K ≤ 100 when `--error-sink` is active).
   - Compares unconstrained model (ω₃ ≥ 1.0) against constrained null model (ω₃ = 1.0) using asymptotic mixture test statistic ½ χ²₀ + ½ χ²₂.
   - Computes per-site **Evidence Ratios (ER)** quantifying evidence that site s evolved under ω₃ > 1.
 - **BUSTED-S (Synonymous Rate Variation)**:
@@ -258,7 +258,7 @@ Q_ij = (α or β) × ψ × ∏_{p ∈ D} r_{i_p → j_p} π_{j_p}^(p)    (|D|K =
   - Strictly preserves detailed balance π_i Q_ij = π_j Q_ji, maintaining fast symmetric eigensolvers.
   - Jointly estimates δ and ψ and reports flux-weighted instantaneous substitution rates and substitution fractions (frac_δ, frac_ψ).
 - **BUSTED-E (`--error-sink`, Saturation Replacement Kernel)**:
-  - Formulates a Huber ε-contaminated transition probability model P̃_b(t_b) = (1 - ε_sink) P_bio(t_b) + ε_sink P_sink, where P_sink(i, j) = π_j / (1 - π_i) for i ≠ j and 0 for i = j.
+  - Formulates a Huber ε-contaminated transition probability model P̃_b(t_b) = (1 - ε_sink) P_bio(t_b) + ε_sink P_sink, where P_sink(i, j) = π_j / (1 - π_i) for i ≠ j and 0 for i = j, and bounds the biological positive-selection class to ω_K ∈ [1, 100] (matching HyPhy 2.5's `BUSTED-E` bound).
   - Evaluates the rank-1 + diagonal bilinear form in O(S) per branch-site, estimates ε_sink (≤ 0.01 by default) via exact EM responsibility accumulation across unweighted branch-site transitions, and flags anomalous misaligned or frameshifted branch-sites via Empirical Bayes Factors (BF ≥ 100).
 - **BUSTED-PH (`hyphy3 busted-ph` or `--phenotype`, Phenotype-Associated Selection + Coupled-$k$ RELAX)**:
   - Tests whether episodic positive selection is specifically associated with a designated **Foreground/Phenotype** branch set (`--branches`) relative to a **Background/Comparison** branch set (`--comparison`, defaulting to the complement of foreground branches), with optional **Unclassified/Nuisance** branches modeled via a third independent $\omega$ distribution.

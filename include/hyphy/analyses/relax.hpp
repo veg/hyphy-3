@@ -97,6 +97,8 @@ struct RELAXSettings {
     // Alternating (distribution <-> branch lengths) optimization after the tree-scale fit.
     int max_joint_cycles = 15;
     Scalar joint_tolerance = 1e-3;
+    int grid_size = 0;       // 0 = default curated grid (8 null / 11 alt); > base size appends Halton points
+    int starting_points = 1; // Number of top-ranked initial seeds refined via Nelder-Mead
     bool verbose = false;
 };
 
@@ -676,7 +678,7 @@ public:
         std::vector<Scalar> pattern_ll(num_patterns, -1e20);
         std::vector<Scalar> weighted_pattern_ll(num_patterns, 0.0);
         int n_threads = LikelihoodEngine::optimal_omp_threads(num_patterns, 32);
-        const size_t tile_size = std::max<size_t>(16, std::min<size_t>(256, (num_patterns + std::max(1, n_threads) - 1) / std::max(1, n_threads)));
+        const size_t tile_size = std::min<size_t>(64, std::max<size_t>(1, num_patterns));
         const size_t num_tiles = (num_patterns + tile_size - 1) / tile_size;
 
         #pragma omp parallel num_threads(n_threads)
@@ -878,7 +880,7 @@ public:
         std::vector<Scalar> pattern_ll(num_patterns, 0.0);
         Matrix pattern_grad = Matrix::Zero(num_nodes, num_patterns);
         int n_threads = LikelihoodEngine::optimal_omp_threads(num_patterns, 32);
-        const size_t tile_size = std::max<size_t>(16, std::min<size_t>(256, (num_patterns + std::max(1, n_threads) - 1) / std::max(1, n_threads)));
+        const size_t tile_size = std::min<size_t>(64, std::max<size_t>(1, num_patterns));
         const size_t num_tiles = (num_patterns + tile_size - 1) / tile_size;
 
         #pragma omp parallel num_threads(n_threads)
@@ -1281,13 +1283,47 @@ public:
             std::vector<Scalar> th(x.begin() + 1, x.end());
             return -loglik_at(decode_theta(th, has_k), bl);
         };
-        std::vector<std::vector<Scalar>> grid(starts.begin() + 1, starts.end());
-        auto o = NelderMeadDynamic::minimize(f, starts[0], lb, ub, 1e-4, 400, grid);
-        auto x = o.x;
-        Scalar fbest = o.f;
-        auto o2 = NelderMeadDynamic::minimize(f, x, lb, ub, 1e-5, 250);
-        if (o2.f < fbest) { x = o2.x; fbest = o2.f; }
-        return {x, -fbest};
+        size_t n_grid = starts.size();
+        if (settings.grid_size > 0 && static_cast<size_t>(settings.grid_size) < n_grid) {
+            n_grid = static_cast<size_t>(settings.grid_size);
+        }
+        const size_t n_starts = std::min<size_t>(
+            n_grid, static_cast<size_t>(std::max(1, settings.starting_points))
+        );
+        if (n_starts <= 1) {
+            std::vector<std::vector<Scalar>> grid(starts.begin() + 1, starts.begin() + n_grid);
+            auto o = NelderMeadDynamic::minimize(f, starts[0], lb, ub, 1e-4, 400, grid);
+            auto x = o.x;
+            Scalar fbest = o.f;
+            auto o2 = NelderMeadDynamic::minimize(f, x, lb, ub, 1e-5, 250);
+            if (o2.f < fbest) { x = o2.x; fbest = o2.f; }
+            return {x, -fbest};
+        }
+
+        // Evaluate all candidate grid points and rank them by initial objective value
+        std::vector<std::pair<Scalar, size_t>> ranked;
+        ranked.reserve(n_grid);
+        for (size_t i = 0; i < n_grid; ++i) {
+            ranked.push_back({f(starts[i]), i});
+        }
+        std::stable_sort(ranked.begin(), ranked.end(),
+                         [](const auto& a, const auto& b) { return a.first < b.first; });
+
+        std::vector<Scalar> best_x = starts[ranked[0].second];
+        Scalar best_f = ranked[0].first;
+        for (size_t s_idx = 0; s_idx < n_starts; ++s_idx) {
+            const auto& seed = starts[ranked[s_idx].second];
+            auto o1 = NelderMeadDynamic::minimize(f, seed, lb, ub, 1e-4, 400);
+            auto cand_x = o1.x;
+            Scalar cand_f = o1.f;
+            auto o2 = NelderMeadDynamic::minimize(f, cand_x, lb, ub, 1e-5, 250);
+            if (o2.f < cand_f) { cand_x = o2.x; cand_f = o2.f; }
+            if (cand_f < best_f) {
+                best_f = cand_f;
+                best_x = std::move(cand_x);
+            }
+        }
+        return {best_x, -best_f};
     }
 
     struct RELAXJointFit {
@@ -1721,6 +1757,18 @@ public:
         // ---------------------------------------------------------
         update_progress("Phase 3: Fitting RELAX null model (K = 1 fixed)", 0.45);
 
+        auto halton = [](size_t idx, size_t base) -> Scalar {
+            Scalar f = 1.0;
+            Scalar r = 0.0;
+            size_t i = idx;
+            while (i > 0) {
+                f /= static_cast<Scalar>(base);
+                r += f * static_cast<Scalar>(i % base);
+                i /= base;
+            }
+            return r;
+        };
+
         // F-014: Expanded data-scaled starting grid for null model
         std::vector<std::vector<Scalar>> null_starts = {
             with_scale(1.0, encode_theta(make_dist(0.0, 0.5, 1.5, 0.6, 0.3), false)),
@@ -1732,6 +1780,15 @@ public:
             with_scale(1.0, encode_theta(make_dist(0.01, 0.15, 1.1, 0.70, 0.25), false)),
             with_scale(1.0, encode_theta(make_dist(0.0, 0.8, 10.0, 0.25, 0.65), false))
         };
+        for (size_t g_idx = null_starts.size(); static_cast<int>(g_idx) < settings.grid_size; ++g_idx) {
+            size_t h_id = g_idx + 1;
+            Scalar w1_h = std::clamp(0.02 + 0.96 * halton(h_id, 2), 1e-3, 0.99);
+            Scalar w0_h = std::clamp(w1_h * halton(h_id, 3), 0.0, w1_h);
+            Scalar w2_h = std::clamp(std::exp(std::log(1.02) + std::log(25.0) * halton(h_id, 5)), 1.01, kMaxOmega);
+            Scalar p0_h = std::clamp(0.05 + 0.80 * halton(h_id, 7), 0.01, 0.90);
+            Scalar p1_h = std::clamp((0.96 - p0_h) * (0.10 + 0.85 * halton(h_id, 11)), 0.01, 0.97 - p0_h);
+            null_starts.push_back(with_scale(1.0, encode_theta(make_dist(w0_h, w1_h, w2_h, p0_h, p1_h), false)));
+        }
         auto scaled_null = optimize_scaled(null_starts, false, mg_bl);
         Scalar null_s = scaled_null.first[0];
         RELAXJointFit J_null = joint_optimize(
@@ -1774,6 +1831,16 @@ public:
             with_scale(1.0, encode_theta(make_dist(0.1 * w_mg, w_mg, 3.0, 0.40, 0.45, 5.0), true)),
             with_scale(1.0, encode_theta(make_dist(0.05, 0.4, 2.5, 0.50, 0.40, 15.0), true))
         };
+        for (size_t g_idx = alt_starts.size(); static_cast<int>(g_idx) < settings.grid_size; ++g_idx) {
+            size_t h_id = g_idx + 1;
+            Scalar w1_h = std::clamp(0.02 + 0.96 * halton(h_id, 2), 1e-3, 0.99);
+            Scalar w0_h = std::clamp(w1_h * halton(h_id, 3), 0.0, w1_h);
+            Scalar w2_h = std::clamp(std::exp(std::log(1.02) + std::log(25.0) * halton(h_id, 5)), 1.01, kMaxOmega);
+            Scalar p0_h = std::clamp(0.05 + 0.80 * halton(h_id, 7), 0.01, 0.90);
+            Scalar p1_h = std::clamp((0.96 - p0_h) * (0.10 + 0.85 * halton(h_id, 11)), 0.01, 0.97 - p0_h);
+            Scalar k_h = std::clamp(std::exp(std::log(0.02) + std::log(750.0) * halton(h_id, 13)), kMinK, kMaxK);
+            alt_starts.push_back(with_scale(1.0, encode_theta(make_dist(w0_h, w1_h, w2_h, p0_h, p1_h, k_h), true)));
+        }
         auto scaled_alt = optimize_scaled(alt_starts, true, mg_bl);
         Scalar alt_s = scaled_alt.first[0];
         RELAXJointFit J_alt = joint_optimize(

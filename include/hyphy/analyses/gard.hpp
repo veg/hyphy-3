@@ -581,23 +581,25 @@ public:
             std::vector<Vector4> node_L(num_nodes);
             std::vector<double> node_log_scale(num_nodes, 0.0);
             for (size_t p = 0; p < num_patterns; ++p) {
-                Scalar pat_lnl = eval_pattern(p, node_L, node_log_scale);
-                pattern_log_l[p] = pat_lnl;
-                total_log_l += aln.patterns[p].weight * pat_lnl;
+                pattern_log_l[p] = eval_pattern(p, node_L, node_log_scale);
             }
         } else {
             #pragma omp parallel
             {
                 std::vector<Vector4> node_L(num_nodes);
                 std::vector<double> node_log_scale(num_nodes, 0.0);
-                #pragma omp for reduction(+:total_log_l) schedule(static)
+                #pragma omp for schedule(static)
                 for (size_t p = 0; p < num_patterns; ++p) {
-                    Scalar pat_lnl = eval_pattern(p, node_L, node_log_scale);
-                    pattern_log_l[p] = pat_lnl;
-                    total_log_l += aln.patterns[p].weight * pat_lnl;
+                    pattern_log_l[p] = eval_pattern(p, node_L, node_log_scale);
                 }
             }
         }
+
+        Scalar total_comp = 0.0;
+        for (size_t p = 0; p < num_patterns; ++p) {
+            LikelihoodEngine::neumaier_acc(total_log_l, total_comp, aln.patterns[p].weight * pattern_log_l[p]);
+        }
+        total_log_l += total_comp;
 
         if (out_site_log_l != nullptr) {
             size_t S = aln.site_to_pattern.size();

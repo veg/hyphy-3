@@ -730,13 +730,13 @@ public:
                 }
             }
 
-            Scalar total_lnl = 0.0;
+            std::vector<Scalar> pat_w_lnl(num_patterns, 0.0);
             #pragma omp parallel
             {
                 std::vector<Vector> thread_node_L(num_nodes, Vector::Zero(S));
                 std::vector<double> thread_node_scale(num_nodes, 0.0);
 
-                #pragma omp for reduction(+:total_lnl) schedule(dynamic, 8)
+                #pragma omp for schedule(static)
                 for (size_t p = 0; p < num_patterns; ++p) {
                     Scalar lnl = FELAnalyzer::compute_pattern_log_likelihood(
                         tree, aln.patterns[p], leaf_to_taxon,
@@ -744,10 +744,10 @@ public:
                         static_cast<const MG94Matrix&>(pm),
                         P_branches, thread_node_L, thread_node_scale
                     );
-                    total_lnl += aln.patterns[p].weight * lnl;
+                    pat_w_lnl[p] = aln.patterns[p].weight * lnl;
                 }
             }
-            return total_lnl;
+            return LikelihoodEngine::neumaier_sum(pat_w_lnl);
         };
 
         auto obj = [&](const std::vector<Scalar>& x) -> Scalar {

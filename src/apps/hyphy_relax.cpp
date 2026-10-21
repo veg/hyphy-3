@@ -53,6 +53,8 @@ static void print_relax_usage(const char* prog) {
               << "  " << Console::brand("--srv") << " <Yes|No>       Synonymous rate variation (supported: No in standalone hyphy_relax; use hyphy_busted --phenotype --relax)\n"
               << "  " << Console::brand("--multiple-hits") << " <m>  Multi-hit mode (supported: None in standalone hyphy_relax; use hyphy_busted --phenotype --relax)\n"
               << "  " << Console::brand("--error-sink") << " <Yes|No> Error-sink class (supported: No in standalone hyphy_relax; use hyphy_busted --phenotype --relax)\n"
+              << "  " << Console::brand("--grid-size") << " <N>       Number of initial candidate points evaluated for RELAX fits (default: 8 null / 11 alt)\n"
+              << "  " << Console::brand("--starting-points") << " <N> Number of top-ranked initial seeds refined via Nelder-Mead (default: 1)\n"
               << "  " << Console::brand("--progress") << "           Force interactive progress bar\n"
               << "  " << Console::brand("--no-progress") << "        Disable progress bar\n"
               << "  " << Console::brand("--help, -h") << "           Show this help message\n\n"
@@ -155,12 +157,20 @@ int run_relax(int argc, char* argv[]) {
                           << "Use 'hyphy_busted --phenotype --relax --error-sink' instead.\n";
                 return 1;
             }
-        } else if ((arg == "--grid-size" || arg == "--starting-points") && i + 1 < argc) {
+        } else if (arg == "--grid-size" && i + 1 < argc) {
             int n_val = std::stoi(argv[++i]);
             if (n_val <= 0) {
-                std::cerr << "Error: " << arg << " must be positive.\n";
+                std::cerr << "Error: --grid-size must be positive.\n";
                 return 1;
             }
+            settings.grid_size = n_val;
+        } else if (arg == "--starting-points" && i + 1 < argc) {
+            int n_val = std::stoi(argv[++i]);
+            if (n_val <= 0) {
+                std::cerr << "Error: --starting-points must be positive.\n";
+                return 1;
+            }
+            settings.starting_points = n_val;
         } else if (arg == "--help" || arg == "-h") {
             print_relax_usage(argv[0]);
             return 0;

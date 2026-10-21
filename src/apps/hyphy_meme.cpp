@@ -51,7 +51,7 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--multiple-hits") << " <m>  Multi-hit mode (supported: None; use hyphy_busted for multi-hit mixtures)\n"
               << "  " << Console::brand("--resample") << " <N>       Parametric bootstrap replicates (supported: 0)\n"
               << "  " << Console::brand("--impute-states") << " <b > Ancestral state imputation mode (supported: No)\n"
-              << "  " << Console::brand("--precision") << " <mode>   Optimization precision ('standard' or 'fast')\n"
+              << "  " << Console::brand("--precision") << " <mode>   Optimization precision ('standard' or 'fast'/'reduced' [= --quick])\n"
               << "  " << Console::brand("--all-sites") << "          Display all codon sites in console table (default: significant only)\n"
               << "  " << Console::brand("--progress") << "           Force interactive progress bar\n"
               << "  " << Console::brand("--no-progress") << "        Disable progress bar\n"
@@ -104,12 +104,12 @@ int run_meme(int argc, char* argv[]) {
             }
         } else if (arg == "--precision" && i + 1 < argc) {
             std::string prec = argv[++i];
-            if (prec == "fast" || prec == "faster") {
+            if (prec == "fast" || prec == "faster" || prec == "reduced") {
                 opts.full_model = false;
             } else if (prec == "standard" || prec == "default") {
                 opts.full_model = true;
             } else {
-                std::cerr << Console::danger("Error: ") << "--precision must be 'standard' or 'fast' (got '" << prec << "').\n";
+                std::cerr << Console::danger("Error: ") << "--precision must be 'standard', 'fast', or 'reduced' (got '" << prec << "').\n";
                 return 1;
             }
         } else if (arg == "--help" || arg == "-h") {
