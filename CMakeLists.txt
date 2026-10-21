@@ -282,6 +282,16 @@ add_test(NAME HTMLReportEndToEndTest
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_html_report.cmake
 )
 
+# Slow tests (a minute or more each on CI) carry the "deep" label: CI runs them nightly,
+# on manual dispatch and on PRs labelled full-ci; every other run uses `ctest -LE deep`.
+# Label any new test that takes a minute or more. The Python tests (PythonAutogradTest,
+# JSONSchemaTest) only exist when nanobind is installed, which only the deep tier does.
+set_tests_properties(
+    MultiDatasetParityTest MEMEParityTest BUSTEDTest BUSTEDMHTest ABSRELTest
+    RELAXTest ContrastFELTest PRIMETest MSSTest JointAlignTest
+    PROPERTIES LABELS deep
+)
+
 
 # Unified HyPhy 3 CLI Driver (hyphy3 fel ..., hyphy3 meme ..., hyphy3 busted ..., hyphy3 absrel ..., hyphy3 relax ..., hyphy3 fubar ..., hyphy3 prime ..., hyphy3 gard ..., hyphy3 slac ..., hyphy3 dfel ..., hyphy3 mss ..., hyphy3 ohmic ..., hyphy3 joint-align ..., hyphy3 expcm ...)
 add_executable(hyphy3

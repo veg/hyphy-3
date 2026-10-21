@@ -202,3 +202,18 @@ Before committing any model changes, you MUST verify:
   $$\frac{\left| g_{\text{analytical}} - g_{\text{finite\_diff}} \right|}{|g_{\text{analytical}}| + 10^{-8}} < 10^{-4}$$
 - [ ] **Thread-Safety Check**: Ensure OpenMP private variables are allocated per thread (e.g., node likelihood vectors `node_L` and `InsideOutsideResult`).
 - [ ] **Simplex Constraint Check**: Ensure mixture weights $\sum p_k = 1$ and $p_k \ge 0$ are preserved across all SQUAREM and Nelder-Mead updates.
+
+---
+
+## 6. Shared Infrastructure: CI, Tests & Commits
+
+Other people maintain parts of this repository (CI, test harness, report viewers). Changes to them land on `main` between your sessions.
+
+1. **Start from the current `main`, never from an older copy.** Before editing, `git fetch origin && git rebase origin/main` (or start a fresh branch from `origin/main`). Never copy files into the repo from another checkout, worktree or backup: that silently reverts everyone else's changes to those files.
+2. **Check the diff before every commit.** Run `git diff --stat origin/main` and make sure every file listed is one the task meant to change. If a file you did not intend to touch appears (especially `.github/`, `CMakeLists.txt`, `tests/`), restore it with `git checkout origin/main -- <file>` before committing.
+3. **Do not modify `.github/workflows/` or test labels unless the task is about CI.** CI has two tiers, and both are deliberate:
+   - **fast**: every push to `main` and every PR. Cached build, `ctest -LE deep`, no Python bindings. A few minutes.
+   - **deep**: the full suite, including tests labelled `deep`. Runs nightly, on manual dispatch, and on PRs labelled `full-ci`.
+4. **Label slow tests.** Any test that takes a minute or more goes in the `set_tests_properties(... PROPERTIES LABELS deep)` list in `CMakeLists.txt`. Before pushing, run the fast tier locally: `ctest --test-dir build -LE deep --output-on-failure`.
+5. **Test data lives in this repo.** Load test inputs from `HYPHY3_SOURCE_DIR "/tests/data/..."` (or `benchmarks/data/`). Never reference a sibling checkout such as `../hyphy/`: CI does not have one. Copy the file into `tests/data/` instead.
+6. **`assert()` is compiled out in Release builds** (CI builds Release). Checks a test relies on must throw or return a nonzero exit code, not only `assert()`.
