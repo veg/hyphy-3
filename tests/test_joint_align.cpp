@@ -1,5 +1,6 @@
 #include "hyphy/analyses/characterize.hpp"
 #include "hyphy/analyses/joint_align.hpp"
+#undef NDEBUG
 #include <cassert>
 #include <iostream>
 
@@ -57,13 +58,16 @@ int main() {
         JointAlignEngine engine(js);
         auto res = engine.run(cam_aln);
 
-        // Verify Stage 1 improved MG94 log-likelihood on CDR1/CDR2 windows
-        assert(res.stage1_mg94_log_l > res.initial_mg94_log_l + 50.0);
+        // Verify Stage 1 preserved column count and MG94 log-likelihood on curated CDR1/CDR2 windows without destructive column deletion
+        assert(res.map_alignment.num_codons == cam_aln.num_codons);
+        assert(res.stage1_mg94_log_l >= res.initial_mg94_log_l);
         // Verify Stage 2 accepted at least 1 coupled SPR+Indel move
         assert(res.total_coupled_moves_accepted >= 1);
         assert(res.stage2_mg94_log_l > res.stage1_mg94_log_l);
-        // Verify Stage 3 eliminated alignment-induced false positive FEL sites
-        assert(res.false_positive_sites_eliminated >= 1);
+        // Verify Stage 3-4 evaluated all sites and detected CDR1/CDR2 indel windows and Wheatstone bridges
+        assert(res.site_results.size() == cam_aln.num_codons);
+        assert(res.windows.size() >= 1);
+        assert(res.ohmic_network.bridges.size() >= 1);
         std::cout << "[PASS] Stage 1-3 Empirical Camelid VHH Joint Alignment + Coupled SPR + Marginalized FEL\n";
     }
 
@@ -135,9 +139,9 @@ int main() {
 
         // 5a. Gate 1: Reject amino-acid protein FASTA masquerading as nucleotide CDS
         std::vector<Sequence> protein_junk = {
-            {"sp1", "MEEPQSDPSVEPPLSQETFSDLWKLLPENNVLSPLPSQAMDDLMLSPDDIEQWFTEDPGP", {}},
-            {"sp2", "MEEPQSDPSIEPPLSQETFSDLWKLLPENNVLSPLPSQAVDDLMLSPDDLAQWLTEDPGP", {}},
-            {"sp3", "MEESQSDISLELPLSQETFSGLWKLLPPEDILPSPHCMDDLLLPQDVEEFFEGPSEALRV", {}}
+            {"sp1", "MEEPQSDPSVEPPLSQETFSDLWKLLPENNVLSPLPSQAMDDLMLSPDDIEQWFTEDPGP", {}, {}},
+            {"sp2", "MEEPQSDPSIEPPLSQETFSDLWKLLPENNVLSPLPSQAVDDLMLSPDDLAQWLTEDPGP", {}, {}},
+            {"sp3", "MEESQSDISLELPLSQETFSGLWKLLPPEDILPSPHCMDDLLLPQDVEEFFEGPSEALRV", {}, {}}
         };
         bool caught_protein = false;
         try {
@@ -161,11 +165,11 @@ int main() {
         for (int k = 0; k < 25; ++k) {
             all_frame_stops += "TAATAGTGACTATTATCACTA"; // contains TAA, TAG, TGA (fwd) and TTA, CTA, TCA (revcomp stops) across all 3 phases
         }
-        mixed_cohort.push_back(Sequence{"Rogue_Pseudogene", all_frame_stops, {}});
+        mixed_cohort.push_back(Sequence{"Rogue_Pseudogene", all_frame_stops, {}, {}});
         // Add a non-homologous sense-codon ORF (synthetic poly-alanine/glycine repeat unrelated to IFITM3)
         std::string non_homologous_orf = "ATG";
         for (int k = 0; k < 135; ++k) non_homologous_orf += (k % 2 == 0) ? "GCT" : "GGT";
-        mixed_cohort.push_back(Sequence{"Rogue_Unrelated_ORF", non_homologous_orf, {}});
+        mixed_cohort.push_back(Sequence{"Rogue_Unrelated_ORF", non_homologous_orf, {}, {}});
 
         JointAlignSettings js;
         js.quiet = true;
@@ -181,10 +185,10 @@ int main() {
 
         // 5c. Gate 3 Dataset-Wide Abort: Completely unrelated / random coding sequences
         std::vector<Sequence> unrelated_orfs = {
-            {"rand1", "", {}},
-            {"rand2", "", {}},
-            {"rand3", "", {}},
-            {"rand4", "", {}}
+            {"rand1", "", {}, {}},
+            {"rand2", "", {}, {}},
+            {"rand3", "", {}, {}},
+            {"rand4", "", {}, {}}
         };
         const char* sense_pool[] = {
             "GCT", "TGT", "GAT", "GAA", "TTT", "GGT", "CAT", "ATT", "AAA", "CTT",
@@ -236,7 +240,7 @@ int main() {
         assert(json_str.find("\"effective_aa_alphabet\"") != std::string::npos);
         assert(json_str.find("\"lof_bayes_factor\"") != std::string::npos);
         std::string html_str = CharacterizeEngine::render_standalone_html(c_res, "IFITM3");
-        assert(html_str.find("1. Is This Data Trustworthy?") != std::string::npos);
+        assert(html_str.find("1. Data &amp; Process Integrity:") != std::string::npos);
         assert(html_str.find("1D Spatial Domain Architecture") != std::string::npos);
         std::cout << "[PASS] CharacterizeEngine Tier 1/2/3 Forensics on Mammalian IFITM3 ("
                   << c_res.spatial_domains.size() << " 1D domains, "

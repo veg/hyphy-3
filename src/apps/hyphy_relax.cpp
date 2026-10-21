@@ -268,9 +268,11 @@ int run_relax(int argc, char* argv[]) {
         });
     }
 
-    std::cout << "\n" << Console::bold("  Inferred Rate Distributions (Alternative Model):") << "\n\n";
-    rate_table.print();
-    std::cout << "\n";
+    if (res.is_failed) {
+        std::cerr << Console::danger("Error: RELAX analysis failed to converge or likelihood underflowed: ")
+                  << res.error_message << "\n";
+        return 1;
+    }
 
     std::ostringstream k_ss, lrt_ss, p_ss, gtr_ss, mg_ss, alt_ss, null_ss, time_ss;
     k_ss << std::fixed << std::setprecision(4) << res.k;
@@ -283,9 +285,7 @@ int run_relax(int argc, char* argv[]) {
     time_ss << std::fixed << std::setprecision(2) << res.runtime_seconds << " s";
 
     std::string conclusion;
-    if (res.is_failed) {
-        conclusion = "FAILED: " + res.error_message;
-    } else if (res.is_significant) {
+    if (res.is_significant) {
         if (res.is_relaxed) {
             conclusion = "SIGNIFICANT RELAXATION of selection on Test branches (K = " + k_ss.str() + " < 1, p = " + p_ss.str() + ")";
         } else {
@@ -317,8 +317,7 @@ int run_relax(int argc, char* argv[]) {
         {"refine_branch_lengths", settings.refine_branch_lengths ? "true" : "false"}
     });
 
-    // Save JSON (and optional HTML)
-    bool write_failed = false;
+    // Save JSON (and optional HTML) before printing final tables/summary
     try {
         res.save_json(cli.output_file, tree, aln, cli.json_format, prov);
         std::string fmt_desc = (cli.json_format == JSONFormat::Legacy) ? "Legacy Datamonkey JSON" : "Modern HyPhy v3.0 JSON";
@@ -331,17 +330,12 @@ int run_relax(int argc, char* argv[]) {
         }
     } catch (const std::exception& e) {
         std::cerr << Console::danger("Error: Failed to write output: ") << e.what() << "\n";
-        write_failed = true;
-    }
-
-    if (res.is_failed) {
-        std::cerr << Console::danger("Error: RELAX analysis failed to converge or likelihood underflowed.\n");
         return 1;
     }
 
-    if (write_failed) {
-        return 1;
-    }
+    std::cout << "\n" << Console::bold("  Inferred Rate Distributions (Alternative Model):") << "\n\n";
+    rate_table.print();
+    std::cout << "\n";
 
     Panel::print_summary_card("RELAX Selection Relaxation Analysis Summary", sum_items, conclusion, res.is_significant);
     return 0;

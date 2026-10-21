@@ -1400,9 +1400,6 @@ public:
         const Matrix61Codon& Q = Q_matrix.Q;
 
         std::vector<Scalar> site_lls(num_sites, 0.0);
-        const double SCALER_THRESH = 1e-150;
-        const double SCALER_UP = 1e150;
-        const double LOG_SCALER = std::log(SCALER_UP);
 
         #pragma omp parallel for schedule(dynamic)
         for (size_t site = 0; site < num_sites; ++site) {
@@ -1444,16 +1441,8 @@ public:
                     node_log_scale[node_id] = 0.0;
                 } else {
                     double child_scale_sum = 0.0;
-                    tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
-
-                    double max_val = node_L[node_id].maxCoeff();
-                    int boost_count = 0;
-                    while (max_val < SCALER_THRESH && max_val > 0.0) {
-                        node_L[node_id] *= SCALER_UP;
-                        max_val *= SCALER_UP;
-                        boost_count++;
-                    }
-                    node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
+                    tree.eval_internal_node_with_model(node_id, P_branches, site_eigen, node_L, node_log_scale, node_L[node_id], child_scale_sum, branch_scale);
+                    node_log_scale[node_id] = child_scale_sum;
                 }
             }
 
@@ -1497,10 +1486,6 @@ public:
         Q_matrix.build(gcode, params);
         const Matrix61Codon& Q = Q_matrix.Q;
 
-        const double SCALER_THRESH = 1e-150;
-        const double SCALER_UP = 1e150;
-        const double LOG_SCALER = std::log(SCALER_UP);
-
         size_t pattern_idx = aln.site_to_pattern[site];
         const auto& pattern = aln.patterns[pattern_idx];
 
@@ -1539,16 +1524,8 @@ public:
                 node_log_scale[node_id] = 0.0;
             } else {
                 double child_scale_sum = 0.0;
-                tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
-
-                double max_val = node_L[node_id].maxCoeff();
-                int boost_count = 0;
-                while (max_val < SCALER_THRESH && max_val > 0.0) {
-                    node_L[node_id] *= SCALER_UP;
-                    max_val *= SCALER_UP;
-                    boost_count++;
-                }
-                node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
+                tree.eval_internal_node_with_model(node_id, P_branches, site_eigen, node_L, node_log_scale, node_L[node_id], child_scale_sum, branch_scale);
+                node_log_scale[node_id] = child_scale_sum;
             }
         }
 

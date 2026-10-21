@@ -275,7 +275,7 @@ public:
                 node_log_scale[node_id] = 0.0;
             } else {
                 double child_scale_sum = 0.0;
-                tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
+                tree.eval_internal_node_with_model(node_id, P_branches, mg94_model, node_L, node_log_scale, node_L[node_id], child_scale_sum);
                 node_log_scale[node_id] = child_scale_sum;
             }
         }

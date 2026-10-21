@@ -801,7 +801,13 @@ public:
             for (size_t c = w_start; c < w_end; ++c) {
                 SitePattern pat;
                 pat.states.resize(N);
-                for (size_t t = 0; t < N; ++t) pat.states[t] = a.sequences[t].codons[c];
+                for (size_t t = 0; t < N; ++t) {
+                    pat.states[t] = a.sequences[t].codons[c];
+                    if (pat.states[t] < 0 && c < a.sequences[t].codon_masks.size() && a.sequences[t].codon_masks[c] != 0) {
+                        if (pat.ambiguous_masks.empty()) pat.ambiguous_masks.assign(N, 0);
+                        pat.ambiguous_masks[t] = a.sequences[t].codon_masks[c];
+                    }
+                }
                 pat.weight = 1;
                 total += FELAnalyzer::compute_pattern_log_likelihood(
                     tree, pat, leaf_to_taxon, mg94, P_branches, node_L, node_scale
@@ -1043,7 +1049,7 @@ public:
                     // Evaluate local window [w_lo, w_hi) before vs after merging c2 into c1
                     size_t w_lo = (c1 >= 2) ? (c1 - 2) : 0;
                     size_t w_hi = std::min(aln.num_codons, c2 + 3);
-                    Scalar score_before = eval_window_lnl(aln, w_lo, w_hi);
+                    Scalar score_before = eval_joint_tree_indel_lnl(aln, w_lo, w_hi);
 
                     Alignment test_aln = aln;
                     for (size_t t = 0; t < N; ++t) {
@@ -1055,7 +1061,7 @@ public:
                         test_aln.sequences[t].raw_seq.erase(3 * c2, 3);
                     }
                     test_aln.num_codons--;
-                    Scalar score_after = eval_window_lnl(test_aln, w_lo, w_hi - 1);
+                    Scalar score_after = eval_joint_tree_indel_lnl(test_aln, w_lo, w_hi - 1);
 
                     if (score_after > score_before) {
                         for (size_t t = 0; t < N; ++t) {
@@ -1106,7 +1112,7 @@ public:
                     size_t new_span = span - min_gaps_in_span;
                     size_t w_lo = (c1 >= 2) ? (c1 - 2) : 0;
                     size_t w_hi = std::min(aln.num_codons, c2 + 3);
-                    Scalar score_before = eval_window_lnl(aln, w_lo, w_hi);
+                    Scalar score_before = eval_joint_tree_indel_lnl(aln, w_lo, w_hi);
 
                     Alignment test_aln = aln;
                     for (size_t t = 0; t < N; ++t) {
@@ -1160,7 +1166,7 @@ public:
                         }
                     }
 
-                    Scalar score_after = eval_window_lnl(test_aln, w_lo, new_w_hi);
+                    Scalar score_after = eval_joint_tree_indel_lnl(test_aln, w_lo, new_w_hi);
 
                     if (score_after > score_before) {
                         aln = std::move(test_aln);
@@ -3441,7 +3447,7 @@ public:
             if (report.entries[orig].status != "Quarantined") {
                 if (report.entries[orig].status == "Rescued") final_rescued++;
                 admitted_m_indices.push_back(a);
-                admitted_seqs.push_back(Sequence{candidates[orig].name, candidates[orig].clean_cds, {}});
+                admitted_seqs.push_back(Sequence{candidates[orig].name, candidates[orig].clean_cds, {}, {}});
             }
         }
         report.rescued_frame_or_strand = final_rescued;
@@ -3534,7 +3540,7 @@ public:
                     }
                 }
             }
-            seqs.push_back(Sequence{current_name, std::move(current_seq), {}});
+            seqs.push_back(Sequence{current_name, std::move(current_seq), {}, {}});
         };
 
         while (std::getline(file, line)) {

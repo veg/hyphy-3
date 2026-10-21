@@ -1784,10 +1784,11 @@ public:
             size_t h_id = g_idx + 1;
             Scalar w1_h = std::clamp(0.02 + 0.96 * halton(h_id, 2), 1e-3, 0.99);
             Scalar w0_h = std::clamp(w1_h * halton(h_id, 3), 0.0, w1_h);
-            Scalar w2_h = std::clamp(std::exp(std::log(1.02) + std::log(25.0) * halton(h_id, 5)), 1.01, kMaxOmega);
+            Scalar w2_h = std::clamp(std::exp(std::log(1.01) + std::log(kMaxOmega / 1.01) * halton(h_id, 5)), 1.01, kMaxOmega);
             Scalar p0_h = std::clamp(0.05 + 0.80 * halton(h_id, 7), 0.01, 0.90);
             Scalar p1_h = std::clamp((0.96 - p0_h) * (0.10 + 0.85 * halton(h_id, 11)), 0.01, 0.97 - p0_h);
-            null_starts.push_back(with_scale(1.0, encode_theta(make_dist(w0_h, w1_h, w2_h, p0_h, p1_h), false)));
+            Scalar s_h = std::exp(std::log(0.25) + std::log(16.0) * halton(h_id, 17));
+            null_starts.push_back(with_scale(s_h, encode_theta(make_dist(w0_h, w1_h, w2_h, p0_h, p1_h), false)));
         }
         auto scaled_null = optimize_scaled(null_starts, false, mg_bl);
         Scalar null_s = scaled_null.first[0];
@@ -1810,7 +1811,7 @@ public:
             );
         }
 
-        // F-014: Expanded data-scaled starting grid covering K in {0.05, 0.25, 0.5, 0.8, 1.0, 1.25, 2.0, 5.0, 15.0}
+        // F-014: Expanded data-scaled starting grid covering K in {0.0, 0.05, 0.25, 0.5, 0.8, 1.0, 1.25, 2.0, 5.0, 15.0, 50.0}
         RELAXDist d_null_mle = decode_theta(J_null.theta, false);
         Scalar w0_n = std::clamp(d_null_mle.omegas[0], 0.0, 0.9);
         Scalar w1_n = std::clamp(d_null_mle.omegas[1], 1e-3, 0.99);
@@ -1820,7 +1821,7 @@ public:
 
         std::vector<std::vector<Scalar>> alt_starts = {
             with_scale(1.0, encode_theta(make_dist(0.0, w_mg, 5.0, 0.35, 0.60, k_init), true)),
-            with_scale(1.0, encode_theta(make_dist(0.0, 0.16, 30.0, 0.35, 0.65, 1e-4), true)),
+            with_scale(1.0, encode_theta(make_dist(0.0, 0.16, 30.0, 0.35, 0.65, 0.0), true)),
             with_scale(1.0, encode_theta(make_dist(0.05, 0.3, 2.0, 0.40, 0.50, 0.05), true)),
             with_scale(1.0, encode_theta(make_dist(0.1 * w_mg, w_mg, 2.5, 0.45, 0.45, 0.25), true)),
             with_scale(1.0, encode_theta(make_dist(0.05, 0.3, 2.0, 0.40, 0.50, 0.5), true)),
@@ -1829,17 +1830,20 @@ public:
             with_scale(1.0, encode_theta(make_dist(w0_n, w1_n, w2_n, p0_n, p1_n, 1.25), true)),
             with_scale(1.0, encode_theta(make_dist(0.0, 0.5, 5.0, 0.3, 0.4, 2.0), true)),
             with_scale(1.0, encode_theta(make_dist(0.1 * w_mg, w_mg, 3.0, 0.40, 0.45, 5.0), true)),
-            with_scale(1.0, encode_theta(make_dist(0.05, 0.4, 2.5, 0.50, 0.40, 15.0), true))
+            with_scale(1.0, encode_theta(make_dist(0.05, 0.4, 2.5, 0.50, 0.40, 15.0), true)),
+            with_scale(1.0, encode_theta(make_dist(w0_n, w1_n, w2_n, p0_n, p1_n, kMaxK), true))
         };
         for (size_t g_idx = alt_starts.size(); static_cast<int>(g_idx) < settings.grid_size; ++g_idx) {
             size_t h_id = g_idx + 1;
             Scalar w1_h = std::clamp(0.02 + 0.96 * halton(h_id, 2), 1e-3, 0.99);
             Scalar w0_h = std::clamp(w1_h * halton(h_id, 3), 0.0, w1_h);
-            Scalar w2_h = std::clamp(std::exp(std::log(1.02) + std::log(25.0) * halton(h_id, 5)), 1.01, kMaxOmega);
+            Scalar w2_h = std::clamp(std::exp(std::log(1.01) + std::log(kMaxOmega / 1.01) * halton(h_id, 5)), 1.01, kMaxOmega);
             Scalar p0_h = std::clamp(0.05 + 0.80 * halton(h_id, 7), 0.01, 0.90);
             Scalar p1_h = std::clamp((0.96 - p0_h) * (0.10 + 0.85 * halton(h_id, 11)), 0.01, 0.97 - p0_h);
-            Scalar k_h = std::clamp(std::exp(std::log(0.02) + std::log(750.0) * halton(h_id, 13)), kMinK, kMaxK);
-            alt_starts.push_back(with_scale(1.0, encode_theta(make_dist(w0_h, w1_h, w2_h, p0_h, p1_h, k_h), true)));
+            Scalar u_k = halton(h_id, 13);
+            Scalar k_h = (u_k < 0.05) ? kMinK : std::clamp(std::exp(std::log(1e-3) + std::log(kMaxK / 1e-3) * ((u_k - 0.05) / 0.95)), kMinK, kMaxK);
+            Scalar s_h = std::exp(std::log(0.25) + std::log(16.0) * halton(h_id, 17));
+            alt_starts.push_back(with_scale(s_h, encode_theta(make_dist(w0_h, w1_h, w2_h, p0_h, p1_h, k_h), true)));
         }
         auto scaled_alt = optimize_scaled(alt_starts, true, mg_bl);
         Scalar alt_s = scaled_alt.first[0];

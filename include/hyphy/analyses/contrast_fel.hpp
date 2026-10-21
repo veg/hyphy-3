@@ -503,39 +503,18 @@ public:
         std::vector<double>& node_log_scale
     ) {
         int S = mg94_model.pi.size();
-        const double SCALER_THRESH = 1e-150;
-        const double SCALER_UP = 1e150;
-        const double LOG_SCALER = std::log(SCALER_UP);
 
         for (int32_t node_id : tree.post_order) {
             const auto& node = tree.nodes[node_id];
 
             if (node.is_leaf) {
                 size_t t_idx = leaf_to_taxon[node_id];
-                if (t_idx != static_cast<size_t>(-1)) {
-                    int8_t state = pattern.states[t_idx];
-                    if (state >= 0 && state < S) {
-                        node_L[node_id].setZero();
-                        node_L[node_id](state) = 1.0;
-                    } else {
-                        node_L[node_id].setOnes();
-                    }
-                } else {
-                    node_L[node_id].setOnes();
-                }
+                LikelihoodEngine::init_leaf_likelihood(pattern, t_idx, S, node_L[node_id]);
                 node_log_scale[node_id] = 0.0;
             } else {
                 double child_scale_sum = 0.0;
-                tree.eval_internal_node(node_id, P_branches, node_L, node_log_scale, node_L[node_id], child_scale_sum);
-
-                double max_val = node_L[node_id].maxCoeff();
-                int boost_count = 0;
-                while (max_val < SCALER_THRESH && max_val > 0.0) {
-                    node_L[node_id] *= SCALER_UP;
-                    max_val *= SCALER_UP;
-                    boost_count++;
-                }
-                node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
+                tree.eval_internal_node_with_model(node_id, P_branches, mg94_model, node_L, node_log_scale, node_L[node_id], child_scale_sum);
+                node_log_scale[node_id] = child_scale_sum;
             }
         }
 

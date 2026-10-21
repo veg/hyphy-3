@@ -1,4 +1,5 @@
 #include "hyphy/analyses/directional_fel.hpp"
+#undef NDEBUG
 #include <cassert>
 #include <iostream>
 #include <fstream>

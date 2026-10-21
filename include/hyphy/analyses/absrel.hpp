@@ -1501,7 +1501,7 @@ public:
         Matrix D_null_mat(S, num_patterns);
 
         const int max_p5_restarts = std::max<int>(10, static_cast<int>(to_test.size()) + 2);
-        for (int p5_restart = 0; p5_restart < max_p5_restarts; ++p5_restart) {
+        for (int p5_restart = 0; p5_restart <= max_p5_restarts; ++p5_restart) {
             bool full_model_improved = false;
             size_t t_idx = 0;
             for (const std::string& bname : to_test) {
@@ -1649,7 +1649,7 @@ public:
                 // Full Model space, if the unconstrained polish does not beat null_ll (or on the final round),
                 // adopt the null configuration directly; if recomputed new_full_ll still fails to beat full_ll,
                 // restore the saved full model state and transition matrices.
-                if (std::isfinite(null_ll) && null_ll > -1e19 && null_ll > full_ll + 1e-4) {
+                if (p5_restart < max_p5_restarts && std::isfinite(null_ll) && null_ll > -1e19 && null_ll > full_ll + 1e-4) {
                     auto saved_alpha = branch_alpha;
                     auto saved_omegas = branch_omegas;
                     auto saved_weights = branch_weights;
@@ -1661,15 +1661,13 @@ public:
                     gtr_params = null_gtr;
                     compute_syn_scale();
 
-                    if (p5_restart + 1 < max_p5_restarts) {
-                        Scalar prev_ws_ll = null_ll;
-                        for (int ws_pass = 0; ws_pass < 15; ++ws_pass) {
-                            run_joint_branch_length_lbfgs();
-                            run_gtr_optimization();
-                            Scalar cur_ws_ll = run_mixture_refinement();
-                            if (std::abs(cur_ws_ll - prev_ws_ll) < 1e-3) break;
-                            prev_ws_ll = cur_ws_ll;
-                        }
+                    Scalar prev_ws_ll = null_ll;
+                    for (int ws_pass = 0; ws_pass < 15; ++ws_pass) {
+                        run_joint_branch_length_lbfgs();
+                        run_gtr_optimization();
+                        Scalar cur_ws_ll = run_mixture_refinement();
+                        if (std::abs(cur_ws_ll - prev_ws_ll) < 1e-3) break;
+                        prev_ws_ll = cur_ws_ll;
                     }
                     P_branches = compute_all_branch_transition_matrices();
                     Scalar new_full_ll = compute_tree_log_likelihood(P_branches);
@@ -1688,10 +1686,8 @@ public:
                         result.full_adaptive_fit = {full_ll, current_params, full_aicc};
                         update_full_branch_summaries();
                         recompute_full_io_cache();
-                        if (p5_restart + 1 < max_p5_restarts) {
-                            full_model_improved = true;
-                            break; // Restart Phase 5 so all branches are tested against the improved full model
-                        }
+                        full_model_improved = true;
+                        break; // Restart Phase 5 so all branches are tested against the improved full model
                     } else {
                         branch_alpha = std::move(saved_alpha);
                         branch_omegas = std::move(saved_omegas);

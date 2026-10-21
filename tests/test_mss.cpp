@@ -7,6 +7,7 @@
 #include <iostream>
 #include <fstream>
 #include <cmath>
+#undef NDEBUG
 #include <cassert>
 
 using namespace hyphy::core;
