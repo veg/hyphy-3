@@ -596,6 +596,109 @@ public:
             size_t num_children = node.children.size();
             if (num_children == 0) continue;
 
+            int32_t b_idx = tree.bridge_index(uid);
+            if (b_idx >= 0) {
+                const auto& wb = tree.bridges[static_cast<size_t>(b_idx)];
+                int32_t id_A = wb.children[0];
+                int32_t id_B = wb.children[1];
+                int32_t id_C = wb.children[2];
+
+                auto M_A = ws.P_D[id_A].leftCols(B);
+                auto M_B = ws.P_D[id_B].leftCols(B);
+                auto M_C = ws.P_D[id_C].leftCols(B);
+                auto U_uid = ws.U[uid].leftCols(B);
+
+                auto get_P_br = [&](int r) -> const Matrix& {
+                    if (P_bridges != nullptr) {
+                        return (*P_bridges)[static_cast<size_t>(b_idx)][r];
+                    }
+                    int32_t bid = wb.bridge_node_id;
+                    if (bid >= 0 && bid != uid && static_cast<size_t>(bid) < P_branches.size() &&
+                        P_branches[bid].rows() == S) {
+                        return P_branches[bid];
+                    }
+                    if (uid >= 0 && static_cast<size_t>(uid) < P_branches.size() &&
+                        P_branches[uid].rows() == S) {
+                        return P_branches[uid];
+                    }
+                    return P_branches[id_A];
+                };
+
+                auto V_A = ws.V[id_A].leftCols(B);
+                auto V_B = ws.V[id_B].leftCols(B);
+                auto V_C = ws.V[id_C].leftCols(B);
+                V_A.setZero();
+                V_B.setZero();
+                V_C.setZero();
+
+                Matrix Y_tmp(S, B), PB_Y(S, B), QT_Y(S, B);
+                if (wb.weights[0] > 0.0) {
+                    const Matrix& P0 = get_P_br(0);
+                    Y_tmp.array() = M_A.array() * M_B.array();
+                    PB_Y.noalias() = P0 * Y_tmp;
+                    Y_tmp.array() = U_uid.array() * M_C.array();
+                    QT_Y.noalias() = P0.transpose() * Y_tmp;
+                    V_A.array() += wb.weights[0] * (QT_Y.array() * M_B.array());
+                    V_B.array() += wb.weights[0] * (QT_Y.array() * M_A.array());
+                    V_C.array() += wb.weights[0] * (U_uid.array() * PB_Y.array());
+                }
+                if (wb.weights[1] > 0.0) {
+                    const Matrix& P1 = get_P_br(1);
+                    Y_tmp.array() = M_A.array() * M_C.array();
+                    PB_Y.noalias() = P1 * Y_tmp;
+                    Y_tmp.array() = U_uid.array() * M_B.array();
+                    QT_Y.noalias() = P1.transpose() * Y_tmp;
+                    V_A.array() += wb.weights[1] * (QT_Y.array() * M_C.array());
+                    V_B.array() += wb.weights[1] * (U_uid.array() * PB_Y.array());
+                    V_C.array() += wb.weights[1] * (QT_Y.array() * M_A.array());
+                }
+                if (wb.weights[2] > 0.0) {
+                    const Matrix& P2 = get_P_br(2);
+                    Y_tmp.array() = M_B.array() * M_C.array();
+                    PB_Y.noalias() = P2 * Y_tmp;
+                    Y_tmp.array() = U_uid.array() * M_A.array();
+                    QT_Y.noalias() = P2.transpose() * Y_tmp;
+                    V_A.array() += wb.weights[2] * (U_uid.array() * PB_Y.array());
+                    V_B.array() += wb.weights[2] * (QT_Y.array() * M_C.array());
+                    V_C.array() += wb.weights[2] * (QT_Y.array() * M_B.array());
+                }
+
+                for (int32_t vid : wb.children) {
+                    auto V_vid = ws.V[vid].leftCols(B);
+                    for (Eigen::Index b = 0; b < B; ++b) {
+                        int net_boost = ws.boost_counts(uid, b);
+                        while (net_boost > 0) {
+                            V_vid.col(b) *= SCALER_UP;
+                            net_boost--;
+                        }
+                        while (net_boost < 0) {
+                            V_vid.col(b) *= SCALER_DOWN;
+                            net_boost++;
+                        }
+                    }
+                    ws.U[vid].leftCols(B).noalias() = P_branches[vid].transpose() * V_vid;
+                }
+                if (wb.bridge_node_id >= 0 && wb.bridge_node_id != uid &&
+                    static_cast<size_t>(wb.bridge_node_id) < num_nodes) {
+                    int32_t bid = wb.bridge_node_id;
+                    ws.D[bid].leftCols(B).array() = M_A.array() * M_B.array();
+                    auto V_bid = ws.V[bid].leftCols(B);
+                    V_bid.array() = U_uid.array() * M_C.array();
+                    for (Eigen::Index b = 0; b < B; ++b) {
+                        int net_boost = ws.boost_counts(uid, b);
+                        while (net_boost > 0) {
+                            V_bid.col(b) *= SCALER_UP;
+                            net_boost--;
+                        }
+                        while (net_boost < 0) {
+                            V_bid.col(b) *= SCALER_DOWN;
+                            net_boost++;
+                        }
+                    }
+                }
+                continue;
+            }
+
             if (ws.pref.size() < num_children || (num_children > 0 && static_cast<size_t>(ws.pref[0].cols()) < static_cast<size_t>(B))) {
                 ws.pref.assign(num_children, Matrix::Ones(S, ws.D[0].cols()));
                 ws.suff.assign(num_children, Matrix::Ones(S, ws.D[0].cols()));
@@ -798,6 +901,94 @@ public:
 
             size_t num_children = node.children.size();
             if (num_children == 0) continue;
+
+            int32_t b_idx = tree.bridge_index(uid);
+            if (b_idx >= 0) {
+                const auto& wb = tree.bridges[static_cast<size_t>(b_idx)];
+                int32_t id_A = wb.children[0];
+                int32_t id_B = wb.children[1];
+                int32_t id_C = wb.children[2];
+
+                const Vector& M_A = ws.P_D[id_A];
+                const Vector& M_B = ws.P_D[id_B];
+                const Vector& M_C = ws.P_D[id_C];
+                const Vector& U_uid = ws.U[uid];
+
+                auto get_P_br = [&](int r) -> const Matrix& {
+                    if (P_bridges != nullptr) {
+                        return (*P_bridges)[static_cast<size_t>(b_idx)][r];
+                    }
+                    int32_t bid = wb.bridge_node_id;
+                    if (bid >= 0 && bid != uid && static_cast<size_t>(bid) < P_branches.size() &&
+                        P_branches[bid].rows() == S) {
+                        return P_branches[bid];
+                    }
+                    if (uid >= 0 && static_cast<size_t>(uid) < P_branches.size() &&
+                        P_branches[uid].rows() == S) {
+                        return P_branches[uid];
+                    }
+                    return P_branches[id_A];
+                };
+
+                ws.V[id_A].setZero();
+                ws.V[id_B].setZero();
+                ws.V[id_C].setZero();
+
+                if (wb.weights[0] > 0.0) {
+                    const Matrix& P0 = get_P_br(0);
+                    Vector PB0 = P0 * M_A.cwiseProduct(M_B);
+                    Vector QT0 = P0.transpose() * U_uid.cwiseProduct(M_C);
+                    ws.V[id_A].noalias() += wb.weights[0] * QT0.cwiseProduct(M_B);
+                    ws.V[id_B].noalias() += wb.weights[0] * QT0.cwiseProduct(M_A);
+                    ws.V[id_C].noalias() += wb.weights[0] * U_uid.cwiseProduct(PB0);
+                }
+                if (wb.weights[1] > 0.0) {
+                    const Matrix& P1 = get_P_br(1);
+                    Vector PB1 = P1 * M_A.cwiseProduct(M_C);
+                    Vector QT1 = P1.transpose() * U_uid.cwiseProduct(M_B);
+                    ws.V[id_A].noalias() += wb.weights[1] * QT1.cwiseProduct(M_C);
+                    ws.V[id_B].noalias() += wb.weights[1] * U_uid.cwiseProduct(PB1);
+                    ws.V[id_C].noalias() += wb.weights[1] * QT1.cwiseProduct(M_A);
+                }
+                if (wb.weights[2] > 0.0) {
+                    const Matrix& P2 = get_P_br(2);
+                    Vector PB2 = P2 * M_B.cwiseProduct(M_C);
+                    Vector QT2 = P2.transpose() * U_uid.cwiseProduct(M_A);
+                    ws.V[id_A].noalias() += wb.weights[2] * U_uid.cwiseProduct(PB2);
+                    ws.V[id_B].noalias() += wb.weights[2] * QT2.cwiseProduct(M_C);
+                    ws.V[id_C].noalias() += wb.weights[2] * QT2.cwiseProduct(M_B);
+                }
+
+                int total_boost = ws.boost_counts[uid];
+                for (int32_t vid : wb.children) {
+                    int net_boost = total_boost;
+                    while (net_boost > 0) {
+                        ws.V[vid] *= SCALER_UP;
+                        net_boost--;
+                    }
+                    while (net_boost < 0) {
+                        ws.V[vid] *= SCALER_DOWN;
+                        net_boost++;
+                    }
+                    ws.U[vid].noalias() = P_branches[vid].transpose() * ws.V[vid];
+                }
+                if (wb.bridge_node_id >= 0 && wb.bridge_node_id != uid &&
+                    static_cast<size_t>(wb.bridge_node_id) < num_nodes) {
+                    int32_t bid = wb.bridge_node_id;
+                    ws.D[bid] = M_A.cwiseProduct(M_B);
+                    ws.V[bid] = U_uid.cwiseProduct(M_C);
+                    int net_boost = total_boost;
+                    while (net_boost > 0) {
+                        ws.V[bid] *= SCALER_UP;
+                        net_boost--;
+                    }
+                    while (net_boost < 0) {
+                        ws.V[bid] *= SCALER_DOWN;
+                        net_boost++;
+                    }
+                }
+                continue;
+            }
 
             if (ws.pref.size() < num_children) {
                 ws.pref.resize(num_children, Vector::Ones(S));
@@ -1761,6 +1952,7 @@ public:
             InsideOutsideWorkspace ws;
             ws.init(num_nodes, 61);
             std::vector<Matrix> P_branches(num_nodes, Matrix::Zero(61, 61));
+            std::vector<std::array<Matrix, 3>> P_bridges(tree.bridges.size());
 
             #pragma omp for schedule(dynamic)
             for (size_t site = 0; site < num_sites; ++site) {
@@ -1789,9 +1981,18 @@ public:
                         P_branches[node.id] = site_eigen.transition_matrix(tb);
                     }
                 }
+                for (size_t b = 0; b < tree.bridges.size(); ++b) {
+                    for (int r = 0; r < 3; ++r) {
+                        Scalar tb = tree.bridges[b].branch_lengths[r] * branch_scale;
+                        P_bridges[b][r] = site_eigen.transition_matrix(tb);
+                    }
+                }
 
                 Vector pi_dyn = pi_site;
-                compute_inside_outside_in_place(tree, pattern, leaf_to_taxon, P_branches, pi_dyn, 61, ws);
+                compute_inside_outside_in_place(
+                    tree, pattern, leaf_to_taxon, P_branches, pi_dyn, 61, ws,
+                    tree.bridges.empty() ? nullptr : &P_bridges
+                );
 
                 Scalar L_r = ws.likelihood;
                 site_ll[site] = ws.log_likelihood;

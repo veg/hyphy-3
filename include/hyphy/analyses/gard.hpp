@@ -550,7 +550,7 @@ public:
                     const auto& node = tree.nodes[node_id];
                     if (!node.is_leaf) {
                         double child_scale_sum = 0.0;
-                        tree.eval_internal_node(node_id, P_k, node_L, node_log_scale, node_L[node_id], child_scale_sum);
+                        tree.eval_internal_node_with_model(node_id, P_k, gtr_model, node_L, node_log_scale, node_L[node_id], child_scale_sum, effective_rates[k]);
                         node_log_scale[node_id] = child_scale_sum;
                     }
                 }

@@ -582,8 +582,9 @@ public:
                 }
             }
         }
+        bool has_bg = (num_test_branches + 1 < num_nodes);
         MG94Matrix mg_bg_step;
-        if (num_test_branches + 1 < num_nodes && !tree.bridges.empty()) {
+        if (has_bg) {
             MG94Parameters p_bg = active_base;
             p_bg.alpha = 1.0;
             p_bg.beta = (mg94_background_omega >= 0.0) ? mg94_background_omega : mg94_omega;
@@ -594,20 +595,26 @@ public:
 
         std::vector<std::vector<std::array<Matrix, 3>>> P_bridges_mix(M);
         for (size_t m = 0; m < M; ++m) {
+            Scalar alpha_m = syn_rates[m];
             for (const auto& node : tree.nodes) {
                 if (node.id != tree.root_id) {
-                    P_mix[m][node.id] = Matrix::Zero(S, S);
-                    Scalar use_bio = (out_new_eps_sink != nullptr && is_test_branch[node.id]) ? bio_scale : 1.0;
-                    for (size_t k = 0; k < K; ++k) {
-                        P_mix[m][node.id] += (use_bio * weights[k]) * P_comp[m][k][node.id];
-                    }
-                    if (out_new_eps_sink != nullptr && is_test_branch[node.id]) {
-                        P_mix[m][node.id].noalias() += eps_sink * P_sink;
+                    if (is_test_branch[node.id]) {
+                        P_mix[m][node.id] = Matrix::Zero(S, S);
+                        Scalar use_bio = (out_new_eps_sink != nullptr) ? bio_scale : 1.0;
+                        for (size_t k = 0; k < K; ++k) {
+                            P_mix[m][node.id] += (use_bio * weights[k]) * P_comp[m][k][node.id];
+                        }
+                        if (out_new_eps_sink != nullptr) {
+                            P_mix[m][node.id].noalias() += eps_sink * P_sink;
+                        }
+                    } else {
+                        Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[node.id] : branch_tau[node.id]);
+                        P_mix[m][node.id] = mg_bg_step.transition_matrix(alpha_m * bl);
                     }
                 }
             }
             if (!tree.bridges.empty()) {
-                P_bridges_mix[m] = build_one_set_bridge_mix(s, syn_rates[m], mg_vec, mg_bg_step, weights, (out_new_eps_sink != nullptr) ? eps_sink : 0.0, bio_scale, custom_branch_lengths);
+                P_bridges_mix[m] = build_one_set_bridge_mix(s, alpha_m, mg_vec, mg_bg_step, weights, (out_new_eps_sink != nullptr) ? eps_sink : 0.0, bio_scale, custom_branch_lengths);
             }
         }
 
@@ -936,6 +943,7 @@ public:
         std::vector<std::vector<Matrix>> P_mix(M, std::vector<Matrix>(num_nodes));
         std::vector<std::vector<Matrix>> dP_mix(M, std::vector<Matrix>(num_nodes));
         std::vector<std::vector<std::array<Matrix, 3>>> P_bridges_mix(M);
+        std::vector<std::vector<std::array<Matrix, 3>>> dP_bridges_mix(M);
         for (size_t m = 0; m < M; ++m) {
             Scalar alpha_m = syn_rates[m];
             for (const auto& node : tree.nodes) {
@@ -963,8 +971,64 @@ public:
             }
             if (!tree.bridges.empty()) {
                 P_bridges_mix[m] = build_one_set_bridge_mix(1.0, alpha_m, mg, mg_bg, weights, eps_sink, bio_scale, &branch_lengths);
+                dP_bridges_mix[m].resize(tree.bridges.size());
+                for (size_t b_idx = 0; b_idx < tree.bridges.size(); ++b_idx) {
+                    const auto& wb = tree.bridges[b_idx];
+                    int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                    bool is_test = (bid >= 0 && static_cast<size_t>(bid) < is_test_branch.size()) ? is_test_branch[bid] : true;
+                    Scalar tau_denom = (bid >= 0 && static_cast<size_t>(bid) < branch_tau.size()) ? branch_tau[bid] : 0.0;
+                    for (int r = 0; r < 3; ++r) {
+                        if ((wb.weights[r] > 0.0 || r == 0) && tau_denom > 1e-12) {
+                            Scalar base_tau = (b_idx < bridge_tau.size()) ? bridge_tau[b_idx][r] : wb.branch_lengths[r];
+                            Scalar dbl_dt = base_tau / tau_denom;
+                            Scalar bl = bridge_resolution_tau(b_idx, r, 1.0, &branch_lengths);
+                            if (is_test) {
+                                dP_bridges_mix[m][b_idx][r] = Matrix::Zero(S, S);
+                                Scalar use_bio = (eps_sink > 0.0) ? bio_scale : 1.0;
+                                for (size_t k = 0; k < K; ++k) {
+                                    Matrix P_k = mg[k].transition_matrix(alpha_m * bl);
+                                    dP_bridges_mix[m][b_idx][r] += (use_bio * weights[k]) * (alpha_m * dbl_dt) * (mg[k].Q * P_k);
+                                }
+                            } else {
+                                Matrix P_b = mg_bg.transition_matrix(alpha_m * bl);
+                                dP_bridges_mix[m][b_idx][r] = (alpha_m * dbl_dt) * (mg_bg.Q * P_b);
+                            }
+                        } else {
+                            dP_bridges_mix[m][b_idx][r] = Matrix::Zero(S, S);
+                        }
+                    }
+                }
             }
         }
+
+        auto eval_bridge_dL = [&](size_t m, size_t b_idx, Eigen::Index b, const LikelihoodEngine::BatchedInsideOutsideWorkspace& ws) -> Scalar {
+            const auto& wb = tree.bridges[b_idx];
+            int32_t uid = wb.hub_node_id;
+            int32_t id_A = wb.children[0];
+            int32_t id_B = wb.children[1];
+            int32_t id_C = wb.children[2];
+            auto mA = ws.P_D[id_A].col(b);
+            auto mB = ws.P_D[id_B].col(b);
+            auto mC = ws.P_D[id_C].col(b);
+            auto u_col = ws.U[uid].col(b);
+            Scalar dL = 0.0;
+            if (wb.weights[0] > 0.0) {
+                Vector y0 = mA.cwiseProduct(mB);
+                dL += wb.weights[0] * u_col.cwiseProduct(mC).dot(dP_bridges_mix[m][b_idx][0] * y0);
+            }
+            if (wb.weights[1] > 0.0) {
+                Vector y1 = mA.cwiseProduct(mC);
+                dL += wb.weights[1] * u_col.cwiseProduct(mB).dot(dP_bridges_mix[m][b_idx][1] * y1);
+            }
+            if (wb.weights[2] > 0.0) {
+                Vector y2 = mB.cwiseProduct(mC);
+                dL += wb.weights[2] * u_col.cwiseProduct(mA).dot(dP_bridges_mix[m][b_idx][2] * y2);
+            }
+            int boost = ws.boost_counts(uid, b);
+            while (boost > 0) { dL *= 1e150; boost--; }
+            while (boost < 0) { dL *= 1e-150; boost++; }
+            return dL;
+        };
 
         // 3. Parallel batched inside-outside GEMM traversal (deterministic pattern-indexed accumulation)
         std::vector<Scalar> pat_ll_vec(num_patterns, 0.0);
@@ -1010,6 +1074,20 @@ public:
                                     size_t p = p_start + b;
                                     Scalar eff_wt = aln.patterns[p].weight;
                                     pat_grad_mat(vid, p) = (eff_wt / L_b) * V_sub.col(b).dot(dP_D_sub.col(b));
+                                }
+                            }
+                        }
+                    }
+                    for (size_t b_idx = 0; b_idx < tree.bridges.size(); ++b_idx) {
+                        const auto& wb = tree.bridges[b_idx];
+                        int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                        if (bid >= 0 && bid != tree.root_id && static_cast<size_t>(bid) < num_nodes) {
+                            for (Eigen::Index b = 0; b < B; ++b) {
+                                Scalar L_b = io_m[0].likelihood(b);
+                                if (L_b > 0.0) {
+                                    size_t p = p_start + b;
+                                    Scalar eff_wt = aln.patterns[p].weight;
+                                    pat_grad_mat(bid, p) += (eff_wt / L_b) * eval_bridge_dL(0, b_idx, b, io_m[0]);
                                 }
                             }
                         }
@@ -1063,6 +1141,24 @@ public:
                                         size_t p = p_start + b;
                                         Scalar eff_wt = aln.patterns[p].weight;
                                         pat_grad_mat(vid, p) += eff_wt * pw * (V_sub.col(b).dot(dP_D_sub.col(b)) / L_b);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    for (size_t b_idx = 0; b_idx < tree.bridges.size(); ++b_idx) {
+                        const auto& wb = tree.bridges[b_idx];
+                        int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                        if (bid >= 0 && bid != tree.root_id && static_cast<size_t>(bid) < num_nodes) {
+                            for (size_t m = 0; m < M; ++m) {
+                                if (syn_weights[m] <= 1e-12) continue;
+                                for (Eigen::Index b = 0; b < B; ++b) {
+                                    Scalar pw = post_w(m, b);
+                                    Scalar L_b = io_m[m].likelihood(b);
+                                    if (pw > 1e-12 && L_b > 0.0) {
+                                        size_t p = p_start + b;
+                                        Scalar eff_wt = aln.patterns[p].weight;
+                                        pat_grad_mat(bid, p) += eff_wt * pw * (eval_bridge_dL(m, b_idx, b, io_m[m]) / L_b);
                                     }
                                 }
                             }
@@ -3587,6 +3683,7 @@ public:
         std::vector<std::vector<Matrix>> P_mix(M, std::vector<Matrix>(num_nodes));
         std::vector<std::vector<Matrix>> dP_mix(M, std::vector<Matrix>(num_nodes));
         std::vector<std::vector<std::array<Matrix, 3>>> P_bridges_mix(M);
+        std::vector<std::vector<std::array<Matrix, 3>>> dP_bridges_mix(M);
         for (size_t m = 0; m < M; ++m) {
             Scalar alpha_m = syn_rates[m];
             for (const auto& node : tree.nodes) {
@@ -3635,8 +3732,77 @@ public:
                     weights_test, weights_bg, weights_unclass, has_unclass_dist,
                     eps_sink_test, eps_sink_bg, bio_scale_t, bio_scale_b, &branch_lengths
                 );
+                dP_bridges_mix[m].resize(tree.bridges.size());
+                for (size_t b_idx = 0; b_idx < tree.bridges.size(); ++b_idx) {
+                    const auto& wb = tree.bridges[b_idx];
+                    int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                    int part = (bid >= 0 && static_cast<size_t>(bid) < branch_partition.size()) ? branch_partition[bid] : 0;
+                    Scalar tau_denom = (bid >= 0 && static_cast<size_t>(bid) < branch_tau.size()) ? branch_tau[bid] : 0.0;
+                    for (int r = 0; r < 3; ++r) {
+                        if ((wb.weights[r] > 0.0 || r == 0) && tau_denom > 1e-12) {
+                            Scalar base_tau = (b_idx < bridge_tau.size()) ? bridge_tau[b_idx][r] : wb.branch_lengths[r];
+                            Scalar dbl_dt = base_tau / tau_denom;
+                            Scalar bl = bridge_resolution_tau(b_idx, r, 1.0, &branch_lengths);
+                            if (part == 0) {
+                                dP_bridges_mix[m][b_idx][r] = Matrix::Zero(S, S);
+                                Scalar use_bio = (eps_sink_test > 0.0) ? bio_scale_t : 1.0;
+                                for (size_t k = 0; k < K_t; ++k) {
+                                    Matrix P_k = mg_t[k].transition_matrix(alpha_m * bl);
+                                    dP_bridges_mix[m][b_idx][r] += (use_bio * weights_test[k]) * (alpha_m * dbl_dt) * (mg_t[k].Q * P_k);
+                                }
+                            } else if (part == 1) {
+                                dP_bridges_mix[m][b_idx][r] = Matrix::Zero(S, S);
+                                Scalar use_bio = (eps_sink_bg > 0.0) ? bio_scale_b : 1.0;
+                                for (size_t k = 0; k < K_b; ++k) {
+                                    Matrix P_k = mg_b[k].transition_matrix(alpha_m * bl);
+                                    dP_bridges_mix[m][b_idx][r] += (use_bio * weights_bg[k]) * (alpha_m * dbl_dt) * (mg_b[k].Q * P_k);
+                                }
+                            } else if (has_unclass_dist) {
+                                dP_bridges_mix[m][b_idx][r] = Matrix::Zero(S, S);
+                                for (size_t k = 0; k < K_u; ++k) {
+                                    Matrix P_k = mg_u[k].transition_matrix(alpha_m * bl);
+                                    dP_bridges_mix[m][b_idx][r] += (*weights_unclass)[k] * (alpha_m * dbl_dt) * (mg_u[k].Q * P_k);
+                                }
+                            } else {
+                                Matrix P_u = mg_unclass.transition_matrix(alpha_m * bl);
+                                dP_bridges_mix[m][b_idx][r] = (alpha_m * dbl_dt) * (mg_unclass.Q * P_u);
+                            }
+                        } else {
+                            dP_bridges_mix[m][b_idx][r] = Matrix::Zero(S, S);
+                        }
+                    }
+                }
             }
         }
+
+        auto eval_bridge_dL = [&](size_t m, size_t b_idx, const LikelihoodEngine::InsideOutsideWorkspace& ws) -> Scalar {
+            const auto& wb = tree.bridges[b_idx];
+            int32_t uid = wb.hub_node_id;
+            int32_t id_A = wb.children[0];
+            int32_t id_B = wb.children[1];
+            int32_t id_C = wb.children[2];
+            const Vector& mA = ws.P_D[id_A];
+            const Vector& mB = ws.P_D[id_B];
+            const Vector& mC = ws.P_D[id_C];
+            const Vector& u_col = ws.U[uid];
+            Scalar dL = 0.0;
+            if (wb.weights[0] > 0.0) {
+                Vector y0 = mA.cwiseProduct(mB);
+                dL += wb.weights[0] * u_col.cwiseProduct(mC).dot(dP_bridges_mix[m][b_idx][0] * y0);
+            }
+            if (wb.weights[1] > 0.0) {
+                Vector y1 = mA.cwiseProduct(mC);
+                dL += wb.weights[1] * u_col.cwiseProduct(mB).dot(dP_bridges_mix[m][b_idx][1] * y1);
+            }
+            if (wb.weights[2] > 0.0) {
+                Vector y2 = mB.cwiseProduct(mC);
+                dL += wb.weights[2] * u_col.cwiseProduct(mA).dot(dP_bridges_mix[m][b_idx][2] * y2);
+            }
+            int boost = ws.boost_counts[uid];
+            while (boost > 0) { dL *= 1e150; boost--; }
+            while (boost < 0) { dL *= 1e-150; boost++; }
+            return dL;
+        };
 
         std::vector<Scalar> pat_ll_vec(num_patterns, 0.0);
         std::vector<std::vector<Scalar>> pat_grad(num_patterns, std::vector<Scalar>(num_nodes, 0.0));
@@ -3662,6 +3828,13 @@ public:
                                 int32_t vid = node.id;
                                 Scalar dL_dt = io_m[0].V[vid].dot(dP_mix[0][vid] * io_m[0].D[vid]);
                                 pat_grad[p][vid] = inv_L * dL_dt;
+                            }
+                        }
+                        for (size_t b_idx = 0; b_idx < tree.bridges.size(); ++b_idx) {
+                            const auto& wb = tree.bridges[b_idx];
+                            int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                            if (bid >= 0 && bid != tree.root_id && static_cast<size_t>(bid) < num_nodes) {
+                                pat_grad[p][bid] += inv_L * eval_bridge_dL(0, b_idx, io_m[0]);
                             }
                         }
                     }
@@ -3705,6 +3878,19 @@ public:
                                         }
                                     }
                                     pat_grad[p][vid] = pattern.weight * d_lnL_dt;
+                                }
+                            }
+                            for (size_t b_idx = 0; b_idx < tree.bridges.size(); ++b_idx) {
+                                const auto& wb = tree.bridges[b_idx];
+                                int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                                if (bid >= 0 && bid != tree.root_id && static_cast<size_t>(bid) < num_nodes) {
+                                    Scalar d_lnL_dt = 0.0;
+                                    for (size_t m = 0; m < M; ++m) {
+                                        if (post_w[m] > 1e-12 && io_m[m].likelihood > 0.0) {
+                                            d_lnL_dt += post_w[m] * (eval_bridge_dL(m, b_idx, io_m[m]) / io_m[m].likelihood);
+                                        }
+                                    }
+                                    pat_grad[p][bid] += pattern.weight * d_lnL_dt;
                                 }
                             }
                         }

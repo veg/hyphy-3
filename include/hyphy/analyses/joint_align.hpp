@@ -117,6 +117,7 @@ struct InputAdmissionReport {
     Scalar median_aa_identity = 0.0;
     Scalar msa_expansion_ratio = 1.0;
     Scalar high_confidence_column_fraction = 1.0;
+    Matrix admitted_dp_similarity;
     std::vector<TaxonAdmissionEntry> entries;
 };
 
@@ -2232,10 +2233,152 @@ public:
         return raw;
     }
 
+    static std::pair<Scalar, Scalar> run_semiglobal_banded_dp_pair(
+        const std::vector<int8_t>& s_a,
+        const std::vector<int8_t>& s_b,
+        const GeneticCode& gcode,
+        std::vector<Scalar>& prev_M,
+        std::vector<Scalar>& curr_M,
+        std::vector<Scalar>& prev_D,
+        std::vector<Scalar>& curr_D,
+        std::vector<size_t>& prev_id_M,
+        std::vector<size_t>& curr_id_M,
+        std::vector<size_t>& prev_id_D,
+        std::vector<size_t>& curr_id_D
+    ) {
+        const auto& s_short = (s_a.size() <= s_b.size()) ? s_a : s_b;
+        const auto& s_long  = (s_a.size() <= s_b.size()) ? s_b : s_a;
+        size_t Ls = s_short.size();
+        size_t Ll = s_long.size();
+        if (Ls == 0 || Ll == 0) return {0.0, 0.0};
+
+        auto aa_sim_score = [&](int8_t c1, int8_t c2) -> Scalar {
+            if (c1 < 0 || c2 < 0) return 0.0;
+            if (c1 == c2) return 1.00;
+            char a1 = gcode.sense_codon_aa[c1];
+            char a2 = gcode.sense_codon_aa[c2];
+            if (a1 == a2) return 0.90;
+            int nd = gcode.diff_matrix[c1][c2].num_diffs;
+            if (nd == 1) return 0.30;
+            return 0.0;
+        };
+
+        constexpr int B0 = 24;
+        constexpr Scalar kNegInf = -1e9;
+        constexpr Scalar g_open = 1.10;
+        constexpr Scalar g_ext  = 0.30;
+        constexpr Scalar g_cap  = 3.80;
+        int dL = static_cast<int>(Ll - Ls);
+        if (prev_M.size() < Ll + 1) {
+            prev_M.resize(Ll + 1);
+            curr_M.resize(Ll + 1);
+            prev_D.resize(Ll + 1);
+            curr_D.resize(Ll + 1);
+            prev_id_M.resize(Ll + 1);
+            curr_id_M.resize(Ll + 1);
+            prev_id_D.resize(Ll + 1);
+            curr_id_D.resize(Ll + 1);
+        }
+        std::fill(prev_M.begin(), prev_M.begin() + static_cast<ptrdiff_t>(Ll + 1), kNegInf);
+        std::fill(prev_D.begin(), prev_D.begin() + static_cast<ptrdiff_t>(Ll + 1), kNegInf);
+        std::fill(prev_id_M.begin(), prev_id_M.begin() + static_cast<ptrdiff_t>(Ll + 1), 0);
+        std::fill(prev_id_D.begin(), prev_id_D.begin() + static_cast<ptrdiff_t>(Ll + 1), 0);
+        int init_max = std::min(static_cast<int>(Ll), dL + B0);
+        for (int c = 0; c <= init_max; ++c) {
+            prev_M[static_cast<size_t>(c)] = 0.0;
+        }
+
+        for (size_t r = 1; r <= Ls; ++r) {
+            int c_min = std::max(1, static_cast<int>(r) - B0);
+            int c_max = std::min(static_cast<int>(Ll), static_cast<int>(r) + dL + B0);
+            std::fill(curr_M.begin(), curr_M.begin() + static_cast<ptrdiff_t>(Ll + 1), kNegInf);
+            std::fill(curr_D.begin(), curr_D.begin() + static_cast<ptrdiff_t>(Ll + 1), kNegInf);
+            std::fill(curr_id_M.begin(), curr_id_M.begin() + static_cast<ptrdiff_t>(Ll + 1), 0);
+            std::fill(curr_id_D.begin(), curr_id_D.begin() + static_cast<ptrdiff_t>(Ll + 1), 0);
+            if (static_cast<int>(r) <= B0) {
+                Scalar pen = -std::min(g_open + g_ext * static_cast<Scalar>(r), g_cap);
+                curr_D[0] = pen;
+                curr_M[0] = pen;
+            }
+            int8_t ci = s_short[r - 1];
+            Scalar ins_sc = kNegInf;
+            size_t ins_id = 0;
+            Scalar best_row_sc = (c_min == 1) ? curr_M[0] : kNegInf;
+            size_t best_row_id = 0;
+
+            for (int c = c_min; c <= c_max; ++c) {
+                size_t cu = static_cast<size_t>(c);
+                int8_t cj = s_long[cu - 1];
+
+                Scalar d_op = prev_M[cu] - g_open - g_ext;
+                Scalar d_ex = prev_D[cu] - g_ext;
+                if (d_op >= d_ex) {
+                    curr_D[cu] = d_op;
+                    curr_id_D[cu] = prev_id_M[cu];
+                } else {
+                    curr_D[cu] = d_ex;
+                    curr_id_D[cu] = prev_id_D[cu];
+                }
+
+                Scalar i_op = curr_M[cu - 1] - g_open - g_ext;
+                Scalar i_ex = ins_sc - g_ext;
+                if (i_op >= i_ex) {
+                    ins_sc = i_op;
+                    ins_id = curr_id_M[cu - 1];
+                } else {
+                    ins_sc = i_ex;
+                }
+                Scalar e_sc = best_row_sc - g_cap;
+
+                Scalar m_sc = prev_M[cu - 1] + aa_sim_score(ci, cj);
+                bool exact_aa = (ci >= 0 && cj >= 0 && gcode.sense_codon_aa[ci] == gcode.sense_codon_aa[cj]);
+                size_t m_id = prev_id_M[cu - 1] + (exact_aa ? 1 : 0);
+
+                Scalar best_sc = m_sc;
+                size_t best_id = m_id;
+                if (curr_D[cu] > best_sc) {
+                    best_sc = curr_D[cu];
+                    best_id = curr_id_D[cu];
+                }
+                if (ins_sc > best_sc) {
+                    best_sc = ins_sc;
+                    best_id = ins_id;
+                }
+                if (e_sc > best_sc) {
+                    best_sc = e_sc;
+                    best_id = best_row_id;
+                }
+                curr_M[cu] = best_sc;
+                curr_id_M[cu] = best_id;
+                if (best_sc > best_row_sc) {
+                    best_row_sc = best_sc;
+                    best_row_id = best_id;
+                }
+            }
+            std::swap(prev_M, curr_M);
+            std::swap(prev_D, curr_D);
+            std::swap(prev_id_M, curr_id_M);
+            std::swap(prev_id_D, curr_id_D);
+        }
+
+        int c_start = std::max(1, static_cast<int>(Ls) - B0);
+        size_t best_c = static_cast<size_t>(c_start);
+        Scalar best_score = prev_M[best_c];
+        for (size_t c = static_cast<size_t>(c_start) + 1; c <= Ll; ++c) {
+            if (prev_M[c] > best_score) {
+                best_score = prev_M[c];
+                best_c = c;
+            }
+        }
+        Scalar L_eff = std::max<Scalar>(1.0, static_cast<Scalar>(Ls));
+        return {best_score / L_eff, static_cast<Scalar>(prev_id_M[best_c]) / L_eff};
+    }
+
     static std::pair<Alignment, Tree> build_de_novo_codon_alignment_and_tree(
         const std::vector<Sequence>& unaligned_seqs,
         std::shared_ptr<const GeneticCode> gcode = nullptr,
-        const JointAlignSettings& settings = JointAlignSettings{}
+        const JointAlignSettings& settings = JointAlignSettings{},
+        const Matrix* precomputed_dp_similarity = nullptr
     ) {
         if (!gcode) gcode = GeneticCode::universal();
         size_t N = unaligned_seqs.size();
@@ -2276,10 +2419,10 @@ public:
         }
         Vector pi_codon = codon_counts / codon_counts.sum();
 
-        // 2. Phase A: Fast Pairwise Evolutionary Distance & Guide Tree Construction
-        //    To handle both closely related sequences and deeply divergent mammalian/bacterial proteins
-        //    (like CD2 where branch lengths reach 0.4 substitutions/site), we compute a fast banded
-        //    amino-acid + codon similarity score for all pairs (i, j) to get accurate branch lengths!
+        // 2. Phase A: Pairwise Evolutionary Distance & Guide Tree Construction
+        //    Reuses the exact Stage 0 Gate 3 semi-global piecewise-affine capped overlap alignment
+        //    (normalized by L_eff = min(Li, Lj)) so 5'/3' truncations and internal exon indels
+        //    do not inflate evolutionary branch lengths.
         if (!settings.quiet) {
             size_t min_len = 999999, max_len = 0;
             for (const auto& tc : taxon_codons) {
@@ -2292,45 +2435,31 @@ public:
                 std::to_string(N) + " unaligned taxa (" + std::to_string(min_len) + ".." + std::to_string(max_len) + " codons)"
             );
         }
-        auto aa_sim = [&](int8_t c1, int8_t c2) -> Scalar {
-            if (c1 < 0 || c2 < 0) return 0.0;
-            if (c1 == c2) return 1.0;
-            char a1 = gcode->sense_codon_aa[c1];
-            char a2 = gcode->sense_codon_aa[c2];
-            if (a1 == a2) return 0.85; // Synonymous
-            int nd = gcode->diff_matrix[c1][c2].num_diffs;
-            if (nd == 1) return 0.35;  // Single-nucleotide nonsynonymous
-            if (nd == 2) return 0.10;
-            return 0.0;
-        };
 
         Matrix D_af = Matrix::Zero(N, N);
+        bool have_precomp = (precomputed_dp_similarity != nullptr &&
+                             static_cast<size_t>(precomputed_dp_similarity->rows()) == N &&
+                             static_cast<size_t>(precomputed_dp_similarity->cols()) == N);
         #pragma omp parallel for schedule(dynamic)
         for (size_t i = 0; i < N; ++i) {
             const auto& seq_i = taxon_codons[i];
             size_t Li = seq_i.size();
+            std::vector<Scalar> prev_M, curr_M, prev_D, curr_D;
+            std::vector<size_t> prev_id_M, curr_id_M, prev_id_D, curr_id_D;
             for (size_t j = i + 1; j < N; ++j) {
                 const auto& seq_j = taxon_codons[j];
                 size_t Lj = seq_j.size();
                 if (Li == 0 || Lj == 0) continue;
 
-                // Banded Smith-Waterman / Needleman-Wunsch similarity within band B = max(24, |Li - Lj| + 16)
-                int B = static_cast<int>(std::max<size_t>(24, (Li > Lj ? Li - Lj : Lj - Li) + 16));
-                std::vector<Scalar> prev(Lj + 1, 0.0), curr(Lj + 1, 0.0);
-                for (size_t r = 1; r <= Li; ++r) {
-                    int c_min = std::max(1, static_cast<int>(r) - B);
-                    int c_max = std::min(static_cast<int>(Lj), static_cast<int>(r) + B);
-                    std::fill(curr.begin(), curr.end(), 0.0);
-                    for (int c = c_min; c <= c_max; ++c) {
-                        Scalar match = prev[c - 1] + aa_sim(seq_i[r - 1], seq_j[c - 1]);
-                        Scalar del = prev[c] - 0.6;
-                        Scalar ins = curr[c - 1] - 0.6;
-                        curr[c] = std::max({match, del, ins});
-                    }
-                    std::swap(prev, curr);
+                Scalar norm_dp = 0.0;
+                if (have_precomp) {
+                    norm_dp = (*precomputed_dp_similarity)(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j));
+                } else {
+                    auto [dp_sc, aa_id] = run_semiglobal_banded_dp_pair(
+                        seq_i, seq_j, *gcode, prev_M, curr_M, prev_D, curr_D, prev_id_M, curr_id_M, prev_id_D, curr_id_D);
+                    norm_dp = dp_sc;
                 }
-                Scalar max_len = static_cast<Scalar>(std::max(Li, Lj));
-                Scalar pid = std::clamp(prev[Lj] / std::max<Scalar>(1.0, max_len), 0.08, 0.9999);
+                Scalar pid = std::clamp<Scalar>(norm_dp, 0.08, 0.9999);
                 Scalar d = std::max<Scalar>(1e-4, -0.75 * std::log(pid));
                 D_af(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j)) = d;
                 D_af(static_cast<Eigen::Index>(j), static_cast<Eigen::Index>(i)) = d;
@@ -3284,92 +3413,6 @@ public:
             );
         }
 
-        auto aa_sim_score = [&](int8_t c1, int8_t c2) -> Scalar {
-            if (c1 < 0 || c2 < 0) return 0.0;
-            if (c1 == c2) return 1.0;
-            char a1 = gcode->sense_codon_aa[c1];
-            char a2 = gcode->sense_codon_aa[c2];
-            if (a1 == a2) return 0.90;
-            int nd = gcode->diff_matrix[c1][c2].num_diffs;
-            if (nd == 1) return 0.30;
-            return 0.0;
-        };
-
-        // Semi-global overlap banded DP helper: aligns shorter sequence (L_eff = min(Li, Lj))
-        // against longer sequence (L_max = max(Li, Lj)) with free 5'/3' overhangs on the longer
-        // sequence within band slack B0 = 24, returning {norm_dp, aa_id} normalized by L_eff.
-        auto run_semiglobal_banded_dp = [&](const std::vector<int8_t>& s_a,
-                                            const std::vector<int8_t>& s_b,
-                                            std::vector<Scalar>& prev,
-                                            std::vector<Scalar>& curr,
-                                            std::vector<size_t>& prev_id,
-                                            std::vector<size_t>& curr_id) -> std::pair<Scalar, Scalar> {
-            const auto& s_short = (s_a.size() <= s_b.size()) ? s_a : s_b;
-            const auto& s_long  = (s_a.size() <= s_b.size()) ? s_b : s_a;
-            size_t Ls = s_short.size();
-            size_t Ll = s_long.size();
-            if (Ls == 0 || Ll == 0) return {0.0, 0.0};
-
-            constexpr int B0 = 24;
-            constexpr Scalar kNegInf = -1e9;
-            int dL = static_cast<int>(Ll - Ls);
-            if (prev.size() < Ll + 1) {
-                prev.resize(Ll + 1);
-                curr.resize(Ll + 1);
-                prev_id.resize(Ll + 1);
-                curr_id.resize(Ll + 1);
-            }
-            std::fill(prev.begin(), prev.begin() + static_cast<ptrdiff_t>(Ll + 1), kNegInf);
-            std::fill(prev_id.begin(), prev_id.begin() + static_cast<ptrdiff_t>(Ll + 1), 0);
-            int init_max = std::min(static_cast<int>(Ll), dL + B0);
-            for (int c = 0; c <= init_max; ++c) {
-                prev[static_cast<size_t>(c)] = 0.0;
-            }
-
-            for (size_t r = 1; r <= Ls; ++r) {
-                int c_min = std::max(1, static_cast<int>(r) - B0);
-                int c_max = std::min(static_cast<int>(Ll), static_cast<int>(r) + dL + B0);
-                std::fill(curr.begin(), curr.begin() + static_cast<ptrdiff_t>(Ll + 1), kNegInf);
-                std::fill(curr_id.begin(), curr_id.begin() + static_cast<ptrdiff_t>(Ll + 1), 0);
-                if (static_cast<int>(r) <= B0) {
-                    curr[0] = -0.65 * static_cast<Scalar>(r);
-                }
-                int8_t ci = s_short[r - 1];
-                for (int c = c_min; c <= c_max; ++c) {
-                    size_t cu = static_cast<size_t>(c);
-                    int8_t cj = s_long[cu - 1];
-                    Scalar m_score = prev[cu - 1] + aa_sim_score(ci, cj);
-                    Scalar d_score = prev[cu] - 0.65;
-                    Scalar i_score = curr[cu - 1] - 0.65;
-                    if (m_score >= d_score && m_score >= i_score) {
-                        curr[cu] = m_score;
-                        bool exact_aa = (ci >= 0 && cj >= 0 && gcode->sense_codon_aa[ci] == gcode->sense_codon_aa[cj]);
-                        curr_id[cu] = prev_id[cu - 1] + (exact_aa ? 1 : 0);
-                    } else if (d_score >= i_score) {
-                        curr[cu] = d_score;
-                        curr_id[cu] = prev_id[cu];
-                    } else {
-                        curr[cu] = i_score;
-                        curr_id[cu] = curr_id[cu - 1];
-                    }
-                }
-                std::swap(prev, curr);
-                std::swap(prev_id, curr_id);
-            }
-
-            int c_start = std::max(1, static_cast<int>(Ls) - B0);
-            size_t best_c = static_cast<size_t>(c_start);
-            Scalar best_score = prev[best_c];
-            for (size_t c = static_cast<size_t>(c_start) + 1; c <= Ll; ++c) {
-                if (prev[c] > best_score) {
-                    best_score = prev[c];
-                    best_c = c;
-                }
-            }
-            Scalar L_eff = std::max<Scalar>(1.0, static_cast<Scalar>(Ls));
-            return {best_score / L_eff, static_cast<Scalar>(prev_id[best_c]) / L_eff};
-        };
-
         auto splitmix64_next = [](uint64_t& state) -> uint64_t {
             uint64_t z = (state += 0x9E3779B97F4A7C15ULL);
             z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
@@ -3386,14 +3429,15 @@ public:
 
         Matrix Z_mat = Matrix::Zero(M, M);
         Matrix ID_mat = Matrix::Zero(M, M);
+        Matrix DP_mat = Matrix::Zero(M, M);
         Matrix MuID_mat = Matrix::Zero(M, M);
 
         #pragma omp parallel for schedule(dynamic)
         for (size_t a = 0; a < M; ++a) {
             const auto& seq_i = candidates[length_ok_indices[a]].codons;
             size_t Li = seq_i.size();
-            std::vector<Scalar> prev, curr;
-            std::vector<size_t> prev_id, curr_id;
+            std::vector<Scalar> prev_M, curr_M, prev_D, curr_D;
+            std::vector<size_t> prev_id_M, curr_id_M, prev_id_D, curr_id_D;
             std::vector<int8_t> shuf_i, shuf_j;
 
             for (size_t b = a + 1; b < M; ++b) {
@@ -3401,7 +3445,8 @@ public:
                 size_t Lj = seq_j.size();
                 if (Li == 0 || Lj == 0) continue;
 
-                auto [norm_dp, aa_id] = run_semiglobal_banded_dp(seq_i, seq_j, prev, curr, prev_id, curr_id);
+                auto [norm_dp, aa_id] = run_semiglobal_banded_dp_pair(
+                    seq_i, seq_j, *gcode, prev_M, curr_M, prev_D, curr_D, prev_id_M, curr_id_M, prev_id_D, curr_id_D);
                 Scalar L_eff = std::max<Scalar>(1.0, static_cast<Scalar>(std::min(Li, Lj)));
 
                 // Calibrate composition- and length-matched null via K = 16 codon-shuffled decoys
@@ -3420,7 +3465,8 @@ public:
                 for (int k = 0; k < K_decoys; ++k) {
                     shuffle_codons_det(shuf_i, rng_state);
                     shuffle_codons_det(shuf_j, rng_state);
-                    auto [dp_k, id_k] = run_semiglobal_banded_dp(shuf_i, shuf_j, prev, curr, prev_id, curr_id);
+                    auto [dp_k, id_k] = run_semiglobal_banded_dp_pair(
+                        shuf_i, shuf_j, *gcode, prev_M, curr_M, prev_D, curr_D, prev_id_M, curr_id_M, prev_id_D, curr_id_D);
                     id_null[static_cast<size_t>(k)] = id_k;
                     dp_null[static_cast<size_t>(k)] = dp_k;
                     sum_id += id_k;
@@ -3458,6 +3504,8 @@ public:
                 Z_mat(static_cast<Eigen::Index>(b), static_cast<Eigen::Index>(a)) = z_comb;
                 ID_mat(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)) = aa_id;
                 ID_mat(static_cast<Eigen::Index>(b), static_cast<Eigen::Index>(a)) = aa_id;
+                DP_mat(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)) = norm_dp;
+                DP_mat(static_cast<Eigen::Index>(b), static_cast<Eigen::Index>(a)) = norm_dp;
                 MuID_mat(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)) = mu_id;
                 MuID_mat(static_cast<Eigen::Index>(b), static_cast<Eigen::Index>(a)) = mu_id;
             }
@@ -3531,13 +3579,17 @@ public:
         }
         report.rescued_frame_or_strand = final_rescued;
 
+        size_t N_adm = admitted_m_indices.size();
+        report.admitted_dp_similarity = Matrix::Ones(N_adm, N_adm);
         std::vector<Scalar> cohort_z, cohort_id;
-        for (size_t i = 0; i < admitted_m_indices.size(); ++i) {
-            for (size_t j = i + 1; j < admitted_m_indices.size(); ++j) {
+        for (size_t i = 0; i < N_adm; ++i) {
+            for (size_t j = i + 1; j < N_adm; ++j) {
                 Eigen::Index u = static_cast<Eigen::Index>(admitted_m_indices[i]);
                 Eigen::Index v = static_cast<Eigen::Index>(admitted_m_indices[j]);
                 cohort_z.push_back(Z_mat(u, v));
                 cohort_id.push_back(ID_mat(u, v));
+                report.admitted_dp_similarity(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j)) = DP_mat(u, v);
+                report.admitted_dp_similarity(static_cast<Eigen::Index>(j), static_cast<Eigen::Index>(i)) = DP_mat(u, v);
             }
         }
         if (!cohort_z.empty()) {
@@ -3656,7 +3708,8 @@ public:
     ) {
         auto t0 = std::chrono::steady_clock::now();
         auto [admitted_seqs, adm_report] = triage_and_admit_unaligned_sequences(unaligned_seqs, gcode, settings);
-        auto [de_novo_aln, de_novo_tree] = build_de_novo_codon_alignment_and_tree(admitted_seqs, gcode, settings);
+        auto [de_novo_aln, de_novo_tree] = build_de_novo_codon_alignment_and_tree(
+            admitted_seqs, gcode, settings, &adm_report.admitted_dp_similarity);
         auto res = run(de_novo_aln, de_novo_tree);
         res.admission_report = std::move(adm_report);
         auto t1 = std::chrono::steady_clock::now();

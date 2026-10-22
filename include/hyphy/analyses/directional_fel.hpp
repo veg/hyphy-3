@@ -245,7 +245,8 @@ public:
         const MG94Matrix& mg94_model,
         const std::vector<Matrix>& P_branches,
         std::vector<Vector>& node_L,
-        std::vector<double>& node_log_scale
+        std::vector<double>& node_log_scale,
+        const std::vector<std::array<Matrix, 3>>* P_bridges = nullptr
     ) {
         int S = mg94_model.pi.size();
 
@@ -258,7 +259,10 @@ public:
                 node_log_scale[node_id] = 0.0;
             } else {
                 double child_scale_sum = 0.0;
-                tree.eval_internal_node_with_model(node_id, P_branches, mg94_model, node_L, node_log_scale, node_L[node_id], child_scale_sum);
+                tree.eval_internal_node_with_model(
+                    node_id, P_branches, mg94_model, node_L, node_log_scale,
+                    node_L[node_id], child_scale_sum, 1.0, nullptr, P_bridges
+                );
                 node_log_scale[node_id] = child_scale_sum;
             }
         }
@@ -667,6 +671,7 @@ public:
 
             // Directional transition matrices per branch
             std::vector<Matrix> P_branches(num_nodes);
+            std::vector<MG94Matrix> branch_mgs(num_nodes);
             for (const auto& node : cand_tree.nodes) {
                 if (node.id != cand_tree.root_id) {
                     int32_t p = node.parent_id;
@@ -695,9 +700,19 @@ public:
                     Scalar sum_cf = codon_f.sum();
                     if (sum_cf > 1e-9) codon_f /= sum_cf;
 
-                    MG94Matrix branch_mg;
-                    branch_mg.update(base_p, pos_freqs, codon_f, gcode);
-                    P_branches[node.id] = branch_mg.transition_matrix(node.branch_length);
+                    branch_mgs[node.id].update(base_p, pos_freqs, codon_f, gcode);
+                    P_branches[node.id] = branch_mgs[node.id].transition_matrix(node.branch_length);
+                }
+            }
+            std::vector<std::array<Matrix, 3>> P_bridges(cand_tree.bridges.size());
+            for (size_t b = 0; b < cand_tree.bridges.size(); ++b) {
+                const auto& wb = cand_tree.bridges[b];
+                int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                const MG94Matrix& m_br = (bid >= 0 && bid != cand_tree.root_id && static_cast<size_t>(bid) < branch_mgs.size())
+                    ? branch_mgs[bid]
+                    : base_matrix;
+                for (int r = 0; r < 3; ++r) {
+                    P_bridges[b][r] = m_br.transition_matrix(wb.branch_lengths[r]);
                 }
             }
 
@@ -710,7 +725,8 @@ public:
             for (size_t p = 0; p < aln.patterns.size(); ++p) {
                 const auto& pat = aln.patterns[p];
                 Scalar pat_l = compute_pattern_log_likelihood(
-                    cand_tree, pat, leaf_to_taxon, base_matrix, P_branches, node_L, node_log_scale
+                    cand_tree, pat, leaf_to_taxon, base_matrix, P_branches, node_L, node_log_scale,
+                    cand_tree.bridges.empty() ? nullptr : &P_bridges
                 );
                 tree_lnl += pat.weight * pat_l;
             }
@@ -1114,31 +1130,43 @@ public:
                 regime_matrices[k].update(p_curr, regimes[k].pos_nuc_freqs, regimes[k].codon_freqs, gcode);
             }
 
+            auto eval_branch_P = [&](int32_t nid, Scalar bl) -> Matrix {
+                if (K == 3 && nid >= 0 && static_cast<size_t>(nid) < branch_regime_weights.size()) {
+                    const auto& w = branch_regime_weights[nid];
+                    if (w[1] > 0.99) {
+                        return regime_matrices[1].transition_matrix(bl);
+                    } else if (w[2] > 0.99) {
+                        return regime_matrices[2].transition_matrix(bl);
+                    } else if (w[0] > 0.99) {
+                        return regime_matrices[0].transition_matrix(bl);
+                    } else {
+                        Matrix P = w[1] * regime_matrices[1].transition_matrix(bl);
+                        if (w[2] > 1e-4) P += w[2] * regime_matrices[2].transition_matrix(bl);
+                        if (w[0] > 1e-4) P += w[0] * regime_matrices[0].transition_matrix(bl);
+                        return P;
+                    }
+                }
+                return regime_matrices[0].transition_matrix(bl);
+            };
+
             for (const auto& node : tree.nodes) {
                 if (node.id != tree.root_id) {
-                    if (K == 3) {
-                        const auto& w = branch_regime_weights[node.id];
-                        if (w[1] > 0.99) {
-                            P_branches[node.id] = regime_matrices[1].transition_matrix(node.branch_length);
-                        } else if (w[2] > 0.99) {
-                            P_branches[node.id] = regime_matrices[2].transition_matrix(node.branch_length);
-                        } else if (w[0] > 0.99) {
-                            P_branches[node.id] = regime_matrices[0].transition_matrix(node.branch_length);
-                        } else {
-                            Matrix P = w[1] * regime_matrices[1].transition_matrix(node.branch_length);
-                            if (w[2] > 1e-4) P += w[2] * regime_matrices[2].transition_matrix(node.branch_length);
-                            if (w[0] > 1e-4) P += w[0] * regime_matrices[0].transition_matrix(node.branch_length);
-                            P_branches[node.id] = std::move(P);
-                        }
-                    } else {
-                        P_branches[node.id] = regime_matrices[0].transition_matrix(node.branch_length);
-                    }
+                    P_branches[node.id] = eval_branch_P(node.id, node.branch_length);
+                }
+            }
+            std::vector<std::array<Matrix, 3>> P_bridges(tree.bridges.size());
+            for (size_t b_idx = 0; b_idx < tree.bridges.size(); ++b_idx) {
+                const auto& wb = tree.bridges[b_idx];
+                int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                for (int r = 0; r < 3; ++r) {
+                    P_bridges[b_idx][r] = eval_branch_P(bid, wb.branch_lengths[r]);
                 }
             }
 
             const auto& mg_root = (K == 3) ? regime_matrices[1] : regime_matrices[0];
             return compute_pattern_log_likelihood(
-                tree, pattern, leaf_to_taxon, mg_root, P_branches, thread_node_L, thread_node_scale
+                tree, pattern, leaf_to_taxon, mg_root, P_branches, thread_node_L, thread_node_scale,
+                tree.bridges.empty() ? nullptr : &P_bridges
             );
         };
 

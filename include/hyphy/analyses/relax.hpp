@@ -670,6 +670,52 @@ public:
             }
         }
 
+        std::array<std::vector<std::array<Matrix, 3>>, 3> P_bridges;
+        if (!t.bridges.empty()) {
+            for (int c = 0; c < 3; ++c) P_bridges[c].resize(t.bridges.size());
+            for (size_t b_idx = 0; b_idx < t.bridges.size(); ++b_idx) {
+                const auto& wb = t.bridges[b_idx];
+                const int bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                const int part = (bid >= 0 && static_cast<size_t>(bid) < branch_partition.size()) ? branch_partition[bid] : 0;
+                const std::vector<Scalar>& br_w = (part == 2) ? wt_U : weights;
+                Scalar scale = tree_scale;
+                if (custom_branch_lengths && bid >= 0 && static_cast<size_t>(bid) < custom_branch_lengths->size() &&
+                    t.nodes[bid].branch_length > 1e-12) {
+                    scale = (*custom_branch_lengths)[bid] / t.nodes[bid].branch_length;
+                }
+                for (int r = 0; r < 3; ++r) {
+                    Scalar bl = wb.branch_lengths[r] * scale;
+                    if (branch_site || part == 2) {
+                        Matrix P_mix = Matrix::Zero(S, S);
+                        for (int c = 0; c < 3; ++c) {
+                            if (br_w[c] <= 1e-12) continue;
+                            if (part == 1) {
+                                P_mix.noalias() += br_w[c] * mats_T[c].transition_matrix(bl * convs_T[c]);
+                            } else if (part == 2) {
+                                P_mix.noalias() += br_w[c] * mats_U[c].transition_matrix(bl * convs_U[c]);
+                            } else {
+                                P_mix.noalias() += br_w[c] * mats_R[c].transition_matrix(bl * convs_R[c]);
+                            }
+                        }
+                        P_bridges[0][b_idx][r] = P_mix;
+                        if (!branch_site) {
+                            P_bridges[1][b_idx][r] = P_mix;
+                            P_bridges[2][b_idx][r] = std::move(P_mix);
+                        }
+                    } else {
+                        for (int c = 0; c < 3; ++c) {
+                            if (weights[c] <= 1e-12) continue;
+                            if (part == 1) {
+                                P_bridges[c][b_idx][r] = mats_T[c].transition_matrix(bl * convs_T[c]);
+                            } else {
+                                P_bridges[c][b_idx][r] = mats_R[c].transition_matrix(bl * convs_R[c]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         std::vector<Scalar> class_w = weights;
         if (branch_site) {
             class_w = {1.0, 0.0, 0.0};
@@ -695,7 +741,8 @@ public:
 
                 if (branch_site) {
                     LikelihoodEngine::compute_inside_batch_in_place(
-                        t, aln, p_start, p_end, leaf_to_taxon, P_branches[0], eq_freqs, S, ws
+                        t, aln, p_start, p_end, leaf_to_taxon, P_branches[0], eq_freqs, S, ws,
+                        t.bridges.empty() ? nullptr : &P_bridges[0]
                     );
                     for (Eigen::Index b = 0; b < B; ++b) {
                         size_t p = p_start + b;
@@ -709,7 +756,8 @@ public:
                         if (class_w[c] <= 1e-12) continue;
                         Scalar log_cw = std::log(class_w[c]);
                         LikelihoodEngine::compute_inside_batch_in_place(
-                            t, aln, p_start, p_end, leaf_to_taxon, P_branches[c], eq_freqs, S, ws
+                            t, aln, p_start, p_end, leaf_to_taxon, P_branches[c], eq_freqs, S, ws,
+                            t.bridges.empty() ? nullptr : &P_bridges[c]
                         );
                         for (Eigen::Index b = 0; b < B; ++b) {
                             if (ws.root_L(b) > 0.0) {
@@ -872,6 +920,98 @@ public:
             }
         }
 
+        std::array<std::vector<std::array<Matrix, 3>>, 3> P_bridges_c;
+        std::array<std::vector<std::array<Matrix, 3>>, 3> dP_bridges_c;
+        if (!tree.bridges.empty()) {
+            for (int c = 0; c < 3; ++c) {
+                P_bridges_c[c].resize(tree.bridges.size());
+                dP_bridges_c[c].resize(tree.bridges.size());
+            }
+            for (size_t b_idx = 0; b_idx < tree.bridges.size(); ++b_idx) {
+                const auto& wb = tree.bridges[b_idx];
+                const int bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                const int part = (bid >= 0 && static_cast<size_t>(bid) < branch_partition.size()) ? branch_partition[bid] : 0;
+                const std::vector<Scalar>& br_w = (part == 2) ? wt_U : weights;
+                Scalar base_bl = (bid >= 0 && static_cast<size_t>(bid) < tree.nodes.size()) ? tree.nodes[bid].branch_length : 0.0;
+                Scalar scale = (base_bl > 1e-12 && bid >= 0 && static_cast<size_t>(bid) < branch_lengths.size())
+                    ? (branch_lengths[bid] / base_bl) : 1.0;
+                for (int r = 0; r < 3; ++r) {
+                    Scalar bl = wb.branch_lengths[r] * scale;
+                    Scalar dbl_dt = (base_bl > 1e-12) ? (wb.branch_lengths[r] / base_bl) : 0.0;
+                    if (branch_site || part == 2) {
+                        Matrix P_mix = Matrix::Zero(S, S);
+                        Matrix dP_mix = Matrix::Zero(S, S);
+                        for (int c = 0; c < 3; ++c) {
+                            if (br_w[c] <= 1e-12) continue;
+                            Matrix P, dP;
+                            if (part == 1) {
+                                P = mats_T[c].transition_matrix(bl * convs_T[c]);
+                                dP = (dbl_dt * convs_T[c]) * (mats_T[c].Q * P);
+                            } else if (part == 2) {
+                                P = mats_U[c].transition_matrix(bl * convs_U[c]);
+                                dP = (dbl_dt * convs_U[c]) * (mats_U[c].Q * P);
+                            } else {
+                                P = mats_R[c].transition_matrix(bl * convs_R[c]);
+                                dP = (dbl_dt * convs_R[c]) * (mats_R[c].Q * P);
+                            }
+                            P_mix.noalias() += br_w[c] * P;
+                            dP_mix.noalias() += br_w[c] * dP;
+                        }
+                        P_bridges_c[0][b_idx][r] = P_mix;
+                        dP_bridges_c[0][b_idx][r] = dP_mix;
+                        if (!branch_site) {
+                            P_bridges_c[1][b_idx][r] = P_mix;
+                            P_bridges_c[2][b_idx][r] = std::move(P_mix);
+                            dP_bridges_c[1][b_idx][r] = dP_mix;
+                            dP_bridges_c[2][b_idx][r] = std::move(dP_mix);
+                        }
+                    } else {
+                        for (int c = 0; c < 3; ++c) {
+                            if (weights[c] <= 1e-12) continue;
+                            if (part == 1) {
+                                Matrix P = mats_T[c].transition_matrix(bl * convs_T[c]);
+                                dP_bridges_c[c][b_idx][r] = (dbl_dt * convs_T[c]) * (mats_T[c].Q * P);
+                                P_bridges_c[c][b_idx][r] = std::move(P);
+                            } else {
+                                Matrix P = mats_R[c].transition_matrix(bl * convs_R[c]);
+                                dP_bridges_c[c][b_idx][r] = (dbl_dt * convs_R[c]) * (mats_R[c].Q * P);
+                                P_bridges_c[c][b_idx][r] = std::move(P);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        auto eval_bridge_dL = [&](int c, size_t b_idx, Eigen::Index b, const LikelihoodEngine::BatchedInsideOutsideWorkspace& ws) -> Scalar {
+            const auto& wb = tree.bridges[b_idx];
+            int32_t uid = wb.hub_node_id;
+            int32_t id_A = wb.children[0];
+            int32_t id_B = wb.children[1];
+            int32_t id_C = wb.children[2];
+            auto mA = ws.P_D[id_A].col(b);
+            auto mB = ws.P_D[id_B].col(b);
+            auto mC = ws.P_D[id_C].col(b);
+            auto u_col = ws.U[uid].col(b);
+            Scalar dL = 0.0;
+            if (wb.weights[0] > 0.0) {
+                Vector y0 = mA.cwiseProduct(mB);
+                dL += wb.weights[0] * u_col.cwiseProduct(mC).dot(dP_bridges_c[c][b_idx][0] * y0);
+            }
+            if (wb.weights[1] > 0.0) {
+                Vector y1 = mA.cwiseProduct(mC);
+                dL += wb.weights[1] * u_col.cwiseProduct(mB).dot(dP_bridges_c[c][b_idx][1] * y1);
+            }
+            if (wb.weights[2] > 0.0) {
+                Vector y2 = mB.cwiseProduct(mC);
+                dL += wb.weights[2] * u_col.cwiseProduct(mA).dot(dP_bridges_c[c][b_idx][2] * y2);
+            }
+            int boost = ws.boost_counts(uid, b);
+            while (boost > 0) { dL *= 1e150; boost--; }
+            while (boost < 0) { dL *= 1e-150; boost++; }
+            return dL;
+        };
+
         std::vector<Scalar> class_w = weights;
         if (branch_site) {
             class_w = {1.0, 0.0, 0.0};
@@ -899,7 +1039,8 @@ public:
 
                 if (branch_site) {
                     LikelihoodEngine::compute_inside_outside_batch_in_place(
-                        tree, aln, p_start, p_end, leaf_to_taxon, P_c[0], eq_freqs, S, io_c[0]
+                        tree, aln, p_start, p_end, leaf_to_taxon, P_c[0], eq_freqs, S, io_c[0],
+                        tree.bridges.empty() ? nullptr : &P_bridges_c[0]
                     );
                     for (Eigen::Index b = 0; b < B; ++b) {
                         size_t p = p_start + b;
@@ -922,12 +1063,26 @@ public:
                             }
                         }
                     }
+                    for (size_t b_idx = 0; b_idx < tree.bridges.size(); ++b_idx) {
+                        const auto& wb = tree.bridges[b_idx];
+                        int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                        if (bid >= 0 && bid != tree.root_id && static_cast<size_t>(bid) < num_nodes) {
+                            for (Eigen::Index b = 0; b < B; ++b) {
+                                Scalar L_b = io_c[0].likelihood(b);
+                                if (L_b > 0.0) {
+                                    size_t p = p_start + b;
+                                    pattern_grad(bid, p) += (aln.patterns[p].weight / L_b) * eval_bridge_dL(0, b_idx, b, io_c[0]);
+                                }
+                            }
+                        }
+                    }
                 } else {
                     post_w.leftCols(B).setZero();
                     for (int c = 0; c < 3; ++c) {
                         if (class_w[c] <= 1e-12) continue;
                         LikelihoodEngine::compute_inside_outside_batch_in_place(
-                            tree, aln, p_start, p_end, leaf_to_taxon, P_c[c], eq_freqs, S, io_c[c]
+                            tree, aln, p_start, p_end, leaf_to_taxon, P_c[c], eq_freqs, S, io_c[c],
+                            tree.bridges.empty() ? nullptr : &P_bridges_c[c]
                         );
                     }
                     for (Eigen::Index b = 0; b < B; ++b) {
@@ -968,6 +1123,23 @@ public:
                                     if (pw > 1e-12 && L_b > 0.0) {
                                         size_t p = p_start + b;
                                         pattern_grad(vid, p) += aln.patterns[p].weight * pw * (V_sub.col(b).dot(dP_D_sub.col(b)) / L_b);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    for (size_t b_idx = 0; b_idx < tree.bridges.size(); ++b_idx) {
+                        const auto& wb = tree.bridges[b_idx];
+                        int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                        if (bid >= 0 && bid != tree.root_id && static_cast<size_t>(bid) < num_nodes) {
+                            for (int c = 0; c < 3; ++c) {
+                                if (class_w[c] <= 1e-12) continue;
+                                for (Eigen::Index b = 0; b < B; ++b) {
+                                    Scalar pw = post_w(c, b);
+                                    Scalar L_b = io_c[c].likelihood(b);
+                                    if (pw > 1e-12 && L_b > 0.0) {
+                                        size_t p = p_start + b;
+                                        pattern_grad(bid, p) += aln.patterns[p].weight * pw * (eval_bridge_dL(c, b_idx, b, io_c[c]) / L_b);
                                     }
                                 }
                             }
