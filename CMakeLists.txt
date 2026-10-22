@@ -54,14 +54,19 @@ target_include_directories(hyphy3_core INTERFACE
 
 # Build metadata for the JSON output software block (consumed by
 # include/hyphy/core/json_output.hpp). git_commit is captured at configure
-# time; falls back to "unknown" outside a git checkout.
-execute_process(
-    COMMAND git rev-parse --short HEAD
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    OUTPUT_VARIABLE HYPHY3_GIT_COMMIT
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
-)
+# time; falls back to "unknown" outside a git checkout. Pass
+# -DHYPHY3_GIT_COMMIT=<value> to pin it: the commit becomes a compile
+# definition of every target, so a value that changes per commit defeats ccache
+# (CI pins it to "ci").
+if(NOT DEFINED HYPHY3_GIT_COMMIT)
+    execute_process(
+        COMMAND git rev-parse --short HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE HYPHY3_GIT_COMMIT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+endif()
 if(NOT HYPHY3_GIT_COMMIT)
     set(HYPHY3_GIT_COMMIT "unknown")
 endif()
