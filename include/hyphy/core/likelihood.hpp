@@ -1113,9 +1113,14 @@ public:
         if (!tree.bridges.empty()) {
             P_bridges.resize(tree.bridges.size());
             for (size_t k = 0; k < tree.bridges.size(); ++k) {
+                const auto& wb = tree.bridges[k];
+                int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                bool is_test = (!has_partition || (bid >= 0 && static_cast<size_t>(bid) < is_test_branch->size() && (*is_test_branch)[bid]));
+                const MG94Matrix& mg_b = is_test ? mg_test : mg_bg;
+                Scalar conv_b = is_test ? conv_test : conv_bg;
                 for (int r = 0; r < 3; ++r) {
-                    if (tree.bridges[k].weights[r] > 0.0 || r == 0) {
-                        P_bridges[k][r] = mg_test.transition_matrix(tree.bridges[k].branch_lengths[r] * conv_test);
+                    if (wb.weights[r] > 0.0 || r == 0) {
+                        P_bridges[k][r] = mg_b.transition_matrix(wb.branch_lengths[r] * conv_b);
                     } else {
                         P_bridges[k][r] = Matrix::Identity(S, S);
                     }

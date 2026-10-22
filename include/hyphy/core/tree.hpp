@@ -180,7 +180,8 @@ public:
         VecType& out_L,
         double& out_child_scale_sum,
         Scalar branch_scale = 1.0,
-        double* out_node_boost = nullptr
+        double* out_node_boost = nullptr,
+        const std::vector<std::array<MatType, 3>>* P_bridges = nullptr
     ) const {
         const double SCALER_THRESH = 1e-150;
         const double SCALER_UP = 1e150;
@@ -203,19 +204,25 @@ public:
 
             out_L = VecType::Zero(M_A.size());
             if (wb.weights[0] > 0.0) {
-                MatType P1 = model.transition_matrix(wb.branch_lengths[0] * branch_scale);
+                MatType P1 = (P_bridges != nullptr)
+                    ? (*P_bridges)[static_cast<size_t>(b_idx)][0]
+                    : model.transition_matrix(wb.branch_lengths[0] * branch_scale);
                 VecType Y1 = M_A.cwiseProduct(M_B);
                 VecType D1 = (P1 * Y1).cwiseProduct(M_C);
                 out_L.noalias() += wb.weights[0] * D1;
             }
             if (wb.weights[1] > 0.0) {
-                MatType P2 = model.transition_matrix(wb.branch_lengths[1] * branch_scale);
+                MatType P2 = (P_bridges != nullptr)
+                    ? (*P_bridges)[static_cast<size_t>(b_idx)][1]
+                    : model.transition_matrix(wb.branch_lengths[1] * branch_scale);
                 VecType Y2 = M_A.cwiseProduct(M_C);
                 VecType D2 = (P2 * Y2).cwiseProduct(M_B);
                 out_L.noalias() += wb.weights[1] * D2;
             }
             if (wb.weights[2] > 0.0) {
-                MatType P3 = model.transition_matrix(wb.branch_lengths[2] * branch_scale);
+                MatType P3 = (P_bridges != nullptr)
+                    ? (*P_bridges)[static_cast<size_t>(b_idx)][2]
+                    : model.transition_matrix(wb.branch_lengths[2] * branch_scale);
                 VecType Y3 = M_B.cwiseProduct(M_C);
                 VecType D3 = (P3 * Y3).cwiseProduct(M_A);
                 out_L.noalias() += wb.weights[2] * D3;

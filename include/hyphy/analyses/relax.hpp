@@ -97,7 +97,7 @@ struct RELAXSettings {
     // Alternating (distribution <-> branch lengths) optimization after the tree-scale fit.
     int max_joint_cycles = 15;
     Scalar joint_tolerance = 1e-3;
-    int grid_size = 0;       // 0 = default curated grid (8 null / 11 alt); > base size appends Halton points
+    int grid_size = 0;       // 0 = default curated grid (8 null / 12 alt); > base size appends Halton points
     int starting_points = 1; // Number of top-ranked initial seeds refined via Nelder-Mead
     bool verbose = false;
 };

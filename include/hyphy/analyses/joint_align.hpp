@@ -3284,32 +3284,6 @@ public:
             );
         }
 
-        // Compute empirical amino-acid frequencies across the candidate cohort to calibrate the exact random null expectation
-        std::array<Scalar, 20> aa_counts{};
-        aa_counts.fill(1.0);
-        auto aa_char_to_idx = [](char a) -> int {
-            static const std::string order = "ACDEFGHIKLMNPQRSTVWY";
-            auto pos = order.find(a);
-            return (pos == std::string::npos) ? -1 : static_cast<int>(pos);
-        };
-        for (size_t idx : length_ok_indices) {
-            for (int8_t sc : candidates[idx].codons) {
-                if (sc >= 0 && sc < gcode->num_sense_codons) {
-                    int a = aa_char_to_idx(gcode->sense_codon_aa[sc]);
-                    if (a >= 0) aa_counts[a] += 1.0;
-                }
-            }
-        }
-        Scalar total_aa = 0.0;
-        for (Scalar c : aa_counts) total_aa += c;
-        std::array<Scalar, 20> p_aa{};
-        for (int a = 0; a < 20; ++a) p_aa[a] = aa_counts[a] / std::max<Scalar>(1.0, total_aa);
-
-        // Expected probability of exact amino-acid match between two random codons: sum_a p_a^2
-        Scalar p_rand_aa = 0.0;
-        for (int a = 0; a < 20; ++a) p_rand_aa += p_aa[a] * p_aa[a];
-        p_rand_aa = std::clamp<Scalar>(p_rand_aa, 0.04, 0.20);
-
         auto aa_sim_score = [&](int8_t c1, int8_t c2) -> Scalar {
             if (c1 < 0 || c2 < 0) return 0.0;
             if (c1 == c2) return 1.0;
@@ -3321,73 +3295,175 @@ public:
             return 0.0;
         };
 
+        // Semi-global overlap banded DP helper: aligns shorter sequence (L_eff = min(Li, Lj))
+        // against longer sequence (L_max = max(Li, Lj)) with free 5'/3' overhangs on the longer
+        // sequence within band slack B0 = 24, returning {norm_dp, aa_id} normalized by L_eff.
+        auto run_semiglobal_banded_dp = [&](const std::vector<int8_t>& s_a,
+                                            const std::vector<int8_t>& s_b,
+                                            std::vector<Scalar>& prev,
+                                            std::vector<Scalar>& curr,
+                                            std::vector<size_t>& prev_id,
+                                            std::vector<size_t>& curr_id) -> std::pair<Scalar, Scalar> {
+            const auto& s_short = (s_a.size() <= s_b.size()) ? s_a : s_b;
+            const auto& s_long  = (s_a.size() <= s_b.size()) ? s_b : s_a;
+            size_t Ls = s_short.size();
+            size_t Ll = s_long.size();
+            if (Ls == 0 || Ll == 0) return {0.0, 0.0};
+
+            constexpr int B0 = 24;
+            constexpr Scalar kNegInf = -1e9;
+            int dL = static_cast<int>(Ll - Ls);
+            if (prev.size() < Ll + 1) {
+                prev.resize(Ll + 1);
+                curr.resize(Ll + 1);
+                prev_id.resize(Ll + 1);
+                curr_id.resize(Ll + 1);
+            }
+            std::fill(prev.begin(), prev.begin() + static_cast<ptrdiff_t>(Ll + 1), kNegInf);
+            std::fill(prev_id.begin(), prev_id.begin() + static_cast<ptrdiff_t>(Ll + 1), 0);
+            int init_max = std::min(static_cast<int>(Ll), dL + B0);
+            for (int c = 0; c <= init_max; ++c) {
+                prev[static_cast<size_t>(c)] = 0.0;
+            }
+
+            for (size_t r = 1; r <= Ls; ++r) {
+                int c_min = std::max(1, static_cast<int>(r) - B0);
+                int c_max = std::min(static_cast<int>(Ll), static_cast<int>(r) + dL + B0);
+                std::fill(curr.begin(), curr.begin() + static_cast<ptrdiff_t>(Ll + 1), kNegInf);
+                std::fill(curr_id.begin(), curr_id.begin() + static_cast<ptrdiff_t>(Ll + 1), 0);
+                if (static_cast<int>(r) <= B0) {
+                    curr[0] = -0.65 * static_cast<Scalar>(r);
+                }
+                int8_t ci = s_short[r - 1];
+                for (int c = c_min; c <= c_max; ++c) {
+                    size_t cu = static_cast<size_t>(c);
+                    int8_t cj = s_long[cu - 1];
+                    Scalar m_score = prev[cu - 1] + aa_sim_score(ci, cj);
+                    Scalar d_score = prev[cu] - 0.65;
+                    Scalar i_score = curr[cu - 1] - 0.65;
+                    if (m_score >= d_score && m_score >= i_score) {
+                        curr[cu] = m_score;
+                        bool exact_aa = (ci >= 0 && cj >= 0 && gcode->sense_codon_aa[ci] == gcode->sense_codon_aa[cj]);
+                        curr_id[cu] = prev_id[cu - 1] + (exact_aa ? 1 : 0);
+                    } else if (d_score >= i_score) {
+                        curr[cu] = d_score;
+                        curr_id[cu] = prev_id[cu];
+                    } else {
+                        curr[cu] = i_score;
+                        curr_id[cu] = curr_id[cu - 1];
+                    }
+                }
+                std::swap(prev, curr);
+                std::swap(prev_id, curr_id);
+            }
+
+            int c_start = std::max(1, static_cast<int>(Ls) - B0);
+            size_t best_c = static_cast<size_t>(c_start);
+            Scalar best_score = prev[best_c];
+            for (size_t c = static_cast<size_t>(c_start) + 1; c <= Ll; ++c) {
+                if (prev[c] > best_score) {
+                    best_score = prev[c];
+                    best_c = c;
+                }
+            }
+            Scalar L_eff = std::max<Scalar>(1.0, static_cast<Scalar>(Ls));
+            return {best_score / L_eff, static_cast<Scalar>(prev_id[best_c]) / L_eff};
+        };
+
+        auto splitmix64_next = [](uint64_t& state) -> uint64_t {
+            uint64_t z = (state += 0x9E3779B97F4A7C15ULL);
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+            return z ^ (z >> 31);
+        };
+
+        auto shuffle_codons_det = [&](std::vector<int8_t>& seq, uint64_t& rng_state) {
+            for (size_t i = seq.size(); i > 1; --i) {
+                size_t j = static_cast<size_t>(splitmix64_next(rng_state) % i);
+                std::swap(seq[i - 1], seq[j]);
+            }
+        };
+
         Matrix Z_mat = Matrix::Zero(M, M);
         Matrix ID_mat = Matrix::Zero(M, M);
+        Matrix MuID_mat = Matrix::Zero(M, M);
 
         #pragma omp parallel for schedule(dynamic)
         for (size_t a = 0; a < M; ++a) {
             const auto& seq_i = candidates[length_ok_indices[a]].codons;
             size_t Li = seq_i.size();
+            std::vector<Scalar> prev, curr;
+            std::vector<size_t> prev_id, curr_id;
+            std::vector<int8_t> shuf_i, shuf_j;
+
             for (size_t b = a + 1; b < M; ++b) {
                 const auto& seq_j = candidates[length_ok_indices[b]].codons;
                 size_t Lj = seq_j.size();
                 if (Li == 0 || Lj == 0) continue;
 
-                int B = static_cast<int>(std::max<size_t>(24, (Li > Lj ? Li - Lj : Lj - Li) + 16));
-                std::vector<Scalar> prev(Lj + 1, 0.0), curr(Lj + 1, 0.0);
-                std::vector<size_t> prev_id(Lj + 1, 0), curr_id(Lj + 1, 0);
+                auto [norm_dp, aa_id] = run_semiglobal_banded_dp(seq_i, seq_j, prev, curr, prev_id, curr_id);
+                Scalar L_eff = std::max<Scalar>(1.0, static_cast<Scalar>(std::min(Li, Lj)));
 
-                for (size_t r = 1; r <= Li; ++r) {
-                    int c_min = std::max(1, static_cast<int>(r) - B);
-                    int c_max = std::min(static_cast<int>(Lj), static_cast<int>(r) + B);
-                    std::fill(curr.begin(), curr.end(), 0.0);
-                    std::fill(curr_id.begin(), curr_id.end(), 0);
-                    for (int c = c_min; c <= c_max; ++c) {
-                        int8_t ci = seq_i[r - 1];
-                        int8_t cj = seq_j[c - 1];
-                        Scalar m_score = prev[c - 1] + aa_sim_score(ci, cj);
-                        Scalar d_score = prev[c] - 0.65;
-                        Scalar i_score = curr[c - 1] - 0.65;
-                        if (m_score >= d_score && m_score >= i_score) {
-                            curr[c] = m_score;
-                            bool exact_aa = (ci >= 0 && cj >= 0 && gcode->sense_codon_aa[ci] == gcode->sense_codon_aa[cj]);
-                            curr_id[c] = prev_id[c - 1] + (exact_aa ? 1 : 0);
-                        } else if (d_score >= i_score) {
-                            curr[c] = d_score;
-                            curr_id[c] = prev_id[c];
-                        } else {
-                            curr[c] = i_score;
-                            curr_id[c] = curr_id[c - 1];
-                        }
-                    }
-                    std::swap(prev, curr);
-                    std::swap(prev_id, curr_id);
+                // Calibrate composition- and length-matched null via K = 16 codon-shuffled decoys
+                // combined with analytical variance shrinkage (prior weight nu_0 = 16).
+                constexpr int K_decoys = 16;
+                constexpr Scalar nu_0 = 16.0;
+                std::array<Scalar, K_decoys> id_null{};
+                std::array<Scalar, K_decoys> dp_null{};
+                shuf_i = seq_i;
+                shuf_j = seq_j;
+                uint64_t rng_state = 0x9E3779B97F4A7C15ULL ^
+                                     (static_cast<uint64_t>(a) * 1315423911ULL +
+                                      static_cast<uint64_t>(b) * 2654435761ULL);
+
+                Scalar sum_id = 0.0, sum_dp = 0.0;
+                for (int k = 0; k < K_decoys; ++k) {
+                    shuffle_codons_det(shuf_i, rng_state);
+                    shuffle_codons_det(shuf_j, rng_state);
+                    auto [dp_k, id_k] = run_semiglobal_banded_dp(shuf_i, shuf_j, prev, curr, prev_id, curr_id);
+                    id_null[static_cast<size_t>(k)] = id_k;
+                    dp_null[static_cast<size_t>(k)] = dp_k;
+                    sum_id += id_k;
+                    sum_dp += dp_k;
                 }
+                Scalar mu_id = sum_id / static_cast<Scalar>(K_decoys);
+                Scalar mu_dp = sum_dp / static_cast<Scalar>(K_decoys);
 
-                Scalar L_eff = static_cast<Scalar>(std::min(Li, Lj));
-                Scalar L_max = static_cast<Scalar>(std::max(Li, Lj));
-                Scalar aa_id = static_cast<Scalar>(prev_id[Lj]) / std::max<Scalar>(1.0, L_max);
+                Scalar var_id_samp = 0.0, var_dp_samp = 0.0;
+                for (int k = 0; k < K_decoys; ++k) {
+                    Scalar d_id = id_null[static_cast<size_t>(k)] - mu_id;
+                    Scalar d_dp = dp_null[static_cast<size_t>(k)] - mu_dp;
+                    var_id_samp += d_id * d_id;
+                    var_dp_samp += d_dp * d_dp;
+                }
+                var_id_samp /= static_cast<Scalar>(K_decoys - 1);
+                var_dp_samp /= static_cast<Scalar>(K_decoys - 1);
 
-                // Calibrated binomial + alignment Z-score against random sequence pairing:
-                // Under random global/banded alignment with gap penalty 0.65, a random pair achieves
-                // ~1.85 * p_rand_aa fractional AA matches by local gap shifting.
-                Scalar p_null = std::min<Scalar>(0.35, 1.85 * p_rand_aa);
-                Scalar sd_null = std::sqrt(p_null * (1.0 - p_null) / std::max<Scalar>(1.0, L_eff));
-                Scalar z_id = (aa_id - p_null) / std::max<Scalar>(1e-4, sd_null);
+                Scalar p_clamped = std::clamp<Scalar>(mu_id, 0.05, 0.95);
+                Scalar var_id_plug = (p_clamped * (1.0 - p_clamped)) / L_eff;
+                Scalar var_dp_plug = (0.35 * 0.35) / L_eff;
 
-                // Also check normalized DP score excess over random banded expectation (~0.21 * L_eff)
-                Scalar norm_dp = prev[Lj] / std::max<Scalar>(1.0, L_max);
-                Scalar z_dp = (norm_dp - 0.21) / std::max<Scalar>(1e-4, 0.45 / std::sqrt(std::max<Scalar>(1.0, L_eff)));
+                Scalar var_id_reg = (1.0 + 1.0 / static_cast<Scalar>(K_decoys)) *
+                    std::max(var_id_plug, (nu_0 * var_id_plug + static_cast<Scalar>(K_decoys - 1) * var_id_samp) /
+                                          (nu_0 + static_cast<Scalar>(K_decoys - 1)));
+                Scalar var_dp_reg = (1.0 + 1.0 / static_cast<Scalar>(K_decoys)) *
+                    std::max(var_dp_plug, (nu_0 * var_dp_plug + static_cast<Scalar>(K_decoys - 1) * var_dp_samp) /
+                                          (nu_0 + static_cast<Scalar>(K_decoys - 1)));
+
+                Scalar z_id = (aa_id - mu_id) / std::max<Scalar>(1e-4, std::sqrt(var_id_reg));
+                Scalar z_dp = (norm_dp - mu_dp) / std::max<Scalar>(1e-4, std::sqrt(var_dp_reg));
                 Scalar z_comb = 0.65 * z_id + 0.35 * z_dp;
 
                 Z_mat(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)) = z_comb;
                 Z_mat(static_cast<Eigen::Index>(b), static_cast<Eigen::Index>(a)) = z_comb;
                 ID_mat(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)) = aa_id;
                 ID_mat(static_cast<Eigen::Index>(b), static_cast<Eigen::Index>(a)) = aa_id;
+                MuID_mat(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)) = mu_id;
+                MuID_mat(static_cast<Eigen::Index>(b), static_cast<Eigen::Index>(a)) = mu_id;
             }
         }
 
-        // Find connected components of the homology graph (edge exists iff Z_ab >= min_homology_z and ID_ab >= 0.18)
+        // Find connected components of the homology graph (edge exists iff Z_ab >= min_homology_z and ID_ab >= max(0.18, mu_ID + 0.04))
         std::vector<int> comp_id(M, -1);
         int num_comps = 0;
         int best_comp = -1;
@@ -3402,9 +3478,12 @@ public:
             while (head < q.size()) {
                 size_t u = q[head++];
                 for (size_t v = 0; v < M; ++v) {
+                    Eigen::Index eu = static_cast<Eigen::Index>(u);
+                    Eigen::Index ev = static_cast<Eigen::Index>(v);
+                    Scalar min_id_edge = std::max<Scalar>(0.18, MuID_mat(eu, ev) + 0.04);
                     if (comp_id[v] == -1 &&
-                        Z_mat(static_cast<Eigen::Index>(u), static_cast<Eigen::Index>(v)) >= settings.min_homology_z &&
-                        ID_mat(static_cast<Eigen::Index>(u), static_cast<Eigen::Index>(v)) >= 0.18) {
+                        Z_mat(eu, ev) >= settings.min_homology_z &&
+                        ID_mat(eu, ev) >= min_id_edge) {
                         comp_id[v] = cid;
                         q.push_back(v);
                     }

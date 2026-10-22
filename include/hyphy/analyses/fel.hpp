@@ -262,7 +262,8 @@ public:
         const MG94Matrix& mg94_model,
         const std::vector<Matrix>& P_branches,
         std::vector<Vector>& node_L,
-        std::vector<double>& node_log_scale
+        std::vector<double>& node_log_scale,
+        const std::vector<std::array<Matrix, 3>>* P_bridges = nullptr
     ) {
         int S = mg94_model.pi.size();
 
@@ -275,7 +276,7 @@ public:
                 node_log_scale[node_id] = 0.0;
             } else {
                 double child_scale_sum = 0.0;
-                tree.eval_internal_node_with_model(node_id, P_branches, mg94_model, node_L, node_log_scale, node_L[node_id], child_scale_sum);
+                tree.eval_internal_node_with_model(node_id, P_branches, mg94_model, node_L, node_log_scale, node_L[node_id], child_scale_sum, 1.0, nullptr, P_bridges);
                 node_log_scale[node_id] = child_scale_sum;
             }
         }
@@ -295,10 +296,11 @@ public:
         const std::vector<size_t>& leaf_to_taxon,
         const MG94Matrix& mg94_model,
         const std::vector<Matrix>& P_branches,
-        std::vector<Vector>& node_L
+        std::vector<Vector>& node_L,
+        const std::vector<std::array<Matrix, 3>>* P_bridges = nullptr
     ) {
         std::vector<double> node_log_scale(tree.num_nodes(), 0.0);
-        Scalar log_l = compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg94_model, P_branches, node_L, node_log_scale);
+        Scalar log_l = compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg94_model, P_branches, node_L, node_log_scale, P_bridges);
         return (log_l > -1e10) ? std::exp(log_l) : 0.0;
     }
 
@@ -422,6 +424,7 @@ public:
 
         // Branch subset path: Test vs Background (3-parameter Alternative vs 2-parameter Null)
         MG94Matrix mg_test, mg_bg;
+        std::vector<std::array<Matrix, 3>> P_bridges(tree.bridges.size());
 
         auto eval_pattern_lnl_subset = [&](Scalar a, Scalar b_test, Scalar b_bg) -> Scalar {
             MG94Parameters p_t = base_params;
@@ -429,6 +432,7 @@ public:
             p_t.beta = b_test;
             mg_test.update(p_t, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
 
+            const std::vector<std::array<Matrix, 3>>* p_bridges_ptr = nullptr;
             if (std::abs(b_test - b_bg) < 1e-9) {
                 for (const auto& node : tree.nodes) {
                     if (node.id != tree.root_id) {
@@ -450,9 +454,22 @@ public:
                         }
                     }
                 }
+                if (!tree.bridges.empty()) {
+                    for (size_t k = 0; k < tree.bridges.size(); ++k) {
+                        const auto& wb = tree.bridges[k];
+                        int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                        const MG94Matrix& mg_br = (bid >= 0 && static_cast<size_t>(bid) < is_test_branch.size() && !is_test_branch[bid]) ? mg_bg : mg_test;
+                        for (int r = 0; r < 3; ++r) {
+                            if (wb.weights[r] > 0.0 || r == 0) {
+                                P_bridges[k][r] = mg_br.transition_matrix(wb.branch_lengths[r]);
+                            }
+                        }
+                    }
+                    p_bridges_ptr = &P_bridges;
+                }
             }
 
-            return compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg_test, P_branches, thread_node_L, thread_node_scale);
+            return compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg_test, P_branches, thread_node_L, thread_node_scale, p_bridges_ptr);
         };
 
         const std::vector<std::array<Scalar, 3>> start_grid_3d = {

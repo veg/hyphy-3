@@ -53,7 +53,7 @@ static void print_relax_usage(const char* prog) {
               << "  " << Console::brand("--srv") << " <Yes|No>       Synonymous rate variation (supported: No in standalone hyphy_relax; use hyphy_busted --phenotype --relax)\n"
               << "  " << Console::brand("--multiple-hits") << " <m>  Multi-hit mode (supported: None in standalone hyphy_relax; use hyphy_busted --phenotype --relax)\n"
               << "  " << Console::brand("--error-sink") << " <Yes|No> Error-sink class (supported: No in standalone hyphy_relax; use hyphy_busted --phenotype --relax)\n"
-              << "  " << Console::brand("--grid-size") << " <N>       Number of initial candidate points evaluated for RELAX fits (default: 8 null / 11 alt)\n"
+              << "  " << Console::brand("--grid-size") << " <N>       Number of initial candidate points evaluated for RELAX fits (default: 8 null / 12 alt)\n"
               << "  " << Console::brand("--starting-points") << " <N> Number of top-ranked initial seeds refined via Nelder-Mead (default: 1)\n"
               << "  " << Console::brand("--progress") << "           Force interactive progress bar\n"
               << "  " << Console::brand("--no-progress") << "        Disable progress bar\n"

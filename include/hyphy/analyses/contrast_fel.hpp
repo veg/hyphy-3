@@ -500,7 +500,8 @@ public:
         const MG94Matrix& mg94_model,
         const std::vector<Matrix>& P_branches,
         std::vector<Vector>& node_L,
-        std::vector<double>& node_log_scale
+        std::vector<double>& node_log_scale,
+        const std::vector<std::array<Matrix, 3>>* P_bridges = nullptr
     ) {
         int S = mg94_model.pi.size();
 
@@ -513,7 +514,7 @@ public:
                 node_log_scale[node_id] = 0.0;
             } else {
                 double child_scale_sum = 0.0;
-                tree.eval_internal_node_with_model(node_id, P_branches, mg94_model, node_L, node_log_scale, node_L[node_id], child_scale_sum);
+                tree.eval_internal_node_with_model(node_id, P_branches, mg94_model, node_L, node_log_scale, node_L[node_id], child_scale_sum, 1.0, nullptr, P_bridges);
                 node_log_scale[node_id] = child_scale_sum;
             }
         }
@@ -569,6 +570,7 @@ public:
         std::vector<Vector> thread_node_L(tree.num_nodes(), Vector::Zero(S));
         std::vector<double> thread_node_scale(tree.num_nodes(), 0.0);
         std::vector<Matrix> P_branches(tree.num_nodes());
+        std::vector<std::array<Matrix, 3>> P_bridges(tree.bridges.size());
 
         // Pre-allocate matrices per group
         std::vector<MG94Matrix> mg_groups(K);
@@ -589,20 +591,39 @@ public:
                 mg_bg.update(p_bg, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
             }
 
+            auto model_for_node = [&](int32_t nid) -> const MG94Matrix& {
+                int gid = (nid >= 0 && static_cast<size_t>(nid) < node_group_id.size()) ? node_group_id[nid] : -1;
+                if (gid >= 0 && gid < static_cast<int>(K)) {
+                    return mg_groups[gid];
+                } else if (has_background) {
+                    return mg_bg;
+                } else {
+                    return mg_groups[0];
+                }
+            };
+
             for (const auto& node : tree.nodes) {
                 if (node.id != tree.root_id) {
-                    int gid = node_group_id[node.id];
-                    if (gid >= 0 && gid < static_cast<int>(K)) {
-                        P_branches[node.id] = mg_groups[gid].transition_matrix(node.branch_length);
-                    } else if (has_background) {
-                        P_branches[node.id] = mg_bg.transition_matrix(node.branch_length);
-                    } else {
-                        P_branches[node.id] = mg_groups[0].transition_matrix(node.branch_length);
-                    }
+                    P_branches[node.id] = model_for_node(node.id).transition_matrix(node.branch_length);
                 }
             }
 
-            return compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg_groups[0], P_branches, thread_node_L, thread_node_scale);
+            const std::vector<std::array<Matrix, 3>>* p_bridges_ptr = nullptr;
+            if (!tree.bridges.empty()) {
+                for (size_t k = 0; k < tree.bridges.size(); ++k) {
+                    const auto& wb = tree.bridges[k];
+                    int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                    const MG94Matrix& mg_br = model_for_node(bid);
+                    for (int r = 0; r < 3; ++r) {
+                        if (wb.weights[r] > 0.0 || r == 0) {
+                            P_bridges[k][r] = mg_br.transition_matrix(wb.branch_lengths[r]);
+                        }
+                    }
+                }
+                p_bridges_ptr = &P_bridges;
+            }
+
+            return compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg_groups[0], P_branches, thread_node_L, thread_node_scale, p_bridges_ptr);
         };
 
         // Ridge Shrinkage Penalty Calculation
