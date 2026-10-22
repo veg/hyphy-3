@@ -250,7 +250,32 @@ public:
                 }
             }
 
-            return FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_branches, thread_node_L, thread_node_scale);
+            std::vector<std::array<Matrix, 3>> P_bridges;
+            const std::vector<std::array<Matrix, 3>>* p_bridges_ptr = nullptr;
+            if (!tree.bridges.empty()) {
+                P_bridges.resize(tree.bridges.size());
+                for (size_t k = 0; k < tree.bridges.size(); ++k) {
+                    const auto& wb = tree.bridges[k];
+                    int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                    bool is_test = (bid >= 0 && static_cast<size_t>(bid) < is_test_branch.size()) ? is_test_branch[bid] : true;
+                    for (int r = 0; r < 3; ++r) {
+                        if (wb.weights[r] > 0.0 || r == 0) {
+                            Scalar tbl = wb.branch_lengths[r];
+                            if (is_test) {
+                                P_bridges[k][r] = p1 * mg1.transition_matrix(tbl) +
+                                                  p_plus_wt * mg_plus.transition_matrix(tbl);
+                            } else {
+                                P_bridges[k][r] = mg_bg.transition_matrix(tbl);
+                            }
+                        } else {
+                            P_bridges[k][r] = Matrix::Identity(S, S);
+                        }
+                    }
+                }
+                p_bridges_ptr = &P_bridges;
+            }
+
+            return FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_branches, thread_node_L, thread_node_scale, p_bridges_ptr);
         };
 
         // Construct grid starting points matching HyPhy 2.5 MEME.bf
@@ -488,6 +513,37 @@ public:
                 }
             }
 
+            std::vector<std::array<Matrix, 3>> P_bridges_1, P_bridges_plus, P_bridges_mix, P_bridges_temp;
+            const std::vector<std::array<Matrix, 3>>* p_bridges_temp_ptr = nullptr;
+            if (!tree.bridges.empty()) {
+                P_bridges_1.resize(tree.bridges.size());
+                P_bridges_plus.resize(tree.bridges.size());
+                P_bridges_mix.resize(tree.bridges.size());
+                for (size_t k = 0; k < tree.bridges.size(); ++k) {
+                    const auto& wb = tree.bridges[k];
+                    int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                    bool is_test = (bid >= 0 && static_cast<size_t>(bid) < is_test_branch.size()) ? is_test_branch[bid] : true;
+                    for (int r = 0; r < 3; ++r) {
+                        if (wb.weights[r] > 0.0 || r == 0) {
+                            Scalar tbl = wb.branch_lengths[r];
+                            P_bridges_1[k][r] = mg1.transition_matrix(tbl);
+                            P_bridges_plus[k][r] = mg_plus.transition_matrix(tbl);
+                            if (is_test) {
+                                P_bridges_mix[k][r] = res.p1 * P_bridges_1[k][r] + res.p_plus * P_bridges_plus[k][r];
+                            } else {
+                                P_bridges_mix[k][r] = mg_bg.transition_matrix(tbl);
+                            }
+                        } else {
+                            P_bridges_1[k][r] = Matrix::Identity(S, S);
+                            P_bridges_plus[k][r] = Matrix::Identity(S, S);
+                            P_bridges_mix[k][r] = Matrix::Identity(S, S);
+                        }
+                    }
+                }
+                P_bridges_temp = P_bridges_mix;
+                p_bridges_temp_ptr = &P_bridges_temp;
+            }
+
             int branches_under_sel = 0;
             std::vector<Matrix> P_temp = P_mix;
             for (const auto& node : tree.nodes) {
@@ -497,15 +553,35 @@ public:
                         res.branch_ebf[node.id] = 1.0;
                         continue;
                     }
-                    // Conditional on branch node.id being in class 1
-                    P_temp[node.id] = P1[node.id];
-                    Scalar log_L1 = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale);
+                    int bridge_k = -1;
+                    for (size_t k = 0; k < tree.bridges.size(); ++k) {
+                        const auto& wb = tree.bridges[k];
+                        if (wb.bridge_node_id == node.id && wb.bridge_node_id != wb.hub_node_id) {
+                            bridge_k = static_cast<int>(k);
+                            break;
+                        }
+                    }
+                    Scalar log_L1 = -1e20;
+                    Scalar log_L_plus = -1e20;
+                    if (bridge_k >= 0) {
+                        P_bridges_temp[static_cast<size_t>(bridge_k)] = P_bridges_1[static_cast<size_t>(bridge_k)];
+                        log_L1 = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale, p_bridges_temp_ptr);
+                        P_bridges_temp[static_cast<size_t>(bridge_k)] = P_bridges_plus[static_cast<size_t>(bridge_k)];
+                        log_L_plus = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale, p_bridges_temp_ptr);
+                        P_bridges_temp[static_cast<size_t>(bridge_k)] = P_bridges_mix[static_cast<size_t>(bridge_k)];
+                    } else if (node.parent_id != INVALID_INDEX) {
+                        // Conditional on branch node.id being in class 1
+                        P_temp[node.id] = P1[node.id];
+                        log_L1 = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale, p_bridges_temp_ptr);
 
-                    // Conditional on branch node.id being in class +
-                    P_temp[node.id] = P_plus[node.id];
-                    Scalar log_L_plus = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale);
+                        // Conditional on branch node.id being in class +
+                        P_temp[node.id] = P_plus[node.id];
+                        log_L_plus = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale, p_bridges_temp_ptr);
 
-                    P_temp[node.id] = P_mix[node.id]; // restore
+                        P_temp[node.id] = P_mix[node.id]; // restore
+                    } else {
+                        continue;
+                    }
 
                     Scalar ebf = 1.0;
                     if (log_L1 > -1e10 && log_L_plus > -1e10) {

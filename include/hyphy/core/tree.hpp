@@ -107,19 +107,10 @@ public:
             out_child_scale_sum = node_log_scale[id_A] + node_log_scale[id_B] + node_log_scale[id_C];
 
             auto get_P_br = [&](int r) -> const MatType& {
-                if (P_bridges != nullptr) {
-                    return (*P_bridges)[static_cast<size_t>(b_idx)][r];
+                if (P_bridges == nullptr || static_cast<size_t>(b_idx) >= P_bridges->size()) {
+                    throw std::logic_error("Wheatstone bridge transition matrices P_bridges required when tree has bridges");
                 }
-                int32_t bid = wb.bridge_node_id;
-                if (bid >= 0 && bid != nid && static_cast<size_t>(bid) < P_branches.size() &&
-                    P_branches[bid].rows() == M_A.size()) {
-                    return P_branches[bid];
-                }
-                if (nid >= 0 && static_cast<size_t>(nid) < P_branches.size() &&
-                    P_branches[nid].rows() == M_A.size()) {
-                    return P_branches[nid];
-                }
-                return P_branches[id_A];
+                return (*P_bridges)[static_cast<size_t>(b_idx)][r];
             };
 
             out_L = VecType::Zero(M_A.size());
@@ -181,7 +172,8 @@ public:
         double& out_child_scale_sum,
         Scalar branch_scale = 1.0,
         double* out_node_boost = nullptr,
-        const std::vector<std::array<MatType, 3>>* P_bridges = nullptr
+        const std::vector<std::array<MatType, 3>>* P_bridges = nullptr,
+        int* out_node_boost_count = nullptr
     ) const {
         const double SCALER_THRESH = 1e-150;
         const double SCALER_UP = 1e150;
@@ -253,6 +245,9 @@ public:
         out_child_scale_sum -= boost_count * LOG_SCALER;
         if (out_node_boost != nullptr) {
             *out_node_boost = boost_mult;
+        }
+        if (out_node_boost_count != nullptr) {
+            *out_node_boost_count = boost_count;
         }
     }
 

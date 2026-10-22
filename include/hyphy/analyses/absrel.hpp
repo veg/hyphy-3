@@ -320,23 +320,26 @@ public:
         std::vector<std::array<Matrix, 3>> P_bridges(tree.bridges.size());
         if (tree.bridges.empty()) return P_bridges;
         int S = gcode->num_sense_codons;
+        Scalar syn_conv = 3.0 / std::max(syn_scale_factor, Scalar(0.1));
         for (size_t b = 0; b < tree.bridges.size(); ++b) {
             const auto& wb = tree.bridges[b];
             int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id &&
                            static_cast<size_t>(wb.bridge_node_id) < alphas.size())
                 ? wb.bridge_node_id
                 : wb.hub_node_id;
-            Scalar base_bl = (bid >= 0 && static_cast<size_t>(bid) < tree.nodes.size() &&
-                              tree.nodes[bid].branch_length > 1e-8)
-                ? tree.nodes[bid].branch_length
-                : ((wb.branch_lengths[0] > 1e-8) ? wb.branch_lengths[0] : 1e-4);
-            Scalar a_base = (bid >= 0 && static_cast<size_t>(bid) < alphas.size()) ? alphas[bid] : 0.01;
+            bool has_base_bl = (bid >= 0 && static_cast<size_t>(bid) < tree.nodes.size() &&
+                                tree.nodes[bid].branch_length > 1e-8 &&
+                                static_cast<size_t>(bid) < alphas.size());
+            Scalar base_bl = has_base_bl ? tree.nodes[bid].branch_length : 1.0;
+            Scalar a_base = has_base_bl ? alphas[bid] : 0.0;
             std::vector<MG94Matrix> mats(omegas[bid].size());
             for (size_t k = 0; k < omegas[bid].size(); ++k) {
                 mats[k] = build_q_matrix(omegas[bid][k]);
             }
             for (int r = 0; r < 3; ++r) {
-                Scalar a_r = a_base * (wb.branch_lengths[r] / base_bl);
+                Scalar a_r = has_base_bl
+                    ? (a_base * (wb.branch_lengths[r] / base_bl))
+                    : (wb.branch_lengths[r] * syn_conv);
                 P_bridges[b][r] = Matrix::Zero(S, S);
                 for (size_t k = 0; k < mats.size(); ++k) {
                     P_bridges[b][r].noalias() += weights[bid][k] * mats[k].transition_matrix(a_r);
@@ -511,7 +514,7 @@ public:
         std::vector<int32_t> branch_ids;
         branch_ids.reserve(num_branches);
         for (const auto& node : tree.nodes) {
-            if (node.id != tree.root_id) {
+            if (node.id != tree.root_id && node.parent_id != INVALID_INDEX) {
                 branch_ids.push_back(node.id);
             }
         }
@@ -1057,7 +1060,7 @@ public:
         // Sort branches by baseline length descending (with deterministic tie-breaker by node id)
         std::vector<int32_t> sorted_branches;
         for (const auto& node : tree.nodes) {
-            if (node.id != tree.root_id) {
+            if (node.id != tree.root_id && node.parent_id != INVALID_INDEX) {
                 sorted_branches.push_back(node.id);
             }
         }
@@ -1181,7 +1184,7 @@ public:
             // instead of calling SelfAdjointEigenSolver<Matrix> on every line-search step!
             size_t num_nodes = tree.num_nodes();
             std::vector<std::vector<MG94Matrix>> cached_branch_mg(num_nodes);
-            for (int32_t bid : all_branches) {
+            for (size_t bid = 0; bid < num_nodes; ++bid) {
                 size_t K_b = cur_omegas[bid].size();
                 cached_branch_mg[bid].resize(K_b);
                 for (size_t k = 0; k < K_b; ++k) {
@@ -1231,20 +1234,21 @@ public:
 
                     std::vector<std::array<Matrix, 3>> P_bridges(abs.tree.bridges.size());
                     std::vector<std::array<Matrix, 3>> dP_bridges(abs.tree.bridges.size());
+                    Scalar syn_conv = 3.0 / std::max(abs.syn_scale_factor, Scalar(0.1));
                     for (size_t b_idx = 0; b_idx < abs.tree.bridges.size(); ++b_idx) {
                         const auto& wb = abs.tree.bridges[b_idx];
                         int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id &&
                                        static_cast<size_t>(wb.bridge_node_id) < alpha_ref.size())
                             ? wb.bridge_node_id
                             : wb.hub_node_id;
-                        Scalar base_bl = (bid >= 0 && static_cast<size_t>(bid) < abs.tree.nodes.size() &&
-                                          abs.tree.nodes[bid].branch_length > 1e-8)
-                            ? abs.tree.nodes[bid].branch_length
-                            : ((wb.branch_lengths[0] > 1e-8) ? wb.branch_lengths[0] : 1e-4);
-                        Scalar a_base = (bid >= 0 && static_cast<size_t>(bid) < alpha_ref.size()) ? alpha_ref[bid] : 0.01;
+                        bool has_base_bl = (bid >= 0 && static_cast<size_t>(bid) < abs.tree.nodes.size() &&
+                                            abs.tree.nodes[bid].branch_length > 1e-8 &&
+                                            static_cast<size_t>(bid) < alpha_ref.size());
+                        Scalar base_bl = has_base_bl ? abs.tree.nodes[bid].branch_length : 1.0;
+                        Scalar a_base = has_base_bl ? alpha_ref[bid] : 0.0;
                         for (int r = 0; r < 3; ++r) {
-                            Scalar ratio = wb.branch_lengths[r] / base_bl;
-                            Scalar a_r = a_base * ratio;
+                            Scalar ratio = has_base_bl ? (wb.branch_lengths[r] / base_bl) : 0.0;
+                            Scalar a_r = has_base_bl ? (a_base * ratio) : (wb.branch_lengths[r] * syn_conv);
                             P_bridges[b_idx][r] = Matrix::Zero(S_val, S_val);
                             dP_bridges[b_idx][r] = Matrix::Zero(S_val, S_val);
                             for (size_t k = 0; k < omegas_ref[bid].size(); ++k) {
@@ -1478,6 +1482,7 @@ public:
             Matrix V_mat_ref(S, num_patterns);
             Matrix D_mat_ref(S, num_patterns);
             for (int32_t bid_iter : all_branches) {
+                if (tree.nodes[bid_iter].parent_id == INVALID_INDEX) continue;
                 int M = static_cast<int>(cur_omegas[bid_iter].size());
                 bool is_constrained = (bid_iter == constrained_bid);
                 if (is_constrained && M == 1) {
@@ -1587,7 +1592,7 @@ public:
         if (progress_cb) progress_cb("Phase 5: Hypothesis Testing for Selection", 0.80);
         std::vector<std::string> to_test;
         for (const auto& node : tree.nodes) {
-            if (node.id == tree.root_id) continue;
+            if (node.id == tree.root_id || node.parent_id == INVALID_INDEX) continue;
             bool test_this = (static_cast<size_t>(node.id) < is_test_branch.size()) ? is_test_branch[node.id] : true;
             if (test_this) {
                 to_test.push_back(node.name);

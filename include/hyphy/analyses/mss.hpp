@@ -853,7 +853,41 @@ public:
         }
     }
 
-    // Evaluate composite log-likelihood across all genes for a given partition and class_rates
+    Scalar evaluate_gene_log_l(
+        const GeneContext& g,
+        const MG94Matrix& m,
+        Scalar sc,
+        int S
+    ) const {
+        size_t nn = g.tree.num_nodes();
+        std::vector<Matrix> P_br(nn);
+        for (const auto& node : g.tree.nodes) {
+            if (node.id != g.tree.root_id) {
+                P_br[node.id] = m.transition_matrix(g.branch_tau[node.id] * sc);
+            }
+        }
+        std::vector<std::array<Matrix, 3>> P_bridges;
+        const std::vector<std::array<Matrix, 3>>* p_bridges_ptr = nullptr;
+        if (!g.tree.bridges.empty()) {
+            Scalar conv = (g.mg94_scale_factor > 0.0) ? (3.0 / g.mg94_scale_factor) : 3.0;
+            P_bridges.resize(g.tree.bridges.size());
+            for (size_t k = 0; k < g.tree.bridges.size(); ++k) {
+                for (int r = 0; r < 3; ++r) {
+                    if (g.tree.bridges[k].weights[r] > 0.0 || r == 0) {
+                        P_bridges[k][r] = m.transition_matrix(g.tree.bridges[k].branch_lengths[r] * conv * sc);
+                    } else {
+                        P_bridges[k][r] = Matrix::Identity(S, S);
+                    }
+                }
+            }
+            p_bridges_ptr = &P_bridges;
+        }
+        return LikelihoodEngine::compute_tree_log_likelihood_from_P(
+            g.tree, g.aln, P_br, m.pi, S, &g.leaf_to_taxon, p_bridges_ptr
+        );
+    }
+
+    // Evaluate composite log-likelihood across all genes for a given MSSPartition + class_rates
     Scalar evaluate_composite_log_l(
         const MSSPartition& part,
         const std::vector<Scalar>& class_rates,
@@ -875,16 +909,7 @@ public:
             m.update(p, g.aln.pos_nuc_frequencies, g.aln.codon_frequencies_f3x4, *code);
 
             Scalar g_scale = custom_gene_scalers ? (*custom_gene_scalers)[g_idx] : g.tree_scaler;
-            size_t num_nodes = g.tree.num_nodes();
-            std::vector<Matrix> P_branches(num_nodes);
-            for (const auto& node : g.tree.nodes) {
-                if (node.id != g.tree.root_id) {
-                    P_branches[node.id] = m.transition_matrix(g.branch_tau[node.id] * g_scale);
-                }
-            }
-            total_ll += LikelihoodEngine::compute_tree_log_likelihood_from_P(
-                g.tree, g.aln, P_branches, m.pi, S, &g.leaf_to_taxon
-            );
+            total_ll += evaluate_gene_log_l(g, m, g_scale, S);
         }
         return total_ll;
     }
@@ -937,12 +962,7 @@ public:
                     MG94Matrix m;
                     m.update(p, g.aln.pos_nuc_frequencies, g.aln.codon_frequencies_f3x4, *code);
                     auto [best_s, _] = Brent1D::minimize([&](Scalar sc) {
-                        size_t nn = g.tree.num_nodes();
-                        std::vector<Matrix> P_br(nn);
-                        for (const auto& node : g.tree.nodes) {
-                            if (node.id != g.tree.root_id) P_br[node.id] = m.transition_matrix(g.branch_tau[node.id] * sc);
-                        }
-                        return -LikelihoodEngine::compute_tree_log_likelihood_from_P(g.tree, g.aln, P_br, m.pi, S, &g.leaf_to_taxon);
+                        return -evaluate_gene_log_l(g, m, sc, S);
                     }, 1e-3, gene_scalers[g_idx], 1000.0, 1e-4, 40);
                     gene_scalers[g_idx] = best_s;
                 } else {
@@ -954,12 +974,7 @@ public:
                         p.syn_pair_rates = &syn_mat;
                         MG94Matrix m;
                         m.update(p, g.aln.pos_nuc_frequencies, g.aln.codon_frequencies_f3x4, *code);
-                        size_t nn = g.tree.num_nodes();
-                        std::vector<Matrix> P_br(nn);
-                        for (const auto& node : g.tree.nodes) {
-                            if (node.id != g.tree.root_id) P_br[node.id] = m.transition_matrix(g.branch_tau[node.id] * sc);
-                        }
-                        return -LikelihoodEngine::compute_tree_log_likelihood_from_P(g.tree, g.aln, P_br, m.pi, S, &g.leaf_to_taxon);
+                        return -evaluate_gene_log_l(g, m, sc, S);
                     }, gene_omegas[g_idx], gene_scalers[g_idx], 1e-5, 1000.0, 1e-4, 40);
                     gene_omegas[g_idx] = std::clamp(opt2.a, 1e-5, 50.0);
                     gene_scalers[g_idx] = std::clamp(opt2.b, 1e-3, 1000.0);
@@ -1015,12 +1030,7 @@ public:
                     MG94Matrix m;
                     m.update(p, g.aln.pos_nuc_frequencies, g.aln.codon_frequencies_f3x4, *code);
                     auto [best_s, _] = Brent1D::minimize([&](Scalar sc) {
-                        size_t nn = g.tree.num_nodes();
-                        std::vector<Matrix> P_br(nn);
-                        for (const auto& node : g.tree.nodes) {
-                            if (node.id != g.tree.root_id) P_br[node.id] = m.transition_matrix(g.branch_tau[node.id] * sc);
-                        }
-                        return -LikelihoodEngine::compute_tree_log_likelihood_from_P(g.tree, g.aln, P_br, m.pi, S, &g.leaf_to_taxon);
+                        return -evaluate_gene_log_l(g, m, sc, S);
                     }, 1e-3, gene_scalers[g_idx], 1000.0, 1e-4, 40);
                     gene_scalers[g_idx] = best_s;
                 } else {
@@ -1032,12 +1042,7 @@ public:
                         p.syn_pair_rates = &syn_mat;
                         MG94Matrix m;
                         m.update(p, g.aln.pos_nuc_frequencies, g.aln.codon_frequencies_f3x4, *code);
-                        size_t nn = g.tree.num_nodes();
-                        std::vector<Matrix> P_br(nn);
-                        for (const auto& node : g.tree.nodes) {
-                            if (node.id != g.tree.root_id) P_br[node.id] = m.transition_matrix(g.branch_tau[node.id] * sc);
-                        }
-                        return -LikelihoodEngine::compute_tree_log_likelihood_from_P(g.tree, g.aln, P_br, m.pi, S, &g.leaf_to_taxon);
+                        return -evaluate_gene_log_l(g, m, sc, S);
                     }, gene_omegas[g_idx], gene_scalers[g_idx], 1e-5, 1000.0, 1e-4, 40);
                     gene_omegas[g_idx] = std::clamp(opt2.a, 1e-5, 50.0);
                     gene_scalers[g_idx] = std::clamp(opt2.b, 1e-3, 1000.0);
@@ -1066,12 +1071,7 @@ public:
             MG94Matrix m;
             m.update(p, g.aln.pos_nuc_frequencies, g.aln.codon_frequencies_f3x4, *code);
             auto [best_s, best_nll] = Brent1D::minimize([&](Scalar sc) {
-                size_t nn = g.tree.num_nodes();
-                std::vector<Matrix> P_br(nn);
-                for (const auto& node : g.tree.nodes) {
-                    if (node.id != g.tree.root_id) P_br[node.id] = m.transition_matrix(g.branch_tau[node.id] * sc);
-                }
-                return -LikelihoodEngine::compute_tree_log_likelihood_from_P(g.tree, g.aln, P_br, m.pi, S, &g.leaf_to_taxon);
+                return -evaluate_gene_log_l(g, m, sc, S);
             }, 1e-3, gene_scalers[0], 1000.0, 1e-4, 40);
             if (-best_nll > prev_ll) {
                 gene_scalers[0] = best_s;
@@ -1569,12 +1569,7 @@ public:
                             MG94Matrix m;
                             m.update(p, g.aln.pos_nuc_frequencies, g.aln.codon_frequencies_f3x4, *code);
                             auto [best_s, _] = Brent1D::minimize([&](Scalar sc) {
-                                size_t nn = g.tree.num_nodes();
-                                std::vector<Matrix> P_br(nn);
-                                for (const auto& node : g.tree.nodes) {
-                                    if (node.id != g.tree.root_id) P_br[node.id] = m.transition_matrix(g.branch_tau[node.id] * sc);
-                                }
-                                return -LikelihoodEngine::compute_tree_log_likelihood_from_P(g.tree, g.aln, P_br, m.pi, S_local, &g.leaf_to_taxon);
+                                return -evaluate_gene_log_l(g, m, sc, S_local);
                             }, 1e-3, local_scalers[g_idx], 1000.0, 1e-4, 25);
                             local_scalers[g_idx] = best_s;
                         } else {
@@ -1586,12 +1581,7 @@ public:
                                 p.syn_pair_rates = &syn_mat_local;
                                 MG94Matrix m;
                                 m.update(p, g.aln.pos_nuc_frequencies, g.aln.codon_frequencies_f3x4, *code);
-                                size_t nn = g.tree.num_nodes();
-                                std::vector<Matrix> P_br(nn);
-                                for (const auto& node : g.tree.nodes) {
-                                    if (node.id != g.tree.root_id) P_br[node.id] = m.transition_matrix(g.branch_tau[node.id] * sc);
-                                }
-                                return -LikelihoodEngine::compute_tree_log_likelihood_from_P(g.tree, g.aln, P_br, m.pi, S_local, &g.leaf_to_taxon);
+                                return -evaluate_gene_log_l(g, m, sc, S_local);
                             }, local_omegas[g_idx], local_scalers[g_idx], 1e-5, 1000.0, 1e-4, 25);
                             local_omegas[g_idx] = std::clamp(opt2.a, 1e-5, 50.0);
                             local_scalers[g_idx] = std::clamp(opt2.b, 1e-3, 1000.0);
@@ -1697,21 +1687,18 @@ public:
             Scalar syn_frac = (tot_flux > 0.0) ? (syn_flux / tot_flux) : 0.0;
             Scalar ns_frac = (tot_flux > 0.0) ? (nonsyn_flux / tot_flux) : 0.0;
 
-            size_t nn = g.tree.num_nodes();
-            std::vector<Matrix> P_br(nn);
             Scalar base_T = 0.0, mss_T = 0.0;
             for (const auto& node : g.tree.nodes) {
                 if (node.id != g.tree.root_id) {
                     base_T += node.branch_length;
                     Scalar tau_scaled = g.branch_tau[node.id] * gs.tree_scaler;
-                    P_br[node.id] = m.transition_matrix(tau_scaled);
                     mss_T += tau_scaled * (m.scale_factor / 3.0);
                 }
             }
             gs.baseline_tree_length = base_T;
             gs.synonymous_tree_length = mss_T * syn_frac;
             gs.nonsynonymous_tree_length = mss_T * ns_frac;
-            gs.mss_log_l = LikelihoodEngine::compute_tree_log_likelihood_from_P(g.tree, g.aln, P_br, m.pi, S, &g.leaf_to_taxon);
+            gs.mss_log_l = evaluate_gene_log_l(g, m, gs.tree_scaler, S);
             res.genes[g_idx] = std::move(gs);
         }
 

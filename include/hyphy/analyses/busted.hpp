@@ -593,6 +593,26 @@ public:
             mg_bg_step.update(p_bg, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
         }
 
+        std::vector<std::vector<std::vector<std::array<Matrix, 3>>>> P_bridge_comp(
+            M, std::vector<std::vector<std::array<Matrix, 3>>>(K, std::vector<std::array<Matrix, 3>>(tree.bridges.size()))
+        );
+        for (size_t k = 0; k < K; ++k) {
+            for (size_t m = 0; m < M; ++m) {
+                Scalar alpha_m = syn_rates[m];
+                for (size_t b_idx = 0; b_idx < tree.bridges.size(); ++b_idx) {
+                    const auto& wb = tree.bridges[b_idx];
+                    for (int r = 0; r < 3; ++r) {
+                        if (wb.weights[r] > 0.0 || r == 0) {
+                            Scalar bl = bridge_resolution_tau(b_idx, r, s, custom_branch_lengths);
+                            P_bridge_comp[m][k][b_idx][r] = mg_vec[k].transition_matrix(alpha_m * bl);
+                        } else {
+                            P_bridge_comp[m][k][b_idx][r] = Matrix::Identity(S, S);
+                        }
+                    }
+                }
+            }
+        }
+
         std::vector<std::vector<std::array<Matrix, 3>>> P_bridges_mix(M);
         for (size_t m = 0; m < M; ++m) {
             Scalar alpha_m = syn_rates[m];
@@ -627,10 +647,14 @@ public:
 
         #pragma omp parallel num_threads(n_threads)
         {
+            const double SCALER_UP = 1e150;
+            const double SCALER_DOWN = 1e-150;
             std::vector<LikelihoodEngine::BatchedInsideOutsideWorkspace> io_m(M);
             for (size_t m = 0; m < M; ++m) io_m[m].init(num_nodes, S, tile_size);
             Eigen::MatrixXd post_m(M, tile_size);
             Matrix PD_tmp(S, tile_size);
+            Matrix D_br(S, tile_size);
+            Matrix V_br(S, tile_size);
 
             #pragma omp for schedule(static)
             for (size_t t = 0; t < num_tiles; ++t) {
@@ -671,7 +695,7 @@ public:
                 }
 
                 for (const auto& node : tree.nodes) {
-                    if (node.id != tree.root_id && is_test_branch[node.id]) {
+                    if (node.id != tree.root_id && node.parent_id != INVALID_INDEX && is_test_branch[node.id]) {
                         int nid = node.id;
                         auto PD_sub = PD_tmp.leftCols(B);
                         for (size_t k = 0; k < K; ++k) {
@@ -710,6 +734,82 @@ public:
                             }
                             pat_wt_accum[p] += eff_wt;
                         }
+                    }
+                }
+
+                for (size_t b_idx = 0; b_idx < tree.bridges.size(); ++b_idx) {
+                    const auto& wb = tree.bridges[b_idx];
+                    int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                    if (bid < 0 || static_cast<size_t>(bid) >= is_test_branch.size() || !is_test_branch[bid]) continue;
+
+                    int32_t uid = wb.hub_node_id;
+                    int32_t id_A = wb.children[0];
+                    int32_t id_B = wb.children[1];
+                    int32_t id_C = wb.children[2];
+                    auto PD_sub = PD_tmp.leftCols(B);
+                    auto D_br_sub = D_br.leftCols(B);
+                    auto V_br_sub = V_br.leftCols(B);
+
+                    for (int r = 0; r < 3; ++r) {
+                        if (wb.weights[r] <= 0.0) continue;
+                        for (size_t m = 0; m < M; ++m) {
+                            if (syn_weights[m] <= 1e-12) continue;
+                            auto M_A = io_m[m].P_D[id_A].leftCols(B);
+                            auto M_B = io_m[m].P_D[id_B].leftCols(B);
+                            auto M_C = io_m[m].P_D[id_C].leftCols(B);
+                            auto U_uid = io_m[m].U[uid].leftCols(B);
+                            if (r == 0) {
+                                D_br_sub.array() = M_A.array() * M_B.array();
+                                V_br_sub.array() = wb.weights[0] * (U_uid.array() * M_C.array());
+                            } else if (r == 1) {
+                                D_br_sub.array() = M_A.array() * M_C.array();
+                                V_br_sub.array() = wb.weights[1] * (U_uid.array() * M_B.array());
+                            } else {
+                                D_br_sub.array() = M_B.array() * M_C.array();
+                                V_br_sub.array() = wb.weights[2] * (U_uid.array() * M_A.array());
+                            }
+                            for (Eigen::Index b = 0; b < B; ++b) {
+                                int net_boost = io_m[m].boost_counts(uid, b);
+                                while (net_boost > 0) {
+                                    V_br_sub.col(b) *= SCALER_UP;
+                                    net_boost--;
+                                }
+                                while (net_boost < 0) {
+                                    V_br_sub.col(b) *= SCALER_DOWN;
+                                    net_boost++;
+                                }
+                            }
+                            for (size_t k = 0; k < K; ++k) {
+                                Scalar prior_k = bio_scale * weights[k];
+                                PD_sub.noalias() = P_bridge_comp[m][k][b_idx][r] * D_br_sub;
+                                for (Eigen::Index b = 0; b < B; ++b) {
+                                    Scalar pm = post_m(m, b);
+                                    Scalar L_b = io_m[m].likelihood(b);
+                                    if (pm > 1e-12 && L_b > 0.0) {
+                                        size_t p = p_start + b;
+                                        Scalar eff_wt = aln.patterns[p].weight;
+                                        Scalar ratio = V_br_sub.col(b).dot(PD_sub.col(b)) / L_b;
+                                        pat_weight_accum(k, p) += eff_wt * prior_k * pm * ratio;
+                                    }
+                                }
+                            }
+                            if (out_new_eps_sink != nullptr) {
+                                for (Eigen::Index b = 0; b < B; ++b) {
+                                    Scalar pm = post_m(m, b);
+                                    Scalar L_b = io_m[m].likelihood(b);
+                                    if (pm > 1e-12 && L_b > 0.0) {
+                                        size_t p = p_start + b;
+                                        Scalar eff_wt = aln.patterns[p].weight;
+                                        pat_sink_accum[p] += eff_wt * eps_sink * pm * (eval_sink_bilinear(V_br_sub.col(b), D_br_sub.col(b)) / L_b);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    for (Eigen::Index b = 0; b < B; ++b) {
+                        if (post_m.col(b).sum() <= 0.0) continue;
+                        size_t p = p_start + b;
+                        pat_wt_accum[p] += aln.patterns[p].weight;
                     }
                 }
             }

@@ -12,6 +12,7 @@
 #include "hyphy/analyses/ohmic.hpp"
 #include "hyphy/analyses/fel.hpp"
 #include "hyphy/analyses/fubar.hpp"
+#include "hyphy/analyses/busted.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -534,4 +535,124 @@ TEST_CASE("OHMIC 8: Standard Analyses (FEL & FUBAR) on Wheatstone Tree + HyphAeo
     auto fubar_res = fubar.run(nullptr, false);
     CHECK(fubar_res.site_results.size() == aln_cd2.num_codons);
 }
+
+// 9. Finite-Difference Gradient Verification on Wheatstone-Bridged Tree (MG94 & BUSTED)
+TEST_CASE("OHMIC 9: Finite-Difference Gradient Verification on Wheatstone-Bridged Tree") {
+    std::string cd2_path = resolve_test_path("benchmarks/data/cd2.fna");
+    auto aln = Alignment::load(cd2_path);
+    REQUIRE(aln.num_taxa == 10);
+
+    OhmicSettings settings;
+    settings.scale_mode = OhmicScaleMode::ExactDense;
+    settings.min_shunt_stress = 0.01;
+    OhmicNetwork net = OhmicNetwork::infer(aln, settings);
+    REQUIRE(net.bridges.size() >= 1);
+
+    Tree tree = net.collapsed_tree;
+    REQUIRE(tree.bridges.size() >= 1);
+    tree.bridges[0].weights = {0.58, 0.27, 0.15};
+    tree.bridges[0].branch_lengths = {0.060, 0.035, 0.020};
+    int32_t b0_id = tree.bridges[0].bridge_node_id;
+    if (b0_id >= 0 && b0_id != tree.bridges[0].hub_node_id &&
+        static_cast<size_t>(b0_id) < tree.nodes.size()) {
+        tree.nodes[b0_id].branch_length = 0.060;
+    }
+
+    MG94Parameters params;
+    params.alpha = 1.0;
+    params.beta = 0.75;
+    params.theta_AC = 0.55;
+    params.theta_AT = 0.40;
+    params.theta_CG = 0.60;
+    params.theta_CT = 1.35;
+    params.theta_GT = 0.45;
+
+    std::vector<Scalar> bl(tree.num_nodes(), 0.0);
+    for (const auto& node : tree.nodes) {
+        if (node.id != tree.root_id) {
+            bl[node.id] = node.branch_length;
+        }
+    }
+
+    auto g = LikelihoodEngine::compute_joint_frechet_gradients(tree, aln, params, bl);
+    const Scalar h = 1e-6;
+
+    auto eval_tree_lnl = [&](const MG94Parameters& p_eval, const std::vector<Scalar>& bl_eval) -> Scalar {
+        return LikelihoodEngine::compute_joint_frechet_gradients(tree, aln, p_eval, bl_eval).log_likelihood;
+    };
+
+    // 1. Check global MG94 Fréchet gradients (omega, theta_AC, theta_CT) including bridge matrices
+    {
+        MG94Parameters p_p = params, p_m = params;
+        p_p.beta += h; p_m.beta -= h;
+        Scalar fd_omega = (eval_tree_lnl(p_p, bl) - eval_tree_lnl(p_m, bl)) / (2.0 * h);
+        CHECK(g.grad_omega == doctest::Approx(fd_omega).epsilon(1e-4));
+    }
+    {
+        MG94Parameters p_p = params, p_m = params;
+        p_p.theta_AC += h; p_m.theta_AC -= h;
+        Scalar fd_ac = (eval_tree_lnl(p_p, bl) - eval_tree_lnl(p_m, bl)) / (2.0 * h);
+        CHECK(g.grad_theta_AC == doctest::Approx(fd_ac).epsilon(1e-4));
+    }
+    {
+        MG94Parameters p_p = params, p_m = params;
+        p_p.theta_CT += h; p_m.theta_CT -= h;
+        Scalar fd_ct = (eval_tree_lnl(p_p, bl) - eval_tree_lnl(p_m, bl)) / (2.0 * h);
+        CHECK(g.grad_theta_CT == doctest::Approx(fd_ct).epsilon(1e-4));
+    }
+
+    // 2. Check all active branch gradients (and verify detached bridge nodes have zero single-edge gradient)
+    for (const auto& node : tree.nodes) {
+        if (node.id == tree.root_id) continue;
+        if (node.parent_id == INVALID_INDEX) {
+            CHECK(g.grad_branches[node.id] == doctest::Approx(0.0).epsilon(1e-12));
+            continue;
+        }
+        std::vector<Scalar> bl_p = bl, bl_m = bl;
+        bl_p[node.id] += h;
+        bl_m[node.id] -= h;
+        Scalar fd_b = (eval_tree_lnl(params, bl_p) - eval_tree_lnl(params, bl_m)) / (2.0 * h);
+        CHECK(g.grad_branches[node.id] == doctest::Approx(fd_b).epsilon(1e-4));
+    }
+
+    // 3. Check BUSTEDAnalyzer::compute_busted_branch_gradients on the bridged tree
+    BUSTEDAnalyzer busted(tree, aln);
+    busted.base_params = params;
+    busted.mg94_omega = 0.75;
+    busted.prepare_baseline_lengths();
+
+    std::vector<Scalar> omegas = {0.15, 0.70, 2.40};
+    std::vector<Scalar> weights = {0.50, 0.35, 0.15};
+    std::vector<Scalar> syn_rates = {0.60, 1.40};
+    std::vector<Scalar> syn_weights = {0.55, 0.45};
+    std::vector<Scalar> custom_tau = busted.branch_tau;
+
+    auto [ll0, b_grads] = busted.compute_busted_branch_gradients(
+        custom_tau, omegas, weights, syn_rates, syn_weights
+    );
+    CHECK(ll0 == doctest::Approx(
+        busted.evaluate_log_l(1.0, omegas, weights, syn_rates, syn_weights, &custom_tau)
+    ).epsilon(1e-9));
+
+    for (const auto& node : busted.tree.nodes) {
+        if (node.id == busted.tree.root_id) continue;
+        bool is_detached_bridge = false;
+        for (const auto& wb : busted.tree.bridges) {
+            if (wb.bridge_node_id == node.id && wb.bridge_node_id != wb.hub_node_id) {
+                is_detached_bridge = true;
+                break;
+            }
+        }
+        if (node.parent_id == INVALID_INDEX && !is_detached_bridge) continue;
+
+        std::vector<Scalar> tau_p = custom_tau, tau_m = custom_tau;
+        tau_p[node.id] += h;
+        tau_m[node.id] -= h;
+        Scalar ll_p = busted.evaluate_log_l(1.0, omegas, weights, syn_rates, syn_weights, &tau_p);
+        Scalar ll_m = busted.evaluate_log_l(1.0, omegas, weights, syn_rates, syn_weights, &tau_m);
+        Scalar fd_tau = (ll_p - ll_m) / (2.0 * h);
+        CHECK(b_grads[node.id] == doctest::Approx(fd_tau).epsilon(1e-4));
+    }
+}
+
 

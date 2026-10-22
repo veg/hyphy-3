@@ -119,27 +119,10 @@ public:
         Scalar star_threshold = 0.05,
         Scalar gap_ratio = 0.15
     ) {
+        (void)gap_ratio;
         size_t N = taxon_names.size();
         if (N < 2) {
             throw std::runtime_error("Spectral tree scaffolding requires at least 2 taxa.");
-        }
-
-        // Compute median positive distance for RBF kernel bandwidth sigma
-        std::vector<Scalar> pos_dists;
-        pos_dists.reserve(N * (N - 1) / 2);
-        for (size_t i = 0; i < N; ++i) {
-            for (size_t j = i + 1; j < N; ++j) {
-                Scalar dij = D(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j));
-                if (dij > 1e-6 && std::isfinite(dij)) {
-                    pos_dists.push_back(dij);
-                }
-            }
-        }
-        Scalar sigma = 0.05;
-        if (!pos_dists.empty()) {
-            std::sort(pos_dists.begin(), pos_dists.end());
-            sigma = pos_dists[pos_dists.size() / 2];
-            sigma = std::clamp(sigma, 1e-4, 5.0);
         }
 
         Tree tree;
@@ -168,7 +151,10 @@ public:
             return id;
         };
 
-        // Recursive Spectral Cheeger Partition with Electrostatic Boundary Grounding
+        // Recursive Grounded Dirichlet Green's Function (Transfer Impedance) Spectral Partitioning:
+        // Grounds each sub-circuit U at its external boundary port A (or internal bulk reference potential r_i)
+        // to form the transfer-impedance matrix G_{ij}^{(A)} = 0.5 * (r_i + r_j - D_{ij}), which cancels
+        // terminal branch-length rate heterogeneity identically and isolates shared ancestral stem paths.
         std::function<int32_t(const std::vector<size_t>&, const std::vector<size_t>&)> recurse_partition;
         recurse_partition = [&](const std::vector<size_t>& indices, const std::vector<size_t>& anchor_indices) -> int32_t {
             size_t m = indices.size();
@@ -188,43 +174,156 @@ public:
                 return u;
             }
 
-            // Build local conductance matrix W and normalized Laplacian L_norm
+            Matrix D_loc = Matrix::Zero(m, m);
+            for (size_t i = 0; i < m; ++i) {
+                for (size_t j = i + 1; j < m; ++j) {
+                    Scalar d = D(static_cast<Eigen::Index>(indices[i]), static_cast<Eigen::Index>(indices[j]));
+                    D_loc(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j)) = d;
+                    D_loc(static_cast<Eigen::Index>(j), static_cast<Eigen::Index>(i)) = d;
+                }
+            }
+
+            // Internal bulk reference potential r_int(i) and proximal boundary-port potential r_anc(i)
+            Vector r_int = Vector::Zero(m);
+            for (size_t i = 0; i < m; ++i) {
+                r_int(static_cast<Eigen::Index>(i)) =
+                    D_loc.row(static_cast<Eigen::Index>(i)).sum() / static_cast<Scalar>(std::max<size_t>(1, m - 2));
+            }
+            Vector r_anc = r_int;
+            if (!anchor_indices.empty()) {
+                std::vector<std::pair<Scalar, size_t>> anc_dists;
+                anc_dists.reserve(anchor_indices.size());
+                for (size_t a : anchor_indices) {
+                    Scalar min_d = 1e18;
+                    for (size_t i = 0; i < m; ++i) {
+                        min_d = std::min(min_d, D(static_cast<Eigen::Index>(indices[i]), static_cast<Eigen::Index>(a)));
+                    }
+                    anc_dists.push_back({min_d, a});
+                }
+                std::sort(anc_dists.begin(), anc_dists.end());
+                size_t k_port = std::min<size_t>(4, anc_dists.size());
+                for (size_t i = 0; i < m; ++i) {
+                    Scalar s = 0.0;
+                    for (size_t k = 0; k < k_port; ++k) {
+                        s += D(static_cast<Eigen::Index>(indices[i]), static_cast<Eigen::Index>(anc_dists[k].second));
+                    }
+                    r_anc(static_cast<Eigen::Index>(i)) = s / static_cast<Scalar>(k_port);
+                }
+            }
+
+            // Grounded Dirichlet Green's Matrices (Transfer Impedance):
+            // G_anc(i, j) = 0.5 * (r_anc(i) + r_anc(j) - D_loc(i, j))
+            // G_int(i, j) = 0.5 * (r_int(i) + r_int(j) - D_loc(i, j))
+            Matrix G_anc = Matrix::Zero(m, m);
+            Matrix G_int = Matrix::Zero(m, m);
+            Scalar min_ga = 1e18, min_gi = 1e18;
+            for (size_t i = 0; i < m; ++i) {
+                for (size_t j = i + 1; j < m; ++j) {
+                    Eigen::Index ii = static_cast<Eigen::Index>(i);
+                    Eigen::Index jj = static_cast<Eigen::Index>(j);
+                    Scalar ga = 0.5 * (r_anc(ii) + r_anc(jj) - D_loc(ii, jj));
+                    Scalar gi = 0.5 * (r_int(ii) + r_int(jj) - D_loc(ii, jj));
+                    G_anc(ii, jj) = G_anc(jj, ii) = ga;
+                    G_int(ii, jj) = G_int(jj, ii) = gi;
+                    min_ga = std::min(min_ga, ga);
+                    min_gi = std::min(min_gi, gi);
+                }
+            }
+            Matrix G = Matrix::Zero(m, m);
+            std::vector<Scalar> pos_g;
+            pos_g.reserve(m * (m - 1) / 2);
+            for (size_t i = 0; i < m; ++i) {
+                for (size_t j = i + 1; j < m; ++j) {
+                    Eigen::Index ii = static_cast<Eigen::Index>(i);
+                    Eigen::Index jj = static_cast<Eigen::Index>(j);
+                    G_anc(ii, jj) = G_anc(jj, ii) = std::max<Scalar>(0.0, G_anc(ii, jj) - min_ga);
+                    G_int(ii, jj) = G_int(jj, ii) = std::max<Scalar>(0.0, G_int(ii, jj) - min_gi);
+                    G(ii, jj) = G(jj, ii) = anchor_indices.empty()
+                        ? G_int(ii, jj)
+                        : (0.60 * G_anc(ii, jj) + 0.40 * G_int(ii, jj));
+                    if (G(ii, jj) > 1e-6) pos_g.push_back(G(ii, jj));
+                }
+            }
+
+            if (m == 3) {
+                // For m == 3, the pair (i, j) with the largest grounded transfer impedance shares the internal stem
+                Scalar best_g = -1e18;
+                size_t best_solo = 0;
+                for (size_t solo = 0; solo < 3; ++solo) {
+                    Eigen::Index ii = static_cast<Eigen::Index>((solo + 1) % 3);
+                    Eigen::Index jj = static_cast<Eigen::Index>((solo + 2) % 3);
+                    Scalar g_val = anchor_indices.empty() ? G(ii, jj) : G_anc(ii, jj);
+                    if (g_val > best_g) {
+                        best_g = g_val;
+                        best_solo = solo;
+                    }
+                }
+                if (allow_polytomies && best_g < star_threshold * 0.05) {
+                    int32_t poly_node = create_internal();
+                    for (size_t idx : indices) {
+                        int32_t c = create_leaf(idx);
+                        tree.nodes[poly_node].children.push_back(c);
+                        tree.nodes[c].parent_id = poly_node;
+                        Scalar avg_d = 0.0;
+                        for (size_t o : indices) {
+                            if (o != idx) avg_d += D(static_cast<Eigen::Index>(idx), static_cast<Eigen::Index>(o));
+                        }
+                        avg_d /= static_cast<Scalar>(m - 1);
+                        tree.nodes[c].branch_length = std::max<Scalar>(1e-4, avg_d * 0.5);
+                    }
+                    return poly_node;
+                }
+                std::vector<size_t> grp1 = {indices[best_solo]};
+                std::vector<size_t> grp2 = {indices[(best_solo + 1) % 3], indices[(best_solo + 2) % 3]};
+                std::vector<size_t> anc1 = grp2;
+                anc1.insert(anc1.end(), anchor_indices.begin(), anchor_indices.end());
+                std::vector<size_t> anc2 = grp1;
+                anc2.insert(anc2.end(), anchor_indices.begin(), anchor_indices.end());
+                int32_t parent = create_internal();
+                int32_t child1 = recurse_partition(grp1, anc1);
+                int32_t child2 = recurse_partition(grp2, anc2);
+                tree.nodes[parent].children = {child1, child2};
+                tree.nodes[child1].parent_id = parent;
+                tree.nodes[child2].parent_id = parent;
+                Scalar d_solo = 0.5 * (D_loc(best_solo, (best_solo + 1) % 3) + D_loc(best_solo, (best_solo + 2) % 3));
+                tree.nodes[child1].branch_length = std::max<Scalar>(1e-4, d_solo * 0.5);
+                tree.nodes[child2].branch_length = std::max<Scalar>(1e-4, best_g);
+                return parent;
+            }
+
+            Scalar tau_g = 0.05;
+            Scalar max_g = 0.0;
+            if (!pos_g.empty()) {
+                std::sort(pos_g.begin(), pos_g.end());
+                tau_g = std::max<Scalar>(1e-4, pos_g[pos_g.size() / 2]);
+                max_g = pos_g.back();
+            }
+
+            // Build Grounded Ohmic Coupling Matrix W from shared ancestral stem impedance G(i, j)
             Matrix W = Matrix::Zero(m, m);
             Vector deg = Vector::Zero(m);
             for (size_t i = 0; i < m; ++i) {
-                size_t ti = indices[i];
                 for (size_t j = i + 1; j < m; ++j) {
-                    size_t tj = indices[j];
-                    Scalar dij = D(static_cast<Eigen::Index>(ti), static_cast<Eigen::Index>(tj));
-                    Scalar w = std::exp(-dij / sigma);
-                    W(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j)) = w;
-                    W(static_cast<Eigen::Index>(j), static_cast<Eigen::Index>(i)) = w;
-                    deg(static_cast<Eigen::Index>(i)) += w;
-                    deg(static_cast<Eigen::Index>(j)) += w;
+                    Eigen::Index ii = static_cast<Eigen::Index>(i);
+                    Eigen::Index jj = static_cast<Eigen::Index>(j);
+                    Scalar w = G(ii, jj) * std::exp(std::min<Scalar>(5.0, G(ii, jj) / tau_g)) + 1e-6;
+                    W(ii, jj) = W(jj, ii) = w;
+                    deg(ii) += w;
+                    deg(jj) += w;
                 }
             }
 
             Vector inv_sqrt_deg(m);
             for (size_t i = 0; i < m; ++i) {
-                inv_sqrt_deg(static_cast<Eigen::Index>(i)) = (deg(static_cast<Eigen::Index>(i)) > 1e-12)
-                    ? (1.0 / std::sqrt(deg(static_cast<Eigen::Index>(i)))) : 1.0;
+                inv_sqrt_deg(static_cast<Eigen::Index>(i)) =
+                    (deg(static_cast<Eigen::Index>(i)) > 1e-12)
+                        ? (1.0 / std::sqrt(deg(static_cast<Eigen::Index>(i))))
+                        : 1.0;
             }
-
-            Matrix L_norm = Matrix::Identity(m, m);
-            for (size_t i = 0; i < m; ++i) {
-                for (size_t j = 0; j < m; ++j) {
-                    if (i != j) {
-                        L_norm(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j)) =
-                            -W(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j)) *
-                             inv_sqrt_deg(static_cast<Eigen::Index>(i)) * inv_sqrt_deg(static_cast<Eigen::Index>(j));
-                    }
-                }
-            }
-
-            // Compute Eigendecomposition
-            Eigen::SelfAdjointEigenSolver<Matrix> es(L_norm);
-            if (es.info() != Eigen::Success) {
-                // Fallback: direct star polytomy
+            Matrix L_norm = Matrix::Identity(m, m) - inv_sqrt_deg.asDiagonal() * W * inv_sqrt_deg.asDiagonal();
+            L_norm = 0.5 * (L_norm + L_norm.transpose());
+            Eigen::SelfAdjointEigenSolver<Matrix> es_nm(L_norm);
+            if (es_nm.info() != Eigen::Success) {
                 int32_t u = create_internal();
                 for (size_t idx : indices) {
                     int32_t c = create_leaf(idx);
@@ -234,21 +333,15 @@ public:
                 return u;
             }
 
-            Vector evals = es.eigenvalues();
-            Scalar lambda2 = evals(1);
-            Scalar lambda3 = (m > 2) ? evals(2) : 1.0;
-
-            // Check if this cluster is a star-like radiation (polytomy)
-            bool is_star = allow_polytomies && (m <= 8) &&
-                           (lambda2 < star_threshold || (lambda3 > 1e-4 && (lambda2 / lambda3) < gap_ratio));
-
+            // In a Grounded Green's transfer impedance graph G(i, j), a star radiation has near-zero
+            // shared internal stem impedance across all pairs (max_g < 0.05 * star_threshold)
+            bool is_star = allow_polytomies && (m <= 8) && (max_g < star_threshold * 0.05);
             if (is_star) {
                 int32_t poly_node = create_internal();
                 for (size_t idx : indices) {
                     int32_t c = create_leaf(idx);
                     tree.nodes[poly_node].children.push_back(c);
                     tree.nodes[c].parent_id = poly_node;
-                    // Assign branch length from average distance to other members
                     Scalar avg_d = 0.0;
                     for (size_t o : indices) {
                         if (o != idx) avg_d += D(static_cast<Eigen::Index>(idx), static_cast<Eigen::Index>(o));
@@ -259,98 +352,114 @@ public:
                 return poly_node;
             }
 
-            // Bipartition along the Fiedler vector v2 using Electrostatic Port Grounding + Cheeger sweep
-            Vector v2 = es.eigenvectors().col(1);
+            Matrix L_unnorm = Matrix(deg.asDiagonal()) - W;
+            L_unnorm = 0.5 * (L_unnorm + L_unnorm.transpose());
+            Eigen::SelfAdjointEigenSolver<Matrix> es_un(L_unnorm);
+            Eigen::SelfAdjointEigenSolver<Matrix> es_G(G);
+
+            std::vector<std::vector<size_t>> orders;
+            auto add_vec_order = [&](const Vector& v) {
+                std::vector<size_t> ord(m);
+                std::iota(ord.begin(), ord.end(), 0);
+                std::sort(ord.begin(), ord.end(), [&](size_t a, size_t b) {
+                    return v(static_cast<Eigen::Index>(a)) < v(static_cast<Eigen::Index>(b));
+                });
+                orders.push_back(std::move(ord));
+            };
+            add_vec_order(deg);
+            add_vec_order(G_anc.rowwise().sum());
+            if (es_G.info() == Eigen::Success) {
+                add_vec_order(es_G.eigenvectors().col(static_cast<Eigen::Index>(m - 1)));
+                add_vec_order(es_G.eigenvectors().col(static_cast<Eigen::Index>(m - 2)));
+            }
+            if (es_un.info() == Eigen::Success) {
+                add_vec_order(es_un.eigenvectors().col(1));
+                if (m >= 4) add_vec_order(es_un.eigenvectors().col(2));
+            }
+            add_vec_order(inv_sqrt_deg.asDiagonal() * es_nm.eigenvectors().col(1));
+            if (m >= 4) {
+                add_vec_order(inv_sqrt_deg.asDiagonal() * es_nm.eigenvectors().col(2));
+            }
+
+            // Evaluate candidate bipartitions (L_idx, R_idx) along the spectral modes using
+            // Grounded Transfer-Impedance Monophyly Margin & Cross-Cut Stem Drop:
+            Scalar best_score = -1e18;
             std::vector<size_t> grp1, grp2;
 
-            std::vector<size_t> sort_order(m);
-            std::iota(sort_order.begin(), sort_order.end(), 0);
-            std::sort(sort_order.begin(), sort_order.end(), [&](size_t a, size_t b) {
-                return v2(static_cast<Eigen::Index>(a)) < v2(static_cast<Eigen::Index>(b));
-            });
-
-            // Electrostatic Boundary Grounding:
-            // If this subset is connected to an external anchor partition, orient v2 so that
-            // sort_order[0..k) is the boundary-proximal entry port (smallest distance to anchor_indices).
-            std::vector<Scalar> d_anchor(m, 0.0);
-            if (!anchor_indices.empty()) {
-                for (size_t i = 0; i < m; ++i) {
-                    size_t ti = indices[i];
-                    Scalar min_da = 1e9;
-                    for (size_t a : anchor_indices) {
-                        Scalar d = D(static_cast<Eigen::Index>(ti), static_cast<Eigen::Index>(a));
-                        if (d < min_da) min_da = d;
+            for (const auto& ord : orders) {
+                for (size_t k = 1; k < m; ++k) {
+                    if (anchor_indices.empty() && (k == 1 || k == m - 1) && m >= 4) {
+                        continue;
                     }
-                    d_anchor[i] = min_da;
-                }
-                // Check which pole of v2 is closer to the external anchor
-                size_t end_window = std::max<size_t>(1, std::min<size_t>(5, m / 3));
-                Scalar left_pole_d = 1e9, right_pole_d = 1e9;
-                for (size_t k = 0; k < end_window; ++k) {
-                    left_pole_d = std::min(left_pole_d, d_anchor[sort_order[k]]);
-                    right_pole_d = std::min(right_pole_d, d_anchor[sort_order[m - 1 - k]]);
-                }
-                if (right_pole_d < left_pole_d) {
-                    std::reverse(sort_order.begin(), sort_order.end());
-                    v2 = -v2;
-                }
-            }
+                    std::vector<size_t> L_idx(ord.begin(), ord.begin() + k);
+                    std::vector<size_t> R_idx(ord.begin() + k, ord.end());
 
-            // Find the optimal cut along sorted v2:
-            // When grounded to an external anchor, a serial conduit (where boundary distance increases
-            // along v2) should peel off the boundary-proximal entry cluster rather than cutting at the
-            // interior centroid (which would invert the proximal half into a reversed side-chain).
-            size_t best_cut = m / 2;
-            Scalar max_gap = -1.0;
-            for (size_t k = 0; k < m - 1; ++k) {
-                Scalar gap = std::abs(v2(static_cast<Eigen::Index>(sort_order[k + 1])) -
-                                      v2(static_cast<Eigen::Index>(sort_order[k])));
-                if (gap > max_gap) {
-                    max_gap = gap;
-                    best_cut = k + 1;
-                }
-            }
-
-            if (!anchor_indices.empty() && m >= 5) {
-                Scalar min_d_all = 1e9, max_d_all = 0.0;
-                size_t argmin_pos = 0;
-                for (size_t k = 0; k < m; ++k) {
-                    Scalar da = d_anchor[sort_order[k]];
-                    if (da < min_d_all) {
-                        min_d_all = da;
-                        argmin_pos = k;
-                    }
-                    if (da > max_d_all) max_d_all = da;
-                }
-
-                // Check if the minimum-distance entry port sits near the proximal end of v2 (first 35%)
-                // while the default best_cut would swallow more than 40% of the clade (inverting the trunk)
-                if (argmin_pos <= m / 3 && (max_d_all - min_d_all) > 2e-3 && best_cut > std::max<size_t>(2, m / 4)) {
-                    // Find the best eigengap in the proximal entry zone [1 .. max(2, m/3)]
-                    // weighted by proximity to the boundary port
-                    size_t max_prox_cut = std::max<size_t>(2, std::min<size_t>(m - 1, std::max<size_t>(argmin_pos + 2, m / 4)));
-                    Scalar best_prox_score = -1.0;
-                    size_t prox_cut = best_cut;
-                    for (size_t k = std::max<size_t>(1, argmin_pos); k <= max_prox_cut && k < m; ++k) {
-                        Scalar gap = std::abs(v2(static_cast<Eigen::Index>(sort_order[k])) -
-                                              v2(static_cast<Eigen::Index>(sort_order[k - 1])));
-                        // Favor cuts right after the entry port where anchor distance steps up
-                        Scalar dist_jump = std::max<Scalar>(0.0, d_anchor[sort_order[k]] - min_d_all);
-                        Scalar score = (gap + 1e-4) * (1.0 + dist_jump / std::max<Scalar>(1e-4, sigma));
-                        if (score > best_prox_score) {
-                            best_prox_score = score;
-                            prox_cut = k;
+                    Scalar sum_cross = 0.0, max_cross = -1e18;
+                    for (size_t l : L_idx) {
+                        for (size_t r : R_idx) {
+                            Scalar g = G_anc(static_cast<Eigen::Index>(l), static_cast<Eigen::Index>(r));
+                            sum_cross += g;
+                            if (g > max_cross) max_cross = g;
                         }
                     }
-                    best_cut = prox_cut;
-                }
-            }
+                    Scalar mean_cross = sum_cross / static_cast<Scalar>(L_idx.size() * R_idx.size());
 
-            for (size_t k = 0; k < m; ++k) {
-                if (k < best_cut) {
-                    grp1.push_back(indices[sort_order[k]]);
-                } else {
-                    grp2.push_back(indices[sort_order[k]]);
+                    Scalar min_node_margin = 1e18;
+                    Scalar sum_node_margin = 0.0;
+                    if (L_idx.size() >= 2) {
+                        for (size_t l : L_idx) {
+                            Scalar max_in = -1e18, max_out = -1e18;
+                            for (size_t l2 : L_idx) {
+                                if (l2 != l) max_in = std::max(max_in, G(static_cast<Eigen::Index>(l), static_cast<Eigen::Index>(l2)));
+                            }
+                            for (size_t r : R_idx) {
+                                max_out = std::max(max_out, G(static_cast<Eigen::Index>(l), static_cast<Eigen::Index>(r)));
+                            }
+                            Scalar marg = max_in - max_out;
+                            min_node_margin = std::min(min_node_margin, marg);
+                            sum_node_margin += marg;
+                        }
+                    }
+                    if (R_idx.size() >= 2) {
+                        for (size_t r : R_idx) {
+                            Scalar max_in = -1e18, max_out = -1e18;
+                            for (size_t r2 : R_idx) {
+                                if (r2 != r) max_in = std::max(max_in, G(static_cast<Eigen::Index>(r), static_cast<Eigen::Index>(r2)));
+                            }
+                            for (size_t l : L_idx) {
+                                max_out = std::max(max_out, G(static_cast<Eigen::Index>(l), static_cast<Eigen::Index>(r)));
+                            }
+                            Scalar marg = max_in - max_out;
+                            min_node_margin = std::min(min_node_margin, marg);
+                            sum_node_margin += marg;
+                        }
+                    }
+                    Scalar mean_node_margin = sum_node_margin / static_cast<Scalar>(m);
+
+                    Scalar sum_in = 0.0, cnt_in = 0.0;
+                    for (size_t i = 0; i < L_idx.size(); ++i) {
+                        for (size_t j = i + 1; j < L_idx.size(); ++j) {
+                            sum_in += G_anc(static_cast<Eigen::Index>(L_idx[i]), static_cast<Eigen::Index>(L_idx[j]));
+                            cnt_in += 1.0;
+                        }
+                    }
+                    for (size_t i = 0; i < R_idx.size(); ++i) {
+                        for (size_t j = i + 1; j < R_idx.size(); ++j) {
+                            sum_in += G_anc(static_cast<Eigen::Index>(R_idx[i]), static_cast<Eigen::Index>(R_idx[j]));
+                            cnt_in += 1.0;
+                        }
+                    }
+                    Scalar mean_in = (cnt_in > 0.0) ? (sum_in / cnt_in) : 0.0;
+                    Scalar stem_gap = mean_in - mean_cross;
+
+                    Scalar score = 0.50 * min_node_margin + 0.30 * mean_node_margin + 0.20 * (stem_gap - 0.5 * max_cross);
+                    if (score > best_score) {
+                        best_score = score;
+                        grp1.clear();
+                        grp2.clear();
+                        for (size_t idx : L_idx) grp1.push_back(indices[idx]);
+                        for (size_t idx : R_idx) grp2.push_back(indices[idx]);
+                    }
                 }
             }
 
@@ -363,21 +472,19 @@ public:
                 }
             }
 
-            // Choose boundary anchors for each child recursion:
-            // For grp1 (proximal), its boundary anchor is the external anchor (if present) or grp2.
-            // For grp2 (distal), its immediate boundary anchor is grp1!
-            const std::vector<size_t>& anchor_for_grp1 = anchor_indices.empty() ? grp2 : anchor_indices;
-            const std::vector<size_t>& anchor_for_grp2 = grp1;
+            std::vector<size_t> anc1 = grp2;
+            anc1.insert(anc1.end(), anchor_indices.begin(), anchor_indices.end());
+            std::vector<size_t> anc2 = grp1;
+            anc2.insert(anc2.end(), anchor_indices.begin(), anchor_indices.end());
 
             int32_t parent = create_internal();
-            int32_t child1 = recurse_partition(grp1, anchor_for_grp1);
-            int32_t child2 = recurse_partition(grp2, anchor_for_grp2);
+            int32_t child1 = recurse_partition(grp1, anc1);
+            int32_t child2 = recurse_partition(grp2, anc2);
 
             tree.nodes[parent].children = {child1, child2};
             tree.nodes[child1].parent_id = parent;
             tree.nodes[child2].parent_id = parent;
 
-            // Set branch lengths between clusters
             Scalar cross_dist = 0.0;
             for (size_t i : grp1) {
                 for (size_t j : grp2) {
@@ -517,7 +624,7 @@ public:
                                 }
                                 int boost_cnt = 0;
                                 const std::vector<std::array<Matrix4, 3>>* no_bridges = nullptr;
-                                tree_ref.eval_internal_node(nid, P_b, node_L, node_log_scale, node_L[nid], child_scale_sum, no_bridges, nullptr, &boost_cnt);
+                                tree_ref.eval_internal_node_with_model(nid, P_b, gtr_ref, node_L, node_log_scale, node_L[nid], child_scale_sum, 1.0, nullptr, no_bridges, &boost_cnt);
                                 boost_counts[nid] = boost_cnt;
                                 node_log_scale[nid] = child_scale_sum;
                             }
@@ -775,7 +882,7 @@ public:
                         }
                         int boost_cnt = 0;
                         const std::vector<std::array<Matrix4, 3>>* no_bridges = nullptr;
-                        tree.eval_internal_node(nid, P_b, D_all, node_log_scale, D_all[nid], child_scale_sum, no_bridges, nullptr, &boost_cnt);
+                        tree.eval_internal_node_with_model(nid, P_b, gtr, D_all, node_log_scale, D_all[nid], child_scale_sum, 1.0, nullptr, no_bridges, &boost_cnt);
                         boost_counts[nid] = boost_cnt;
                         node_log_scale[nid] = child_scale_sum;
                     }

@@ -2374,6 +2374,216 @@ public:
         return {best_score / L_eff, static_cast<Scalar>(prev_id_M[best_c]) / L_eff};
     }
 
+    struct PairwiseCodonTracks {
+        Scalar dp_similarity = 0.0;
+        Scalar aa_identity = 0.0;
+        Scalar d_tot = 0.0;
+        Scalar d_syn = 0.0;
+        Scalar d_ns = 0.0;
+        Scalar d_tn93 = 0.0;
+    };
+
+    static PairwiseCodonTracks run_semiglobal_multitrack_dp_pair(
+        const std::vector<int8_t>& s_a,
+        const std::vector<int8_t>& s_b,
+        const std::string& raw_a,
+        const std::string& raw_b,
+        const GeneticCode& gcode,
+        const Vector4& pi
+    ) {
+        bool swapped = (s_a.size() > s_b.size());
+        const auto& s_short = swapped ? s_b : s_a;
+        const auto& s_long  = swapped ? s_a : s_b;
+        const std::string& r_short = swapped ? raw_b : raw_a;
+        const std::string& r_long  = swapped ? raw_a : raw_b;
+        size_t Ls = s_short.size();
+        size_t Ll = s_long.size();
+        if (Ls == 0 || Ll == 0) return {};
+
+        auto aa_sim_score = [&](int8_t c1, int8_t c2) -> Scalar {
+            if (c1 < 0 || c2 < 0) return 0.0;
+            if (c1 == c2) return 1.00;
+            char a1 = gcode.sense_codon_aa[c1];
+            char a2 = gcode.sense_codon_aa[c2];
+            if (a1 == a2) return 0.90;
+            int nd = gcode.diff_matrix[c1][c2].num_diffs;
+            if (nd == 1) return 0.30;
+            return 0.0;
+        };
+
+        constexpr int B0 = 24;
+        constexpr Scalar kNegInf = -1e9;
+        constexpr Scalar g_open = 1.10;
+        constexpr Scalar g_ext  = 0.30;
+        constexpr Scalar g_cap  = 3.80;
+        int dL = static_cast<int>(Ll - Ls);
+
+        struct TrackAcc {
+            size_t exact_aa = 0;
+            Scalar syn_sc = 0.0;
+            Scalar ns_sc = 0.0;
+            Scalar ag_ts = 0.0;
+            Scalar ct_ts = 0.0;
+            Scalar tv = 0.0;
+            Scalar valid_nt = 0.0;
+        };
+
+        std::vector<Scalar> prev_M(Ll + 1, kNegInf), curr_M(Ll + 1, kNegInf);
+        std::vector<Scalar> prev_D(Ll + 1, kNegInf), curr_D(Ll + 1, kNegInf);
+        std::vector<TrackAcc> prev_tr_M(Ll + 1), curr_tr_M(Ll + 1);
+        std::vector<TrackAcc> prev_tr_D(Ll + 1), curr_tr_D(Ll + 1);
+
+        int init_max = std::min(static_cast<int>(Ll), dL + B0);
+        for (int c = 0; c <= init_max; ++c) {
+            prev_M[static_cast<size_t>(c)] = 0.0;
+        }
+
+        for (size_t r = 1; r <= Ls; ++r) {
+            int c_min = std::max(1, static_cast<int>(r) - B0);
+            int c_max = std::min(static_cast<int>(Ll), static_cast<int>(r) + dL + B0);
+            std::fill(curr_M.begin(), curr_M.end(), kNegInf);
+            std::fill(curr_D.begin(), curr_D.end(), kNegInf);
+            std::fill(curr_tr_M.begin(), curr_tr_M.end(), TrackAcc{});
+            std::fill(curr_tr_D.begin(), curr_tr_D.end(), TrackAcc{});
+            if (static_cast<int>(r) <= B0) {
+                Scalar pen = -std::min(g_open + g_ext * static_cast<Scalar>(r), g_cap);
+                curr_D[0] = pen;
+                curr_M[0] = pen;
+            }
+            int8_t ci = s_short[r - 1];
+            Scalar ins_sc = kNegInf;
+            TrackAcc ins_tr{};
+            Scalar best_row_sc = (c_min == 1) ? curr_M[0] : kNegInf;
+            TrackAcc best_row_tr{};
+
+            for (int c = c_min; c <= c_max; ++c) {
+                size_t cu = static_cast<size_t>(c);
+                int8_t cj = s_long[cu - 1];
+
+                Scalar d_op = prev_M[cu] - g_open - g_ext;
+                Scalar d_ex = prev_D[cu] - g_ext;
+                if (d_op >= d_ex) {
+                    curr_D[cu] = d_op;
+                    curr_tr_D[cu] = prev_tr_M[cu];
+                } else {
+                    curr_D[cu] = d_ex;
+                    curr_tr_D[cu] = prev_tr_D[cu];
+                }
+
+                Scalar i_op = curr_M[cu - 1] - g_open - g_ext;
+                Scalar i_ex = ins_sc - g_ext;
+                if (i_op >= i_ex) {
+                    ins_sc = i_op;
+                    ins_tr = curr_tr_M[cu - 1];
+                } else {
+                    ins_sc = i_ex;
+                }
+                Scalar e_sc = best_row_sc - g_cap;
+
+                Scalar m_sc = prev_M[cu - 1] + aa_sim_score(ci, cj);
+                TrackAcc m_tr = prev_tr_M[cu - 1];
+                if (ci >= 0 && cj >= 0) {
+                    int nd = gcode.diff_matrix[ci][cj].num_diffs;
+                    if (ci == cj) {
+                        m_tr.exact_aa += 1;
+                        m_tr.syn_sc += 1.0;
+                        m_tr.ns_sc  += 1.0;
+                    } else if (gcode.sense_codon_aa[ci] == gcode.sense_codon_aa[cj]) {
+                        m_tr.exact_aa += 1;
+                        m_tr.syn_sc += (nd == 1) ? 0.65 : 0.35;
+                        m_tr.ns_sc  += 1.0;
+                    } else {
+                        m_tr.syn_sc += (nd == 1) ? 0.45 : 0.15;
+                        m_tr.ns_sc  += (nd == 1) ? 0.45 : 0.10;
+                    }
+                }
+                if (3 * (r - 1) + 2 < r_short.size() && 3 * (cu - 1) + 2 < r_long.size()) {
+                    for (int p = 0; p < 3; ++p) {
+                        int b1 = char_to_nuc(r_short[3 * (r - 1) + p]);
+                        int b2 = char_to_nuc(r_long[3 * (cu - 1) + p]);
+                        if (b1 >= 0 && b1 < 4 && b2 >= 0 && b2 < 4) {
+                            m_tr.valid_nt += 1.0;
+                            if (b1 != b2) {
+                                bool p1 = (b1 == 0 || b1 == 2);
+                                bool p2 = (b2 == 0 || b2 == 2);
+                                if (p1 && p2) m_tr.ag_ts += 1.0;
+                                else if (!p1 && !p2) m_tr.ct_ts += 1.0;
+                                else m_tr.tv += 1.0;
+                            }
+                        }
+                    }
+                }
+
+                Scalar best_sc = m_sc;
+                TrackAcc best_tr = m_tr;
+                if (curr_D[cu] > best_sc) {
+                    best_sc = curr_D[cu];
+                    best_tr = curr_tr_D[cu];
+                }
+                if (ins_sc > best_sc) {
+                    best_sc = ins_sc;
+                    best_tr = ins_tr;
+                }
+                if (e_sc > best_sc) {
+                    best_sc = e_sc;
+                    best_tr = best_row_tr;
+                }
+                curr_M[cu] = best_sc;
+                curr_tr_M[cu] = best_tr;
+                if (best_sc > best_row_sc) {
+                    best_row_sc = best_sc;
+                    best_row_tr = best_tr;
+                }
+            }
+            std::swap(prev_M, curr_M);
+            std::swap(prev_D, curr_D);
+            std::swap(prev_tr_M, curr_tr_M);
+            std::swap(prev_tr_D, curr_tr_D);
+        }
+
+        int c_start = std::max(1, static_cast<int>(Ls) - B0);
+        size_t best_c = static_cast<size_t>(c_start);
+        Scalar best_score = prev_M[best_c];
+        for (size_t c = static_cast<size_t>(c_start) + 1; c <= Ll; ++c) {
+            if (prev_M[c] > best_score) {
+                best_score = prev_M[c];
+                best_c = c;
+            }
+        }
+        Scalar L_eff = std::max<Scalar>(1.0, static_cast<Scalar>(Ls));
+        const auto& tr = prev_tr_M[best_c];
+        PairwiseCodonTracks res;
+        res.dp_similarity = best_score / L_eff;
+        res.aa_identity   = static_cast<Scalar>(tr.exact_aa) / L_eff;
+        Scalar pid_tot = std::clamp<Scalar>(res.dp_similarity, 0.08, 0.9999);
+        Scalar pid_syn = std::clamp<Scalar>(tr.syn_sc / L_eff, 0.08, 0.9999);
+        Scalar pid_ns  = std::clamp<Scalar>(tr.ns_sc / L_eff, 0.08, 0.9999);
+        res.d_tot = std::max<Scalar>(1e-4, -0.75 * std::log(pid_tot));
+        res.d_syn = std::max<Scalar>(1e-4, -0.75 * std::log(pid_syn));
+        res.d_ns  = std::max<Scalar>(1e-4, -0.75 * std::log(pid_ns));
+
+        if (tr.valid_nt >= 15.0) {
+            Scalar gR = pi(0) + pi(2);
+            Scalar gY = pi(1) + pi(3);
+            Scalar k1_denom = 2.0 * pi(0) * pi(2) / gR;
+            Scalar k2_denom = 2.0 * pi(1) * pi(3) / gY;
+            Scalar k3_denom = 2.0 * gR * gY;
+            Scalar P1 = tr.ag_ts / tr.valid_nt;
+            Scalar P2 = tr.ct_ts / tr.valid_nt;
+            Scalar Q  = tr.tv / tr.valid_nt;
+            Scalar arg1 = std::max<Scalar>(0.02, 1.0 - P1 / k1_denom - Q / (2.0 * gR));
+            Scalar arg2 = std::max<Scalar>(0.02, 1.0 - P2 / k2_denom - Q / (2.0 * gY));
+            Scalar arg3 = std::max<Scalar>(0.02, 1.0 - Q / k3_denom);
+            Scalar term1 = k1_denom * std::log(arg1);
+            Scalar term2 = k2_denom * std::log(arg2);
+            Scalar term3 = 2.0 * (gR * gY - (pi(0) * pi(2) * gY / gR) - (pi(1) * pi(3) * gR / gY)) * std::log(arg3);
+            res.d_tn93 = std::max<Scalar>(1e-4, -(term1 + term2 + term3));
+        } else {
+            res.d_tn93 = res.d_tot;
+        }
+        return res;
+    }
+
     static std::pair<Alignment, Tree> build_de_novo_codon_alignment_and_tree(
         const std::vector<Sequence>& unaligned_seqs,
         std::shared_ptr<const GeneticCode> gcode = nullptr,
@@ -2418,11 +2628,13 @@ public:
             if (rsum > 0.0) pos_freqs.row(p) = pos_counts.row(p) / rsum;
         }
         Vector pi_codon = codon_counts / codon_counts.sum();
+        Vector4 pi_nuc = pos_freqs.colwise().mean().transpose();
+        for (int b = 0; b < 4; ++b) {
+            if (pi_nuc(b) < 1e-4) pi_nuc(b) = 1e-4;
+        }
+        pi_nuc /= pi_nuc.sum();
 
-        // 2. Phase A: Pairwise Evolutionary Distance & Guide Tree Construction
-        //    Reuses the exact Stage 0 Gate 3 semi-global piecewise-affine capped overlap alignment
-        //    (normalized by L_eff = min(Li, Lj)) so 5'/3' truncations and internal exon indels
-        //    do not inflate evolutionary branch lengths.
+        // 2. Phase A: Multi-Track Alignment-Free DP, Ohmic Conductance Graph & Grounded Green's Spectral Scaffold
         if (!settings.quiet) {
             size_t min_len = 999999, max_len = 0;
             for (const auto& tc : taxon_codons) {
@@ -2436,33 +2648,61 @@ public:
             );
         }
 
-        Matrix D_af = Matrix::Zero(N, N);
-        bool have_precomp = (precomputed_dp_similarity != nullptr &&
-                             static_cast<size_t>(precomputed_dp_similarity->rows()) == N &&
-                             static_cast<size_t>(precomputed_dp_similarity->cols()) == N);
+        (void)precomputed_dp_similarity;
+        Matrix D_tot  = Matrix::Zero(N, N);
+        Matrix D_syn  = Matrix::Zero(N, N);
+        Matrix D_ns   = Matrix::Zero(N, N);
+        Matrix D_tn93 = Matrix::Zero(N, N);
         #pragma omp parallel for schedule(dynamic)
         for (size_t i = 0; i < N; ++i) {
             const auto& seq_i = taxon_codons[i];
             size_t Li = seq_i.size();
-            std::vector<Scalar> prev_M, curr_M, prev_D, curr_D;
-            std::vector<size_t> prev_id_M, curr_id_M, prev_id_D, curr_id_D;
             for (size_t j = i + 1; j < N; ++j) {
                 const auto& seq_j = taxon_codons[j];
                 size_t Lj = seq_j.size();
                 if (Li == 0 || Lj == 0) continue;
 
-                Scalar norm_dp = 0.0;
-                if (have_precomp) {
-                    norm_dp = (*precomputed_dp_similarity)(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j));
-                } else {
-                    auto [dp_sc, aa_id] = run_semiglobal_banded_dp_pair(
-                        seq_i, seq_j, *gcode, prev_M, curr_M, prev_D, curr_D, prev_id_M, curr_id_M, prev_id_D, curr_id_D);
-                    norm_dp = dp_sc;
+                auto tr = run_semiglobal_multitrack_dp_pair(
+                    seq_i, seq_j, unaligned_seqs[i].raw_seq, unaligned_seqs[j].raw_seq, *gcode, pi_nuc
+                );
+                Eigen::Index ii = static_cast<Eigen::Index>(i);
+                Eigen::Index jj = static_cast<Eigen::Index>(j);
+                D_tot(ii, jj)  = D_tot(jj, ii)  = tr.d_tot;
+                D_syn(ii, jj)  = D_syn(jj, ii)  = tr.d_syn;
+                D_ns(ii, jj)   = D_ns(jj, ii)   = tr.d_ns;
+                D_tn93(ii, jj) = D_tn93(jj, ii) = tr.d_tn93;
+            }
+        }
+
+        // Depth-adaptive multi-track fusion:
+        // Shallow splits are resolved by the synonymous-weighted track D_syn and transition/transversion D_tn93,
+        // while deep splits (> 0.35 substitutions/site) blend in the non-synonymous track D_ns to prevent saturation rollover.
+        Scalar sum_tn = 0.0, sum_syn = 0.0, sum_ns = 0.0;
+        for (size_t i = 0; i < N; ++i) {
+            for (size_t j = i + 1; j < N; ++j) {
+                Eigen::Index ii = static_cast<Eigen::Index>(i);
+                Eigen::Index jj = static_cast<Eigen::Index>(j);
+                if (D_tn93(ii, jj) < 0.35) {
+                    sum_tn  += D_tn93(ii, jj);
+                    sum_syn += D_syn(ii, jj);
+                    sum_ns  += D_ns(ii, jj);
                 }
-                Scalar pid = std::clamp<Scalar>(norm_dp, 0.08, 0.9999);
-                Scalar d = std::max<Scalar>(1e-4, -0.75 * std::log(pid));
-                D_af(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j)) = d;
-                D_af(static_cast<Eigen::Index>(j), static_cast<Eigen::Index>(i)) = d;
+            }
+        }
+        Scalar scale_syn = (sum_syn > 1e-9 && sum_tn > 1e-9) ? (sum_tn / sum_syn) : 1.0;
+        Scalar scale_ns  = (sum_ns > 1e-9 && sum_tn > 1e-9) ? (sum_tn / sum_ns) : 1.0;
+
+        Matrix D_af = Matrix::Zero(N, N);
+        for (size_t i = 0; i < N; ++i) {
+            for (size_t j = i + 1; j < N; ++j) {
+                Eigen::Index ii = static_cast<Eigen::Index>(i);
+                Eigen::Index jj = static_cast<Eigen::Index>(j);
+                Scalar d0 = D_tn93(ii, jj);
+                Scalar ds = D_syn(ii, jj) * scale_syn;
+                Scalar dn = D_ns(ii, jj) * scale_ns;
+                Scalar alpha_s = 0.20 * std::exp(-(d0 / 0.35) * (d0 / 0.35));
+                Scalar d = alpha_s * ds + (1.0 - alpha_s) * (0.85 * d0 + 0.15 * dn);
+                D_af(ii, jj) = D_af(jj, ii) = d;
             }
         }
 
@@ -2520,7 +2760,7 @@ public:
         }
 
         // Fuse direct evolutionary distance D_af with Ohmic circuit resistance Omega_af
-        // (normalized to the median evolutionary scale) and construct the Ohmic Spectral Fiedler Scaffold!
+        // (normalized to the median evolutionary scale) and construct the Grounded Green's Spectral Scaffold!
         std::vector<Scalar> upper_om;
         upper_om.reserve(N * (N - 1) / 2);
         for (size_t i = 0; i < N; ++i) {
@@ -2538,7 +2778,7 @@ public:
         std::vector<std::string> taxon_names(N);
         for (size_t t = 0; t < N; ++t) taxon_names[t] = unaligned_seqs[t].name;
 
-        // Build balanced Ohmic Spectral Fiedler + Electrostatic Port-Grounded Guide Tree
+        // Build balanced Grounded Dirichlet Green's Function Spectral Guide Tree
         Tree guide_tree = TreeEngine::build_spectral_scaffold_from_distances(
             D_ohmic_af, taxon_names, false
         );
