@@ -90,6 +90,12 @@ public:
             curr_tree.nodes[nid].branch_length *= opt_s;
         }
         curr_tree.scale_bridge_lengths(opt_s);
+        for (const auto& br : curr_tree.bridges) {
+            if (br.bridge_node_id >= 0 && static_cast<size_t>(br.bridge_node_id) < curr_tree.nodes.size() &&
+                br.bridge_node_id != br.hub_node_id) {
+                curr_tree.nodes[br.bridge_node_id].branch_length = br.branch_lengths[0];
+            }
+        }
 
         // Stage 2 & 3: Alternating coordinate-wise optimization of GTR rates and individual branch lengths
         constexpr int max_cycles = 15;
@@ -140,6 +146,28 @@ public:
                     auto [best_bl, _] = Brent1D::minimize(bl_obj, 1e-6, std::max(init_bl, 1e-4), 50.0, 1e-4, 20);
                     curr_tree.nodes[nid].branch_length = best_bl;
                 }
+                for (auto& br : curr_tree.bridges) {
+                    auto saved_lens = br.branch_lengths;
+                    Scalar base_l0 = std::max(saved_lens[0], 1e-4);
+                    auto br_obj = [&](Scalar bl0) -> Scalar {
+                        Scalar scale = bl0 / base_l0;
+                        for (int r = 0; r < 3; ++r) {
+                            br.branch_lengths[r] = saved_lens[r] * scale;
+                        }
+                        Scalar lnl = eval_tree_lnl(curr_tree, params);
+                        br.branch_lengths = saved_lens;
+                        return -lnl;
+                    };
+                    auto [best_bl0, _] = Brent1D::minimize(br_obj, 1e-6, base_l0, 50.0, 1e-4, 20);
+                    Scalar best_scale = best_bl0 / base_l0;
+                    for (int r = 0; r < 3; ++r) {
+                        br.branch_lengths[r] = saved_lens[r] * best_scale;
+                    }
+                    if (br.bridge_node_id >= 0 && static_cast<size_t>(br.bridge_node_id) < curr_tree.nodes.size() &&
+                        br.bridge_node_id != br.hub_node_id) {
+                        curr_tree.nodes[br.bridge_node_id].branch_length = br.branch_lengths[0];
+                    }
+                }
             }
 
             Scalar current_ll = eval_tree_lnl(curr_tree, params);
@@ -150,10 +178,10 @@ public:
             }
             prev_cycle_ll = current_ll;
         }
-        for (auto& br : curr_tree.bridges) {
+        for (const auto& br : curr_tree.bridges) {
             if (br.bridge_node_id >= 0 && static_cast<size_t>(br.bridge_node_id) < curr_tree.nodes.size() &&
                 br.bridge_node_id != br.hub_node_id) {
-                br.branch_lengths[0] = curr_tree.nodes[br.bridge_node_id].branch_length;
+                curr_tree.nodes[br.bridge_node_id].branch_length = br.branch_lengths[0];
             }
         }
 

@@ -13,6 +13,7 @@
 #include "hyphy/analyses/fel.hpp"
 #include "hyphy/analyses/fubar.hpp"
 #include "hyphy/analyses/busted.hpp"
+#include "hyphy/analyses/absrel.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -652,6 +653,62 @@ TEST_CASE("OHMIC 9: Finite-Difference Gradient Verification on Wheatstone-Bridge
         Scalar ll_m = busted.evaluate_log_l(1.0, omegas, weights, syn_rates, syn_weights, &tau_m);
         Scalar fd_tau = (ll_p - ll_m) / (2.0 * h);
         CHECK(b_grads[node.id] == doctest::Approx(fd_tau).epsilon(1e-4));
+    }
+
+    // 4. Verify aBSREL detached bridge node cavity equivalence and full fitting/testing
+    if (b0_id >= 0 && b0_id != tree.bridges[0].hub_node_id) {
+        ABSRELSettings absrel_settings;
+        ABSRELAnalyzer absrel = ABSRELAnalyzer::create(tree, aln, absrel_settings);
+        CHECK(absrel.detached_bridge_index(b0_id) == 0);
+        CHECK(absrel.is_active_absrel_branch(b0_id));
+
+        // Verify stacked [3*S x P] bridge cavity matches full tree log-likelihood for M=2 mixture on b0_id
+        absrel.branch_alpha[b0_id] = 0.085;
+        absrel.branch_omegas[b0_id] = {0.18, 2.35};
+        absrel.branch_weights[b0_id] = {0.72, 0.28};
+
+        auto P_all = absrel.compute_all_branch_transition_matrices();
+        auto P_bridges = absrel.compute_all_bridge_transition_matrices();
+        Scalar full_tree_ll = absrel.compute_tree_log_likelihood(P_all, &P_bridges);
+
+        Matrix V_mat, D_mat, PD_scratch;
+        Scalar log_scale_offset = 0.0;
+        absrel.compute_branch_context_matrices(b0_id, P_all, V_mat, D_mat, log_scale_offset, &P_bridges);
+        CHECK(V_mat.rows() == 3 * absrel.gcode->num_sense_codons);
+        CHECK(D_mat.rows() == 3 * absrel.gcode->num_sense_codons);
+        Scalar cavity_ll = absrel.eval_node_current_mixture_ll(
+            b0_id, absrel.branch_alpha[b0_id], absrel.branch_omegas[b0_id],
+            absrel.branch_weights[b0_id], V_mat, D_mat, log_scale_offset, PD_scratch
+        );
+        CHECK(cavity_ll == doctest::Approx(full_tree_ll).epsilon(1e-9));
+
+        // Run full aBSREL pipeline and verify detached bridge node is fitted and tested
+        absrel_settings.max_rate_classes = 2;
+        absrel_settings.test_branches = "Internal";
+        ABSRELAnalyzer absrel_run = ABSRELAnalyzer::create(tree, aln, absrel_settings);
+        ABSRELResult absrel_res = absrel_run.run();
+        CHECK(std::isfinite(absrel_res.baseline_fit.log_likelihood));
+        CHECK(std::isfinite(absrel_res.full_adaptive_fit.log_likelihood));
+        CHECK(absrel_res.full_adaptive_fit.log_likelihood >= absrel_res.baseline_fit.log_likelihood - 1e-4);
+
+        bool found_detached_bridge = false;
+        for (const auto& [name, br] : absrel_res.branches) {
+            if (br.node_id == b0_id) {
+                found_detached_bridge = true;
+                CHECK(br.is_tested);
+                CHECK(br.baseline_branch_length > 0.0);
+                CHECK(br.full_branch_length > 0.0);
+                CHECK(std::isfinite(br.baseline_omega));
+                CHECK(std::isfinite(br.lrt));
+                CHECK(br.uncorrected_p_value >= 0.0);
+                CHECK(br.uncorrected_p_value <= 1.0);
+            }
+            // Collapsed polytomy tombstones (parent_id == INVALID_INDEX and not a detached bridge) must not appear
+            if (absrel_run.tree.nodes[br.node_id].parent_id == INVALID_INDEX) {
+                CHECK(absrel_run.detached_bridge_index(br.node_id) >= 0);
+            }
+        }
+        CHECK(found_detached_bridge);
     }
 }
 

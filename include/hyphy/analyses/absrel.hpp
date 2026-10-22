@@ -308,6 +308,37 @@ public:
         return P_branches;
     }
 
+    int32_t detached_bridge_index(int32_t bid) const {
+        for (size_t b = 0; b < tree.bridges.size(); ++b) {
+            const auto& wb = tree.bridges[b];
+            if (wb.bridge_node_id == bid && wb.bridge_node_id != wb.hub_node_id) {
+                return static_cast<int32_t>(b);
+            }
+        }
+        return -1;
+    }
+
+    bool is_active_absrel_branch(int32_t bid) const {
+        if (bid < 0 || static_cast<size_t>(bid) >= tree.nodes.size()) return false;
+        if (bid == tree.root_id) return false;
+        if (tree.nodes[bid].parent_id != INVALID_INDEX) return true;
+        return detached_bridge_index(bid) >= 0;
+    }
+
+    std::array<Scalar, 3> bridge_resolution_ratios(int32_t b_idx) const {
+        const auto& wb = tree.bridges[static_cast<size_t>(b_idx)];
+        int32_t bid = wb.bridge_node_id;
+        Scalar base_bl = (bid >= 0 && static_cast<size_t>(bid) < tree.nodes.size() &&
+                          tree.nodes[bid].branch_length > 1e-8)
+            ? tree.nodes[bid].branch_length
+            : ((wb.branch_lengths[0] > 1e-8) ? wb.branch_lengths[0] : 1.0);
+        return {
+            wb.branch_lengths[0] / base_bl,
+            wb.branch_lengths[1] / base_bl,
+            wb.branch_lengths[2] / base_bl
+        };
+    }
+
     std::vector<std::array<Matrix, 3>> compute_all_bridge_transition_matrices() const {
         return compute_all_bridge_transition_matrices_with(branch_alpha, branch_omegas, branch_weights);
     }
@@ -323,14 +354,16 @@ public:
         Scalar syn_conv = 3.0 / std::max(syn_scale_factor, Scalar(0.1));
         for (size_t b = 0; b < tree.bridges.size(); ++b) {
             const auto& wb = tree.bridges[b];
-            int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id &&
-                           static_cast<size_t>(wb.bridge_node_id) < alphas.size())
-                ? wb.bridge_node_id
-                : wb.hub_node_id;
-            bool has_base_bl = (bid >= 0 && static_cast<size_t>(bid) < tree.nodes.size() &&
+            bool is_detached_bridge = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id &&
+                                       static_cast<size_t>(wb.bridge_node_id) < alphas.size());
+            int32_t bid = is_detached_bridge ? wb.bridge_node_id : wb.hub_node_id;
+            bool has_base_bl = is_detached_bridge ||
+                               (bid >= 0 && static_cast<size_t>(bid) < tree.nodes.size() &&
                                 tree.nodes[bid].branch_length > 1e-8 &&
                                 static_cast<size_t>(bid) < alphas.size());
-            Scalar base_bl = has_base_bl ? tree.nodes[bid].branch_length : 1.0;
+            std::array<Scalar, 3> ratios = has_base_bl
+                ? bridge_resolution_ratios(static_cast<int32_t>(b))
+                : std::array<Scalar, 3>{0.0, 0.0, 0.0};
             Scalar a_base = has_base_bl ? alphas[bid] : 0.0;
             std::vector<MG94Matrix> mats(omegas[bid].size());
             for (size_t k = 0; k < omegas[bid].size(); ++k) {
@@ -338,7 +371,7 @@ public:
             }
             for (int r = 0; r < 3; ++r) {
                 Scalar a_r = has_base_bl
-                    ? (a_base * (wb.branch_lengths[r] / base_bl))
+                    ? (a_base * ratios[r])
                     : (wb.branch_lengths[r] * syn_conv);
                 P_bridges[b][r] = Matrix::Zero(S, S);
                 for (size_t k = 0; k < mats.size(); ++k) {
@@ -420,7 +453,178 @@ public:
         return ll + c_ll;
     }
 
-    // Zero-allocation helper to compute V_mat [S x P], D_mat [S x P], and log_scale_offset for a single branch
+    // Apply single-class transition matrix P(a) (or 3-resolution block-diagonal P(a * ratio_r) for a detached Wheatstone bridge)
+    void apply_node_class_transition(
+        int32_t bid,
+        const MG94Matrix& mat,
+        Scalar a,
+        const Matrix& D_mat,
+        Matrix& PD_out
+    ) const {
+        int S = gcode->num_sense_codons;
+        int32_t b_idx = detached_bridge_index(bid);
+        if (b_idx < 0 || D_mat.rows() == S) {
+            PD_out.resize(S, D_mat.cols());
+            PD_out.noalias() = mat.transition_matrix(a) * D_mat;
+        } else {
+            PD_out.resize(3 * S, D_mat.cols());
+            auto ratios = bridge_resolution_ratios(b_idx);
+            for (int r = 0; r < 3; ++r) {
+                PD_out.middleRows(r * S, S).noalias() =
+                    mat.transition_matrix(a * ratios[r]) * D_mat.middleRows(r * S, S);
+            }
+        }
+    }
+
+    Scalar eval_node_single_class_ll(
+        int32_t bid,
+        const MG94Matrix& mat,
+        Scalar a,
+        const Matrix& V_mat,
+        const Matrix& D_mat,
+        Scalar log_scale_offset,
+        Matrix& PD_scratch
+    ) const {
+        apply_node_class_transition(bid, mat, a, D_mat, PD_scratch);
+        size_t num_patterns = aln.patterns.size();
+        Scalar ll = log_scale_offset;
+        Scalar c_ll = 0.0;
+        for (size_t p = 0; p < num_patterns; ++p) {
+            Scalar Lp = V_mat.col(p).dot(PD_scratch.col(p));
+            Scalar term = (Lp > 0.0) ? (pattern_weights_vec(p) * std::log(Lp)) : (pattern_weights_vec(p) * (-1e20));
+            LikelihoodEngine::neumaier_acc(ll, c_ll, term);
+        }
+        return ll + c_ll;
+    }
+
+    Scalar eval_node_two_class_ll(
+        int32_t bid,
+        const MG94Matrix& mat1,
+        Scalar p1,
+        const MG94Matrix& mat2,
+        Scalar p2,
+        Scalar a,
+        const Matrix& V_mat,
+        const Matrix& D_mat,
+        Scalar log_scale_offset,
+        Matrix& PD_scratch
+    ) const {
+        int S = gcode->num_sense_codons;
+        int32_t b_idx = detached_bridge_index(bid);
+        if (b_idx < 0 || D_mat.rows() == S) {
+            PD_scratch.resize(S, D_mat.cols());
+            Matrix P_mix = p1 * mat1.transition_matrix(a) + p2 * mat2.transition_matrix(a);
+            return eval_branch_ll_from_matrices(P_mix, V_mat, D_mat, log_scale_offset, PD_scratch);
+        }
+        PD_scratch.resize(3 * S, D_mat.cols());
+        auto ratios = bridge_resolution_ratios(b_idx);
+        for (int r = 0; r < 3; ++r) {
+            Scalar a_r = a * ratios[r];
+            Matrix P_mix_r = p1 * mat1.transition_matrix(a_r) + p2 * mat2.transition_matrix(a_r);
+            PD_scratch.middleRows(r * S, S).noalias() = P_mix_r * D_mat.middleRows(r * S, S);
+        }
+        size_t num_patterns = aln.patterns.size();
+        Scalar ll = log_scale_offset;
+        Scalar c_ll = 0.0;
+        for (size_t p = 0; p < num_patterns; ++p) {
+            Scalar Lp = V_mat.col(p).dot(PD_scratch.col(p));
+            Scalar term = (Lp > 0.0) ? (pattern_weights_vec(p) * std::log(Lp)) : (pattern_weights_vec(p) * (-1e20));
+            LikelihoodEngine::neumaier_acc(ll, c_ll, term);
+        }
+        return ll + c_ll;
+    }
+
+    Scalar eval_node_current_mixture_ll(
+        int32_t bid,
+        Scalar a,
+        const std::vector<Scalar>& omegas,
+        const std::vector<Scalar>& weights,
+        const Matrix& V_mat,
+        const Matrix& D_mat,
+        Scalar log_scale_offset,
+        Matrix& PD_scratch
+    ) const {
+        int S = gcode->num_sense_codons;
+        int32_t b_idx = detached_bridge_index(bid);
+        std::vector<MG94Matrix> mats(omegas.size());
+        for (size_t k = 0; k < omegas.size(); ++k) {
+            mats[k] = build_q_matrix(omegas[k]);
+        }
+        if (b_idx < 0 || D_mat.rows() == S) {
+            PD_scratch.resize(S, D_mat.cols());
+            Matrix P_mix = Matrix::Zero(S, S);
+            for (size_t k = 0; k < mats.size(); ++k) {
+                P_mix.noalias() += weights[k] * mats[k].transition_matrix(a);
+            }
+            return eval_branch_ll_from_matrices(P_mix, V_mat, D_mat, log_scale_offset, PD_scratch);
+        }
+        PD_scratch.resize(3 * S, D_mat.cols());
+        auto ratios = bridge_resolution_ratios(b_idx);
+        for (int r = 0; r < 3; ++r) {
+            Scalar a_r = a * ratios[r];
+            Matrix P_mix_r = Matrix::Zero(S, S);
+            for (size_t k = 0; k < mats.size(); ++k) {
+                P_mix_r.noalias() += weights[k] * mats[k].transition_matrix(a_r);
+            }
+            PD_scratch.middleRows(r * S, S).noalias() = P_mix_r * D_mat.middleRows(r * S, S);
+        }
+        size_t num_patterns = aln.patterns.size();
+        Scalar ll = log_scale_offset;
+        Scalar c_ll = 0.0;
+        for (size_t p = 0; p < num_patterns; ++p) {
+            Scalar Lp = V_mat.col(p).dot(PD_scratch.col(p));
+            Scalar term = (Lp > 0.0) ? (pattern_weights_vec(p) * std::log(Lp)) : (pattern_weights_vec(p) * (-1e20));
+            LikelihoodEngine::neumaier_acc(ll, c_ll, term);
+        }
+        return ll + c_ll;
+    }
+
+    // Extract 3-resolution stacked [3*S x B] cavity matrices for a detached Wheatstone bridge
+    void extract_bridge_cavity_tile(
+        int32_t b_idx,
+        size_t p_start,
+        size_t B,
+        const LikelihoodEngine::BatchedInsideOutsideWorkspace& ws,
+        Matrix& V_bridge_out,
+        Matrix& D_bridge_out
+    ) const {
+        int S = gcode->num_sense_codons;
+        const auto& wb = tree.bridges[static_cast<size_t>(b_idx)];
+        int32_t uid = wb.hub_node_id;
+        int32_t id_A = wb.children[0];
+        int32_t id_B = wb.children[1];
+        int32_t id_C = wb.children[2];
+
+        auto M_A = ws.P_D[id_A].leftCols(B);
+        auto M_B = ws.P_D[id_B].leftCols(B);
+        auto M_C = ws.P_D[id_C].leftCols(B);
+        Matrix U_boosted = ws.U[uid].leftCols(B);
+        for (Eigen::Index b = 0; b < static_cast<Eigen::Index>(B); ++b) {
+            int net_boost = ws.boost_counts(uid, b);
+            while (net_boost > 0) {
+                U_boosted.col(b) *= 1e150;
+                net_boost--;
+            }
+            while (net_boost < 0) {
+                U_boosted.col(b) *= 1e-150;
+                net_boost++;
+            }
+        }
+
+        // Resolution 0: (A, B) | C
+        D_bridge_out.block(0, p_start, S, B).array() = M_A.array() * M_B.array();
+        V_bridge_out.block(0, p_start, S, B).array() = wb.weights[0] * (U_boosted.array() * M_C.array());
+
+        // Resolution 1: (A, C) | B
+        D_bridge_out.block(S, p_start, S, B).array() = M_A.array() * M_C.array();
+        V_bridge_out.block(S, p_start, S, B).array() = wb.weights[1] * (U_boosted.array() * M_B.array());
+
+        // Resolution 2: (B, C) | A
+        D_bridge_out.block(2 * S, p_start, S, B).array() = M_B.array() * M_C.array();
+        V_bridge_out.block(2 * S, p_start, S, B).array() = wb.weights[2] * (U_boosted.array() * M_A.array());
+    }
+
+    // Zero-allocation helper to compute V_mat [S x P] (or [3*S x P] for detached bridges), D_mat, and log_scale_offset for a single branch
     void compute_branch_context_matrices(
         int32_t bid,
         const std::vector<Matrix>& P_branches,
@@ -432,8 +636,10 @@ public:
         int S = gcode->num_sense_codons;
         size_t num_patterns = aln.patterns.size();
         size_t num_nodes = tree.num_nodes();
-        V_mat.resize(S, num_patterns);
-        D_mat.resize(S, num_patterns);
+        int32_t b_idx = detached_bridge_index(bid);
+        int rows_needed = (b_idx >= 0) ? (3 * S) : S;
+        V_mat.resize(rows_needed, num_patterns);
+        D_mat.resize(rows_needed, num_patterns);
         std::vector<Scalar> scale_offsets(num_patterns, 0.0);
 
         std::vector<std::array<Matrix, 3>> local_P_bridges;
@@ -460,8 +666,12 @@ public:
                 LikelihoodEngine::compute_inside_outside_batch_in_place(
                     tree, aln, p_start, p_end, leaf_to_taxon, P_branches, codon_freqs, S, ws, P_br_ptr
                 );
-                V_mat.middleCols(p_start, B) = ws.V[bid].leftCols(B);
-                D_mat.middleCols(p_start, B) = ws.D[bid].leftCols(B);
+                if (b_idx >= 0) {
+                    extract_bridge_cavity_tile(b_idx, p_start, B, ws, V_mat, D_mat);
+                } else {
+                    V_mat.middleCols(p_start, B) = ws.V[bid].leftCols(B);
+                    D_mat.middleCols(p_start, B) = ws.D[bid].leftCols(B);
+                }
                 for (size_t b = 0; b < B; ++b) {
                     size_t p = p_start + b;
                     if (ws.likelihood(b) > 0.0) {
@@ -509,15 +719,15 @@ public:
         int S = gcode->num_sense_codons;
         size_t num_patterns = aln.patterns.size();
         size_t num_nodes = tree.num_nodes();
-        size_t num_branches = num_nodes - 1;
 
         std::vector<int32_t> branch_ids;
-        branch_ids.reserve(num_branches);
+        branch_ids.reserve(num_nodes);
         for (const auto& node : tree.nodes) {
-            if (node.id != tree.root_id && node.parent_id != INVALID_INDEX) {
+            if (is_active_absrel_branch(node.id)) {
                 branch_ids.push_back(node.id);
             }
         }
+        size_t num_branches = branch_ids.size();
 
         std::unique_ptr<ProgressBar> pbar_p2;
         if (show_progress && (force_progress || ProgressBar::is_terminal())) {
@@ -533,8 +743,13 @@ public:
         std::vector<Matrix> P_branches = compute_all_branch_transition_matrices();
         Scalar prev_ll = compute_tree_log_likelihood(P_branches);
 
-        std::vector<Matrix> V_all(num_nodes, Matrix::Zero(S, num_patterns));
-        std::vector<Matrix> D_all(num_nodes, Matrix::Zero(S, num_patterns));
+        std::vector<Matrix> V_all(num_nodes);
+        std::vector<Matrix> D_all(num_nodes);
+        for (int32_t bid : branch_ids) {
+            int rows_needed = (detached_bridge_index(bid) >= 0) ? (3 * S) : S;
+            V_all[bid] = Matrix::Zero(rows_needed, num_patterns);
+            D_all[bid] = Matrix::Zero(rows_needed, num_patterns);
+        }
 
         for (int cycle = 0; cycle < max_cycles; ++cycle) {
             // 1. Batched GEMM Inside-Outside pass for all patterns across entire tree
@@ -558,8 +773,13 @@ public:
                         tree, aln, p_start, p_end, leaf_to_taxon, P_branches, codon_freqs, S, ws, P_bridges_ptr
                     );
                     for (int32_t bid : branch_ids) {
-                        V_all[bid].middleCols(p_start, B) = ws.V[bid].leftCols(B);
-                        D_all[bid].middleCols(p_start, B) = ws.D[bid].leftCols(B);
+                        int32_t b_idx = detached_bridge_index(bid);
+                        if (b_idx >= 0) {
+                            extract_bridge_cavity_tile(b_idx, p_start, B, ws, V_all[bid], D_all[bid]);
+                        } else {
+                            V_all[bid].middleCols(p_start, B) = ws.V[bid].leftCols(B);
+                            D_all[bid].middleCols(p_start, B) = ws.D[bid].leftCols(B);
+                        }
                     }
                 }
             }
@@ -571,7 +791,7 @@ public:
             int br_threads = LikelihoodEngine::optimal_omp_threads(branch_ids.size(), 2);
             #pragma omp parallel num_threads(br_threads)
             {
-                Matrix PD_scratch(S, num_patterns);
+                Matrix PD_scratch;
                 #pragma omp for schedule(static)
                 for (size_t bi = 0; bi < branch_ids.size(); ++bi) {
                     int32_t bid = branch_ids[bi];
@@ -583,8 +803,7 @@ public:
                         if (cur_alpha > 50.0 || cur_omega > 5000.0) return 1e20;
 
                         MG94Matrix mat = build_q_matrix(cur_omega);
-                        Matrix P_b = mat.transition_matrix(cur_alpha);
-                        return -eval_branch_ll_from_matrices(P_b, V_all[bid], D_all[bid], 0.0, PD_scratch);
+                        return -eval_node_single_class_ll(bid, mat, cur_alpha, V_all[bid], D_all[bid], 0.0, PD_scratch);
                     };
 
                     Scalar init_log_alpha = std::log(std::clamp(branch_alpha[bid], 1e-4, 20.0));
@@ -640,9 +859,9 @@ public:
                 }
                 P_branches = compute_all_branch_transition_matrices();
                 cur_ll = prev_ll;
-                Matrix V_gs(S, num_patterns);
-                Matrix D_gs(S, num_patterns);
-                Matrix PD_gs(S, num_patterns);
+                Matrix V_gs;
+                Matrix D_gs;
+                Matrix PD_gs;
                 for (int32_t bid : branch_ids) {
                     Scalar gs_offset = 0.0;
                     compute_branch_context_matrices(bid, P_branches, V_gs, D_gs, gs_offset);
@@ -651,8 +870,7 @@ public:
                         Scalar cw = std::exp(log_omega);
                         if (ca > 50.0 || cw > 5000.0) return 1e20;
                         MG94Matrix mat = build_q_matrix(cw);
-                        Matrix P_b = mat.transition_matrix(ca);
-                        return -eval_branch_ll_from_matrices(P_b, V_gs, D_gs, gs_offset, PD_gs);
+                        return -eval_node_single_class_ll(bid, mat, ca, V_gs, D_gs, gs_offset, PD_gs);
                     };
                     Scalar init_la = std::log(std::clamp(branch_alpha[bid], 1e-4, 20.0));
                     Scalar init_lw = std::log(std::clamp(branch_omegas[bid][0], 1e-3, 50.0));
@@ -712,20 +930,22 @@ public:
         const std::vector<Scalar>* override_weights = nullptr,
         Scalar log_scale_offset = 0.0
     ) const {
-        int S = gcode->num_sense_codons;
         size_t num_patterns = aln.patterns.size();
         Scalar cur_alpha = (override_alpha > 0.0) ? override_alpha : std::max(1e-5, branch_alpha[bid]);
         const auto& cur_omegas = (override_omegas != nullptr) ? *override_omegas : branch_omegas[bid];
         const auto& cur_weights = (override_weights != nullptr) ? *override_weights : branch_weights[bid];
 
-        Matrix PD_scratch(S, num_patterns);
+        Matrix PD_scratch(D_mat.rows(), num_patterns);
 
         if (M == 1) {
             MG94Matrix mat_w1 = build_q_matrix(1.0);
             auto obj_1d = [&](Scalar log_a, Scalar log_w) -> Scalar {
                 Scalar a = std::exp(log_a);
-                Matrix P_b = constrain_null ? mat_w1.transition_matrix(a) : build_q_matrix(std::exp(log_w)).transition_matrix(a);
-                return -eval_branch_ll_from_matrices(P_b, V_mat, D_mat, log_scale_offset, PD_scratch);
+                if (constrain_null) {
+                    return -eval_node_single_class_ll(bid, mat_w1, a, V_mat, D_mat, log_scale_offset, PD_scratch);
+                }
+                MG94Matrix mat_w = build_q_matrix(std::exp(log_w));
+                return -eval_node_single_class_ll(bid, mat_w, a, V_mat, D_mat, log_scale_offset, PD_scratch);
             };
 
             LocalBranchFit res;
@@ -776,8 +996,7 @@ public:
                     Scalar w1 = 1.0 / (1.0 + std::exp(-x[2]));
 
                     MG94Matrix mat1 = build_q_matrix(w1);
-                    Matrix P_mix = p1 * mat1.transition_matrix(a) + p2 * mat_w2_one.transition_matrix(a);
-                    return -eval_branch_ll_from_matrices(P_mix, V_mat, D_mat, log_scale_offset, PD_scratch);
+                    return -eval_node_two_class_ll(bid, mat1, p1, mat_w2_one, p2, a, V_mat, D_mat, log_scale_offset, PD_scratch);
                 };
 
                 Scalar init_log_a = std::log(cur_alpha);
@@ -821,13 +1040,13 @@ public:
                     Scalar cand_log_a = std::log(cur_alpha * a_mult);
                     Scalar a = std::exp(cand_log_a);
 
-                    PD_scratch.noalias() = mat_w2_one.transition_matrix(a) * D_mat;
+                    apply_node_class_transition(bid, mat_w2_one, a, D_mat, PD_scratch);
                     for (size_t p = 0; p < num_patterns; ++p) {
                         L_w2(p) = V_mat.col(p).dot(PD_scratch.col(p));
                     }
 
                     for (size_t iw1 = 0; iw1 < 6; ++iw1) {
-                        PD_scratch.noalias() = mat_w1_grid[iw1].transition_matrix(a) * D_mat;
+                        apply_node_class_transition(bid, mat_w1_grid[iw1], a, D_mat, PD_scratch);
                         for (size_t p = 0; p < num_patterns; ++p) {
                             L_w1[iw1](p) = V_mat.col(p).dot(PD_scratch.col(p));
                         }
@@ -876,8 +1095,7 @@ public:
 
                     MG94Matrix mat1 = build_q_matrix(w1);
                     MG94Matrix mat2 = build_q_matrix(w2);
-                    Matrix P_mix = p1 * mat1.transition_matrix(a) + p2 * mat2.transition_matrix(a);
-                    return -eval_branch_ll_from_matrices(P_mix, V_mat, D_mat, log_scale_offset, PD_scratch);
+                    return -eval_node_two_class_ll(bid, mat1, p1, mat2, p2, a, V_mat, D_mat, log_scale_offset, PD_scratch);
                 };
 
                 Scalar init_log_a = std::log(cur_alpha);
@@ -937,13 +1155,13 @@ public:
                     Scalar a = std::exp(cand_log_a);
 
                     for (size_t iw1 = 0; iw1 < 6; ++iw1) {
-                        PD_scratch.noalias() = mat_w1_grid[iw1].transition_matrix(a) * D_mat;
+                        apply_node_class_transition(bid, mat_w1_grid[iw1], a, D_mat, PD_scratch);
                         for (size_t p = 0; p < num_patterns; ++p) {
                             L_w1[iw1](p) = V_mat.col(p).dot(PD_scratch.col(p));
                         }
                     }
                     for (size_t iw2 = 0; iw2 < 10; ++iw2) {
-                        PD_scratch.noalias() = mat_w2_grid[iw2].transition_matrix(a) * D_mat;
+                        apply_node_class_transition(bid, mat_w2_grid[iw2], a, D_mat, PD_scratch);
                         for (size_t p = 0; p < num_patterns; ++p) {
                             L_w2[iw2](p) = V_mat.col(p).dot(PD_scratch.col(p));
                         }
@@ -1040,7 +1258,7 @@ public:
 
         // Record baseline results per branch
         for (const auto& node : tree.nodes) {
-            if (node.id == tree.root_id) continue;
+            if (!is_active_absrel_branch(node.id)) continue;
             ABSRELBranchResult bres;
             bres.branch_name = node.name;
             bres.node_id = node.id;
@@ -1060,7 +1278,7 @@ public:
         // Sort branches by baseline length descending (with deterministic tie-breaker by node id)
         std::vector<int32_t> sorted_branches;
         for (const auto& node : tree.nodes) {
-            if (node.id != tree.root_id && node.parent_id != INVALID_INDEX) {
+            if (is_active_absrel_branch(node.id)) {
                 sorted_branches.push_back(node.id);
             }
         }
@@ -1168,7 +1386,7 @@ public:
         // 3. Branch mixture parameter refinement (Nelder-Mead on local mixtures)
         std::vector<int32_t> all_branches;
         for (const auto& node : tree.nodes) {
-            if (node.id != tree.root_id) {
+            if (is_active_absrel_branch(node.id)) {
                 all_branches.push_back(node.id);
             }
         }
@@ -1237,17 +1455,19 @@ public:
                     Scalar syn_conv = 3.0 / std::max(abs.syn_scale_factor, Scalar(0.1));
                     for (size_t b_idx = 0; b_idx < abs.tree.bridges.size(); ++b_idx) {
                         const auto& wb = abs.tree.bridges[b_idx];
-                        int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id &&
-                                       static_cast<size_t>(wb.bridge_node_id) < alpha_ref.size())
-                            ? wb.bridge_node_id
-                            : wb.hub_node_id;
-                        bool has_base_bl = (bid >= 0 && static_cast<size_t>(bid) < abs.tree.nodes.size() &&
+                        bool is_detached_bridge = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id &&
+                                                   static_cast<size_t>(wb.bridge_node_id) < alpha_ref.size());
+                        int32_t bid = is_detached_bridge ? wb.bridge_node_id : wb.hub_node_id;
+                        bool has_base_bl = is_detached_bridge ||
+                                           (bid >= 0 && static_cast<size_t>(bid) < abs.tree.nodes.size() &&
                                             abs.tree.nodes[bid].branch_length > 1e-8 &&
                                             static_cast<size_t>(bid) < alpha_ref.size());
-                        Scalar base_bl = has_base_bl ? abs.tree.nodes[bid].branch_length : 1.0;
+                        std::array<Scalar, 3> ratios = has_base_bl
+                            ? abs.bridge_resolution_ratios(static_cast<int32_t>(b_idx))
+                            : std::array<Scalar, 3>{0.0, 0.0, 0.0};
                         Scalar a_base = has_base_bl ? alpha_ref[bid] : 0.0;
                         for (int r = 0; r < 3; ++r) {
-                            Scalar ratio = has_base_bl ? (wb.branch_lengths[r] / base_bl) : 0.0;
+                            Scalar ratio = ratios[r];
                             Scalar a_r = has_base_bl ? (a_base * ratio) : (wb.branch_lengths[r] * syn_conv);
                             P_bridges[b_idx][r] = Matrix::Zero(S_val, S_val);
                             dP_bridges[b_idx][r] = Matrix::Zero(S_val, S_val);
@@ -1479,10 +1699,10 @@ public:
         ) -> Scalar {
             auto P_b = compute_all_branch_transition_matrices_with(cur_alpha, cur_omegas, cur_weights);
             auto P_br = compute_all_bridge_transition_matrices_with(cur_alpha, cur_omegas, cur_weights);
-            Matrix V_mat_ref(S, num_patterns);
-            Matrix D_mat_ref(S, num_patterns);
+            Matrix V_mat_ref;
+            Matrix D_mat_ref;
             for (int32_t bid_iter : all_branches) {
-                if (tree.nodes[bid_iter].parent_id == INVALID_INDEX) continue;
+                if (!is_active_absrel_branch(bid_iter)) continue;
                 int M = static_cast<int>(cur_omegas[bid_iter].size());
                 bool is_constrained = (bid_iter == constrained_bid);
                 if (is_constrained && M == 1) {
@@ -1495,8 +1715,11 @@ public:
                     tree.bridges.empty() ? nullptr : &P_br
                 );
 
-                Matrix PD_scratch(S, num_patterns);
-                Scalar prev_b_ll = eval_branch_ll_from_matrices(P_b[bid_iter], V_mat_ref, D_mat_ref, log_scale_offset, PD_scratch);
+                Matrix PD_scratch;
+                Scalar prev_b_ll = eval_node_current_mixture_ll(
+                    bid_iter, cur_alpha[bid_iter], cur_omegas[bid_iter], cur_weights[bid_iter],
+                    V_mat_ref, D_mat_ref, log_scale_offset, PD_scratch
+                );
 
                 auto refined_fit = optimize_branch_mixture_mat(
                     bid_iter, M, V_mat_ref, D_mat_ref, is_constrained,
@@ -1575,7 +1798,7 @@ public:
 
         auto update_full_branch_summaries = [&]() {
             for (const auto& node : tree.nodes) {
-                if (node.id == tree.root_id) continue;
+                if (!is_active_absrel_branch(node.id)) continue;
                 int32_t bid_node = node.id;
                 const std::string& bname_node = node.name;
                 result.branches[bname_node].rate_distribution.rates = branch_omegas[bid_node];
@@ -1592,7 +1815,7 @@ public:
         if (progress_cb) progress_cb("Phase 5: Hypothesis Testing for Selection", 0.80);
         std::vector<std::string> to_test;
         for (const auto& node : tree.nodes) {
-            if (node.id == tree.root_id || node.parent_id == INVALID_INDEX) continue;
+            if (!is_active_absrel_branch(node.id)) continue;
             bool test_this = (static_cast<size_t>(node.id) < is_test_branch.size()) ? is_test_branch[node.id] : true;
             if (test_this) {
                 to_test.push_back(node.name);
@@ -1617,8 +1840,13 @@ public:
         // Precompute full-model Inside-Outside context ONCE across the tree for all branches!
         // (Previously this was recomputed from scratch for every tested branch with omega_max > 1).
         size_t num_nodes_total = tree.num_nodes();
-        std::vector<Matrix> V_full_all(num_nodes_total, Matrix::Zero(S, num_patterns));
-        std::vector<Matrix> D_full_all(num_nodes_total, Matrix::Zero(S, num_patterns));
+        std::vector<Matrix> V_full_all(num_nodes_total);
+        std::vector<Matrix> D_full_all(num_nodes_total);
+        for (int32_t bid_node : all_branches) {
+            int rows_needed = (detached_bridge_index(bid_node) >= 0) ? (3 * S) : S;
+            V_full_all[bid_node] = Matrix::Zero(rows_needed, num_patterns);
+            D_full_all[bid_node] = Matrix::Zero(rows_needed, num_patterns);
+        }
         auto recompute_full_io_cache = [&]() {
             std::vector<std::array<Matrix, 3>> P_bridges = compute_all_bridge_transition_matrices();
             const auto* P_bridges_ptr = tree.bridges.empty() ? nullptr : &P_bridges;
@@ -1640,8 +1868,13 @@ public:
                         tree, aln, p_start, p_end, leaf_to_taxon, P_branches, codon_freqs, S, ws, P_bridges_ptr
                     );
                     for (int32_t bid_node : all_branches) {
-                        V_full_all[bid_node].middleCols(p_start, B) = ws.V[bid_node].leftCols(B);
-                        D_full_all[bid_node].middleCols(p_start, B) = ws.D[bid_node].leftCols(B);
+                        int32_t b_idx = detached_bridge_index(bid_node);
+                        if (b_idx >= 0) {
+                            extract_bridge_cavity_tile(b_idx, p_start, B, ws, V_full_all[bid_node], D_full_all[bid_node]);
+                        } else {
+                            V_full_all[bid_node].middleCols(p_start, B) = ws.V[bid_node].leftCols(B);
+                            D_full_all[bid_node].middleCols(p_start, B) = ws.D[bid_node].leftCols(B);
+                        }
                     }
                 }
             }
@@ -1884,17 +2117,17 @@ public:
                 // Compute pattern EBFs
                 std::vector<Scalar> pattern_ebf(num_patterns, 1.0);
                 Scalar alpha = branch_alpha[bid];
-                std::vector<Matrix> P_comps(K);
+                std::vector<Matrix> PD_comps(K);
                 for (size_t k = 0; k < K; ++k) {
                     MG94Matrix mat = build_q_matrix(bres.rate_distribution.rates[k]);
-                    P_comps[k] = mat.transition_matrix(alpha);
+                    apply_node_class_transition(bid, mat, alpha, D_branch_full, PD_comps[k]);
                 }
 
                 for (size_t p = 0; p < num_patterns; ++p) {
                     std::vector<Scalar> comp_L(K);
                     Scalar denom = 0.0;
                     for (size_t k = 0; k < K; ++k) {
-                        Scalar L_k = V_branch_full.col(p).dot(P_comps[k] * D_branch_full.col(p));
+                        Scalar L_k = V_branch_full.col(p).dot(PD_comps[k].col(p));
                         comp_L[k] = bres.rate_distribution.weights[k] * L_k;
                         denom += comp_L[k];
                     }
