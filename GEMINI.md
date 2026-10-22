@@ -7,3 +7,4 @@ Read `AGENT.md` before making changes. Section 6 ("Shared Infrastructure: CI, Te
 - Do not edit `.github/workflows/` or the `deep` test labels in `CMakeLists.txt` unless the task is about CI. CI is two-tier on purpose: a fast tier on every push and PR (`ctest -LE deep`) and a deep tier nightly or on PRs labelled `full-ci`.
 - New tests that take a minute or more get the `deep` label.
 - Test data must be inside this repo (`tests/data/`), never `../hyphy/...`.
+- Keep the CI build cache working (`AGENT.md` §6.7). Never put a per-commit value (hash, date) into a compile definition or flag. Keep the `if(NOT DEFINED HYPHY3_GIT_COMMIT)` guard in `CMakeLists.txt`: CI pins the commit to `ci`, and that pin never needs bumping. To reset the cache, bump the `ccache-fast-` / `ccache-deep-` key prefix in `.github/workflows/test.yml`.
