@@ -2,6 +2,7 @@
 #include "hyphy/analyses/joint_align.hpp"
 #undef NDEBUG
 #include <cassert>
+#include <iomanip>
 #include <iostream>
 
 using namespace hyphy::core;
@@ -60,7 +61,10 @@ int main() {
 
         // Verify Stage 1 preserved column count and MG94 log-likelihood on curated CDR1/CDR2 windows without destructive column deletion
         assert(res.map_alignment.num_codons == cam_aln.num_codons);
-        assert(res.stage1_mg94_log_l >= res.initial_mg94_log_l);
+        // Stage 1 can leave this alignment unchanged, so allow rounding-level differences between the two evaluations
+        std::cout << std::setprecision(12) << "  camelid MG94 lnL: initial " << res.initial_mg94_log_l << ", stage 1 " << res.stage1_mg94_log_l
+                  << ", stage 2 " << res.stage2_mg94_log_l << "\n";
+        assert(res.stage1_mg94_log_l >= res.initial_mg94_log_l - 1e-4);
         // Verify Stage 2 accepted at least 1 coupled SPR+Indel move
         assert(res.total_coupled_moves_accepted >= 1);
         assert(res.stage2_mg94_log_l > res.stage1_mg94_log_l);
