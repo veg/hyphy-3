@@ -579,6 +579,100 @@ public:
         return ll + c_ll;
     }
 
+    // Re-estimate all 3 quartet resolution lengths (and hence the 1 : ratio_1 : ratio_2 shape)
+    // for a detached Wheatstone bridge using its [3*S x num_patterns] cavity (V_mat, D_mat)
+    Scalar refine_bridge_resolution_lengths(
+        int32_t b_idx,
+        std::vector<Scalar>& alphas,
+        const std::vector<std::vector<Scalar>>& omegas,
+        const std::vector<std::vector<Scalar>>& weights,
+        const Matrix& V_mat,
+        const Matrix& D_mat,
+        Scalar log_scale_offset,
+        Scalar cur_ll
+    ) {
+        if (b_idx < 0 || static_cast<size_t>(b_idx) >= tree.bridges.size()) return cur_ll;
+        auto& wb = tree.bridges[static_cast<size_t>(b_idx)];
+        int32_t bid = wb.bridge_node_id;
+        if (bid < 0 || bid == wb.hub_node_id || static_cast<size_t>(bid) >= alphas.size()) return cur_ll;
+        int S = gcode->num_sense_codons;
+        if (V_mat.rows() != 3 * S || D_mat.rows() != 3 * S) return cur_ll;
+
+        size_t num_patterns = aln.patterns.size();
+        auto ratios = bridge_resolution_ratios(b_idx);
+        Scalar a_base = std::max(alphas[bid], Scalar(1e-6));
+        std::array<Scalar, 3> a_res = {
+            std::max(a_base * ratios[0], Scalar(1e-6)),
+            std::max(a_base * ratios[1], Scalar(1e-6)),
+            std::max(a_base * ratios[2], Scalar(1e-6))
+        };
+
+        std::vector<MG94Matrix> mats(omegas[bid].size());
+        for (size_t k = 0; k < omegas[bid].size(); ++k) {
+            mats[k] = build_q_matrix(omegas[bid][k]);
+        }
+
+        auto eval_res_contrib = [&](int r, Scalar a_r, Vector& contrib_out, Matrix& PD_r) {
+            Matrix P_mix_r = Matrix::Zero(S, S);
+            for (size_t k = 0; k < mats.size(); ++k) {
+                P_mix_r.noalias() += weights[bid][k] * mats[k].transition_matrix(a_r);
+            }
+            PD_r.noalias() = P_mix_r * D_mat.middleRows(r * S, S);
+            for (size_t p = 0; p < num_patterns; ++p) {
+                contrib_out(static_cast<Eigen::Index>(p)) =
+                    V_mat.block(r * S, static_cast<Eigen::Index>(p), S, 1).col(0).dot(PD_r.col(static_cast<Eigen::Index>(p)));
+            }
+        };
+
+        std::array<Vector, 3> contrib;
+        Matrix PD_r(S, num_patterns);
+        for (int r = 0; r < 3; ++r) {
+            contrib[r] = Vector::Zero(num_patterns);
+            if (wb.weights[r] > 1e-12) {
+                eval_res_contrib(r, a_res[r], contrib[r], PD_r);
+            }
+        }
+
+        Vector L_other(num_patterns), contrib_cand(num_patterns);
+        for (int r = 0; r < 3; ++r) {
+            if (wb.weights[r] <= 1e-12) continue;
+            L_other.setZero();
+            for (int r_o = 0; r_o < 3; ++r_o) {
+                if (r_o != r && wb.weights[r_o] > 1e-12) {
+                    L_other += contrib[r_o];
+                }
+            }
+            auto obj_r = [&](Scalar cand_a_r) -> Scalar {
+                eval_res_contrib(r, cand_a_r, contrib_cand, PD_r);
+                Scalar ll = log_scale_offset;
+                Scalar c_ll = 0.0;
+                for (size_t p = 0; p < num_patterns; ++p) {
+                    Scalar Lp = L_other(static_cast<Eigen::Index>(p)) + contrib_cand(static_cast<Eigen::Index>(p));
+                    Scalar term = (Lp > 0.0) ? (pattern_weights_vec(p) * std::log(Lp)) : (pattern_weights_vec(p) * (-1e20));
+                    LikelihoodEngine::neumaier_acc(ll, c_ll, term);
+                }
+                return -(ll + c_ll);
+            };
+            Scalar init_ar = std::clamp(a_res[r], Scalar(1e-5), Scalar(20.0));
+            auto [best_ar, best_f] = Brent1D::minimize(obj_r, 1e-6, init_ar, 50.0, 1e-5, 64);
+            if (-best_f >= cur_ll) {
+                a_res[r] = best_ar;
+                eval_res_contrib(r, a_res[r], contrib[r], PD_r);
+                cur_ll = -best_f;
+            }
+        }
+
+        Scalar syn_to_bl = std::max(syn_scale_factor, Scalar(0.1)) / 3.0;
+        alphas[bid] = std::max(a_res[0], Scalar(1e-6));
+        for (int r = 0; r < 3; ++r) {
+            wb.branch_lengths[r] = std::max(a_res[r] * syn_to_bl, Scalar(1e-8));
+        }
+        if (static_cast<size_t>(bid) < tree.nodes.size()) {
+            tree.nodes[bid].branch_length = wb.branch_lengths[0];
+        }
+        return cur_ll;
+    }
+
     // Extract 3-resolution stacked [3*S x B] cavity matrices for a detached Wheatstone bridge
     void extract_bridge_cavity_tile(
         int32_t b_idx,
@@ -694,11 +788,15 @@ public:
         gtr_params = gtr_res.params;
         gtr_log_l = gtr_res.log_likelihood;
         gtr_aicc = gtr_res.aicc;
+        tree.bridges = gtr_res.tree.bridges;
 
         compute_syn_scale();
 
         // Initialize branch alpha using nucleotide branch lengths
         for (const auto& node : gtr_res.tree.nodes) {
+            if (static_cast<size_t>(node.id) < tree.nodes.size()) {
+                tree.nodes[node.id].branch_length = node.branch_length;
+            }
             if (node.id != tree.root_id) {
                 // Initial conversion from nucleotide substitutions to synonymous time
                 Scalar bl = std::max(node.branch_length, 1e-4);
@@ -880,6 +978,23 @@ public:
                         branch_omegas[bid][0] = std::exp(opt_gs.b);
                         P_branches[bid] = build_q_matrix(branch_omegas[bid][0]).transition_matrix(branch_alpha[bid]);
                         cur_ll = -opt_gs.f;
+                    }
+                }
+            }
+
+            // Re-estimate per-resolution lengths (1 : ratio_1 : ratio_2 shape) for any detached Wheatstone bridge
+            if (!tree.bridges.empty()) {
+                Matrix V_br, D_br;
+                for (size_t b = 0; b < tree.bridges.size(); ++b) {
+                    int32_t bid = tree.bridges[b].bridge_node_id;
+                    if (bid >= 0 && bid != tree.bridges[b].hub_node_id && is_active_absrel_branch(bid)) {
+                        Scalar br_offset = 0.0;
+                        compute_branch_context_matrices(bid, P_branches, V_br, D_br, br_offset);
+                        cur_ll = refine_bridge_resolution_lengths(
+                            static_cast<int32_t>(b), branch_alpha, branch_omegas, branch_weights,
+                            V_br, D_br, br_offset, cur_ll
+                        );
+                        P_branches[bid] = build_q_matrix(branch_omegas[bid][0]).transition_matrix(branch_alpha[bid]);
                     }
                 }
             }
@@ -1729,18 +1844,26 @@ public:
                     cur_alpha[bid_iter] = refined_fit.alpha;
                     cur_omegas[bid_iter] = refined_fit.omegas;
                     cur_weights[bid_iter] = refined_fit.weights;
-                    P_b[bid_iter] = Matrix::Zero(S, S);
-                    for (size_t k = 0; k < cur_omegas[bid_iter].size(); ++k) {
-                        MG94Matrix mat = build_q_matrix(cur_omegas[bid_iter][k]);
-                        P_b[bid_iter] += cur_weights[bid_iter][k] * mat.transition_matrix(cur_alpha[bid_iter]);
-                    }
-                    if (!tree.bridges.empty()) {
-                        P_br = compute_all_bridge_transition_matrices_with(cur_alpha, cur_omegas, cur_weights);
-                    }
+                    prev_b_ll = refined_fit.log_l;
                     if (update_result_branches) {
                         result.branches[tree.nodes[bid_iter].name].rate_distribution.rates = refined_fit.omegas;
                         result.branches[tree.nodes[bid_iter].name].rate_distribution.weights = refined_fit.weights;
                     }
+                }
+                int32_t b_idx = detached_bridge_index(bid_iter);
+                if (b_idx >= 0 && constrained_bid == -1 && update_result_branches) {
+                    prev_b_ll = refine_bridge_resolution_lengths(
+                        b_idx, cur_alpha, cur_omegas, cur_weights,
+                        V_mat_ref, D_mat_ref, log_scale_offset, prev_b_ll
+                    );
+                }
+                P_b[bid_iter] = Matrix::Zero(S, S);
+                for (size_t k = 0; k < cur_omegas[bid_iter].size(); ++k) {
+                    MG94Matrix mat = build_q_matrix(cur_omegas[bid_iter][k]);
+                    P_b[bid_iter] += cur_weights[bid_iter][k] * mat.transition_matrix(cur_alpha[bid_iter]);
+                }
+                if (!tree.bridges.empty()) {
+                    P_br = compute_all_bridge_transition_matrices_with(cur_alpha, cur_omegas, cur_weights);
                 }
             }
             return compute_tree_log_likelihood(P_b, tree.bridges.empty() ? nullptr : &P_br);

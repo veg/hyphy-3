@@ -143,25 +143,22 @@ public:
                         curr_tree.nodes[nid].branch_length = old_bl;
                         return -lnl;
                     };
-                    auto [best_bl, _] = Brent1D::minimize(bl_obj, 1e-6, std::max(init_bl, 1e-4), 50.0, 1e-4, 20);
+                    auto [best_bl, _] = Brent1D::minimize(bl_obj, 1e-6, std::max(init_bl, 1e-4), 50.0, 1e-5, 64);
                     curr_tree.nodes[nid].branch_length = best_bl;
                 }
                 for (auto& br : curr_tree.bridges) {
-                    auto saved_lens = br.branch_lengths;
-                    Scalar base_l0 = std::max(saved_lens[0], 1e-4);
-                    auto br_obj = [&](Scalar bl0) -> Scalar {
-                        Scalar scale = bl0 / base_l0;
-                        for (int r = 0; r < 3; ++r) {
-                            br.branch_lengths[r] = saved_lens[r] * scale;
-                        }
-                        Scalar lnl = eval_tree_lnl(curr_tree, params);
-                        br.branch_lengths = saved_lens;
-                        return -lnl;
-                    };
-                    auto [best_bl0, _] = Brent1D::minimize(br_obj, 1e-6, base_l0, 50.0, 1e-4, 20);
-                    Scalar best_scale = best_bl0 / base_l0;
                     for (int r = 0; r < 3; ++r) {
-                        br.branch_lengths[r] = saved_lens[r] * best_scale;
+                        if (br.weights[r] <= 1e-12) continue;
+                        Scalar init_r_bl = std::max(br.branch_lengths[r], 1e-4);
+                        auto br_r_obj = [&](Scalar bl_r) -> Scalar {
+                            Scalar old_bl_r = br.branch_lengths[r];
+                            br.branch_lengths[r] = bl_r;
+                            Scalar lnl = eval_tree_lnl(curr_tree, params);
+                            br.branch_lengths[r] = old_bl_r;
+                            return -lnl;
+                        };
+                        auto [best_bl_r, _] = Brent1D::minimize(br_r_obj, 1e-6, init_r_bl, 50.0, 1e-5, 64);
+                        br.branch_lengths[r] = best_bl_r;
                     }
                     if (br.bridge_node_id >= 0 && static_cast<size_t>(br.bridge_node_id) < curr_tree.nodes.size() &&
                         br.bridge_node_id != br.hub_node_id) {

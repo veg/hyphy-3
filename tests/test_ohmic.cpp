@@ -682,11 +682,15 @@ TEST_CASE("OHMIC 9: Finite-Difference Gradient Verification on Wheatstone-Bridge
         );
         CHECK(cavity_ll == doctest::Approx(full_tree_ll).epsilon(1e-9));
 
-        // Run full aBSREL pipeline and verify detached bridge node is fitted and tested
+        // Run full aBSREL pipeline and verify detached bridge node and its resolution ratios are fitted and tested
         absrel_settings.max_rate_classes = 2;
         absrel_settings.test_branches = "Internal";
         ABSRELAnalyzer absrel_run = ABSRELAnalyzer::create(tree, aln, absrel_settings);
+        auto init_ratios = absrel_run.bridge_resolution_ratios(0);
         ABSRELResult absrel_res = absrel_run.run();
+        auto fitted_ratios = absrel_run.bridge_resolution_ratios(0);
+        CHECK((std::abs(fitted_ratios[1] - init_ratios[1]) > 1e-6 ||
+               std::abs(fitted_ratios[2] - init_ratios[2]) > 1e-6));
         CHECK(std::isfinite(absrel_res.baseline_fit.log_likelihood));
         CHECK(std::isfinite(absrel_res.full_adaptive_fit.log_likelihood));
         CHECK(absrel_res.full_adaptive_fit.log_likelihood >= absrel_res.baseline_fit.log_likelihood - 1e-4);
