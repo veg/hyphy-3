@@ -65,28 +65,36 @@ int run_contrast_fel(int argc, char* argv[]) {
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+        if ((arg == "--branches" || arg == "--branch-set" || arg == "--branch-sets") && i + 1 < argc) {
+            branch_specs = argv[++i];
+            continue;
+        } else if (arg == "--shrinkage" && i + 1 < argc) {
+            shrinkage_lambda = std::stod(argv[++i]);
+            continue;
+        } else if (arg == "--no-shrinkage") {
+            shrinkage_lambda = 0.0;
+            continue;
+        } else if ((arg == "--pvalue" || arg == "--p-value" || arg == "-p") && i + 1 < argc) {
+            pvalue_threshold = std::stod(argv[++i]);
+            continue;
+        } else if ((arg == "--qvalue" || arg == "--q-value" || arg == "-q") && i + 1 < argc) {
+            qvalue_threshold = std::stod(argv[++i]);
+            continue;
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(argv[0]);
+            return 0;
+        }
+
         auto status = parse_common_cli_arg(i, argc, argv, cli);
         if (status == CommonArgParseStatus::Handled) continue;
         if (status == CommonArgParseStatus::Error) return 1;
 
-        if ((arg == "--branches" || arg == "--branch-sets") && i + 1 < argc) {
-            branch_specs = argv[++i];
-        } else if (arg == "--shrinkage" && i + 1 < argc) {
-            shrinkage_lambda = std::stod(argv[++i]);
-        } else if (arg == "--no-shrinkage") {
-            shrinkage_lambda = 0.0;
-        } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-            pvalue_threshold = std::stod(argv[++i]);
-        } else if ((arg == "--qvalue" || arg == "-q") && i + 1 < argc) {
-            qvalue_threshold = std::stod(argv[++i]);
-        } else if (arg == "--help" || arg == "-h") {
-            print_usage(argv[0]);
-            return 0;
-        } else {
-            std::cerr << Console::danger("Unknown argument: ") << arg << "\n";
-            print_usage(argv[0]);
-            return 1;
-        }
+        std::cerr << Console::danger("Unknown argument: ") << arg << "\n";
+        print_usage(argv[0]);
+        return 1;
+    }
+    if (branch_specs == "auto" && cli.branches != "All" && !cli.branches.empty()) {
+        branch_specs = cli.branches;
     }
 
     if (cli.alignment_file.empty()) {

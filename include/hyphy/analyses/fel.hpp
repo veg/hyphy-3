@@ -132,8 +132,10 @@ public:
     MG94Matrix base_mg94_matrix;
     std::vector<Matrix> branch_transition_matrices;
 
-    FELAnalyzer(Tree t, Alignment a, MG94Parameters params = MG94Parameters{}, FELSettings s = FELSettings{})
-        : tree(std::move(t)), aln(std::move(a)), base_params(params), settings(std::move(s)) {
+    Scalar background_omega = -1.0;
+
+    FELAnalyzer(Tree t, Alignment a, MG94Parameters params = MG94Parameters{}, FELSettings s = FELSettings{}, Scalar bg_om = -1.0)
+        : tree(std::move(t)), aln(std::move(a)), base_params(params), settings(std::move(s)), background_omega(bg_om) {
         p_value_threshold = settings.p_value_threshold;
         full_model = settings.full_model;
         prepare_branch_lengths();
@@ -167,17 +169,19 @@ public:
 
         MG94Fitter mg_fitter(gtr_res.tree, aln);
         FitResult mg_res;
+        Scalar bg_om = -1.0;
         if (settings.full_model) {
             const std::vector<bool>* p_sel = (sel.num_selected > 0 && sel.num_unselected > 0) ? &sel.is_selected : nullptr;
-            mg_res = mg_fitter.fit_full_model(1.0, base_p, progress_cb, 250, 1e-5, p_sel);
+            mg_res = mg_fitter.fit_full_model(1.0, base_p, progress_cb, 250, 1e-5, p_sel, p_sel ? &bg_om : nullptr);
             base_p = mg_res.params;
         } else {
             mg_res = mg_fitter.fit_omega_and_scale(1.0, base_p);
             base_p.alpha = 1.0;
             base_p.beta = mg_res.x_opt(0);
+            bg_om = base_p.beta;
         }
 
-        FELAnalyzer analyzer(mg_res.tree, std::move(aln), base_p, settings);
+        FELAnalyzer analyzer(mg_res.tree, std::move(aln), base_p, settings, bg_om);
         analyzer.global_log_l = mg_res.log_likelihood;
         size_t K_mg = 5 + ((sel.num_selected > 0 && sel.num_unselected > 0) ? 2 : 1) + (mg_res.tree.num_nodes() - 1);
         size_t N_codons = analyzer.aln.num_codons;
@@ -226,9 +230,22 @@ public:
     void prepare_branch_lengths() {
         partition_branches();
 
-        base_mg94_matrix.update(base_params, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *(aln.code ? aln.code : GeneticCode::universal()));
+        const auto& gcode = *(aln.code ? aln.code : GeneticCode::universal());
+        base_mg94_matrix.update(base_params, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
         Scalar Q_scale = base_mg94_matrix.scale_factor;
         conversion_factor = (Q_scale > 1e-12) ? (3.0 / Q_scale) : 1.0;
+
+        Scalar bg_conv = conversion_factor;
+        if (num_background > 0 && background_omega > 0.0) {
+            MG94Parameters pbg = base_params;
+            pbg.alpha = 1.0;
+            pbg.beta = background_omega;
+            MG94Matrix mgbg;
+            mgbg.update(pbg, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+            if (mgbg.scale_factor > 1e-12) {
+                bg_conv = 3.0 / mgbg.scale_factor;
+            }
+        }
 
         baseline_tree_length = 0.0;
         baseline_tested_tree_length = 0.0;
@@ -238,10 +255,11 @@ public:
                 baseline_tree_length += node.branch_length;
                 if (is_test_branch[node.id]) {
                     baseline_tested_tree_length += node.branch_length;
+                    node.branch_length *= conversion_factor;
                 } else {
                     baseline_bg_tree_length += node.branch_length;
+                    node.branch_length *= bg_conv;
                 }
-                node.branch_length *= conversion_factor;
             }
         }
         tree.scale_bridge_lengths(conversion_factor);

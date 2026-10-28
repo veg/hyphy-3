@@ -168,12 +168,22 @@ public:
     ContrastBranchGroup background_group;
     bool has_background = false;
     std::vector<int> node_group_id;     // node.id -> 0..K-1 (testable) or -1 (background)
+    std::vector<Scalar> group_omegas;
+    Scalar background_omega = -1.0;
 
     MG94Matrix base_mg94_matrix;
     std::vector<Matrix> branch_transition_matrices;
 
-    ContrastFELAnalyzer(Tree t, Alignment a, MG94Parameters params = MG94Parameters{}, ContrastFELSettings s = ContrastFELSettings{})
-        : tree(std::move(t)), aln(std::move(a)), base_params(params), settings(std::move(s)) {
+    ContrastFELAnalyzer(
+        Tree t,
+        Alignment a,
+        MG94Parameters params = MG94Parameters{},
+        ContrastFELSettings s = ContrastFELSettings{},
+        std::vector<Scalar> grp_om = {},
+        Scalar bg_om = -1.0
+    )
+        : tree(std::move(t)), aln(std::move(a)), base_params(params), settings(std::move(s)),
+          group_omegas(std::move(grp_om)), background_omega(bg_om) {
         p_value_threshold = settings.p_value_threshold;
         q_value_threshold = settings.q_value_threshold;
         shrinkage_lambda = settings.shrinkage_lambda;
@@ -416,6 +426,31 @@ public:
         Scalar Q_scale = base_mg94_matrix.scale_factor;
         conversion_factor = (Q_scale > 1e-12) ? (3.0 / Q_scale) : 1.0;
 
+        std::vector<Scalar> group_conv(testable_groups.size(), conversion_factor);
+        for (size_t g = 0; g < testable_groups.size(); ++g) {
+            if (g < group_omegas.size() && group_omegas[g] > 0.0) {
+                MG94Parameters pg = base_params;
+                pg.alpha = 1.0;
+                pg.beta = group_omegas[g];
+                MG94Matrix mgg;
+                mgg.update(pg, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+                if (mgg.scale_factor > 1e-12) {
+                    group_conv[g] = 3.0 / mgg.scale_factor;
+                }
+            }
+        }
+        Scalar bg_conv = conversion_factor;
+        if (has_background && background_omega > 0.0) {
+            MG94Parameters pbg = base_params;
+            pbg.alpha = 1.0;
+            pbg.beta = background_omega;
+            MG94Matrix mgbg;
+            mgbg.update(pbg, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+            if (mgbg.scale_factor > 1e-12) {
+                bg_conv = 3.0 / mgbg.scale_factor;
+            }
+        }
+
         baseline_tree_length = 0.0;
         for (auto& grp : testable_groups) {
             grp.total_branch_length = 0.0;
@@ -426,12 +461,15 @@ public:
             if (node.id != tree.root_id) {
                 baseline_tree_length += node.branch_length;
                 int gid = node_group_id[node.id];
+                Scalar node_conv = conversion_factor;
                 if (gid >= 0 && gid < static_cast<int>(testable_groups.size())) {
                     testable_groups[gid].total_branch_length += node.branch_length;
+                    node_conv = group_conv[gid];
                 } else if (has_background) {
                     background_group.total_branch_length += node.branch_length;
+                    node_conv = bg_conv;
                 }
-                node.branch_length *= conversion_factor;
+                node.branch_length *= node_conv;
             }
         }
         tree.scale_bridge_lengths(conversion_factor);
@@ -463,20 +501,47 @@ public:
         base_p.theta_CT = gtr_res.params.theta_CT;
         base_p.theta_GT = gtr_res.params.theta_GT;
 
+        // Partition branches beforehand so Phase 2 MG94 fits partitioned group omegas
+        ContrastFELAnalyzer part_probe(gtr_res.tree, aln, base_p, settings);
+        std::vector<bool> is_group0(gtr_res.tree.num_nodes(), false);
+        bool has_group0 = false, has_other = false;
+        for (const auto& node : gtr_res.tree.nodes) {
+            if (node.id != gtr_res.tree.root_id && node.parent_id != INVALID_INDEX) {
+                if (part_probe.node_group_id[node.id] == 0) {
+                    is_group0[node.id] = true;
+                    has_group0 = true;
+                } else {
+                    has_other = true;
+                }
+            }
+        }
+        const std::vector<bool>* p_part = (has_group0 && has_other) ? &is_group0 : nullptr;
+
         MG94Fitter mg_fitter(gtr_res.tree, aln);
         FitResult mg_res;
+        Scalar omega_other = -1.0;
         if (settings.full_model) {
-            mg_res = mg_fitter.fit_full_model(1.0, base_p, progress_cb);
+            mg_res = mg_fitter.fit_full_model(1.0, base_p, progress_cb, 250, 1e-5, p_part, p_part ? &omega_other : nullptr);
             base_p = mg_res.params;
         } else {
             mg_res = mg_fitter.fit_omega_and_scale(1.0, base_p);
             base_p.alpha = 1.0;
             base_p.beta = mg_res.x_opt(0);
+            omega_other = base_p.beta;
         }
 
-        ContrastFELAnalyzer analyzer(mg_res.tree, std::move(aln), base_p, settings);
+        std::vector<Scalar> grp_omegas(part_probe.testable_groups.size(), base_p.beta);
+        if (!grp_omegas.empty()) {
+            grp_omegas[0] = base_p.beta;
+            for (size_t g = 1; g < grp_omegas.size(); ++g) {
+                grp_omegas[g] = (omega_other > 0.0) ? omega_other : base_p.beta;
+            }
+        }
+        Scalar bg_om = (omega_other > 0.0) ? omega_other : base_p.beta;
+
+        ContrastFELAnalyzer analyzer(mg_res.tree, std::move(aln), base_p, settings, grp_omegas, bg_om);
         analyzer.global_log_l = mg_res.log_likelihood;
-        size_t K_mg = 5 + 1 + (mg_res.tree.num_nodes() - 1);
+        size_t K_mg = 5 + (p_part ? 2 : 1) + (mg_res.tree.num_nodes() - 1);
         size_t N_codons = analyzer.aln.num_codons;
         analyzer.global_aicc = -2.0 * mg_res.log_likelihood + 2.0 * K_mg * N_codons / (N_codons - K_mg - 1.0);
 
@@ -645,9 +710,10 @@ public:
         // 1. Fit Alternative Model (Nelder-Mead ND)
         // Parameter vector x: [alpha, beta_0, beta_1, ..., beta_{K-1}, (beta_bg)]
         size_t alt_dim = 1 + K + (has_background ? 1 : 0);
-        std::vector<Scalar> lb_alt(alt_dim, 1e-4);
-        std::vector<Scalar> ub_alt(alt_dim, 1000.0);
-        lb_alt[0] = 1e-4; ub_alt[0] = 100.0; // alpha bound
+        Scalar min_rate_bound = (shrinkage_lambda > 0.0) ? 1e-4 : 0.0;
+        std::vector<Scalar> lb_alt(alt_dim, min_rate_bound);
+        std::vector<Scalar> ub_alt(alt_dim, 10000.0);
+        lb_alt[0] = 0.0; ub_alt[0] = 10000.0; // alpha bound
 
         auto obj_alt = [&](const std::vector<Scalar>& x) -> Scalar {
             Scalar a = x[0];
@@ -662,7 +728,7 @@ public:
 
         // Grid search for initialization
         std::vector<std::vector<Scalar>> grid_pts;
-        for (Scalar cand_a : {0.1, 1.0, 5.0}) {
+        for (Scalar cand_a : {0.01, 0.1, 1.0, 5.0}) {
             for (Scalar cand_b : {0.1, 1.0, 3.0}) {
                 std::vector<Scalar> pt(alt_dim, cand_b);
                 pt[0] = cand_a;
@@ -673,8 +739,14 @@ public:
         if (K == 2) {
             grid_pts.push_back({1.0, 0.1, 3.0});
             grid_pts.push_back({1.0, 3.0, 0.1});
+            grid_pts.push_back({1.0, 0.05, 8.0});
+            grid_pts.push_back({1.0, 8.0, 0.05});
             grid_pts.push_back({0.1, 0.05, 5.0});
             grid_pts.push_back({0.1, 5.0, 0.05});
+            grid_pts.push_back({0.001, 0.001, 5.0});
+            grid_pts.push_back({0.001, 5.0, 0.001});
+            grid_pts.push_back({0.001, 0.001, 12.0});
+            grid_pts.push_back({0.001, 12.0, 0.001});
             if (has_background) {
                 for (auto& g : grid_pts) {
                     if (g.size() < alt_dim) g.push_back(1.0);
@@ -692,7 +764,7 @@ public:
             }
         }
 
-        auto pt_alt = NelderMeadDynamic::minimize(obj_alt, init_alt, lb_alt, ub_alt, 1e-4, 120, grid_pts);
+        auto pt_alt = NelderMeadDynamic::minimize(obj_alt, init_alt, lb_alt, ub_alt, 1e-5, 200, grid_pts);
         res.alpha = pt_alt.x[0];
         for (size_t k = 0; k < K; ++k) res.beta[k] = pt_alt.x[1 + k];
         if (has_background) res.beta_background = pt_alt.x[1 + K];
@@ -704,9 +776,9 @@ public:
         // 2. Fit Overall Null Model (All tested groups share beta_null)
         // Parameter vector x: [alpha, beta_shared, (beta_bg)]
         size_t null_dim = 2 + (has_background ? 1 : 0);
-        std::vector<Scalar> lb_null(null_dim, 1e-4);
-        std::vector<Scalar> ub_null(null_dim, 1000.0);
-        lb_null[0] = 1e-4; ub_null[0] = 100.0;
+        std::vector<Scalar> lb_null(null_dim, 0.0);
+        std::vector<Scalar> ub_null(null_dim, 10000.0);
+        lb_null[0] = 0.0; ub_null[0] = 10000.0;
 
         auto obj_null = [&](const std::vector<Scalar>& x) -> Scalar {
             Scalar a = x[0];
@@ -724,7 +796,21 @@ public:
         init_null[1] = avg_beta;
         if (has_background) init_null[2] = res.beta_background;
 
-        auto pt_null = NelderMeadDynamic::minimize(obj_null, init_null, lb_null, ub_null, 1e-4, 80);
+        Scalar best_null_score = obj_null(init_null);
+        for (Scalar cand_a : {res.alpha, 0.001, 0.1, 1.0}) {
+            for (Scalar cand_b : {avg_beta, 0.1, 1.0}) {
+                std::vector<Scalar> cand = init_null;
+                cand[0] = cand_a;
+                cand[1] = cand_b;
+                Scalar sc = obj_null(cand);
+                if (sc < best_null_score) {
+                    best_null_score = sc;
+                    init_null = cand;
+                }
+            }
+        }
+
+        auto pt_null = NelderMeadDynamic::minimize(obj_null, init_null, lb_null, ub_null, 1e-5, 120);
         res.alpha_null = pt_null.x[0];
         res.beta_null = pt_null.x[1];
         res.log_l_null = -pt_null.f;
