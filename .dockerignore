@@ -1,0 +1,16 @@
+# Exclude local build directories, git history, and large benchmark/report outputs
+build/
+build-*/
+cmake-build-*/
+.git/
+.github/
+.cache/
+reports/
+slkp/
+benchmarks/
+docs/
+paper/
+*.o
+*.a
+*.so
+*.dylib
