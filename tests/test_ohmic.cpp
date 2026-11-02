@@ -574,6 +574,27 @@ TEST_CASE("OHMIC 8: Standard Analyses (FEL & FUBAR) on Wheatstone Tree + HyphAeo
     CHECK(fubar_res.site_results.size() == aln_cd2.num_codons);
 }
 
+TEST_CASE("OHMIC 8b: HyphAeon helper tolerates both aeon-core cache APIs") {
+    // Stub aeon_core/torch/numpy/huggingface_hub packages under tests/data/fake_aeon.
+    // aeon-core 0.1.x exposes weights.CACHE_DIR; 0.2.0 renamed it to HF_HUB_CACHE.
+    std::string w = resolve_test_path("tests/data/fake_aeon/aeon_core/weights.py");
+    auto pos = w.rfind("/aeon_core/weights.py");
+    REQUIRE(pos != std::string::npos);
+    std::string fake_dir = w.substr(0, pos);
+    setenv("PYTHONPATH", fake_dir.c_str(), 1);
+    setenv("HYPHY3_PYTHON", "python3", 1);
+    unsetenv("HYPHAEON_WEIGHTS");
+    unsetenv("HYPHAEON_VARIANT");
+
+    setenv("FAKE_AEON_API", "new", 1);
+    CHECK(hyphaeon::is_available());
+    setenv("FAKE_AEON_API", "old", 1);
+    CHECK(hyphaeon::is_available());
+
+    unsetenv("FAKE_AEON_API");
+    unsetenv("PYTHONPATH");
+}
+
 // 9. Finite-Difference Gradient Verification on Wheatstone-Bridged Tree (MG94 & BUSTED)
 TEST_CASE("OHMIC 9: Finite-Difference Gradient Verification on Wheatstone-Bridged Tree") {
     std::string cd2_path = resolve_test_path("benchmarks/data/cd2.fna");
