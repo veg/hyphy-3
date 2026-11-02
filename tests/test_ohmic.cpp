@@ -20,6 +20,7 @@
 #endif
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <random>
@@ -753,3 +754,95 @@ TEST_CASE("OHMIC 9: Finite-Difference Gradient Verification on Wheatstone-Bridge
 }
 
 
+
+// 10. Precomputed --embeddings text files: join by taxon name, or alignment order when unnamed
+TEST_CASE("OHMIC 10: --embeddings rows are joined by taxon name, not file position") {
+    std::string cd2_path = resolve_test_path("tests/data/cd2.fna");
+    auto aln = Alignment::load_nucleotide(cd2_path);
+    const size_t N = aln.num_taxa;
+    REQUIRE(N == 10);
+    const int D = 4;
+
+    // Deterministic embeddings, row i belongs to taxon i
+    std::vector<std::vector<double>> emb(N, std::vector<double>(D));
+    for (size_t i = 0; i < N; ++i)
+        for (int c = 0; c < D; ++c) emb[i][c] = 0.1 * (i + 1) + 0.01 * c * (i % 3) + 0.001 * c;
+
+    auto write_file = [&](const std::string& path, const std::vector<size_t>& order, bool named) {
+        std::ofstream o(path);
+        for (size_t i : order) {
+            if (named) o << aln.taxon_names[i] << "\t";
+            for (int c = 0; c < D; ++c) o << emb[i][c] << (c + 1 < D ? "\t" : "\n");
+        }
+    };
+    std::vector<size_t> ordered(N), shuffled(N);
+    for (size_t i = 0; i < N; ++i) ordered[i] = i;
+    shuffled = {7, 2, 9, 0, 4, 1, 8, 3, 6, 5};
+
+    auto load = [&](const std::string& path, OhmicNetwork* out = nullptr) {
+        OhmicSettings s;
+        s.embeddings_filepath = path;
+        OhmicNetwork net = OhmicNetwork::infer(aln, s);
+        Matrix M = net.hyphaeon_embeddings;
+        if (out) *out = std::move(net);
+        return M;
+    };
+
+    write_file("ohmic10_unnamed.tsv", ordered, false);
+    write_file("ohmic10_named_ordered.tsv", ordered, true);
+    write_file("ohmic10_named_shuffled.tsv", shuffled, true);
+
+    Matrix M_unnamed = load("ohmic10_unnamed.tsv");
+    Matrix M_ord = load("ohmic10_named_ordered.tsv");
+    Matrix M_shuf = load("ohmic10_named_shuffled.tsv");
+    REQUIRE(M_unnamed.rows() == static_cast<Eigen::Index>(N));
+    REQUIRE(M_shuf.rows() == static_cast<Eigen::Index>(N));
+    for (size_t i = 0; i < N; ++i)
+        for (int c = 0; c < D; ++c) {
+            CHECK(M_unnamed(i, c) == doctest::Approx(emb[i][c]));
+            CHECK(M_ord(i, c) == doctest::Approx(emb[i][c]));
+            CHECK(M_shuf(i, c) == doctest::Approx(emb[i][c]));
+        }
+
+    // Output JSON records how rows were matched
+    {
+        OhmicAnalysisSettings as;
+        as.input_file = cd2_path;
+        as.use_codon_model = false;
+        as.quiet = true;
+        as.network_settings.embeddings_filepath = "ohmic10_named_shuffled.tsv";
+        OhmicResult res = OhmicAnalyzer(aln, as).run();
+        auto j = res.to_modern_json(cd2_path);
+        CHECK(j["electrical_network"]["embeddings_row_mapping"] == "by_taxon_name");
+        as.network_settings.embeddings_filepath = "ohmic10_unnamed.tsv";
+        j = OhmicAnalyzer(aln, as).run().to_modern_json(cd2_path);
+        CHECK(j["electrical_network"]["embeddings_row_mapping"] == "positional_alignment_order");
+    }
+
+    // Missing taxon
+    {
+        std::vector<size_t> missing(ordered.begin(), ordered.end() - 1);
+        write_file("ohmic10_missing.tsv", missing, true);
+        CHECK_THROWS_AS(load("ohmic10_missing.tsv"), std::runtime_error);
+    }
+    // Unknown taxon (right row count)
+    {
+        write_file("ohmic10_unknown.tsv", ordered, true);
+        std::ifstream in("ohmic10_unknown.tsv");
+        std::string txt((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        txt.replace(0, aln.taxon_names[0].size(), "NOT_A_TAXON");
+        std::ofstream("ohmic10_unknown.tsv") << txt;
+        CHECK_THROWS_AS(load("ohmic10_unknown.tsv"), std::runtime_error);
+    }
+    // Duplicate taxon (right row count)
+    {
+        std::vector<size_t> dup = ordered;
+        dup[3] = dup[2];
+        write_file("ohmic10_dup.tsv", dup, true);
+        CHECK_THROWS_AS(load("ohmic10_dup.tsv"), std::runtime_error);
+    }
+    for (const char* f : {"ohmic10_unnamed.tsv", "ohmic10_named_ordered.tsv", "ohmic10_named_shuffled.tsv",
+                          "ohmic10_missing.tsv", "ohmic10_unknown.tsv", "ohmic10_dup.tsv"})
+        std::remove(f);
+}

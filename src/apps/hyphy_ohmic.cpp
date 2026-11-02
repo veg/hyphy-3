@@ -43,7 +43,7 @@ static void print_ohmic_usage(const char* prog) {
               << "  " << Console::brand("--nucleotide") << "                   Shorthand for --datatype nucleotide\n"
               << "  " << Console::brand("--hyphaeon") << "                     Opt-in: HyphAeon 384D transformer embeddings (needs Python aeon-core)\n"
               << "  " << Console::brand("--no-hyphaeon") << "                  Use empirical conductances only (default)\n"
-              << "  " << Console::brand("--embeddings") << " <file>            Path to precomputed [N x D] taxon embeddings TSV/CSV\n"
+              << "  " << Console::brand("--embeddings") << " <file>            Precomputed [N x D] taxon embeddings TSV/CSV; rows with a leading taxon name are joined by name\n                                  (any order), purely numeric rows are taken in alignment order\n"
               << "  " << Console::brand("--scale-mode, -s") << " <mode>        Solver mode: 'auto' (default), 'dense', or 'woodbury'\n"
               << "  " << Console::brand("--scalable-method") << " <method>     Backbone method: 'spectral' (Multi-Scale Spectral-Foster, default) or 'ward'\n"
               << "  " << Console::brand("--foster-threshold") << " <N>       Cluster size threshold T for Spectral to Foster transition (default: 128)\n"

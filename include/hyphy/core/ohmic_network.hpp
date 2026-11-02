@@ -62,6 +62,7 @@ struct OhmicNetwork {
     size_t num_super_nodes = 0;                // M <= N equipotential representatives
     size_t num_collapsed_polytomies = 0;       // Count of zero-signal branches collapsed into busbars
     bool used_hyphaeon_embeddings = false;     // True if 384D HyphAeon (192D dS + 192D dN) was fused
+    std::string embeddings_row_mapping;        // "by_taxon_name" or "positional_alignment_order" (precomputed file only)
     Matrix hyphaeon_embeddings;                // [N x 384] latent representations when extracted/loaded
 
     // Populated in ExactDense mode (empty in ScalableWoodbury mode to save O(N^2) RAM):
@@ -415,7 +416,10 @@ struct OhmicNetwork {
     }
 
     // Load precomputed [N x D] (default D=384) HyphAeon embeddings from .bin, .npy, or text (.tsv/.csv)
-    static Matrix load_embeddings_file(const std::string& filepath, size_t expected_N) {
+    static Matrix load_embeddings_file(const std::string& filepath, size_t expected_N,
+                                       const std::vector<std::string>* taxon_names = nullptr,
+                                       std::string* mapping = nullptr) {
+        if (mapping) *mapping = "positional_alignment_order";  // binary formats carry no names
         std::ifstream f(filepath, std::ios::binary);
         if (!f.is_open()) {
             throw std::runtime_error("OhmicNetwork::load_embeddings_file: Cannot open " + filepath);
@@ -475,20 +479,86 @@ struct OhmicNetwork {
             }
         }
 
-        // Case 3: Whitespace or comma-separated text file
+        // Case 3: Whitespace or comma-separated text file.
+        // Rows may carry a leading taxon-name column (first field non-numeric); such rows are joined to the
+        // alignment by name (any order; missing, unknown or duplicate names are errors). Purely numeric rows
+        // are taken positionally in alignment order. An optional header line (non-numeric fields) is skipped.
         f.clear();
         f.seekg(0, std::ios::beg);
+        auto parse_num = [](const std::string& tok, Scalar& out) {
+            char* end = nullptr;
+            out = std::strtod(tok.c_str(), &end);
+            return end != tok.c_str() && *end == '\0';
+        };
         std::vector<std::vector<Scalar>> rows;
+        std::vector<std::string> row_names;  // empty string for unnamed rows
+        size_t n_named = 0;
+        bool first_line = true;
         std::string line;
         while (std::getline(f, line)) {
             for (char& ch : line) {
-                if (ch == ',' || ch == '\t') ch = ' ';
+                if (ch == ',' || ch == '\t' || ch == '\r') ch = ' ';
             }
             std::istringstream iss(line);
+            std::vector<std::string> toks;
+            std::string tok;
+            while (iss >> tok) toks.push_back(tok);
+            if (toks.empty()) continue;
             std::vector<Scalar> vals;
+            std::string name;
             Scalar v;
-            while (iss >> v) vals.push_back(v);
-            if (!vals.empty()) rows.push_back(std::move(vals));
+            size_t start = 0;
+            if (!parse_num(toks[0], v)) { name = toks[0]; start = 1; }
+            bool ok = true;
+            for (size_t k = start; k < toks.size(); ++k) {
+                if (!parse_num(toks[k], v)) { ok = false; break; }
+                vals.push_back(v);
+            }
+            if (!ok || (start == 1 && vals.empty())) {
+                if (first_line) { first_line = false; continue; }  // header line
+                throw std::runtime_error("OhmicNetwork::load_embeddings_file: non-numeric embedding value in row '" +
+                                         toks[0] + "' of " + filepath);
+            }
+            first_line = false;
+            if (start == 1) ++n_named;
+            row_names.push_back(name);
+            rows.push_back(std::move(vals));
+        }
+        if (!rows.empty() && n_named != 0) {
+            if (n_named != rows.size())
+                throw std::runtime_error("OhmicNetwork::load_embeddings_file: " + filepath +
+                                         " mixes named and unnamed rows");
+            if (taxon_names == nullptr || taxon_names->size() != expected_N)
+                throw std::runtime_error("OhmicNetwork::load_embeddings_file: named rows in " + filepath +
+                                         " but no alignment taxon names to join on");
+            std::unordered_map<std::string, size_t> idx;
+            for (size_t i = 0; i < taxon_names->size(); ++i) idx.emplace((*taxon_names)[i], i);
+            const size_t cols = rows[0].size();
+            Matrix M = Matrix::Zero(static_cast<Eigen::Index>(expected_N), static_cast<Eigen::Index>(cols));
+            std::vector<bool> seen(expected_N, false);
+            for (size_t r = 0; r < rows.size(); ++r) {
+                auto it = idx.find(row_names[r]);
+                if (it == idx.end())
+                    throw std::runtime_error("OhmicNetwork::load_embeddings_file: taxon '" + row_names[r] +
+                                             "' in " + filepath + " is not in the alignment");
+                if (seen[it->second])
+                    throw std::runtime_error("OhmicNetwork::load_embeddings_file: duplicate taxon '" + row_names[r] +
+                                             "' in " + filepath);
+                if (rows[r].size() != cols)
+                    throw std::runtime_error("OhmicNetwork::load_embeddings_file: row '" + row_names[r] +
+                                             "' has " + std::to_string(rows[r].size()) + " values, expected " +
+                                             std::to_string(cols) + " in " + filepath);
+                seen[it->second] = true;
+                for (size_t c = 0; c < cols; ++c)
+                    M(static_cast<Eigen::Index>(it->second), static_cast<Eigen::Index>(c)) = rows[r][c];
+            }
+            for (size_t i = 0; i < expected_N; ++i) {
+                if (!seen[i])
+                    throw std::runtime_error("OhmicNetwork::load_embeddings_file: alignment taxon '" +
+                                             (*taxon_names)[i] + "' has no row in " + filepath);
+            }
+            if (mapping) *mapping = "by_taxon_name";
+            return M;
         }
         if (rows.size() == expected_N && !rows[0].empty()) {
             size_t cols = rows[0].size();
@@ -498,6 +568,7 @@ struct OhmicNetwork {
                     M(static_cast<Eigen::Index>(r), static_cast<Eigen::Index>(c)) = rows[r][c];
                 }
             }
+            if (mapping) *mapping = "positional_alignment_order";
             return M;
         }
         throw std::runtime_error("OhmicNetwork::load_embeddings_file: Unrecognized format or row count mismatch in " + filepath);
@@ -594,7 +665,8 @@ struct OhmicNetwork {
             net.hyphaeon_embeddings = *external_hyphaeon_embeddings;
             net.used_hyphaeon_embeddings = true;
         } else if (!settings.embeddings_filepath.empty()) {
-            net.hyphaeon_embeddings = load_embeddings_file(settings.embeddings_filepath, N);
+            net.hyphaeon_embeddings = load_embeddings_file(settings.embeddings_filepath, N, &aln.taxon_names,
+                                                          &net.embeddings_row_mapping);
             net.used_hyphaeon_embeddings = (net.hyphaeon_embeddings.rows() == static_cast<Eigen::Index>(N));
         } else if (settings.use_hyphaeon_transformer && !settings.use_hamming_distance) {
             net.hyphaeon_embeddings = extract_hyphaeon_embeddings(aln);

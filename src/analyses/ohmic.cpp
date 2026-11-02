@@ -63,6 +63,7 @@ nlohmann::json OhmicResult::to_modern_json(const std::string& filepath) const {
         j["electrical_network"] = {
             {"scale_mode", mode_str},
             {"used_hyphaeon_embeddings", network.used_hyphaeon_embeddings},
+            {"embeddings_row_mapping", network.embeddings_row_mapping},
             {"embedding_dim", network.used_hyphaeon_embeddings ? static_cast<int>(network.hyphaeon_embeddings.cols()) : 0},
             {"foster_sum", foster_sum},
             {"num_bridges", static_cast<int>(num_bridges)},
