@@ -135,7 +135,15 @@ def resolve_weights(W, variant, explicit, allow_download):
     from huggingface_hub import try_to_load_from_cache
     v = variant or W.DEFAULT_VARIANT
     fname = W.get_variant_filename(v)
-    cache_dir = str(W.CACHE_DIR.parent / "huggingface")
+    # aeon-core >= 0.2.0 exposes the Hugging Face hub cache as HF_HUB_CACHE; older releases had CACHE_DIR.
+    hub_cache = getattr(W, "HF_HUB_CACHE", None)
+    if hub_cache is not None:
+        cache_dir = str(hub_cache)
+    elif hasattr(W, "CACHE_DIR"):
+        cache_dir = str(W.CACHE_DIR.parent / "huggingface")
+    else:
+        from huggingface_hub import constants as hf_constants
+        cache_dir = str(hf_constants.HF_HUB_CACHE)
 
     def cached(name):
         try:
