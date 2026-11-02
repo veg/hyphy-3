@@ -39,10 +39,10 @@ nlohmann::json OhmicResult::to_modern_json(const std::string& filepath) const {
                     prov.inputs["alignment"] = {in_path, "FASTA/NEXUS", hash, sz};
                 }
             }
-            prov.execution.start_time = Provenance::current_iso8601();
-            prov.execution.end_time = prov.execution.start_time;
+            prov.execution.end_time = end_time_iso.empty() ? Provenance::current_iso8601() : end_time_iso;
+            prov.execution.start_time = start_time_iso.empty() ? prov.execution.end_time : start_time_iso;
             prov.execution.wall_time_seconds = runtime_seconds;
-            prov.execution.cpu_threads = 1;
+            prov.execution.cpu_threads = cpu_threads > 0 ? cpu_threads : 1;
             prov.execution.hostname = Provenance::get_hostname();
             prov.execution.os = Provenance::detect_os();
             prov.execution.compiler = Provenance::detect_compiler();

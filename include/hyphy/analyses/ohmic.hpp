@@ -73,6 +73,10 @@ struct OhmicResult {
     std::vector<Scalar> site_ohmic_log_l;
     std::vector<Scalar> site_delta_log_l;
     double runtime_seconds = 0.0;
+    // Execution provenance captured around run(); empty/0 for hand-built results.
+    std::string start_time_iso;
+    std::string end_time_iso;
+    int cpu_threads = 0;
 
 nlohmann::json to_modern_json(const std::string& filepath = "") const;
 
@@ -91,6 +95,12 @@ public:
         auto t_start = std::chrono::steady_clock::now();
 
         OhmicResult result;
+        result.start_time_iso = Provenance::current_iso8601();
+#ifdef _OPENMP
+        result.cpu_threads = omp_get_max_threads();
+#else
+        result.cpu_threads = 1;
+#endif
         result.settings = settings;
         result.taxon_names = aln.taxon_names;
         result.num_taxa = aln.num_taxa;
@@ -124,6 +134,7 @@ public:
 
         auto t_end = std::chrono::steady_clock::now();
         result.runtime_seconds = std::chrono::duration<double>(t_end - t_start).count();
+        result.end_time_iso = Provenance::current_iso8601();
         return result;
     }
 
