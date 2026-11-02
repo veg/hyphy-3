@@ -842,7 +842,47 @@ TEST_CASE("OHMIC 10: --embeddings rows are joined by taxon name, not file positi
         write_file("ohmic10_dup.tsv", dup, true);
         CHECK_THROWS_AS(load("ohmic10_dup.tsv"), std::runtime_error);
     }
+    // Bad value in the first named row is an error, not a skipped header
+    {
+        write_file("ohmic10_badfirst.tsv", ordered, true);
+        std::ifstream in("ohmic10_badfirst.tsv");
+        std::string txt((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        txt.replace(txt.find('\t') + 1, txt.find('\t', txt.find('\t') + 1) - txt.find('\t') - 1, "abc");
+        std::ofstream("ohmic10_badfirst.tsv") << txt;
+        CHECK_THROWS_WITH_AS(load("ohmic10_badfirst.tsv"), doctest::Contains("non-numeric"), std::runtime_error);
+    }
+    // Ragged unnamed rows are an error
+    {
+        write_file("ohmic10_ragged.tsv", ordered, false);
+        std::ifstream in("ohmic10_ragged.tsv");
+        std::string txt((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        txt.erase(txt.rfind('\t', txt.size() - 2));  // drop the last value of the last row
+        txt += "\n";
+        std::ofstream("ohmic10_ragged.tsv") << txt;
+        CHECK_THROWS_AS(load("ohmic10_ragged.tsv"), std::runtime_error);
+    }
+    // Purely numeric taxon names are still joined by name, not read as an extra column
+    {
+        Alignment aln_num = aln;
+        for (size_t i = 0; i < N; ++i) aln_num.taxon_names[i] = std::to_string(i + 1);
+        std::ofstream o("ohmic10_numeric_names.tsv");
+        for (size_t i : shuffled) {
+            o << aln_num.taxon_names[i] << "\t";
+            for (int c = 0; c < D; ++c) o << emb[i][c] << (c + 1 < D ? "\t" : "\n");
+        }
+        o.close();
+        OhmicSettings s;
+        s.embeddings_filepath = "ohmic10_numeric_names.tsv";
+        OhmicNetwork net = OhmicNetwork::infer(aln_num, s);
+        CHECK(net.embeddings_row_mapping == "by_taxon_name");
+        REQUIRE(net.hyphaeon_embeddings.cols() == D);
+        for (size_t i = 0; i < N; ++i)
+            for (int c = 0; c < D; ++c) CHECK(net.hyphaeon_embeddings(i, c) == doctest::Approx(emb[i][c]));
+    }
     for (const char* f : {"ohmic10_unnamed.tsv", "ohmic10_named_ordered.tsv", "ohmic10_named_shuffled.tsv",
-                          "ohmic10_missing.tsv", "ohmic10_unknown.tsv", "ohmic10_dup.tsv"})
+                          "ohmic10_missing.tsv", "ohmic10_unknown.tsv", "ohmic10_dup.tsv", "ohmic10_badfirst.tsv",
+                          "ohmic10_ragged.tsv", "ohmic10_numeric_names.tsv"})
         std::remove(f);
 }

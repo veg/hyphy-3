@@ -492,6 +492,7 @@ struct OhmicNetwork {
         };
         std::vector<std::vector<Scalar>> rows;
         std::vector<std::string> row_names;  // empty string for unnamed rows
+        std::vector<std::string> first_toks; // raw first field of each row (taxon names may look numeric)
         size_t n_named = 0;
         bool first_line = true;
         std::string line;
@@ -515,14 +516,30 @@ struct OhmicNetwork {
                 vals.push_back(v);
             }
             if (!ok || (start == 1 && vals.empty())) {
-                if (first_line) { first_line = false; continue; }  // header line
+                bool any_numeric = false;
+                for (const auto& t : toks) any_numeric = any_numeric || parse_num(t, v);
+                if (first_line && !any_numeric) { first_line = false; continue; }  // header line
                 throw std::runtime_error("OhmicNetwork::load_embeddings_file: non-numeric embedding value in row '" +
                                          toks[0] + "' of " + filepath);
             }
             first_line = false;
             if (start == 1) ++n_named;
             row_names.push_back(name);
+            first_toks.push_back(toks[0]);
             rows.push_back(std::move(vals));
+        }
+        // Numeric-looking taxon names: if the first fields of an all-numeric file are exactly the alignment's
+        // taxon names, it is a named file, not an extra embedding column.
+        if (n_named == 0 && taxon_names != nullptr && rows.size() == expected_N && rows[0].size() > 1) {
+            std::unordered_set<std::string> names(taxon_names->begin(), taxon_names->end());
+            std::unordered_set<std::string> firsts(first_toks.begin(), first_toks.end());
+            if (names.size() == expected_N && firsts == names) {
+                for (size_t r = 0; r < rows.size(); ++r) {
+                    row_names[r] = first_toks[r];
+                    rows[r].erase(rows[r].begin());
+                }
+                n_named = rows.size();
+            }
         }
         if (!rows.empty() && n_named != 0) {
             if (n_named != rows.size())
@@ -562,6 +579,12 @@ struct OhmicNetwork {
         }
         if (rows.size() == expected_N && !rows[0].empty()) {
             size_t cols = rows[0].size();
+            for (size_t r = 1; r < rows.size(); ++r) {
+                if (rows[r].size() != cols)
+                    throw std::runtime_error("OhmicNetwork::load_embeddings_file: row " + std::to_string(r + 1) +
+                                             " has " + std::to_string(rows[r].size()) + " values, expected " +
+                                             std::to_string(cols) + " in " + filepath);
+            }
             Matrix M = Matrix::Zero(static_cast<Eigen::Index>(expected_N), static_cast<Eigen::Index>(cols));
             for (size_t r = 0; r < expected_N; ++r) {
                 for (size_t c = 0; c < std::min(cols, rows[r].size()); ++c) {
