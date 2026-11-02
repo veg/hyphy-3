@@ -15,6 +15,9 @@
 #include "hyphy/analyses/busted.hpp"
 #include "hyphy/analyses/absrel.hpp"
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -497,6 +500,39 @@ TEST_CASE("OHMIC 7: Empirical Multi-Gene Benchmark (cd2.fna, bglobin.nex)") {
     auto j = res.to_modern_json(cd2_path);
     CHECK(j["analysis"]["id"] == "ohmic");
     CHECK(j["dataset"]["taxa_count"] == 10);
+}
+
+// 7b. Provenance: cpu_threads reflects the run's thread count; start_time precedes end_time
+TEST_CASE("OHMIC 7b: Provenance records resolved threads and distinct start/end times") {
+    std::string cd2_path = resolve_test_path("tests/data/cd2.fna");
+    auto aln_cd2 = Alignment::load_nucleotide(cd2_path);
+
+    OhmicAnalysisSettings settings;
+    settings.input_file = cd2_path;
+    settings.use_codon_model = false;
+    settings.quiet = true;
+    settings.network_settings.min_shunt_stress = 0.05;
+
+#ifdef _OPENMP
+    const int prev_threads = omp_get_max_threads();
+    omp_set_num_threads(2);
+    const int expected_threads = 2;
+#else
+    const int expected_threads = 1;
+#endif
+    OhmicAnalyzer analyzer(aln_cd2, settings);
+    OhmicResult res = analyzer.run();
+#ifdef _OPENMP
+    omp_set_num_threads(prev_threads);
+#endif
+
+    auto j = res.to_modern_json(cd2_path);
+    const auto& ex = j["provenance"]["execution"];
+    CHECK(ex["cpu_threads"].get<int>() == expected_threads);
+    CHECK(ex["wall_time_seconds"].get<double>() > 0.0);
+    const std::string st = ex["start_time"].get<std::string>();
+    const std::string et = ex["end_time"].get<std::string>();
+    CHECK(st < et);  // fixed-width ISO-8601 UTC sorts lexicographically
 }
 
 // 8. Standard Analyses (FEL & FUBAR) on Wheatstone-Equipped Tree + HyphAeon 384D
