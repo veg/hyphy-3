@@ -93,11 +93,15 @@ TEST_CASE("Report: FEL and MEME reports embed the viewer, stylesheet and data") 
     CHECK(ohmic.find("window.HyPhyOhmicViewer") != std::string::npos);
     CHECK(ohmic.find("window.HyPhyFELViewer") == std::string::npos);
     CHECK(ohmic.find("OHMIC &bull; Phylogenetic Network") != std::string::npos);
+
+    std::string gard = render_html(R"J({"analysis": {"id": "gard"}})J", "g.json");
+    CHECK(gard.find("<hyphy-viewer id=\"hyphy-viewer\"") != std::string::npos);
+    CHECK(gard.find("GARD &bull; Recombination Breakpoints") != std::string::npos);
 }
 
 TEST_CASE("Report: the viewer table drives the supported analyses") {
-    CHECK(supported_analyses() == std::vector<std::string>{"fel", "meme", "fubar", "slac", "dfel", "ohmic"});
-    CHECK(supported_analyses_text() == "FEL, MEME, FUBAR, SLAC, DFEL, OHMIC");
+    CHECK(supported_analyses() == std::vector<std::string>{"fel", "meme", "fubar", "slac", "dfel", "gard", "ohmic"});
+    CHECK(supported_analyses_text() == "FEL, MEME, FUBAR, SLAC, DFEL, GARD, OHMIC");
     REQUIRE(find_viewer("meme") != nullptr);
     CHECK(find_viewer("meme")->tag == "hyphy-meme-viewer");
     REQUIRE(find_viewer("fubar") != nullptr);
@@ -106,6 +110,8 @@ TEST_CASE("Report: the viewer table drives the supported analyses") {
     CHECK(find_viewer("slac")->tag == "hyphy-viewer");
     REQUIRE(find_viewer("dfel") != nullptr);
     CHECK(find_viewer("dfel")->tag == "hyphy-viewer");
+    REQUIRE(find_viewer("gard") != nullptr);
+    CHECK(find_viewer("gard")->tag == "hyphy-viewer");
     REQUIRE(find_viewer("ohmic") != nullptr);
     CHECK(find_viewer("ohmic")->tag == "hyphy-ohmic-viewer");
     CHECK(find_viewer("busted") == nullptr);

@@ -8,13 +8,15 @@ import { MEME_CONFIG } from './meme.js';
 import { FUBAR_CONFIG } from './fubar.js';
 import { SLAC_CONFIG } from './slac.js';
 import { DFEL_CONFIG } from './dfel.js';
+import { GARD_CONFIG } from './gard.js';
 
 export const METHOD_CONFIGS = {
   fel: FEL_CONFIG,
   meme: MEME_CONFIG,
   fubar: FUBAR_CONFIG,
   slac: SLAC_CONFIG,
-  dfel: DFEL_CONFIG
+  dfel: DFEL_CONFIG,
+  gard: GARD_CONFIG
 };
 
 // Config for a method id ('fel', 'MEME', ...), or null when the viewer has none

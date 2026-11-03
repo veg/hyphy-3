@@ -227,7 +227,9 @@ export class OverviewBrush {
     ctx.textBaseline = 'bottom';
     ctx.strokeStyle = PALETTE.dotMuted;
     ctx.lineWidth = 0.75;
-    const step = total > 500 ? 100 : (total > 200 ? 50 : 25);
+    let step = total > 500 ? 100 : (total > 200 ? 50 : 25);
+    // Long alignments widen the step through 1-2-5 stops until labels sit 44px apart
+    for (let k = 0; (step * w) / total < 44; k++) step = [2, 2.5, 2][k % 3] * step;
     for (let s = 1; s <= total; s += step) {
       const x = ((s - 0.5) / total) * w;
       ctx.fillText(s.toString(), x, rulerY);

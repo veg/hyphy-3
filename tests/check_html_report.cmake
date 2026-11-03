@@ -59,7 +59,15 @@ check_report("${WORK_DIR}/dfel.html" hyphy-viewer)
 run("${HYPHY3}" report dfel.json --html dfel.report.html)
 check_report("${WORK_DIR}/dfel.report.html" hyphy-viewer)
 
-# 6. Analyses without a viewer are refused with a clear error rather than mis-rendered
+# 6. GARD reports mount the neutral viewer element, from a run and from its result file
+#    (HRVI.nex lives with the unit-test data, not the benchmark data)
+run("${HYPHY3}" gard --alignment "${CMAKE_CURRENT_LIST_DIR}/data/HRVI.nex" --max-breakpoints 1 --quiet
+    --output gard.json --html gard.html)
+check_report("${WORK_DIR}/gard.html" hyphy-viewer)
+run("${HYPHY3}" report gard.json --html gard.report.html)
+check_report("${WORK_DIR}/gard.report.html" hyphy-viewer)
+
+# 7. Analyses without a viewer are refused with a clear error rather than mis-rendered
 file(WRITE "${WORK_DIR}/busted.json" "{\"analysis\": {\"id\": \"busted\"}}")
 execute_process(COMMAND "${HYPHY3}" report busted.json --html busted.html WORKING_DIRECTORY "${WORK_DIR}"
                 RESULT_VARIABLE rc ERROR_VARIABLE err OUTPUT_QUIET)

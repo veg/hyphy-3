@@ -34,6 +34,7 @@ inline const std::vector<ReportViewer>& report_viewers() {
         {"fubar", "FUBAR &bull; Bayesian Pervasive Selection", "hyphy-viewer"},
         {"slac", "SLAC &bull; Ancestral Counting", "hyphy-viewer"},
         {"dfel", "dFEL &bull; Directional Selection", "hyphy-viewer"},
+        {"gard", "GARD &bull; Recombination Breakpoints", "hyphy-viewer"},
         {"ohmic", "OHMIC &bull; Phylogenetic Network", "hyphy-ohmic-viewer", assets::ohmic_viewer_js,
          assets::ohmic_viewer_css},
     };

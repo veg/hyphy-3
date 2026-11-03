@@ -2,7 +2,9 @@
 // best-model partitions), in alternating light and mid grey, each labelled with its
 // range when it fits. A breakpoint sits between consecutive segments, half a site past
 // the left segment's end, and gets a solid accent rule through the band and, with
-// rules: true, through the main band too. Each block is a hit region of kind 'segment' (key = segment.key).
+// rules: true, through the main band too. breakTone(bp, track) recolours a break's rule and
+// label ('accent' | 'ink' | 'muted'; GARD's incongruent, branch-length-only and untested
+// breaks), and breakLabel(bp, track) rewrites its label; bp is { index, at, left, right }. Each block is a hit region of kind 'segment' (key = segment.key).
 //
 // A segment is { key, start, end, label? } in the track's site coordinates (1-based,
 // inclusive), in alignment order.
@@ -19,12 +21,21 @@ function segmentTitle(segment, index) {
   return segment.label ?? `Segment ${index + 1} · ${segment.start}–${segment.end}`;
 }
 
+// The colours a break tone names, from the track's themed palette when it has one
+const SEGMENT_TONES = {
+  accent: (colors) => PALETTE.accent,
+  ink: (colors) => colors.ink,
+  muted: (colors) => colors.stone
+};
+
 export class SegmentBand {
   constructor(options = {}) {
     this.options = Object.assign({
       segments: () => [],    // (data, track) => segments
       height: 28,
       rules: true,           // carry the breakpoint rules up through the main band
+      breakTone: null,       // (bp, track) => 'accent' | 'ink' | 'muted'; accent when unset
+      breakLabel: null,      // (bp, track) => label text; 'BP n' when unset
       emptyLabel: 'No recombination detected — single tree fits best',
       tooltip: null          // (segment, track) => HTML
     }, options);
@@ -43,6 +54,19 @@ export class SegmentBand {
       index,
       title: single ? this.options.emptyLabel : segmentTitle(segment, index)
     }));
+  }
+
+  // Breaks between the blocks' segments, with their tone and label
+  breaks(blocks, track, colors) {
+    const segments = blocks.map(b => b.segment);
+    return segmentBreaks(segments).map((bp, i) => {
+      const full = Object.assign(bp, { left: segments[i], right: segments[i + 1] });
+      const tone = this.options.breakTone?.(full, track) ?? 'accent';
+      return Object.assign(full, {
+        color: SEGMENT_TONES[tone](colors),
+        label: this.options.breakLabel?.(full, track) ?? `BP ${full.index}`
+      });
+    });
   }
 
   isHit(region, block) {
@@ -72,20 +96,20 @@ export class SegmentBand {
       ctx.fillText(label, (b.x0 + b.x1) / 2, frame.top + frame.height / 2);
     }
 
-    ctx.strokeStyle = PALETTE.accent;
-    ctx.fillStyle = PALETTE.accent;
     ctx.lineWidth = 1.5;
     ctx.font = 'bold 9px "SF Mono", Monaco, monospace';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
     const top = this.options.rules ? main.top : frame.top;
-    for (const bp of segmentBreaks(blocks.map(b => b.segment))) {
+    for (const bp of this.breaks(blocks, track, track.colors ?? PALETTE)) {
       const x = frame.scaleX(bp.at);
+      ctx.strokeStyle = bp.color;
+      ctx.fillStyle = bp.color;
       ctx.beginPath();
       ctx.moveTo(x, top);
       ctx.lineTo(x, bottom);
       ctx.stroke();
-      if (this.options.rules) ctx.fillText(`BP ${bp.index}`, x + 3, main.top + 2);
+      if (this.options.rules) ctx.fillText(bp.label, x + 3, main.top + 2);
     }
     ctx.restore();
 
@@ -115,10 +139,10 @@ export class SegmentBand {
       svg += `  <rect x="${b.x0}" y="${frame.top}" width="${b.x1 - b.x0}" height="${frame.height}" fill="${b.index % 2 ? PALETTE.overviewEmpty : PALETTE.inset}"/>\n`;
       svg += `  <text x="${(b.x0 + b.x1) / 2}" y="${frame.top + frame.height / 2}" text-anchor="middle" dominant-baseline="middle">${escapeSvgText(b.title)}</text>\n`;
     }
-    for (const bp of segmentBreaks(blocks.map(b => b.segment))) {
+    for (const bp of this.breaks(blocks, track, PALETTE)) {
       const x = frame.scaleX(bp.at);
-      svg += `  <line x1="${x}" y1="${top}" x2="${x}" y2="${bottom}" stroke="${PALETTE.accent}" stroke-width="1.5"/>\n`;
-      if (this.options.rules) svg += `  <text x="${x + 3}" y="${top + 10}" fill="${PALETTE.accent}" font-weight="bold">BP ${bp.index}</text>\n`;
+      svg += `  <line x1="${x}" y1="${top}" x2="${x}" y2="${bottom}" stroke="${bp.color}" stroke-width="1.5"/>\n`;
+      if (this.options.rules) svg += `  <text x="${x + 3}" y="${top + 10}" fill="${bp.color}" font-weight="bold">${escapeSvgText(bp.label)}</text>\n`;
     }
     return svg;
   }

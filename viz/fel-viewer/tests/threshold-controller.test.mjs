@@ -7,6 +7,7 @@ import {
 } from '../src/components/kpi-bar.js';
 import { SITE_P_THRESHOLD } from '../src/methods/fel.js';
 import { formatThreshold } from '../src/core/format.js';
+import { installFakeDOM, FakeElement } from './fake-dom.mjs';
 
 const POSTERIOR = {
   title: 'Posterior Cutoff', statistic: 'PP', direction: 'ge',
@@ -99,6 +100,8 @@ function fakeBar(cards, blank) {
   bar.cards = cards;
   bar.blank = blank;
   bar.inserted = [];
+  bar.controller = {};
+  bar.setEnabled = () => {};
   bar.controlEl = { insertAdjacentHTML: (where, html) => bar.inserted.push([where, html]) };
   bar.cardEls = blank.map(card => fakeCard(card.id));
   bar.bindCards = list => list.map(card => fakeCard(card.id, card.widget ? { slot: card.id } : null));
@@ -158,4 +161,27 @@ test('a cutoff set from outside moves the slider to its position', () => {
   bar.setThreshold(0.01);
   assert.equal(bar.slider.value, -2);
   assert.equal(bar.display.textContent, 'p ≤ 0.01');
+});
+
+test('a controller can follow the loaded result: its caption sees the data, and enabled() switches it off', () => {
+  installFakeDOM();
+  const controller = Object.assign({}, LOG_P, {
+    toggle: undefined,
+    caption: ({ data }) => (data ? `B = ${data.b}` : 'no data'),
+    enabled: (data) => data.b > 0,
+    disabledCaption: 'No topology test'
+  });
+  const bar = new KpiBar(new FakeElement(), { cards: [], controller });
+  assert.equal(bar.caption.textContent, 'no data');
+  const load = (b) => bar.setData({ b, getStats: () => ({}) });
+  load(2);
+  assert.equal(bar.caption.textContent, 'B = 2');
+  assert.equal(bar.slider.disabled, false);
+  load(0);
+  assert.equal(bar.slider.disabled, true);
+  assert.equal(bar.caption.textContent, 'No topology test');
+  load(3);
+  assert.equal(bar.slider.disabled, false);
+  assert.equal(bar.caption.textContent, 'B = 3');
+  assert.equal(thresholdCaption(controller, 0.05, 'p', { b: 4 }), 'B = 4');
 });

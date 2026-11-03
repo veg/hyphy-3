@@ -245,3 +245,24 @@ test('a single segment reads as no recombination and draws no rule', () => {
     ['No recombination detected — single tree fits best']);
   assert.equal(ctx.calls.filter(c => c[0] === 'moveTo').length, 0);
 });
+
+test('break tones recolour each rule and label, and the default stays accent', () => {
+  const tones = { 1: 'ink' };
+  const band = new SegmentBand({
+    segments: data => data.segments,
+    breakTone: bp => tones[bp.index],
+    breakLabel: bp => `BP ${bp.index} ✱`
+  });
+  const main = frameFor(762, 24, 200, 700);
+  const frame = frameFor(762, 248, 28, 700);
+  const ctx = recordingContext();
+  const t = track([], { numSites: 762, data: { segments: SEGMENTS }, frames: [main, frame], colors: { ink: '#F8FAFC', stone: '#94A3B8' } });
+  band.draw(ctx, frame, t);
+  assert.deepEqual(ctx.calls.filter(c => c[0] === '=strokeStyle').slice(-1).map(c => c[1]), ['#F8FAFC']);
+  assert.deepEqual(ctx.calls.filter(c => c[0] === 'fillText').map(c => c[1]).slice(-1), ['BP 1 ✱']);
+  assert.match(band.svg(frame, t), /stroke="#1A1A18" stroke-width="1.5"/);
+
+  const plain = recordingContext();
+  new SegmentBand({ segments: data => data.segments }).draw(plain, frame, t);
+  assert.equal(plain.calls.filter(c => c[0] === '=strokeStyle').slice(-1)[0][1], '#EB5E28');
+});
