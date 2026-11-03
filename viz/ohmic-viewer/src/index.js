@@ -87,6 +87,17 @@ export class HyPhyOhmicViewer {
     this.sitePlot.setModel(this.model);
     this.bridgesTable.setModel(this.model, this.tauThreshold, this.selectedBridgeIndex);
     this.bridgeDrawer.close();
+
+    // Tell the host page (report header chip) what was loaded, as the FEL shell does
+    this.container.dispatchEvent(new CustomEvent('data-loaded', {
+      bubbles: true,
+      composed: true,
+      detail: {
+        numSites: this.model.sitesCount,
+        numTaxa: this.model.taxaCount,
+        formatLabel: this.model.formatLabel
+      }
+    }));
   }
 
   setTheme(theme) {

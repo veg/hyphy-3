@@ -313,6 +313,8 @@ if(HYPHY3_BUILD_TESTS)
     if(NODE_EXECUTABLE)
         add_test(NAME ViewerUnitTests
             COMMAND ${NODE_EXECUTABLE} --test ${CMAKE_CURRENT_SOURCE_DIR}/viz/fel-viewer/tests/*.test.mjs)
+        add_test(NAME OhmicViewerUnitTests
+            COMMAND ${NODE_EXECUTABLE} --test ${CMAKE_CURRENT_SOURCE_DIR}/viz/ohmic-viewer/tests/*.test.mjs)
     endif()
 endif()
 

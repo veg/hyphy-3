@@ -1,3 +1,5 @@
+import { bridgePassesTau } from '../data/ohmic-data.js';
+
 /**
  * Sortable Industrial Table of 4-Way Wheatstone Bridges.
  */
@@ -85,7 +87,7 @@ export class BridgesTable {
     if (!this.tbody || !this.model) return;
 
     const filtered = this.model.bridges
-      .filter((b) => b.shuntStress >= this.tauThreshold)
+      .filter((b) => bridgePassesTau(b, this.tauThreshold))
       .slice()
       .sort((a, b) => {
         const va = a[this.sortKey];

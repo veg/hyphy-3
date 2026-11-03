@@ -1,3 +1,5 @@
+import { bridgePassesTau } from '../data/ohmic-data.js';
+
 /**
  * Interactive Phylogenetic Electrical Network & Wheatstone Shunt Canvas.
  * Renders the backbone or collapsed tree with interactive 4-way Wheatstone
@@ -246,7 +248,7 @@ export class NetworkTreeCanvas {
 
       // Check if this branch is a bridge internal node
       const brByBridge = this.model.bridgeByBridgeNodeName.get(node.name);
-      const isActiveBridgeBranch = brByBridge && brByBridge.shuntStress >= this.tauThreshold;
+      const isActiveBridgeBranch = brByBridge && bridgePassesTau(brByBridge, this.tauThreshold);
 
       ctx.beginPath();
       ctx.moveTo(p.x, p.y);
@@ -265,7 +267,7 @@ export class NetworkTreeCanvas {
 
     // 2. Draw Wheatstone Bridge Shunt Arcs & Hub Diamonds
     for (const br of this.model.bridges) {
-      if (br.shuntStress < this.tauThreshold) continue;
+      if (!bridgePassesTau(br, this.tauThreshold)) continue;
 
       const hubNode = treeObj.nodeByName.get(br.hubNode);
       const bridgeNode = treeObj.nodeByName.get(br.bridgeNode) || hubNode;
@@ -475,7 +477,7 @@ export class NetworkTreeCanvas {
 
     // Bridges
     for (const br of this.model.bridges) {
-      if (br.shuntStress < this.tauThreshold) continue;
+      if (!bridgePassesTau(br, this.tauThreshold)) continue;
       const hubNode = treeObj.nodeByName.get(br.hubNode);
       const bridgeNode = treeObj.nodeByName.get(br.bridgeNode) || hubNode;
       const childA = treeObj.nodeByName.get(br.children[0]);

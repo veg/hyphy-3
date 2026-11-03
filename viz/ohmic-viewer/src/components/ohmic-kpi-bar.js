@@ -2,6 +2,8 @@
  * Dieter Rams / Braun Industrial KPI Header Bar for HyPhy OHMIC Viewer.
  */
 
+import { countActiveBridges, bridgeCountText } from '../data/ohmic-data.js';
+
 export class OhmicKpiBar {
   constructor(container, options = {}) {
     this.container = container;
@@ -18,7 +20,7 @@ export class OhmicKpiBar {
       return;
     }
 
-    const activeCount = model.bridges.filter((b) => b.shuntStress >= this.tauThreshold).length;
+    const activeCount = countActiveBridges(model.bridges, this.tauThreshold);
     const mlRetainedCount = model.bridges.filter((b) => b.activeShuntWeight > 0.01).length;
     const fosterOk = model.fosterResidual < 1e-6;
     const deltaPositive = model.deltaLogL >= 0;
@@ -80,7 +82,7 @@ export class OhmicKpiBar {
             <span class="ohmic-badge ohmic-badge-blue">O(K) SERIES-PARALLEL</span>
           </div>
           <div class="ohmic-kpi-value-row">
-            <span class="ohmic-kpi-main ohmic-text-accent">${activeCount}</span>
+            <span class="ohmic-kpi-main ohmic-text-accent" id="ohmic-active-count">${activeCount}</span>
             <span class="ohmic-kpi-unit">/ ${model.bridges.length} SHUNTS</span>
             <span class="ohmic-kpi-sep">•</span>
             <span class="ohmic-kpi-main">${mlRetainedCount}</span>
@@ -133,7 +135,7 @@ export class OhmicKpiBar {
             />
           </div>
           <div class="ohmic-kpi-sub">
-            <span>Showing ${activeCount} of ${model.bridges.length} bridges • ${model.networkFavoringSitesCount} sites ΔlnL &gt; 0.05</span>
+            <span><span id="ohmic-showing">${bridgeCountText(activeCount, model.bridges.length)}</span> • ${model.networkFavoringSitesCount} sites ΔlnL &gt; 0.05</span>
           </div>
         </div>
       </div>
@@ -141,11 +143,17 @@ export class OhmicKpiBar {
 
     const slider = this.container.querySelector('#ohmic-tau-slider');
     const valLabel = this.container.querySelector('#ohmic-tau-val');
+    const countEl = this.container.querySelector('#ohmic-active-count');
+    const showingEl = this.container.querySelector('#ohmic-showing');
     if (slider) {
       slider.addEventListener('input', (e) => {
         const v = parseFloat(e.target.value);
         this.tauThreshold = v;
         if (valLabel) valLabel.textContent = `≥ ${v.toFixed(2)}`;
+        // The cards follow the same filter the table applies
+        const n = countActiveBridges(model.bridges, v);
+        if (countEl) countEl.textContent = String(n);
+        if (showingEl) showingEl.textContent = bridgeCountText(n, model.bridges.length);
         this.onTauThresholdChange(v);
       });
     }
