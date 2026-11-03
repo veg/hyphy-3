@@ -2222,6 +2222,10 @@
   overflow-x: auto;
 }
 
+.gard-card-row-wide > .gard-panel {
+  flex: 1 1 100%;
+}
+
 .gard-matrix {
   border-collapse: collapse;
   font-size: 11px;

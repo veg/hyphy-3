@@ -424,3 +424,16 @@ test('diagnostics name the run and show the input file by its name, never its pa
   assert.match(html, /Models evaluated/);
   assert.match(html, /hyphy3 v3/);
 });
+
+test('step annotations are cut to their slot, with the full list in the bar tooltip', () => {
+  const steps = Array.from({ length: 10 }, (_, i) => ({ k: i + 1, deltaAicc: 100 - i, bps: Array.from({ length: i + 1 }, (__, j) => 1000 * (i + 1) + j) }));
+  const { svg } = gardStepsSVG(steps, { width: 480, colors: PALETTE });
+  assert.match(svg, /<title>10 BP: \+/);
+  const labels = [...svg.matchAll(/font-size="9"[^>]*>([^<]*)</g)].map(m => m[1]).filter(t => t.startsWith('+'));
+  assert.ok(labels.every(t => t.length <= 8), labels.join('|'));
+});
+
+test('the tree card starts on the run alpha it is given', () => {
+  assert.equal(new GardTreeCard(new FakeElement(), { threshold: 0.01 }).alpha, 0.01);
+  assert.equal(new GardTreeCard(new FakeElement()).alpha, 0.05);
+});

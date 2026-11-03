@@ -6,7 +6,7 @@
 import { BranchTree } from './branch-tree.js';
 import { COMPOSITION_CSS_COLORS } from './composition-panel.js';
 import { PALETTE } from '../data/palette.js';
-import { gardCutoff, gardFormat, gardP } from '../data/gard-data.js';
+import { GARD_RUN_ALPHA, gardCutoff, gardFormat, gardP } from '../data/gard-data.js';
 import { downloadSVG, downloadSVGAsPNG, escapeSvgText } from '../core/export.js';
 
 // Past this many leaves a tree is drawn as a cladogram: rows are too tight for lengths to read
@@ -15,7 +15,7 @@ export const GARD_CLADOGRAM_TAXA = 60;
 const GARD_COLORS = Object.assign({}, COMPOSITION_CSS_COLORS, { accent: 'var(--accent)' });
 const GARD_FILE_COLORS = Object.assign({}, PALETTE);
 
-const GARD_MOVED_LEGEND = [{ label: 'Moved taxon (different sister clade)', stroke: 'var(--accent)' }];
+const GARD_MOVED_LEGEND = [{ label: 'Moved taxon (sister clade differs)', stroke: 'var(--accent)' }];
 const GARD_MOVED_SHOWN = 24;
 
 // 'S1 · 1–279', the segment a select offers
@@ -56,23 +56,23 @@ export class GardTreePair {
     this.el.className = 'gard-tree-pair';
     this.el.innerHTML = `
       <div class="gard-tree-cols">
-        <div class="gard-tree-col" id="gard-col-left">
-          <div class="gard-tree-head"><span class="gard-tree-title" id="gard-title-left"></span><button type="button" class="plot-tool-btn" id="gard-svg-left" title="Export Vector SVG">SVG</button></div>
-          <div class="gard-tree-host" id="gard-tree-left"></div>
+        <div class="gard-tree-col" data-side="left">
+          <div class="gard-tree-head"><span class="gard-tree-title" data-title="left"></span><button type="button" class="plot-tool-btn" data-svg="left" title="Export Vector SVG">SVG</button></div>
+          <div class="gard-tree-host" data-tree="left"></div>
         </div>
-        <div class="gard-tree-col" id="gard-col-right">
-          <div class="gard-tree-head"><span class="gard-tree-title" id="gard-title-right"></span><button type="button" class="plot-tool-btn" id="gard-svg-right" title="Export Vector SVG">SVG</button></div>
-          <div class="gard-tree-host" id="gard-tree-right"></div>
+        <div class="gard-tree-col" data-side="right">
+          <div class="gard-tree-head"><span class="gard-tree-title" data-title="right"></span><button type="button" class="plot-tool-btn" data-svg="right" title="Export Vector SVG">SVG</button></div>
+          <div class="gard-tree-host" data-tree="right"></div>
         </div>
       </div>
-      <div class="gard-tree-summary" id="gard-tree-summary"></div>
+      <div class="gard-tree-summary" data-summary></div>
     `;
     container.appendChild(this.el);
 
     this.sides = ['left', 'right'].map((side, i) => ({
-      col: this.el.querySelector(`#gard-col-${side}`),
-      title: this.el.querySelector(`#gard-title-${side}`),
-      tree: new BranchTree(this.el.querySelector(`#gard-tree-${side}`), {
+      col: this.el.querySelector(`[data-side="${side}"]`),
+      title: this.el.querySelector(`[data-title="${side}"]`),
+      tree: new BranchTree(this.el.querySelector(`[data-tree="${side}"]`), {
         ladderize: true,
         hoverColor: 'stone',
         style: (node, meta, colors) => (!node.children.length && this.moved.has(node.name) ? { stroke: colors.accent, width: 2 } : null),
@@ -83,9 +83,9 @@ export class GardTreePair {
       })
     }));
     this.sides.forEach(({ tree }, i) => {
-      this.el.querySelector(`#gard-svg-${i ? 'right' : 'left'}`).addEventListener('click', () => tree.exportSVG());
+      this.el.querySelector(`[data-svg="${i ? 'right' : 'left'}"]`).addEventListener('click', () => tree.exportSVG());
     });
-    this.summary = this.el.querySelector('#gard-tree-summary');
+    this.summary = this.el.querySelector('[data-summary]');
   }
 
   get trees() {
@@ -119,7 +119,8 @@ export class GardTreePair {
       tree.options.exportName = `${this.options.exportName}_s${index + 1}`;
     });
     const scale = cladogram ? ` · cladogram above ${GARD_CLADOGRAM_TAXA} taxa (branch lengths not to scale)` : '';
-    this.summary.innerHTML = j == null ? 'A single tree fits best: no breakpoints.' : `${gardTreeSummary(diff)}${scale}`;
+    this.summary.innerHTML = j == null ? 'A single tree fits best: no breakpoints.'
+      : (diff ? `${gardTreeSummary(diff)}${scale}` : `Trees cannot be compared: a tree is missing or its taxon names are not unique${scale}`);
   }
 }
 
@@ -154,7 +155,7 @@ export function gardStepsSVG(steps, { best = steps.length, width = 480, colors =
   const text = (x, y, value, anchor, color, extra = '') =>
     `  <text x="${x}" y="${y}" text-anchor="${anchor}" font-size="10"${extra} ${fill(color)}>${escapeSvgText(value)}</text>\n`;
 
-  let svg = `<svg xmlns="http://www.w3.org/2000/svg" class="gard-steps" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" font-family="-apple-system, sans-serif">\n`;
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" class="gard-steps" role="img" aria-label="ΔAICc gained as each breakpoint is added to the best model" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" font-family="-apple-system, sans-serif">\n`;
   svg += `  <rect width="100%" height="100%" ${fill(colors.panel)}/>\n`;
   svg += `  <line x1="${pad.left}" y1="${pad.top + plotH}" x2="${width - pad.right}" y2="${pad.top + plotH}" style="stroke: ${colors.hairline}"/>\n`;
   svg += text(pad.left - 8, pad.top + 4, gardFormat(max, 0), 'end', colors.stone);
@@ -164,11 +165,17 @@ export function gardStepsSVG(steps, { best = steps.length, width = 480, colors =
     const x = pad.left + slot * i + (slot - barW) / 2;
     const h = Math.max(1, ((step.deltaAicc ?? 0) / max) * plotH);
     const isBest = step.k === best;
-    svg += `  <rect x="${x}" y="${pad.top + plotH - h}" width="${barW}" height="${h}" ${fill(isBest ? colors.ink : colors.slateLight)}/>\n`;
+    const sites = gardAddedSites(steps, i);
+    const tip = sites.length ? `<title>${step.k} BP: +${escapeSvgText(sites.join(', '))}</title>` : '';
+    svg += `  <rect x="${x}" y="${pad.top + plotH - h}" width="${barW}" height="${h}" ${fill(isBest ? colors.ink : colors.slateLight)}>${tip}</rect>\n`;
     svg += text(x + barW / 2, pad.top + plotH - h - 5, gardFormat(step.deltaAicc, 1), 'middle', colors.ink, isBest ? ' font-weight="bold"' : '');
     svg += text(x + barW / 2, pad.top + plotH + 14, `${step.k} BP`, 'middle', isBest ? colors.ink : colors.stone, isBest ? ' font-weight="bold"' : '');
-    const added = gardAddedLabel(gardAddedSites(steps, i));
+    // Fit the label to its slot (about 5px a character); the full list is in the bar's tooltip
+    const room = Math.floor((slot - 4) / 5);
+    let added = gardAddedLabel(sites);
+    if (added.length > room) added = room >= 4 ? `${added.slice(0, room - 1).replace(/[ ,]+$/, '')}…` : '';
     if (added) svg += text(x + barW / 2, pad.top + plotH + 27, added, 'middle', colors.stone, ' font-size="9"');
+
   });
   svg += '</svg>';
   return { svg, width, height };
@@ -196,7 +203,7 @@ export function gardMatrixMarkup(matrix, { mode = 'logL', cutoff = 0 } = {}) {
     return `
               <tr><th>P${m.partition + 1}</th><td class="font-mono">${m.interval[0]}–${m.interval[1]}</td>${cells}</tr>`;
   }).join('');
-  return `<table class="gard-matrix">
+  return `<table class="gard-matrix" aria-label="Log-likelihood or topology-test p of each partition under every partition's tree">
             <thead><tr><th>Partition</th><th>Sites</th>${head}</tr></thead>
             <tbody>${body}
             </tbody>
@@ -212,10 +219,10 @@ function gardPanelHead(title, exportId, extra = '') {
 }
 
 export class GardTreeCard {
-  constructor(container) {
+  constructor(container, options = {}) {
     this.container = container;
     this.data = null;
-    this.alpha = null;
+    this.alpha = options.threshold ?? GARD_RUN_ALPHA;
     this.matrixMode = 'logL';
     this.pair = null;
     this.indexes = [0, null];
@@ -281,6 +288,8 @@ export class GardTreeCard {
     this.data = data;
     this.indexes = gardDefaultPair(data, null);
     this.el.querySelector('#gard-matrix-panel').style.display = data.capabilities.matrix ? '' : 'none';
+    // A matrix of many trees takes the full row
+    this.el.querySelector('.gard-card-row').classList.toggle('gard-card-row-wide', data.matrix.length > 4);
     this.el.querySelector('#gard-selects').style.display = data.segments.length > 1 ? '' : 'none';
     this.selects.forEach(select => {
       select.innerHTML = data.segments.map((s, i) => `<option value="${i}">${gardSegmentLabel(s, i)}</option>`).join('');

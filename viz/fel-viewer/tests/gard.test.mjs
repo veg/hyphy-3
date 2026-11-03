@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import {
-  GardResults, gardBreakCall, gardSplits, gardRF, gardMovedTaxa, gardFormat, gardP, gardCutoff
+  GardResults, gardBreakCall, gardSplits, gardRF, gardMovedTaxa, gardFormat, gardP, gardCutoff, gardUniqueTaxa
 } from '../src/data/gard-data.js';
 import { detectMethod } from '../src/core/detect-method.js';
 import { GARD_KPI_CARDS, GARD_ALPHA, gardTopologyValue, gardTopologySub } from '../src/methods/gard.js';
@@ -319,4 +319,28 @@ test('the parity fixtures parse', { skip: noFixtures }, () => {
     assert.ok(data.support.length > 0, file);
     assert.equal(data.segments.at(-1).end, data.numSites, file);
   }
+});
+
+test('HyPhy 2.5 writes the 0-based break as the left end and nested step sets; both are normalised', () => {
+  // HyPhy 2.5 for a break at 0-based 278: intervals 1..278 and 279..561, steps [[278]]
+  const d = new GardResults(legacyDoc([[1, 278], [279, 561]], {
+    analysis: { info: 'GARD : Genetic Algorithms\n    for Recombination Detection.', version: '0.2' },
+    improvements: { 0: { breakpoints: [[278]], deltaAICc: 904 } }
+  }));
+  assert.equal(d.format, 'hyphy25');
+  assert.equal(d.off, 1);
+  assert.deepEqual(d.segments.map(s => [s.start, s.end]), [[1, 279], [280, 561]]);
+  assert.equal(d.breaks[0].site, 279);
+  assert.equal(d.support.find(s => s.site === 279).p, 0.9977);
+  assert.deepEqual(d.steps, [{ k: 1, deltaAicc: 904, bps: [279] }]);
+});
+
+test('trees with repeated taxon names are not compared', () => {
+  assert.equal(gardUniqueTaxa(TREE_A), true);
+  assert.equal(gardUniqueTaxa('((x,x),(x,x));'), false);
+  const dup = '((x:1,x:1):1,(x:1,x:1):1);';
+  const d = new GardResults(modernDoc({ partitions: [
+    { partition_index: 0, start_site: 1, end_site: 279, log_likelihood: -1, tree: dup },
+    { partition_index: 1, start_site: 280, end_site: 561, log_likelihood: -1, tree: dup }] }));
+  assert.equal(d.breaks[0].diff, null);
 });

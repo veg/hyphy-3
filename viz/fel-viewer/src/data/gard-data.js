@@ -22,6 +22,12 @@ import { parseNewick } from '../core/newick.js';
 // The run's own family-wise alpha for the KH/SH tests (hyphy3 applies 0.05 / 2B per flank)
 export const GARD_RUN_ALPHA = 0.05;
 
+// Breakpoints as a flat list of numbers: HyPhy 2.5 writes each step's set as a one-row matrix
+// ([[459]]) and hyphy3 as a plain list
+function gardFlat(list) {
+  return (Array.isArray(list) ? list.flat(Infinity) : []).map(Number).filter(Number.isFinite);
+}
+
 function gardNumber(x) {
   return typeof x === 'number' && Number.isFinite(x) ? x : null;
 }
@@ -67,6 +73,14 @@ function gardLeaves(node, into = []) {
   if (!node.children.length) into.push(node.name);
   node.children.forEach(child => gardLeaves(child, into));
   return into;
+}
+
+// Whether every leaf of a Newick tree has its own name
+export function gardUniqueTaxa(newick) {
+  const root = parseNewick(newick);
+  if (!root) return false;
+  const names = gardLeaves(root);
+  return new Set(names).size === names.length;
 }
 
 const GARD_SEP = '\u001f';
@@ -142,7 +156,10 @@ function gardSisters(newick, taxa) {
 }
 
 // The taxa whose sister clade differs between two trees, over the taxa they share, in
-// alphabetical order: where the topologies disagree about who a taxon's nearest relatives are
+// alphabetical order: where the topologies disagree about who a taxon's nearest relatives are.
+// A moved clade is flagged at its junction only (its members keep their sisters); finding the
+// smallest set of taxa to prune for the trees to agree is a maximum-agreement-subtree search,
+// far too slow at hundreds of taxa.
 export function gardMovedTaxa(a, b) {
   const leavesOf = (tree) => { const r = parseNewick(tree); return r ? gardLeaves(r) : []; };
   const inB = new Set(leavesOf(b));
@@ -263,7 +280,7 @@ export class GardResults {
     this.steps = (ms.improvements || []).map(s => ({
       k: s.breakpoints_count,
       deltaAicc: gardNumber(s.delta_aicc),
-      bps: Array.isArray(s.breakpoints) ? s.breakpoints.map(b => this.display(b)) : null
+      bps: Array.isArray(s.breakpoints) ? gardFlat(s.breakpoints).map(b => this.display(b)) : null
     }));
     this.setSupport(json.site_breakpoint_support);
     this.topology = tt.single_tree_aicc === undefined && tt.topological_incongruence_supported === undefined ? null : {
@@ -319,9 +336,10 @@ export class GardResults {
     this.baseline = { logL: null, tree: parts.length === 1 ? parts[0].tree : '', rates: null, frequencies: null };
 
     const steps = Object.entries(json.improvements || {}).sort((a, b) => Number(a[0]) - Number(b[0]))
-      .filter(([, s]) => Array.isArray(s.breakpoints));
-    this.setOffset(steps.length ? steps[steps.length - 1][1].breakpoints : []);
-    this.steps = steps.map(([, s]) => ({ k: s.breakpoints.length, deltaAicc: gardNumber(s.deltaAICc), bps: s.breakpoints.map(b => this.display(b)) }));
+      .filter(([, s]) => Array.isArray(s.breakpoints))
+      .map(([, s]) => ({ bps: gardFlat(s.breakpoints), deltaAicc: gardNumber(s.deltaAICc) }));
+    this.setOffset(steps.length ? steps[steps.length - 1].bps : []);
+    this.steps = steps.map(s => ({ k: s.bps.length, deltaAicc: s.deltaAicc, bps: s.bps.map(b => this.display(b)) }));
     this.setSupport(json.siteBreakPointSupport);
 
     const delta = this.singleTreeAicc == null || this.bestAicc == null ? null : this.singleTreeAicc - this.bestAicc;
@@ -337,9 +355,20 @@ export class GardResults {
 
   // The shift from 0-based breakpoints to display sites: the first partition ends at the
   // site after the first breakpoint's position
+  // HyPhy 2.5 writes the 0-based break position itself as the left interval's end (1..459,
+  // 460..762 for a break at 459, though its filter is sites 0..459): the offset reads 0, and the
+  // intervals are moved onto 1-based sites (1..460, 461..762) so every producer agrees.
   setOffset(bestBreakpoints) {
-    const first = Array.isArray(bestBreakpoints) && bestBreakpoints.length ? Math.min(...bestBreakpoints) : null;
+    const flat = gardFlat(bestBreakpoints);
+    const first = flat.length ? Math.min(...flat) : null;
     this.off = first != null && this.segments.length > 1 ? this.segments[0].end - first : 1;
+    if (this.off === 0) {
+      this.segments.forEach((s, i) => {
+        if (i > 0) s.start += 1;
+        if (i < this.segments.length - 1) s.end += 1;
+      });
+      this.off = 1;
+    }
   }
 
   // diff is the trees' comparison across the break ({ rf, max, moved }), computed on first use
@@ -372,13 +401,15 @@ export class GardResults {
     return gardBreakCall(brk.test, alpha, this.breaks.length, this.testMode);
   }
 
-  // RF distance and moved taxa between two segments' trees, by index; cached
+  // RF distance and moved taxa between two segments' trees, by index; cached. Null when a tree
+  // is missing or repeats a taxon name (splits over names would then be meaningless).
   compare(i, j) {
     const key = `${i}-${j}`;
     if (!this.compareCache.has(key)) {
       const a = this.segments[i]?.tree;
       const b = this.segments[j]?.tree;
-      this.compareCache.set(key, a && b ? Object.assign(gardRF(a, b), { moved: gardMovedTaxa(a, b) }) : null);
+      const ok = a && b && gardUniqueTaxa(a) && gardUniqueTaxa(b);
+      this.compareCache.set(key, ok ? Object.assign(gardRF(a, b), { moved: gardMovedTaxa(a, b) }) : null);
     }
     return this.compareCache.get(key);
   }

@@ -24,7 +24,7 @@ import { escapeSvgText } from '../core/export.js';
 
 // The family-wise alpha for the topology tests, on a log slider
 export const GARD_ALPHA = {
-  title: 'Family-wise α (KH/SH)',
+  title: 'Family-wise <span class="case-literal">α</span> (KH/SH)',
   statistic: 'α',
   direction: 'le',
   min: 0.001,
@@ -106,7 +106,7 @@ export const GARD_KPI_CARDS = [
   {
     id: 'topology',
     cardClass: 'kpi-card-text',
-    label: 'Topology · incongruent at α',
+    label: 'Topology · incongruent',
     value: gardTopologyValue,
     sub: gardTopologySub,
     tone: (stats, { data }) => {
@@ -466,7 +466,7 @@ export const GARD_COLUMNS = [
     id: 'moved',
     header: 'Moved taxa',
     width: 90,
-    title: 'Taxa whose sister clade differs between the trees either side',
+    title: 'Taxa whose sister clade differs between the trees either side; a moved clade is counted at its junction',
     cell: (r) => `<td class="font-mono">${r.diff?.moved.length ?? '–'}</td>`,
     csv: [{ header: 'Moved taxa', value: (r) => gardCsv(r.diff?.moved.length) }],
     sort: (r) => r.diff?.moved.length ?? -1
@@ -489,7 +489,7 @@ export const GARD_FILTERS = [
     unit: 'incongruent breakpoint',
     count: (stats) => stats.incongruent,
     test: (r, t, { data }) => data.callOf(r, t) === 'incongruent',
-    subtitle: (n, t) => `Showing ${n} breakpoints with significant topological incongruence (α ≤ ${formatThreshold(t)})`
+    subtitle: (n, t) => `Showing ${n} breakpoint${n === 1 ? '' : 's'} with significant topological incongruence (α ≤ ${formatThreshold(t)})`
   },
   {
     id: 'all',
@@ -498,7 +498,7 @@ export const GARD_FILTERS = [
     unit: 'breakpoint',
     count: (stats) => stats.breakpoints,
     test: () => true,
-    subtitle: (n) => `Showing all ${n} breakpoints`
+    subtitle: (n) => `Showing all ${n} breakpoint${n === 1 ? '' : 's'}`
   }
 ];
 
@@ -737,7 +737,7 @@ export const GARD_CONFIG = {
     filterType: hooks.filterType,
     onSelect: (site, row, action) => hooks.onSiteSelect(site, action)
   })),
-  secondary: (parent) => new GardTreeCard(parent),
+  secondary: (parent, hooks) => new GardTreeCard(parent, { threshold: hooks.threshold }),
   drawer: (container, hooks) => new Drawer(container, Object.assign({}, GARD_DRAWER, {
     threshold: hooks.threshold,
     statistic: hooks.statistic,
