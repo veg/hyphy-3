@@ -79,6 +79,42 @@ public:
         return d;
     }
 
+    uint64_t resolve_triplet_mask(char c1, char c2, char c3) const {
+        uint8_t m1 = char_to_iupac_mask(c1);
+        uint8_t m2 = char_to_iupac_mask(c2);
+        uint8_t m3 = char_to_iupac_mask(c3);
+        uint64_t all_sense = (num_sense_codons >= 64) ? ~uint64_t(0) : ((uint64_t(1) << num_sense_codons) - 1);
+        if (m1 == 0xF && m2 == 0xF && m3 == 0xF) {
+            return all_sense;
+        }
+        uint64_t mask = 0;
+        for (int i = 0; i < 4; ++i) {
+            if (!(m1 & (1 << i))) continue;
+            for (int j = 0; j < 4; ++j) {
+                if (!(m2 & (1 << j))) continue;
+                for (int k = 0; k < 4; ++k) {
+                    if (!(m3 & (1 << k))) continue;
+                    int8_t s = codon_lookup[i][j][k];
+                    if (s >= 0) {
+                        mask |= (uint64_t(1) << s);
+                    }
+                }
+            }
+        }
+        return (mask != 0) ? mask : all_sense;
+    }
+
+    std::vector<int> resolve_ambiguous_triplet(char c1, char c2, char c3) const {
+        uint64_t mask = resolve_triplet_mask(c1, c2, c3);
+        std::vector<int> res;
+        for (int s = 0; s < num_sense_codons; ++s) {
+            if (mask & (uint64_t(1) << s)) {
+                res.push_back(s);
+            }
+        }
+        return res;
+    }
+
     static std::shared_ptr<const GeneticCode> from_name(std::string name);
     static std::shared_ptr<const GeneticCode> universal();
     static std::shared_ptr<const GeneticCode> vertebrate_mtdna();
@@ -264,6 +300,68 @@ private:
         register_code("Blepharisma-Nuclear", 11, {
             {50, 12}
         }, {"blepharisma_nuclear", "transl_table=15", "15"});
+
+        // 13. Chlorophycean-mtDNA
+        register_code("Chlorophycean-mtDNA", 12, {
+            {50, 1}    // TAG => Leu
+        }, {"chlorophycean_mtdna", "chlorophycean", "transl_table=16", "16"});
+
+        // 14. Trematode-mtDNA
+        register_code("Trematode-mtDNA", 13, {
+            {0, 13},   // AAA => Asn
+            {8, 5},    // AGA => Ser
+            {10, 5},   // AGG => Ser
+            {12, 3},   // ATA => Met
+            {56, 18}   // TGA => Trp
+        }, {"trematode_mtdna", "trematode", "transl_table=21", "21"});
+
+        // 15. Scenedesmus-obliquus-mtDNA
+        register_code("Scenedesmus-obliquus-mtDNA", 14, {
+            {50, 1},   // TAG => Leu
+            {52, 10}   // TCA => Stop
+        }, {"scenedesmus_obliquus_mtdna", "scenedesmus-mtdna", "scenedesmus_mtdna", "transl_table=22", "22"});
+
+        // 16. Thraustochytrium-mtDNA
+        register_code("Thraustochytrium-mtDNA", 15, {
+            {60, 10}   // TTA => Stop
+        }, {"thraustochytrium_mtdna", "thraustochytrium", "transl_table=23", "23"});
+
+        // 17. Pterobranchia-mtDNA
+        register_code("Pterobranchia-mtDNA", 16, {
+            {8, 5},    // AGA => Ser
+            {10, 14},  // AGG => Lys
+            {56, 18}   // TGA => Trp
+        }, {"pterobranchia_mtdna", "pterobranchia", "transl_table=24", "24"});
+
+        // 18. SR1-and-Gracilibacteria
+        register_code("SR1-and-Gracilibacteria", 17, {
+            {56, 20}   // TGA => Gly
+        }, {"sr1_and_gracilibacteria", "sr1", "gracilibacteria", "transl_table=25", "25"});
+
+        // 19. Pachysolen-Nuclear
+        register_code("Pachysolen-Nuclear", 18, {
+            {30, 8}    // CTG => Ala
+        }, {"pachysolen_nuclear", "pachysolen", "transl_table=26", "26"});
+
+        // 20. Mesodinium-Nuclear
+        register_code("Mesodinium-Nuclear", 19, {
+            {48, 9},   // TAA => Tyr
+            {50, 9}    // TAG => Tyr
+        }, {"mesodinium_nuclear", "mesodinium", "transl_table=29", "29"});
+
+        // 21. Peritrich-Nuclear
+        register_code("Peritrich-Nuclear", 20, {
+            {48, 16},  // TAA => Glu
+            {50, 16}   // TAG => Glu
+        }, {"peritrich_nuclear", "peritrich", "transl_table=30", "30"});
+
+        // 22. Cephalodiscidae-mtDNA
+        register_code("Cephalodiscidae-mtDNA", 21, {
+            {8, 5},    // AGA => Ser
+            {10, 14},  // AGG => Lys
+            {48, 9},   // TAA => Tyr
+            {56, 18}   // TGA => Trp
+        }, {"cephalodiscidae_mtdna", "cephalodiscidae", "transl_table=33", "33"});
     }
 };
 

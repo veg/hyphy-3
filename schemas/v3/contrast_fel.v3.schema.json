@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/contrast_fel.v3.schema.json",
+  "title": "HyPhy 3 Contrast-FEL Analysis Schema v3.0",
+  "description": "Standardized output schema for HyPhy 3 Contrast-FEL analyses: site-level tests for differential selective pressures between branch sets using Empirical Bayes Ridge Shrinkage.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema_version",
+    "analysis",
+    "software",
+    "provenance",
+    "dataset",
+    "phylogeny",
+    "model_fits",
+    "statistical_tests",
+    "site_results"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri"
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^3\\.[0-9]+\\.[0-9]+$"
+    },
+    "analysis": {
+      "type": "object",
+      "required": ["id", "name", "version"],
+      "properties": {
+        "id": { "type": "string", "enum": ["contrast-fel"] },
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "description": { "type": "string" },
+        "reference": { "type": "string" },
+        "shrinkage_lambda": { "type": ["number", "null"] }
+      }
+    },
+    "software": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "git_commit": { "type": "string" },
+        "build_type": { "type": "string" },
+        "compiler": { "type": "string" }
+      }
+    },
+    "provenance": {
+      "type": "object"
+    },
+    "dataset": {
+      "type": "object",
+      "required": ["file", "sequences", "codon_sites", "nucleotide_sites", "taxa"],
+      "properties": {
+        "file": { "type": "string" },
+        "sequences": { "type": "integer" },
+        "codon_sites": { "type": "integer" },
+        "nucleotide_sites": { "type": "integer" },
+        "taxa": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "phylogeny": {
+      "type": "object",
+      "required": ["newick", "tree_length", "nodes"],
+      "properties": {
+        "newick": { "type": "string" },
+        "tree_length": { "type": ["number", "null"] },
+        "nodes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["type", "branch_length", "group", "is_testable"],
+            "properties": {
+              "type": { "type": "string", "enum": ["leaf", "internal"] },
+              "branch_length": { "type": ["number", "null"] },
+              "group": { "type": "string" },
+              "is_testable": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "model_fits": {
+      "type": "object",
+      "required": ["codon_mg94"],
+      "properties": {
+        "nucleotide_gtr": {
+          "type": "object",
+          "properties": {
+            "log_likelihood": { "type": ["number", "null"] },
+            "aicc": { "type": ["number", "null"] },
+            "rates": {
+              "type": "object",
+              "properties": {
+                "AC": { "type": ["number", "null"] },
+                "AT": { "type": ["number", "null"] },
+                "CG": { "type": ["number", "null"] },
+                "CT": { "type": ["number", "null"] },
+                "GT": { "type": ["number", "null"] }
+              }
+            }
+          }
+        },
+        "codon_mg94": {
+          "type": "object",
+          "required": ["log_likelihood", "aicc", "omega"],
+          "properties": {
+            "log_likelihood": { "type": ["number", "null"] },
+            "aicc": { "type": ["number", "null"] },
+            "omega": { "type": ["number", "null"] }
+          }
+        }
+      }
+    },
+    "statistical_tests": {
+      "type": "object",
+      "required": ["summary"],
+      "properties": {
+        "summary": {
+          "type": "object",
+          "required": [
+            "total_sites",
+            "significant_p_threshold",
+            "significant_p_sites",
+            "significant_q_threshold",
+            "significant_q_sites",
+            "shrinkage_lambda"
+          ],
+          "properties": {
+            "total_sites": { "type": "integer" },
+            "degrees_of_freedom": { "type": "integer" },
+            "significant_p_threshold": { "type": ["number", "null"] },
+            "significant_p_sites": { "type": "integer" },
+            "significant_q_threshold": { "type": ["number", "null"] },
+            "significant_q_sites": { "type": "integer" },
+            "shrinkage_lambda": { "type": ["number", "null"] }
+          }
+        },
+        "pairwise_contrasts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["group_a", "group_b", "significant_p_sites", "significant_adjusted_p_sites"],
+            "properties": {
+              "group_a": { "type": "string" },
+              "group_b": { "type": "string" },
+              "significant_p_sites": { "type": "integer" },
+              "significant_adjusted_p_sites": { "type": "integer" }
+            }
+          }
+        }
+      }
+    },
+    "site_results": {
+      "type": "object",
+      "required": ["columns", "data"],
+      "properties": {
+        "row_count": { "type": "integer" },
+        "columns": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["type", "description"],
+            "properties": {
+              "type": { "type": "string" },
+              "unit": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "site",
+            "alpha",
+            "alpha_null",
+            "beta_null",
+            "raw_lrt",
+            "penalized_lrt",
+            "p_value",
+            "q_value",
+            "contrast_tag",
+            "substitutions"
+          ],
+          "properties": {
+            "site": { "type": "array", "items": { "type": "integer" } },
+            "alpha": { "type": "array", "items": { "type": ["number", "null"] } },
+            "alpha_null": { "type": "array", "items": { "type": ["number", "null"] } },
+            "beta_null": { "type": "array", "items": { "type": ["number", "null"] } },
+            "raw_lrt": { "type": "array", "items": { "type": ["number", "null"] } },
+            "penalized_lrt": { "type": "array", "items": { "type": ["number", "null"] } },
+            "p_value": { "type": "array", "items": { "type": ["number", "null"] } },
+            "q_value": { "type": "array", "items": { "type": ["number", "null"] } },
+            "contrast_tag": { "type": "array", "items": { "type": "string" } },
+            "substitutions": { "type": "array", "items": { "type": "string" } }
+          },
+          "patternProperties": {
+            "^beta_": { "type": "array", "items": { "type": ["number", "null"] } },
+            "^lrt_": { "type": "array", "items": { "type": ["number", "null"] } },
+            "^p_value_": { "type": "array", "items": { "type": ["number", "null"] } },
+            "^p_adjusted_": { "type": "array", "items": { "type": ["number", "null"] } }
+          }
+        }
+      }
+    }
+  }
+}

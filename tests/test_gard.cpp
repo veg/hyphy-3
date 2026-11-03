@@ -93,6 +93,9 @@ TEST_CASE("GARD: Negative Control on HRVI.nex (0 Breakpoints Expected)") {
     CHECK(result.best_model.breakpoints.empty());
     CHECK(result.best_model.aicc == doctest::Approx(result.baseline_aicc));
     CHECK(result.topological_incongruence == false);
+    CHECK(result.topology_test_result.run == false);
+    CHECK(result.topology_test_result.breakpoint_tests.empty());
+    CHECK(result.topology_test_result.any_incongruence_significant == false);
 
     // Check JSON serialization
     auto modern_json = result.to_json();
@@ -140,11 +143,46 @@ TEST_CASE("GARD: Positive Control on adh.nex (Breakpoint at Site 460)") {
     CHECK(result.topological_incongruence == true);
     CHECK(result.best_model.aicc < result.single_tree_aicc);
 
+    // Topological incongruence tests (KH / SH with RELL bootstrap)
+    CHECK(result.topology_test_result.run == true);
+    CHECK(!result.topology_test_result.breakpoint_tests.empty());
+    CHECK(result.topology_test_result.breakpoint_tests.size() == result.best_model.breakpoints.size());
+    const auto& bp_test0 = result.topology_test_result.breakpoint_tests[0];
+    CHECK(bp_test0.delta_lnl_left > 0.0);
+    CHECK(bp_test0.delta_lnl_right > 0.0);
+    CHECK(bp_test0.kh_p_value_left >= 0.0);
+    CHECK(bp_test0.kh_p_value_left <= 1.0);
+    CHECK(bp_test0.sh_p_value_left >= 0.0);
+    CHECK(bp_test0.sh_p_value_left <= 1.0);
+    CHECK(bp_test0.statistically_significant == true);
+    CHECK(result.topology_test_result.any_incongruence_significant == true);
+    CHECK(!result.topology_test_result.partition_matrix.empty());
+
     // Verify partitions
     CHECK(result.best_model.partitions.size() >= 2);
     CHECK(result.best_model.partitions[0].start_site == 1);
     CHECK(result.best_model.partitions[0].end_site == primary_bp + 1);
     CHECK(result.best_model.partitions[1].start_site == primary_bp + 2);
+
+    // Modern JSON verification
+    auto adh_modern_json = result.to_json();
+    CHECK(adh_modern_json.contains("topology_test"));
+    CHECK(adh_modern_json["topology_test"]["topological_incongruence_supported"] == true);
+    CHECK(adh_modern_json["topology_test"]["any_incongruence_significant"] == true);
+    CHECK(adh_modern_json["topology_test"]["breakpoints"].size() == result.best_model.breakpoints.size());
+
+    // Issue #5: Verify legacy JSON has all partitions, trees, improvements, and topologyTests
+    auto legacy_json = result.to_legacy_json();
+    CHECK(legacy_json["breakpointData"].size() == result.best_model.partitions.size());
+    CHECK(legacy_json["trees"].size() == result.best_model.partitions.size());
+    CHECK(legacy_json["improvements"].size() == result.improvements.size());
+    CHECK(legacy_json.contains("topologyTests"));
+    CHECK(!legacy_json["topologyTests"].empty());
+    for (auto& [k, imp] : legacy_json["improvements"].items()) {
+        CHECK(imp.contains("breakpoints"));
+        CHECK(imp["breakpoints"].is_array());
+        CHECK(!imp["breakpoints"].empty());
+    }
 }
 
 TEST_CASE("GARD: Dynamic Breakpoint Chart and Visualizer") {
@@ -199,3 +237,142 @@ TEST_CASE("GARD: Dynamic Breakpoint Chart and Visualizer") {
     CHECK(ga_lines[4].find("[241..520] (280bp)") != std::string::npos);
     CHECK(ga_lines[4].find("[521..762] (242bp)") != std::string::npos);
 }
+
+TEST_CASE("GARD: High Breakpoint Count GUI Stability & Adaptive Resolution Detail (B=8, 9, 12)") {
+    GARDVisualizer viz(762, 23, false, true, true);
+    viz.chart_width = 65;
+
+    // Test ANSI truncation helper
+    std::string styled = Console::bold(Console::brand("1234567890"));
+    CHECK(Console::printable_len(styled) == 10);
+    std::string truncated = GARDVisualizer::truncate_ansi_line(styled, 5);
+    CHECK(Console::printable_len(truncated) == 5);
+
+    // 1. Test B = 8 (9 partitions) - must not wrap in standard 80-col terminal
+    std::vector<size_t> bps_8 = {85, 158, 239, 319, 399, 479, 559, 639};
+    viz.start_ga(8, 50, 10300.0, bps_8);
+    viz.update_ga_generation(25, 30, 8, 0.35, bps_8, 10250.0);
+
+    auto lines_8 = viz.format_dashboard_lines();
+    CHECK(lines_8.size() == 5);
+    for (size_t i = 0; i < lines_8.size(); ++i) {
+        CHECK(Console::printable_len(lines_8[i]) <= 80);
+    }
+    // Partition line should use adaptive compact/stats tier without overflow
+    CHECK(lines_8[4].find("parts") != std::string::npos);
+
+    // 2. Test B = 9 (10 partitions)
+    std::vector<size_t> bps_9 = {75, 150, 225, 300, 375, 450, 525, 600, 675};
+    viz.start_ga(9, 50, 10250.0, bps_9);
+    viz.update_ga_generation(30, 30, 12, 0.28, bps_9, 10220.0);
+
+    auto lines_9 = viz.format_dashboard_lines();
+    CHECK(lines_9.size() == 5);
+    for (size_t i = 0; i < lines_9.size(); ++i) {
+        CHECK(Console::printable_len(lines_9[i]) <= 80);
+    }
+    CHECK(lines_9[4].find("parts") != std::string::npos);
+
+    // 3. Test B = 12 (13 partitions)
+    std::vector<size_t> bps_12 = {50, 110, 170, 230, 290, 350, 410, 470, 530, 590, 650, 710};
+    viz.start_ga(12, 50, 10200.0, bps_12);
+    viz.update_ga_generation(40, 30, 20, 0.20, bps_12, 10180.0);
+
+    auto lines_12 = viz.format_dashboard_lines();
+    CHECK(lines_12.size() == 5);
+    for (size_t i = 0; i < lines_12.size(); ++i) {
+        CHECK(Console::printable_len(lines_12[i]) <= 80);
+    }
+    CHECK(lines_12[4].find("parts") != std::string::npos);
+
+    // 4. Test ruler collision avoidance with tightly clustered breakpoints
+    std::vector<size_t> clustered_bps = {450, 452, 455};
+    viz.start_ga(3, 50, 10200.0, clustered_bps);
+    viz.update_best(clustered_bps, 10190.0);
+    auto clustered_lines = viz.format_dashboard_lines();
+    CHECK(clustered_lines.size() == 5);
+    for (size_t i = 0; i < clustered_lines.size(); ++i) {
+        CHECK(Console::printable_len(clustered_lines[i]) <= 80);
+    }
+}
+
+TEST_CASE("GARD: Ohmic Spectral Trees, Rate Variation & Wheatstone Bridges on HRVI.nex") {
+    std::string hrvi_path = resolve_test_path("tests/data/HRVI.nex");
+    auto aln = Alignment::load_nucleotide(hrvi_path);
+
+    GARDSettings settings;
+    settings.input_file = hrvi_path;
+    settings.run_mode = "Faster";
+    settings.tree_method = GARDTreeMethod::Ohmic;
+    settings.srv_mode = GARDSRVMode::DiscreteGamma;
+    settings.allow_bridges = true;
+    settings.quiet = true;
+
+    GARDAnalyzer analyzer(aln, settings);
+    GARDResult result = analyzer.run();
+
+    CHECK(result.tree_method == GARDTreeMethod::Ohmic);
+    CHECK(result.srv_mode == GARDSRVMode::DiscreteGamma);
+    CHECK(result.gamma_rates.size() == 4);
+    CHECK(result.gamma_alpha > 0.01);
+
+    // Wheatstone bridge screening should detect active reticulation
+    CHECK(result.ohmic_bridges_detected == true);
+    CHECK(result.num_bridges >= 1);
+    CHECK(result.ohmic_aicc < result.baseline_aicc);
+    CHECK(result.ohmic_delta_aicc > 50.0);
+
+    // Bridge trajectory should seed candidate breakpoint
+    CHECK(!result.bridge_candidate_breakpoints.empty());
+
+    // JSON export
+    auto j = result.to_json();
+    CHECK(j["rate_variation"]["mode"] == "discrete_gamma");
+    CHECK(j["rate_variation"]["classes"] == 4);
+    CHECK(j["tree_engine"]["method"] == "ohmic_spectral");
+    CHECK(j["ohmic_network"]["bridges_detected"] == true);
+    CHECK(j["ohmic_network"]["num_bridges"] >= 1);
+}
+
+TEST_CASE("GARD: Kishino-Hasegawa (KH) & Shimodaira-Hasegawa (SH) Topology Testing Engine") {
+    // 1. Identical models
+    std::vector<Scalar> lnl1 = {-1.5, -2.0, -0.8, -3.2, -1.1};
+    std::vector<Scalar> lnl2 = {-1.5, -2.0, -0.8, -3.2, -1.1};
+    auto kh_ident = GARDTopologyTester::run_kh_test(lnl1, lnl2, 500, 42);
+    CHECK(kh_ident.delta_lnl == doctest::Approx(0.0));
+    CHECK(kh_ident.p_asymptotic == doctest::Approx(1.0));
+    CHECK(kh_ident.p_rell == doctest::Approx(1.0));
+
+    auto sh_ident = GARDTopologyTester::run_sh_test({lnl1, lnl2}, 500, 42);
+    CHECK(sh_ident.best_index == 0);
+    CHECK(sh_ident.p_values[0] == doctest::Approx(1.0));
+    CHECK(sh_ident.p_values[1] == doctest::Approx(1.0));
+
+    // 2. Decisively superior tree across sites
+    std::vector<Scalar> lnl_good(100, -1.0);
+    std::vector<Scalar> lnl_bad(100, -3.0);
+    auto kh_sup = GARDTopologyTester::run_kh_test(lnl_good, lnl_bad, 500, 42);
+    CHECK(kh_sup.delta_lnl == doctest::Approx(200.0));
+    CHECK(kh_sup.p_asymptotic < 1e-6);
+    CHECK(kh_sup.p_rell < 0.01);
+
+    auto sh_sup = GARDTopologyTester::run_sh_test({lnl_good, lnl_bad}, 500, 42);
+    CHECK(sh_sup.best_index == 0);
+    CHECK(sh_sup.p_values[0] == doctest::Approx(1.0));
+    CHECK(sh_sup.p_values[1] < 0.01);
+
+    // 3. Multi-tree candidate set (3 trees) with site variance
+    std::vector<Scalar> t1(50, -1.0);
+    std::vector<Scalar> t2 = t1;
+    for (size_t i = 0; i < 50; ++i) {
+        if (i % 2 == 0) t2[i] += 0.05; // slightly better at even sites
+        else t2[i] -= 0.06;           // slightly worse at odd sites
+    }
+    std::vector<Scalar> t3(50, -3.0);  // decisively worse across all sites
+    auto sh_multi = GARDTopologyTester::run_sh_test({t1, t2, t3}, 500, 42);
+    CHECK(sh_multi.best_index == 0);
+    CHECK(sh_multi.p_values[0] == doctest::Approx(1.0));
+    CHECK(sh_multi.p_values[1] > 0.05); // Not rejected due to variance
+    CHECK(sh_multi.p_values[2] < 0.01); // Decisively rejected
+}
+

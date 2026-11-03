@@ -1,10 +1,7 @@
 #include "hyphy/core/types.hpp"
-#include "hyphy/core/genetic_code.hpp"
-#include "hyphy/core/alignment.hpp"
-#include "hyphy/core/tree.hpp"
+#include "hyphy/core/cli_common.hpp"
 #include "hyphy/core/rate_matrix.hpp"
 #include "hyphy/core/likelihood.hpp"
-#include "hyphy/core/console.hpp"
 #include "hyphy/opt/optimizer.hpp"
 #include "hyphy/analyses/contrast_fel.hpp"
 
@@ -14,10 +11,6 @@
 #include <chrono>
 #include <iomanip>
 #include <numeric>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 using namespace hyphy::core;
 using namespace hyphy::analyses;
@@ -38,12 +31,18 @@ static void print_usage(const char* prog) {
               << Console::bold("Required arguments:") << "\n"
               << "  " << Console::brand("--alignment") << " <file>   Path to codon alignment (FASTA or NEXUS)\n\n"
               << Console::bold("Optional arguments:") << "\n"
-              << "  " << Console::brand("--tree") << " <file>        Path to Newick tree file (optional if embedded in NEXUS)\n"
+              << "  " << Console::brand("--tree") << " <file>        Path to Newick tree file or 'auto' (optional; auto-infers ML tree via TreeEngine if omitted or 'auto')\n"
+              << "  " << Console::brand("--ohmic, --omhic") << "     Infer Ohmic network & Wheatstone bridges (empirical conductances)\n"
+              << "  " << Console::brand("--hyphaeon") << "           Opt-in: HyphAeon 384D transformer conductances (needs Python aeon-core)\n"
+              << "  " << Console::brand("--embeddings") << " <file>  Path to precomputed [N x D] taxon embeddings TSV/CSV for Ohmic\n"
               << "  " << Console::brand("--code") << " <name>        Genetic code (default: Universal; e.g. Vertebrate-mtDNA)\n"
               << "  " << Console::brand("--branches") << " <spec>    Branch sets to contrast: 'auto' (default, uses tree tags), 'Internal,Leaves', or tag names\n"
               << "  " << Console::brand("--shrinkage") << " <val>    Empirical Bayes Ridge shrinkage lambda (default: 1.0; 0 to disable)\n"
               << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
               << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.CONTRAST-FEL.json)\n"
+              << "  " << Console::brand("--html") << " <file>        Also write a self-contained interactive HTML report\n"
+              << "  " << Console::brand("--json-format") << " <fmt>  JSON schema format: modern (default) or legacy (HyPhy 2.5)\n"
+              << "  " << Console::brand("--legacy-json") << "        Output legacy HyPhy 2.5 JSON schema\n"
               << "  " << Console::brand("--pvalue") << " <float>     Nominal p-value threshold for site display (default: 0.05)\n"
               << "  " << Console::brand("--qvalue") << " <float>     FDR q-value threshold for reporting (default: 0.20)\n"
               << "  " << Console::brand("--all-sites") << "          Display all codon sites in console table (default: significant only)\n"
@@ -52,137 +51,85 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--help, -h") << "           Show this help message\n\n"
               << Console::bold("Examples:") << "\n"
               << "  " << prog << " --alignment data/cd2.fna --tree data/cd2.nwk\n"
+              << "  " << prog << " --alignment data/cd2.fna --tree auto --branches Internal,Leaves\n"
               << "  " << prog << " --alignment data/cd2.fna --branches Internal,Leaves --shrinkage 1.0\n"
               << "  " << prog << " --alignment test.nex --pvalue 0.05 --qvalue 0.10\n\n";
 }
 
 int run_contrast_fel(int argc, char* argv[]) {
-    std::string alignment_file;
-    std::string tree_file;
-    std::string output_file;
-    std::string code_name = "Universal";
+    CommonCLIOptions cli;
     std::string branch_specs = "auto";
-    int num_threads = 0;
     Scalar pvalue_threshold = 0.05;
     Scalar qvalue_threshold = 0.20;
     Scalar shrinkage_lambda = 1.0;
-    bool show_progress = ProgressBar::is_terminal();
-    bool force_progress = false;
-    bool all_sites = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--alignment" && i + 1 < argc) {
-            alignment_file = argv[++i];
-        } else if (arg == "--tree" && i + 1 < argc) {
-            tree_file = argv[++i];
-        } else if (arg == "--code" && i + 1 < argc) {
-            code_name = argv[++i];
-        } else if ((arg == "--branches" || arg == "--branch-sets") && i + 1 < argc) {
+        if ((arg == "--branches" || arg == "--branch-set" || arg == "--branch-sets") && i + 1 < argc) {
             branch_specs = argv[++i];
+            continue;
         } else if (arg == "--shrinkage" && i + 1 < argc) {
             shrinkage_lambda = std::stod(argv[++i]);
+            continue;
         } else if (arg == "--no-shrinkage") {
             shrinkage_lambda = 0.0;
-        } else if (arg == "--threads" && i + 1 < argc) {
-            num_threads = std::stoi(argv[++i]);
-        } else if (arg == "--output" && i + 1 < argc) {
-            output_file = argv[++i];
-        } else if (arg == "--pvalue" && i + 1 < argc) {
+            continue;
+        } else if ((arg == "--pvalue" || arg == "--p-value" || arg == "-p") && i + 1 < argc) {
             pvalue_threshold = std::stod(argv[++i]);
-        } else if (arg == "--qvalue" && i + 1 < argc) {
+            continue;
+        } else if ((arg == "--qvalue" || arg == "--q-value" || arg == "-q") && i + 1 < argc) {
             qvalue_threshold = std::stod(argv[++i]);
-        } else if (arg == "--all-sites") {
-            all_sites = true;
-        } else if (arg == "--progress") {
-            show_progress = true;
-            force_progress = true;
-        } else if (arg == "--no-progress") {
-            show_progress = false;
-            force_progress = false;
+            continue;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
-        } else {
-            std::cerr << Console::danger("Unknown argument: ") << arg << "\n";
-            print_usage(argv[0]);
-            return 1;
         }
+
+        auto status = parse_common_cli_arg(i, argc, argv, cli);
+        if (status == CommonArgParseStatus::Handled) continue;
+        if (status == CommonArgParseStatus::Error) return 1;
+
+        std::cerr << Console::danger("Unknown argument: ") << arg << "\n";
+        print_usage(argv[0]);
+        return 1;
+    }
+    if (branch_specs == "auto" && cli.branches != "All" && !cli.branches.empty()) {
+        branch_specs = cli.branches;
     }
 
-    if (alignment_file.empty()) {
+    if (cli.alignment_file.empty()) {
         std::cerr << Console::danger("Error: --alignment is required.\n\n");
         print_usage(argv[0]);
         return 1;
     }
 
-#ifdef _OPENMP
-    if (num_threads > 0) {
-        omp_set_num_threads(num_threads);
-    }
-#endif
-
-    if (output_file.empty()) {
-        output_file = alignment_file + ".CONTRAST-FEL.json";
-    }
-
+    finalize_common_cli_options(cli, ".CONTRAST-FEL.json");
     print_banner();
 
     auto start_time = std::chrono::high_resolution_clock::now();
     std::string start_iso = Provenance::current_iso8601();
-    std::string cli_cmd = argv[0];
-    for (int i = 1; i < argc; ++i) {
-        cli_cmd += " ";
-        cli_cmd += argv[i];
-    }
+    std::string cli_cmd = join_cli_command(argc, argv);
 
-    std::shared_ptr<const GeneticCode> gcode;
-    try {
-        gcode = GeneticCode::from_name(code_name);
-    } catch (const std::exception&) {
-        std::cerr << Console::warning("Warning: Unknown genetic code '" + code_name + "', using Universal.\n");
-        gcode = GeneticCode::universal();
+    LoadedCodonDataset ds;
+    if (!load_codon_dataset(cli, ds, false, /*allow_fallback_code=*/false)) {
+        return 1;
     }
+    auto& gcode = ds.gcode;
+    auto& aln = ds.aln;
+    auto& tree = ds.tree;
+    const auto& tree_source = ds.tree_source;
+    size_t num_codons = aln.num_codons;
 
     std::cout << Console::bold("Input Data:\n")
-              << "  " << Console::muted("Alignment file : ") << Console::bold(alignment_file) << "\n";
-    if (!tree_file.empty()) {
-        std::cout << "  " << Console::muted("Tree file      : ") << Console::bold(tree_file) << "\n";
+              << "  " << Console::muted("Alignment file : ") << Console::bold(cli.alignment_file) << "\n";
+    if (!cli.tree_file.empty()) {
+        std::cout << "  " << Console::muted("Tree file      : ") << Console::bold(cli.tree_file) << "\n";
     }
-    std::cout << "  " << Console::muted("Genetic code   : ") << Console::bold(gcode->name) << "\n";
-    std::cout << "  " << Console::muted("Shrinkage λ    : ") << Console::bold(std::to_string(shrinkage_lambda)) 
-              << (shrinkage_lambda > 0.0 ? Console::success(" [Empirical Bayes Ridge Enabled]") : Console::warning(" [Unpenalized MLE]")) << "\n\n";
-
-    Alignment aln;
-    try {
-        if (alignment_file.ends_with(".nex") || alignment_file.ends_with(".nexus") ||
-            alignment_file.ends_with(".NEX") || alignment_file.ends_with(".NEXUS")) {
-            aln = Alignment::from_nexus(alignment_file, gcode);
-        } else {
-            aln = Alignment::from_fasta(alignment_file, gcode);
-        }
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error reading alignment: ") << e.what() << "\n";
-        return 1;
-    }
-
-    Tree tree;
-    try {
-        if (!tree_file.empty()) {
-            tree = Tree::from_newick_file(tree_file);
-        } else if (!aln.embedded_tree_newick.empty()) {
-            tree = Tree::from_newick(aln.embedded_tree_newick);
-            std::cout << "  " << Console::muted("Using tree embedded in NEXUS file.\n");
-        } else {
-            std::cerr << Console::danger("Error: No tree file specified and no tree embedded in NEXUS.\n");
-            return 1;
-        }
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error reading tree: ") << e.what() << "\n";
-        return 1;
-    }
-
-    std::cout << "  " << Console::muted("Sequences      : ") << Console::bold(std::to_string(aln.num_taxa)) << "\n"
+    std::cout << "  " << Console::muted("Genetic code   : ") << Console::bold(gcode->name) << "\n"
+              << "  " << Console::muted("Shrinkage λ    : ") << Console::bold(std::to_string(shrinkage_lambda)) 
+              << (shrinkage_lambda > 0.0 ? Console::success(" [Empirical Bayes Ridge Enabled]") : Console::warning(" [Unpenalized MLE]")) << "\n"
+              << "  " << Console::muted("Tree source    : ") << Console::bold(tree_source) << "\n"
+              << "  " << Console::muted("Sequences      : ") << Console::bold(std::to_string(aln.num_taxa)) << "\n"
               << "  " << Console::muted("Codon sites    : ") << Console::bold(std::to_string(aln.num_codons)) << "\n"
               << "  " << Console::muted("Unique patterns: ") << Console::bold(std::to_string(aln.patterns.size())) << "\n\n";
 
@@ -213,7 +160,7 @@ int run_contrast_fel(int argc, char* argv[]) {
     }
     std::cout << "\n";
 
-    auto site_results = contrast_fel.run(show_progress, force_progress);
+    auto site_results = contrast_fel.run(cli.show_progress, cli.force_progress);
 
     // Sparkline renderer for 2 groups
     auto render_contrast_spark = [](double alpha, double b0, double b1) -> std::string {
@@ -274,7 +221,7 @@ int run_contrast_fel(int argc, char* argv[]) {
     }
 
     std::vector<size_t> sites_to_display;
-    if (all_sites) {
+    if (cli.all_sites) {
         sites_to_display.resize(site_results.size());
         std::iota(sites_to_display.begin(), sites_to_display.end(), 0);
     } else if (!sig_indices.empty()) {
@@ -353,11 +300,11 @@ int run_contrast_fel(int argc, char* argv[]) {
     std::cout << "\n";
     table.print();
 
-    if (!all_sites) {
+    if (!cli.all_sites) {
         if (!sig_indices.empty()) {
             std::cout << Console::muted("  Showing " + std::to_string(sig_indices.size()) + 
                                        " site(s) with differential selection at p <= " + std::to_string(pvalue_threshold) + 
-                                       " out of " + std::to_string(aln.num_codons) + 
+                                       " out of " + std::to_string(num_codons) + 
                                        ". (Use --all-sites to display all)\n\n");
         } else {
             std::cout << Console::muted("  No sites reached nominal significance (p <= " + 
@@ -413,30 +360,53 @@ int run_contrast_fel(int argc, char* argv[]) {
                                            std::to_string(qvalue_threshold) + ".\n\n");
     }
 
+    if (K > 2 && !site_results.empty() && !site_results[0].pairwise.empty()) {
+        std::cout << Console::bold("  Pairwise Group Contrasts Summary (p <= " + std::to_string(pvalue_threshold) + "):\n\n");
+        Table pw_table;
+        pw_table.add_column("Group Pair", Table::Align::Left, 24);
+        pw_table.add_column("Uncorrected p <= " + std::to_string(pvalue_threshold), Table::Align::Right, 22);
+        pw_table.add_column("Holm-Bonferroni p <= " + std::to_string(pvalue_threshold), Table::Align::Right, 26);
+        for (size_t pw_idx = 0; pw_idx < site_results[0].pairwise.size(); ++pw_idx) {
+            const auto& pw0 = site_results[0].pairwise[pw_idx];
+            size_t cnt_unadj = 0, cnt_adj = 0;
+            for (const auto& r : site_results) {
+                if (pw_idx < r.pairwise.size()) {
+                    if (r.pairwise[pw_idx].p_value <= pvalue_threshold) cnt_unadj++;
+                    if (r.pairwise[pw_idx].p_value_adjusted <= pvalue_threshold) cnt_adj++;
+                }
+            }
+            pw_table.add_row({
+                pw0.name_a + " vs " + pw0.name_b,
+                std::to_string(cnt_unadj),
+                std::to_string(cnt_adj)
+            });
+        }
+        pw_table.print();
+        std::cout << "\n";
+    }
+
     auto end_time = std::chrono::high_resolution_clock::now();
     double total_sec = std::chrono::duration<double>(end_time - start_time).count();
 
-    Provenance prov;
-    prov.invocation.cli_command = cli_cmd;
-    prov.invocation.working_directory = Provenance::get_cwd();
-    prov.execution.start_time = start_iso;
-    prov.execution.end_time = Provenance::current_iso8601();
-    prov.execution.wall_time_seconds = total_sec;
-#ifdef _OPENMP
-    prov.execution.cpu_threads = (num_threads > 0) ? num_threads : omp_get_max_threads();
-#else
-    prov.execution.cpu_threads = 1;
-#endif
-    prov.execution.hostname = Provenance::get_hostname();
-    prov.execution.os = Provenance::detect_os();
-    prov.execution.compiler = Provenance::detect_compiler();
+    Provenance prov = build_cli_provenance(cli, cli_cmd, start_iso, total_sec, {
+        {"branches", branch_specs},
+        {"shrinkage", std::to_string(shrinkage_lambda)},
+        {"pvalue", std::to_string(pvalue_threshold)},
+        {"qvalue", std::to_string(qvalue_threshold)}
+    });
 
     try {
-        contrast_fel.save_json(output_file, alignment_file, tree.to_newick(), prov);
+        contrast_fel.save_json(cli.output_file, cli.alignment_file, contrast_fel.tree.to_newick(), prov, cli.json_format);
         std::cout << Console::bold("Output:\n")
-                  << "  " << Console::muted("Analysis results saved to: ") << Console::brand(output_file) << "\n\n";
+                  << "  " << Console::muted("Analysis results saved to: ") << Console::brand(cli.output_file) << "\n\n";
+        if (!cli.html_file.empty()) {
+            hyphy::report::write_html_report(cli.output_file, cli.html_file);
+            std::cout << Console::success("✔") << " " << Console::bold("Saved HTML report to: ")
+                      << Console::brand(cli.html_file) << "\n\n";
+        }
     } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error writing JSON output: ") << e.what() << "\n";
+        std::cerr << Console::danger("Error writing output: ") << e.what() << "\n";
+        return 1;
     }
 
     return 0;
@@ -444,6 +414,11 @@ int run_contrast_fel(int argc, char* argv[]) {
 
 #ifndef HYPHY3_COMBINED_DRIVER
 int main(int argc, char* argv[]) {
-    return run_contrast_fel(argc, argv);
+    try {
+        return run_contrast_fel(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
 }
 #endif

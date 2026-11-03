@@ -1,13 +1,9 @@
 #include "hyphy/core/types.hpp"
-#include "hyphy/core/genetic_code.hpp"
-#include "hyphy/core/alignment.hpp"
-#include "hyphy/core/tree.hpp"
+#include "hyphy/core/cli_common.hpp"
 #include "hyphy/core/rate_matrix.hpp"
 #include "hyphy/core/likelihood.hpp"
-#include "hyphy/core/console.hpp"
 #include "hyphy/opt/optimizer.hpp"
 #include "hyphy/analyses/fubar.hpp"
-#include "hyphy/report/html_report.hpp"
 
 #include <iostream>
 #include <string>
@@ -15,10 +11,6 @@
 #include <chrono>
 #include <iomanip>
 #include <numeric>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 using namespace hyphy::core;
 using namespace hyphy::analyses;
@@ -39,7 +31,10 @@ static void print_usage(const char* prog) {
               << Console::bold("Required arguments:") << "\n"
               << "  " << Console::brand("--alignment, -a") << " <file>   Path to codon alignment (FASTA or NEXUS)\n\n"
               << Console::bold("Optional arguments:") << "\n"
-              << "  " << Console::brand("--tree, -t") << " <file>        Path to Newick tree file (optional if embedded in NEXUS)\n"
+              << "  " << Console::brand("--tree, -t") << " <file>        Path to Newick tree file or 'auto' (optional; auto-inferred via TreeEngine if omitted or 'auto')\n"
+              << "  " << Console::brand("--ohmic, --omhic") << "         Infer Ohmic network & Wheatstone bridges (empirical conductances)\n"
+              << "  " << Console::brand("--hyphaeon") << "               Opt-in: HyphAeon 384D transformer conductances (needs Python aeon-core)\n"
+              << "  " << Console::brand("--embeddings") << " <file>      Path to precomputed [N x D] taxon embeddings TSV/CSV for Ohmic\n"
               << "  " << Console::brand("--code") << " <name>            Genetic code (default: Universal; e.g. Vertebrate-mtDNA)\n"
               << "  " << Console::brand("--grid, -g") << " <N>           Number of grid points per dimension (default: 20; total D^2 = 400)\n"
               << "  " << Console::brand("--method, -m") << " <name>      Inference method: 'Variational-Bayes' (default), 'Collapsed-Gibbs', or 'Metropolis-Hastings'\n"
@@ -47,45 +42,37 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--posterior, -p") << " <float>  Posterior probability cutoff for selection calls (default: 0.90)\n"
               << "  " << Console::brand("--non-zero") << "               Enforce non-zero synonymous rates (min 1e-3)\n"
               << "  " << Console::brand("--tree-scaling") << " <mode>    Tree scaling mode: 'grid' (default, HyPhy 2.5 standard) or 'mg94'\n"
-              << "  " << Console::brand("--chains") << " <N>             Number of MCMC chains for MCMC methods (default: 1)\n"
+              << "  " << Console::brand("--chains") << " <N>             Number of MCMC chains for MCMC methods (default: 5)\n"
               << "  " << Console::brand("--chain-length") << " <N>       MCMC chain length (default: 2000000)\n"
               << "  " << Console::brand("--burn-in") << " <N>            MCMC burn-in steps (default: 1000000)\n"
               << "  " << Console::brand("--samples") << " <N>            MCMC samples to draw (default: 100)\n"
               << "  " << Console::brand("--threads, -T") << " <N>        Number of OpenMP worker threads\n"
               << "  " << Console::brand("--output, -o") << " <file>      Path to output JSON file (default: <alignment>.FUBAR.json)\n"
               << "  " << Console::brand("--html") << " <file>            Also write a self-contained interactive HTML report\n"
+              << "  " << Console::brand("--json-format") << " <fmt>      JSON schema format: modern (default) or legacy (HyPhy 2.5)\n"
+              << "  " << Console::brand("--legacy-json") << "            Output legacy HyPhy 2.5 JSON schema\n"
               << "  " << Console::brand("--all-sites") << "              Display all codon sites in console table (default: significant only)\n"
               << "  " << Console::brand("--progress") << "               Force interactive progress bar\n"
               << "  " << Console::brand("--no-progress") << "            Disable progress bar\n"
               << "  " << Console::brand("--help, -h") << "               Show this help message\n\n"
               << Console::bold("Examples:") << "\n"
               << "  " << prog << " --alignment data/cd2.fna --tree data/cd2.nwk\n"
+              << "  " << prog << " --alignment data/cd2.fna --tree auto --output cd2.fubar.json\n"
               << "  " << prog << " --alignment data/cd2.fna --grid 20 --method Variational-Bayes\n"
               << "  " << prog << " --alignment test.nex --posterior 0.95 --output test.fubar.json\n\n";
 }
 
 int run_fubar(int argc, char* argv[]) {
-    std::string alignment_file;
-    std::string tree_file;
-    std::string output_file;
-    std::string html_file;
-    std::string code_name = "Universal";
-    int num_threads = 0;
-    
+    CommonCLIOptions cli;
     FUBARSettings settings;
-    std::string json_format = "modern";
-    bool show_progress = ProgressBar::is_terminal();
-    bool all_sites = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if ((arg == "--alignment" || arg == "-a") && i + 1 < argc) {
-            alignment_file = argv[++i];
-        } else if ((arg == "--tree" || arg == "-t") && i + 1 < argc) {
-            tree_file = argv[++i];
-        } else if (arg == "--code" && i + 1 < argc) {
-            code_name = argv[++i];
-        } else if ((arg == "--grid" || arg == "-g") && i + 1 < argc) {
+        auto status = parse_common_cli_arg(i, argc, argv, cli);
+        if (status == CommonArgParseStatus::Handled) continue;
+        if (status == CommonArgParseStatus::Error) return 1;
+
+        if ((arg == "--grid" || arg == "-g") && i + 1 < argc) {
             settings.grid_points = std::stoi(argv[++i]);
         } else if ((arg == "--method" || arg == "-m") && i + 1 < argc) {
             settings.method = string_to_fubar_method(argv[++i]);
@@ -105,89 +92,36 @@ int run_fubar(int argc, char* argv[]) {
             settings.mcmc_burn_in = std::stoll(argv[++i]);
         } else if (arg == "--samples" && i + 1 < argc) {
             settings.mcmc_samples = std::stoll(argv[++i]);
-        } else if ((arg == "--threads" || arg == "-T") && i + 1 < argc) {
-            num_threads = std::stoi(argv[++i]);
-        } else if ((arg == "--output" || arg == "-o") && i + 1 < argc) {
-            output_file = argv[++i];
-        } else if (arg == "--html" && i + 1 < argc) {
-            html_file = argv[++i];
-        } else if (arg == "--all-sites") {
-            all_sites = true;
-        } else if (arg == "--legacy") {
-            json_format = "legacy";
-        } else if (arg == "--modern") {
-            json_format = "modern";
-        } else if (arg == "--progress") {
-            show_progress = true;
-        } else if (arg == "--no-progress") {
-            show_progress = false;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
+        } else {
+            std::cerr << Console::danger("Unknown argument: ") << arg << "\n";
+            print_usage(argv[0]);
+            return 1;
         }
     }
 
-    if (alignment_file.empty()) {
+    if (cli.alignment_file.empty()) {
         std::cerr << Console::danger("Error: Missing required argument --alignment.\n\n");
         print_usage(argv[0]);
         return 1;
     }
 
-    if (output_file.empty()) {
-        output_file = alignment_file + ".FUBAR.json";
-    }
-
-#ifdef _OPENMP
-    if (num_threads > 0) {
-        omp_set_num_threads(num_threads);
-    }
-#endif
-
+    finalize_common_cli_options(cli, ".FUBAR.json");
     print_banner();
 
-    // 1. Load Alignment & Tree
-    std::shared_ptr<const GeneticCode> gcode;
-    try {
-        gcode = GeneticCode::from_name(code_name);
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error loading genetic code: ") << e.what() << "\n";
+    LoadedCodonDataset ds;
+    if (!load_codon_dataset(cli, ds, false)) {
         return 1;
     }
-
-    Alignment aln;
-    try {
-        aln = Alignment::load(alignment_file, gcode);
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error reading input files: ") << e.what() << "\n";
-        return 1;
-    }
-
-    Tree tree;
-    std::string tree_source;
-    if (!tree_file.empty()) {
-        try {
-            tree = Tree::from_newick_file(tree_file);
-            tree_source = tree_file;
-        } catch (const std::exception& e) {
-            std::cerr << Console::danger("Error loading tree: ") << e.what() << "\n";
-            return 1;
-        }
-    } else if (!aln.embedded_tree_newick.empty()) {
-        try {
-            tree = Tree::from_newick(aln.embedded_tree_newick);
-            tree_source = "embedded in NEXUS";
-        } catch (const std::exception& e) {
-            std::cerr << Console::danger("Error parsing embedded tree: ") << e.what() << "\n";
-            return 1;
-        }
-    } else {
-        std::cerr << Console::danger("Error: No tree provided via --tree and no embedded tree found in alignment.\n\n");
-        print_usage(argv[0]);
-        return 1;
-    }
+    auto& gcode = ds.gcode;
+    auto& aln = ds.aln;
+    auto& tree = ds.tree;
+    const auto& tree_source = ds.tree_source;
 
     Panel::print_card("Dataset & Configuration", {
-        {"Alignment File", alignment_file},
+        {"Alignment File", cli.alignment_file},
         {"Sequences / Taxa", std::to_string(aln.num_taxa)},
         {"Codon Sites", std::to_string(aln.num_codons)},
         {"Unique Patterns", std::to_string(aln.patterns.size())},
@@ -198,7 +132,7 @@ int run_fubar(int argc, char* argv[]) {
         {"Concentration", format_float_val(settings.concentration, 2)},
         {"Posterior Threshold", format_float_val(settings.posterior_threshold, 2)},
 #ifdef _OPENMP
-        {"OpenMP Worker Threads", std::to_string((num_threads > 0) ? num_threads : omp_get_max_threads())}
+        {"OpenMP Worker Threads", std::to_string((cli.num_threads > 0) ? cli.num_threads : omp_get_max_threads())}
 #else
         {"OpenMP Worker Threads", "1 (Serial Build)"}
 #endif
@@ -206,18 +140,18 @@ int run_fubar(int argc, char* argv[]) {
 
     // 2. Initialize and Fit
     auto progress_cb = [&](const std::string& msg, double pct) {
-        if (!show_progress) return;
+        if (!cli.show_progress) return;
         std::cout << Console::brand("==> ") << Console::bold(msg) 
                   << Console::muted(" [" + std::to_string(static_cast<int>(pct * 100)) + "%]") << "\n";
     };
 
     FUBARAnalyzer fubar = FUBARAnalyzer::create_and_fit(tree, aln, settings, progress_cb);
-    FUBARResult result = fubar.run(progress_cb, show_progress);
+    FUBARResult result = fubar.run(progress_cb, cli.show_progress);
 
     // 3. Console Presentation
     FUBARAnalyzer::print_summary(result, settings);
 
-    if (all_sites) {
+    if (cli.all_sites) {
         Table all_tbl;
         all_tbl.add_column("Codon", Table::Align::Right);
         all_tbl.add_column("alpha", Table::Align::Right);
@@ -250,35 +184,12 @@ int run_fubar(int argc, char* argv[]) {
         FUBARAnalyzer::print_results_table(result, settings);
     }
 
-    // 4. Save JSON Output
-    std::string cli_cmd = "hyphy3 fubar";
-    for (int i = 1; i < argc; ++i) {
-        cli_cmd += " ";
-        cli_cmd += argv[i];
-    }
-
-    try {
-        std::string json_str = fubar.to_json(result, json_format, cli_cmd, alignment_file);
-        std::ofstream out(output_file);
-        if (!out.is_open()) {
-            throw std::runtime_error("Could not open output file: " + output_file);
-        }
-        out << json_str;
-        std::cout << Console::bold("Output:\n")
-                  << "  " << Console::muted("Analysis results saved to: ") << Console::brand(output_file) << "\n\n";
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error writing JSON output: ") << e.what() << "\n";
-    }
-
-    if (!html_file.empty()) {
-        try {
-            hyphy::report::write_html_report(output_file, html_file);
-            std::cout << Console::success("✔") << " " << Console::bold("Saved HTML report to: ")
-                      << Console::brand(html_file) << "\n\n";
-        } catch (const std::exception& e) {
-            std::cerr << Console::danger("Error writing HTML report: ") << e.what() << "\n";
-            return 1;
-        }
+    // 4. Save JSON Output (and optional HTML)
+    std::string cli_cmd = join_cli_command(argc, argv);
+    std::string json_format_str = (cli.json_format == JSONFormat::Legacy) ? "legacy" : "modern";
+    std::string json_str = fubar.to_json(result, json_format_str, cli_cmd, cli.alignment_file);
+    if (!write_cli_json_and_html(cli, json_str)) {
+        return 1;
     }
 
     return 0;

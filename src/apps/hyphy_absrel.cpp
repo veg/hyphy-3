@@ -1,8 +1,5 @@
 #include "hyphy/core/types.hpp"
-#include "hyphy/core/genetic_code.hpp"
-#include "hyphy/core/alignment.hpp"
-#include "hyphy/core/tree.hpp"
-#include "hyphy/core/console.hpp"
+#include "hyphy/core/cli_common.hpp"
 #include "hyphy/analyses/absrel.hpp"
 
 #include <iostream>
@@ -11,9 +8,6 @@
 #include <vector>
 #include <chrono>
 #include <iomanip>
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 using namespace hyphy::core;
 using namespace hyphy::analyses;
@@ -33,67 +27,43 @@ static void print_absrel_usage(const char* prog) {
               << Console::bold("Required arguments:") << "\n"
               << "  " << Console::brand("--alignment") << " <file>   Path to codon alignment (FASTA or NEXUS)\n\n"
               << Console::bold("Optional arguments:") << "\n"
-              << "  " << Console::brand("--tree") << " <file>        Path to Newick tree file (optional if embedded in NEXUS)\n"
+              << "  " << Console::brand("--tree") << " <file>        Path to Newick tree file or 'auto' (optional; auto-infers ML tree via TreeEngine if omitted or 'auto')\n"
+              << "  " << Console::brand("--ohmic") << "              Build Ohmic Phylogenetic Network with Wheatstone bridges\n"
+              << "  " << Console::brand("--hyphaeon") << "           Opt-in: HyphAeon 384D transformer conductances (needs Python aeon-core)\n"
+              << "  " << Console::brand("--no-hyphaeon") << "        Use empirical codon conductances only (default)\n"
+              << "  " << Console::brand("--embeddings") << " <file>  Path to precomputed [N x 384] HyphAeon embeddings (.bin/.csv/.tsv)\n"
               << "  " << Console::brand("--code") << " <name>        Genetic code (default: Universal)\n"
               << "  " << Console::brand("--branches") << " <set>     Branches to test: All, Internal, Leaves (default: All)\n"
               << "  " << Console::brand("--pvalue") << " <threshold> Holm-Bonferroni p-value threshold (default: 0.05)\n"
-              << "  " << Console::brand("--max-rates") << " <N>      Maximum rate classes per branch (default: 3)\n"
+              << "  " << Console::brand("--max-rates, --rates") << " <N> Maximum rate classes per branch (default: 3)\n"
               << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
               << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.ABSREL.json)\n"
+              << "  " << Console::brand("--html") << " <file>        Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--progress") << "           Force interactive progress bar\n"
               << "  " << Console::brand("--no-progress") << "        Disable progress bar\n"
               << "  " << Console::brand("--help, -h") << "           Show this help message\n\n"
               << Console::bold("Examples:") << "\n"
               << "  " << prog << " --alignment data/bglobin.nex\n"
-              << "  " << prog << " --alignment data/cd2.fna --tree data/cd2.nwk --branches Internal --threads 8\n\n";
+              << "  " << prog << " --alignment data/cd2.fna --tree auto --output cd2.ABSREL.json\n"
+              << "  " << prog << " --alignment data/cd2.fna --ohmic --branches Internal --threads 8\n\n";
 }
 
 int run_absrel(int argc, char* argv[]) {
-    std::string alignment_file;
-    std::string tree_file;
-    std::string output_file;
-    std::string code_name = "Universal";
-    int num_threads = 0;
-    JSONFormat json_format = JSONFormat::ModernV3;
+    CommonCLIOptions cli;
     ABSRELSettings settings;
-    bool show_progress = ProgressBar::is_terminal();
-    bool force_progress = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--alignment" && i + 1 < argc) {
-            alignment_file = argv[++i];
-        } else if (arg == "--tree" && i + 1 < argc) {
-            tree_file = argv[++i];
-        } else if (arg == "--code" && i + 1 < argc) {
-            code_name = argv[++i];
-        } else if (arg == "--branches" && i + 1 < argc) {
+        auto status = parse_common_cli_arg(i, argc, argv, cli);
+        if (status == CommonArgParseStatus::Handled) continue;
+        if (status == CommonArgParseStatus::Error) return 1;
+
+        if ((arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
             settings.test_branches = argv[++i];
-        } else if (arg == "--pvalue" && i + 1 < argc) {
+        } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
             settings.p_threshold = std::stod(argv[++i]);
-        } else if (arg == "--max-rates" && i + 1 < argc) {
+        } else if ((arg == "--max-rates" || arg == "--rates") && i + 1 < argc) {
             settings.max_rate_classes = std::stoi(argv[++i]);
-        } else if (arg == "--threads" && i + 1 < argc) {
-            num_threads = std::stoi(argv[++i]);
-        } else if (arg == "--json-format" && i + 1 < argc) {
-            std::string fmt = argv[++i];
-            if (fmt == "legacy" || fmt == "datamonkey") {
-                json_format = JSONFormat::Legacy;
-            } else {
-                json_format = JSONFormat::ModernV3;
-            }
-        } else if (arg == "--legacy-json") {
-            json_format = JSONFormat::Legacy;
-        } else if (arg == "--modern-json") {
-            json_format = JSONFormat::ModernV3;
-        } else if (arg == "--output" && i + 1 < argc) {
-            output_file = argv[++i];
-        } else if (arg == "--progress") {
-            show_progress = true;
-            force_progress = true;
-        } else if (arg == "--no-progress") {
-            show_progress = false;
-            force_progress = false;
         } else if (arg == "--help" || arg == "-h") {
             print_absrel_usage(argv[0]);
             return 0;
@@ -104,97 +74,54 @@ int run_absrel(int argc, char* argv[]) {
         }
     }
 
-    if (alignment_file.empty()) {
+    if (cli.alignment_file.empty()) {
         std::cerr << "Error: --alignment is required.\n\n";
         print_absrel_usage(argv[0]);
         return 1;
     }
 
-#ifdef _OPENMP
-    if (num_threads > 0) {
-        omp_set_num_threads(num_threads);
-    }
-#endif
-
-    if (output_file.empty()) {
-        output_file = alignment_file + ".ABSREL.json";
-    }
-
+    finalize_common_cli_options(cli, ".ABSREL.json");
     print_absrel_banner();
 
     auto start_time = std::chrono::high_resolution_clock::now();
     std::string start_iso = Provenance::current_iso8601();
-    std::string cli_cmd = argv[0];
-    for (int i = 1; i < argc; ++i) {
-        cli_cmd += " ";
-        cli_cmd += argv[i];
-    }
+    std::string cli_cmd = join_cli_command(argc, argv);
 
-    // 1. Load Genetic Code
-    std::shared_ptr<const GeneticCode> code;
-    try {
-        code = GeneticCode::from_name(code_name);
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error: Unknown genetic code '") << code_name << "'.\n";
+    LoadedCodonDataset ds;
+    if (!load_codon_dataset(cli, ds, true)) {
         return 1;
     }
+    auto& code = ds.gcode;
+    auto& aln = ds.aln;
+    auto& tree = ds.tree;
+    const auto& tree_source = ds.tree_source;
 
-    // 2. Load Alignment
-    Alignment aln;
-    try {
-        aln = Alignment::load(alignment_file, code);
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error loading alignment: ") << e.what() << "\n";
-        return 1;
-    }
-
-    // 3. Load Tree
-    Tree tree;
-    if (!tree_file.empty()) {
-        try {
-            tree = Tree::from_newick_file(tree_file);
-        } catch (const std::exception& e) {
-            std::cerr << Console::danger("Error loading tree from file: ") << e.what() << "\n";
-            return 1;
-        }
-    } else if (!aln.embedded_tree_newick.empty()) {
-        try {
-            tree = Tree::from_newick(aln.embedded_tree_newick);
-        } catch (const std::exception& e) {
-            std::cerr << Console::danger("Error parsing embedded tree: ") << e.what() << "\n";
-            return 1;
-        }
-    } else {
-        std::cerr << Console::danger("Error: No tree provided and no tree embedded in alignment.\n");
-        return 1;
-    }
-
-    // 4. Initialize and Run aBSREL
+    // Initialize and Run aBSREL
     auto absrel = ABSRELAnalyzer::create(tree, aln, settings);
 
     Panel::print_card("Dataset & Lineage Testing", {
-        {"Alignment File", alignment_file},
+        {"Alignment File", cli.alignment_file},
         {"Sequences / Taxa", std::to_string(aln.num_taxa)},
         {"Codon Sites", std::to_string(aln.num_codons) + " (" + std::to_string(aln.num_codons * 3) + " nt)"},
         {"Unique Patterns", std::to_string(aln.patterns.size())},
-        {"Tree", std::to_string(tree.num_nodes()) + " nodes (" + std::to_string(tree.num_leaves()) + " leaves)"},
+        {"Tree Source", tree_source + " (" + std::to_string(tree.num_nodes()) + " nodes, " + std::to_string(tree.num_leaves()) + " leaves)"},
         {"Tested Branches", settings.test_branches},
         {"Max Rate Classes", std::to_string(settings.max_rate_classes)},
         {"Genetic Code", code->name}
     });
 
-    Panel::print_step(1, 2, "Fitting Baseline GTR & MG94xREV Models", "Exchangeability rates & branch lengths");
+    Panel::print_step(1, 1, "Running aBSREL Adaptive Branch-Site Workflow", 
+                      "Baseline MG94xREV, step-up complexity selection & lineage testing");
 
     std::function<void(const std::string&, double)> progress_cb = nullptr;
-    if (!show_progress && !force_progress) {
+    if (!cli.show_progress && !cli.force_progress) {
         progress_cb = [](const std::string& stage, double frac) {
             std::cout << "  " << Console::muted("↳ [") << std::setw(3) << static_cast<int>(frac * 100) 
                       << Console::muted("%] ") << stage << std::endl;
         };
     }
 
-    Panel::print_step(2, 2, "Running Adaptive Model Selection & Lineage Testing", "OpenMP parallel");
-    auto res = absrel.run(progress_cb, show_progress, force_progress);
+    auto res = absrel.run(progress_cb, cli.show_progress, cli.force_progress);
 
     // Branch table
     Table branch_table;
@@ -253,7 +180,7 @@ int run_absrel(int argc, char* argv[]) {
         conclusion = "No branches detected to be under positive selection at Holm-Bonferroni p <= " + std::to_string(settings.p_threshold) + ".";
     }
 
-    std::string json_desc = (json_format == JSONFormat::Legacy) ? " [Legacy]" : " [Modern v3.0]";
+    std::string json_desc = (cli.json_format == JSONFormat::Legacy) ? " [Legacy]" : " [Modern v3.0]";
     std::vector<std::pair<std::string, std::string>> sum_items = {
         {"Tested Branches", std::to_string(res.tested_branches.size()) + " (" + settings.test_branches + ")"},
         {"Positively Selected Branches", 
@@ -262,57 +189,34 @@ int run_absrel(int argc, char* argv[]) {
         {"Baseline MG94xREV Log-L", base_ss.str()},
         {"Full Adaptive aBSREL Log-L", full_ss.str()},
         {"Nucleotide GTR Log-L", gtr_ss.str()},
-        {"JSON Output File", output_file + json_desc},
+        {"JSON Output File", cli.output_file + json_desc},
         {"Total Execution Time", time_ss.str()}
     };
 
     Panel::print_summary_card("aBSREL Lineage Selection Analysis Summary", sum_items, conclusion, is_sig);
 
-    // Build Provenance
-    Provenance prov;
-    prov.invocation.cli_command = cli_cmd;
-    prov.invocation.working_directory = Provenance::get_cwd();
-    prov.invocation.arguments["alignment"] = alignment_file;
-    if (!tree_file.empty()) prov.invocation.arguments["tree"] = tree_file;
-    prov.invocation.arguments["code"] = code_name;
-    prov.invocation.arguments["branches"] = settings.test_branches;
-    prov.invocation.arguments["pvalue"] = std::to_string(settings.p_threshold);
-    prov.invocation.arguments["max_rates"] = std::to_string(settings.max_rate_classes);
-    prov.invocation.arguments["json_format"] = (json_format == JSONFormat::Legacy) ? "legacy" : "modern_v3";
-
-    size_t aln_sz = 0;
-    std::string aln_hash = crypto::SHA256::hash_file(alignment_file, &aln_sz);
-    prov.inputs["alignment"] = {alignment_file, "FASTA/NEXUS", aln_hash, aln_sz};
-
-    if (!tree_file.empty()) {
-        size_t tree_sz = 0;
-        std::string tree_hash = crypto::SHA256::hash_file(tree_file, &tree_sz);
-        prov.inputs["tree"] = {tree_file, "Newick", tree_hash, tree_sz};
-    }
-
     auto end_time = std::chrono::high_resolution_clock::now();
     double total_runtime = std::chrono::duration<double>(end_time - start_time).count();
 
-    prov.execution.start_time = start_iso;
-    prov.execution.end_time = Provenance::current_iso8601();
-    prov.execution.wall_time_seconds = total_runtime;
-#ifdef _OPENMP
-    prov.execution.cpu_threads = (num_threads > 0) ? num_threads : omp_get_max_threads();
-#else
-    prov.execution.cpu_threads = 1;
-#endif
-    prov.execution.hostname = Provenance::get_hostname();
-    prov.execution.os = Provenance::detect_os();
-    prov.execution.compiler = Provenance::detect_compiler();
+    Provenance prov = build_cli_provenance(cli, cli_cmd, start_iso, total_runtime, {
+        {"branches", settings.test_branches},
+        {"pvalue", std::to_string(settings.p_threshold)},
+        {"max_rates", std::to_string(settings.max_rate_classes)}
+    });
 
-    // Save JSON
+    // Save JSON (and optional HTML)
     try {
-        res.save_json(output_file, tree, aln, json_format, prov);
-        std::string fmt_desc = (json_format == JSONFormat::Legacy) ? "Legacy Datamonkey JSON" : "Modern HyPhy v3.0 JSON";
+        res.save_json(cli.output_file, tree, aln, cli.json_format, prov);
+        std::string fmt_desc = (cli.json_format == JSONFormat::Legacy) ? "Legacy Datamonkey JSON" : "Modern HyPhy v3.0 JSON";
         std::cout << Console::success("✔") << " " << Console::bold("Saved " + fmt_desc + " report to: ")
-                  << Console::brand(output_file) << "\n\n";
+                  << Console::brand(cli.output_file) << "\n\n";
+        if (!cli.html_file.empty()) {
+            hyphy::report::write_html_report(cli.output_file, cli.html_file);
+            std::cout << Console::success("✔") << " " << Console::bold("Saved HTML report to: ")
+                      << Console::brand(cli.html_file) << "\n\n";
+        }
     } catch (const std::exception& e) {
-        std::cerr << Console::danger("Warning: Failed to write JSON output: ") << e.what() << "\n";
+        std::cerr << Console::danger("Warning: Failed to write output: ") << e.what() << "\n";
     }
 
     return 0;

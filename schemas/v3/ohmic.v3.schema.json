@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/ohmic.v3.schema.json",
+  "title": "HyPhy 3 Ohmic Analysis Schema v3.0",
+  "description": "Standardized output schema for HyPhy 3 Ohmic phylogenetic network analyses with linear-time Wheatstone pruning.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema_version",
+    "analysis",
+    "software",
+    "provenance",
+    "dataset",
+    "electrical_network",
+    "fits",
+    "wheatstone_bridges",
+    "timers"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri"
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^3\\.[0-9]+\\.[0-9]+$"
+    },
+    "analysis": {
+      "type": "object",
+      "required": ["id", "name", "version"],
+      "properties": {
+        "id": { "type": "string", "enum": ["ohmic"] },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "version": { "type": "string" },
+        "authors": { "type": "string" },
+        "contact": { "type": "string" }
+      }
+    },
+    "software": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "git_commit": { "type": "string" },
+        "build_type": { "type": "string" },
+        "compiler": { "type": "string" }
+      }
+    },
+    "provenance": {
+      "type": "object"
+    },
+    "dataset": {
+      "type": "object",
+      "required": ["file", "taxa_count", "sites_count", "patterns_count", "super_nodes_count"],
+      "properties": {
+        "file": { "type": "string" },
+        "taxa_count": { "type": "integer" },
+        "sites_count": { "type": "integer" },
+        "patterns_count": { "type": "integer" },
+        "super_nodes_count": { "type": "integer" }
+      }
+    },
+    "electrical_network": {
+      "type": "object",
+      "required": [
+        "scale_mode",
+        "foster_sum",
+        "num_bridges",
+        "num_collapsed_polytomies",
+        "backbone_tree",
+        "collapsed_tree"
+      ],
+      "properties": {
+        "scale_mode": { "type": "string", "enum": ["ExactDense", "ScalableWoodbury"] },
+        "foster_sum": { "type": ["number", "null"] },
+        "num_bridges": { "type": "integer" },
+        "num_collapsed_polytomies": { "type": "integer" },
+        "backbone_tree": { "type": "string" },
+        "collapsed_tree": { "type": "string" }
+      }
+    },
+    "fits": {
+      "type": "object",
+      "required": ["single_tree", "ohmic_network"],
+      "properties": {
+        "single_tree": {
+          "type": "object",
+          "required": ["log_likelihood", "aicc"],
+          "properties": {
+            "log_likelihood": { "type": ["number", "null"] },
+            "aicc": { "type": ["number", "null"] }
+          }
+        },
+        "ohmic_network": {
+          "type": "object",
+          "required": ["log_likelihood", "aicc", "delta_log_likelihood", "delta_aicc"],
+          "properties": {
+            "log_likelihood": { "type": ["number", "null"] },
+            "aicc": { "type": ["number", "null"] },
+            "delta_log_likelihood": { "type": ["number", "null"] },
+            "delta_aicc": { "type": ["number", "null"] }
+          }
+        }
+      }
+    },
+    "wheatstone_bridges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "bridge_index",
+          "hub_node",
+          "bridge_node",
+          "children",
+          "ohmic_support",
+          "shunt_stress",
+          "initial_weights",
+          "fitted_weights",
+          "fitted_branch_lengths"
+        ],
+        "properties": {
+          "bridge_index": { "type": "integer" },
+          "hub_node": { "type": "string" },
+          "bridge_node": { "type": "string" },
+          "children": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "ohmic_support": { "type": ["number", "null"] },
+          "shunt_stress": { "type": ["number", "null"] },
+          "initial_weights": {
+            "type": "array",
+            "items": { "type": ["number", "null"] },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "fitted_weights": {
+            "type": "array",
+            "items": { "type": ["number", "null"] },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "fitted_branch_lengths": {
+            "type": "array",
+            "items": { "type": ["number", "null"] },
+            "minItems": 3,
+            "maxItems": 3
+          }
+        }
+      }
+    },
+    "timers": {
+      "type": "object",
+      "required": ["total_seconds"],
+      "properties": {
+        "total_seconds": { "type": ["number", "null"] }
+      }
+    }
+  }
+}

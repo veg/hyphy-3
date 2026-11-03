@@ -101,6 +101,10 @@ public:
         return total_;
     }
 
+    void set_total(size_t total) {
+        total_ = total;
+    }
+
     // Conclude progress bar with an optional completion summary line
     void finish(const std::string& summary_message = "") {
         if (is_finished_.exchange(true)) return;

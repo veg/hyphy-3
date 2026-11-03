@@ -52,9 +52,9 @@ Two statistical failure modes occur when these components are enabled manually o
 
 \subsection{Formulation of the Replacement Kernel}
 
-In \textsc{HyPhy}~2.5, \texttt{--error-sink} added a fourth rate class with fixed $\omega_{\text{sink}} = 100$ and weight $p_{\text{sink}} \le 0.01$. That formulation had three defects. First, its transition probabilities depended on branch length $t_b$, so it failed to absorb errors on terminal branches of length $t_b \to 0$. Second, it only increased single-nucleotide non-synonymous rates and could not absorb 2-nt or 3-nt frameshift codons in one step unless $\delta, \psi > 0$. Third, it required an extra $61 \times 61$ matrix exponential per branch.
+In \textsc{HyPhy}~2.5, \texttt{--error-sink} added a fourth CTMC rate class with $\omega_{\text{sink}} \in [100, 10^{10}]$ (lower bound set by \texttt{--error-sink-bound}, default $100$, initialized on $[100, 5000]$) and weight $p_{\text{sink}} \le 0.01$, while restricting the biological positive-selection rate class to $\omega_K \in [1, 100]$. That CTMC formulation had three defects. First, its transition probabilities depended on branch length $t_b$, so it failed to absorb errors on terminal branches of length $t_b \to 0$. Second, it only increased single-nucleotide non-synonymous rates and could not absorb 2-nt or 3-nt frameshift codons in one step unless $\delta, \psi > 0$. Third, it required an extra $61 \times 61$ matrix exponential per branch.
 
-In \textsc{HyPhy}~3, we replace the $\omega = 100$ rate class with an exact branch-length-independent off-diagonal replacement kernel $\bm{P}_{\text{sink}} \in \mathbb{R}^{S \times S}$ ($S = 61$ sense codons):
+In \textsc{HyPhy}~3, we replace the $\omega_{\text{sink}} \in [100, 10^{10}]$ CTMC rate class with an exact branch-length-independent off-diagonal replacement kernel $\bm{P}_{\text{sink}} \in \mathbb{R}^{S \times S}$ ($S = 61$ sense codons):
 \begin{equation}
     P_{\text{sink}}(i, j) = \begin{cases}
     0 & \text{if } i = j, \\
@@ -69,7 +69,7 @@ On any tested branch $b$ of length $t_b$, the effective transition probability m
     \tilde{\bm{P}}_b(m, k) = (1 - \epsilon_{\text{sink}}) \bm{P}_{\text{bio}}(t_b \mid \alpha_m, \omega_k) + \epsilon_{\text{sink}} \bm{P}_{\text{sink}}.
     \label{eq:huber}
 \end{equation}
-Here $\bm{P}_{\text{bio}}(t_b \mid \alpha_m, \omega_k) = \exp(\alpha_m t_b \bm{Q}(1, \omega_k))$ is the biological transition matrix, and $\epsilon_{\text{sink}} \in [0, \epsilon_{\max}]$ ($\epsilon_{\max} = 0.05$) is the alignment-wide error proportion shared by the Unconstrained Alternative and Constrained Null models.
+Here $\bm{P}_{\text{bio}}(t_b \mid \alpha_m, \omega_k) = \exp(\alpha_m t_b \bm{Q}(1, \omega_k))$ is the biological transition matrix, and $\epsilon_{\text{sink}} \in [0, \epsilon_{\max}]$ ($\epsilon_{\max} = 0.01$ by default) is the alignment-wide error proportion.
 
 \subsection{Zero-Matrix-Exponential $O(S)$ Bilinear Evaluation}
 
@@ -96,16 +96,16 @@ Let $L_{b,p}^{\text{bio}} = \bm{u}^T \left(\sum_{m,k} q_m p_k \bm{P}_{\text{bio}
 \end{equation}
 In each Expectation-Maximization (EM) step, the maximum-likelihood update for $\epsilon_{\text{sink}}$ across all tested branches $\mathcal{B}_{\text{test}}$ ($|\mathcal{B}_{\text{test}}| = B_{\text{test}}$) and codon sites $C = \sum_{p=1}^P w_p$ is:
 \begin{equation}
-    \epsilon_{\text{sink}}^{\text{new}} = \text{clip}\left( \frac{1}{B_{\text{test}} C} \sum_{b \in \mathcal{B}_{\text{test}}} \sum_{p=1}^P w_p r_{b,p}^{\text{sink}}, \; 10^{-8}, \; \epsilon_{\max} \right).
+    \epsilon_{\text{sink}}^{\text{new}} = \text{clip}\left( \frac{1}{B_{\text{test}} C} \sum_{b \in \mathcal{B}_{\text{test}}} \sum_{p=1}^P w_p r_{b,p}^{\text{sink}}, \; 10^{-7}, \; \epsilon_{\max} \right).
     \label{eq:em_eps}
 \end{equation}
-To prevent the biological positive-selection rate class $\omega_K$ from degenerating into an infinite-rate saturation kernel ($\omega_K = 2000$) on short branches and competing with $\bm{P}_{\text{sink}}$, \textsc{HyPhy}~3 caps the biological rate at $\omega_K \le 50.0$ whenever \texttt{--error-sink} is active. Any instantaneous saturation jump on a short branch is therefore routed into $\bm{P}_{\text{sink}}$ under both the Alternative and Null models.
+To prevent the biological positive-selection rate class $\omega_K$ from degenerating into an extreme saturation kernel ($\omega_K \le 10^4$, the default \textsc{HyPhy}~3 upper bound when \texttt{--error-sink} is inactive, which is tighter than \textsc{HyPhy}~2.5's \texttt{terms.range\_gte1} upper bound of $10^{10}$) on short branches and competing with $\bm{P}_{\text{sink}}$, \textsc{HyPhy}~3 matches \textsc{HyPhy}~2.5's error-sink positive-selection bound by restricting $\omega_K \in [1, 100]$ whenever \texttt{--error-sink} is active. Any instantaneous saturation jump on a short branch is therefore routed into $\bm{P}_{\text{sink}}$ under both the Alternative and Null models while preserving exact, unweighted codon site log-likelihoods.
 
 For each branch-site $(b, s)$, \textsc{HyPhy}~3 reports the posterior error probability $r_{b,s}^{\text{sink}}$ and the Empirical Bayes Factor:
 \begin{equation}
     \text{BF}_{b,s}^{\text{sink}} = \frac{r_{b,s}^{\text{sink}} / (1 - r_{b,s}^{\text{sink}})}{\epsilon_{\text{sink}} / (1 - \epsilon_{\text{sink}})} = \frac{L_{b,s}^{\text{sink}}}{L_{b,s}^{\text{bio}}}.
 \end{equation}
-Branch-sites with $\text{BF}_{b,s}^{\text{sink}} \ge 20.0$ and $r_{b,s}^{\text{sink}} \ge 0.50$ are reported in the console summary and JSON output alongside their inferred ancestral and descendant codons.
+Branch-sites with $\text{BF}_{b,s}^{\text{sink}} \ge 100.0$ (default \texttt{--error-sink-bf 100}) and $r_{b,s}^{\text{sink}} \ge 0.50$ are reported in the console summary and JSON output.
 
 \section{The \texttt{BUSTED --auto} 4-Gate Model Selection Pipeline}
 
@@ -117,14 +117,14 @@ At every tested branch $b$ and site $s$ (with pattern $p(s)$), Gate 1 computes t
 \begin{equation}
     \Delta I_{b,s}^{\text{sink}} = \log_2 \left( \frac{L_{b,p(s)}^{\text{sink}}}{L_{b,p(s)}^{\text{bio}}} \right) \quad \text{bits}.
 \end{equation}
-Under a well-specified single-hit biological model, $\Delta I_{b,s}^{\text{sink}} < 0$ at conserved sites and rarely exceeds $8$ bits at rapidly evolving sites. A 2-nt or 3-nt misalignment on a branch of length $t_b = 0.002$ has $L_{b,s}^{\text{bio}} \propto t_b^2$ or $t_b^3$, yielding $\Delta I_{b,s}^{\text{sink}} \in [14, 35]$ bits. Gate 1 also counts spatially adjacent outlier pairs on the same branch:
+Under a well-specified single-hit biological model, $\Delta I_{b,s}^{\text{sink}} < 0$ at conserved sites and rarely exceeds $8$ bits at rapidly evolving sites. A 2-nt or 3-nt misalignment on a branch of length $t_b = 0.002$ has $L_{b,s}^{\text{bio}} \propto t_b^2$ or $t_b^3$, yielding $\Delta I_{b,s}^{\text{sink}} \in [13, 35]$ bits. Gate 1 also counts spatially adjacent outlier pairs on the same branch:
 \begin{equation}
-    N_{\text{adj}} = \sum_{b \in \mathcal{B}_{\text{test}}} \sum_{s=1}^{C-1} \mathbb{I}\left(\Delta I_{b,s}^{\text{sink}} > 6.0 \text{ and } \Delta I_{b,s+1}^{\text{sink}} > 6.0\right),
+    N_{\text{adj}} = \sum_{b \in \mathcal{B}_{\text{test}}} \sum_{s=1}^{C-1} \mathbb{I}\left(\Delta I_{b,s}^{\text{sink}} > 8.0 \text{ and } \Delta I_{b,s+1}^{\text{sink}} > 8.0\right),
 \end{equation}
 which detects multi-codon indels and local frameshifts.
 \begin{itemize}[nosep]
-    \item \textbf{Screening rule:} If $\max_{b,s} \Delta I_{b,s}^{\text{sink}} < 10.0$ bits and $N_{\text{adj}} = 0$, the alignment has no saturation anomalies; \texttt{--error-sink} is turned \textbf{OFF} ($\epsilon_{\text{sink}} = 0$) in zero extra tree passes.
-    \item \textbf{Confirmation probe:} Otherwise, Gate 1 runs a 3-step EM probe on $(\epsilon_{\text{sink}}, \bm{\omega}, \bm{p})$ starting from the baseline fit. It activates \texttt{--error-sink} if and only if the log-likelihood increases by $\Delta \ell_{\text{sink}} > 2.0$ ($\text{AIC}_c$ improvement after penalizing 1 parameter).
+    \item \textbf{Screening rule:} If $\max_{b,s} \Delta I_{b,s}^{\text{sink}} \le 13.0$ bits and $N_{\text{adj}} = 0$, the alignment has no saturation anomalies; \texttt{--error-sink} is turned \textbf{OFF} ($\epsilon_{\text{sink}} = 0$) in zero extra tree passes.
+    \item \textbf{Confirmation probe:} Otherwise, Gate 1 evaluates $\epsilon_{\text{sink}} \in \{0.001, 0.003, 0.008\}$ followed by an EM update and activates \texttt{--error-sink} if and only if $\Delta \ell_{\text{sink}} > 2.2$ and either $\max_{b,s} \Delta I_{b,s}^{\text{sink}} \ge 13.0$ bits or ($N_{\text{adj}} \ge 1$ and $\max_{b,s} \Delta I_{b,s}^{\text{sink}} \ge 8.0$ bits).
 \end{itemize}
 
 \subsection{Gate 2: Error-Quarantined Multi-Hit Score Test ($\delta, \psi$)}
@@ -136,31 +136,21 @@ To prevent alignment artifacts from triggering multi-nucleotide substitution par
 \end{align}
 where $\dot{\bm{Q}}_\delta^+$ and $\dot{\bm{Q}}_\psi^+$ contain the off-diagonal 2-hit and 3-hit rates.
 \begin{itemize}[nosep]
-    \item \textbf{Screening rule:} If $S_\delta < 1.5$, multi-hit parameters are set to \texttt{None} ($\delta = \psi = 0$) immediately.
-    \item \textbf{Confirmation probe:} If $S_\delta \ge 1.5$, Gate 2 evaluates a 1D coordinate probe for $\delta \in \{0.05, 0.15, 0.30\}$ with $\epsilon_{\text{sink}}$ fixed from Gate 1. It enables \texttt{Double} only if $\Delta \ell_\delta > 2.0$ ($\Delta \text{AIC}_c > 2.0$), and subsequently enables \texttt{Double+Triple} only if $S_\psi \ge 1.0$ and $\Delta \ell_\psi > 2.0$.
+    \item \textbf{Screening rule:} If $S_\delta \le 0.15$, multi-hit parameters are set to \texttt{None} ($\delta = \psi = 0$) immediately.
+    \item \textbf{Confirmation probe:} If $S_\delta > 0.15$, Gate 2 evaluates a coordinate probe for $\delta \in \{0.06, 0.20\}$ with $\epsilon_{\text{sink}}$ fixed from Gate 1. It enables \texttt{Double} only if $\Delta \ell_\delta > 2.2$, and subsequently enables \texttt{Double+Triple} only if $S_\psi > 0.05$ and $\Delta \ell_\psi > 2.2$.
 \end{itemize}
 
-\subsection{Gate 3: Synonymous Rate Variation ($M$) via Neyman-Scott Overdispersion}
+\subsection{Gate 3: Synonymous Rate Variation ($M$) via Neyman-Scott Overdispersion and Rate Optimization}
 
-To test whether a single synonymous rate ($M=1$) is sufficient or whether site-to-site synonymous rate variation ($M \in \{2, 3\}$) is required, Gate 3 evaluates the empirical variance of site-level synonymous scaling gradients. At each pattern $p$, let $g_p = \left.\partial \ln L_p / \partial \alpha_p\right|_{\alpha_p = 1}$ denote the derivative of the site log-likelihood with respect to a site-specific synonymous rate multiplier $\alpha_p$, evaluated analytically from the cached Inside-Outside vectors using $\partial \bm{P}_b / \partial \alpha_p = t_b \bm{Q} \bm{P}_b$. Under the homogeneous null $H_0: \text{Var}(\alpha_s) = 0$, the Neyman-Scott overdispersion $Z$-statistic across $C$ codons is:
+To test whether a single synonymous rate ($M=1$) is sufficient or whether site-to-site synonymous rate variation ($M \in \{2, 3\}$) is required, Gate 3 evaluates the empirical Neyman-Scott overdispersion $Z$-statistic across patterns:
 \begin{equation}
-    Z_{\text{SRV}} = \frac{1}{\sqrt{2 C}} \sum_{p=1}^P w_p \left[ \frac{(g_p - \bar{g})^2}{\bar{v}} - 1 \right],
+    Z_{\text{SRV}} = \frac{\sum_{p=1}^P w_p (u_p^2 - v_p)}{\sqrt{2 \sum_{p=1}^P w_p v_p^2}},
 \end{equation}
-where $\bar{g} = C^{-1} \sum_p w_p g_p$ and $\bar{v}$ is the baseline squared gradient scale.
-\begin{itemize}[nosep]
-    \item \textbf{Screening rule:} If $Z_{\text{SRV}} < 1.5$, synonymous rate variation is turned \textbf{OFF} ($M=1$).
-    \item \textbf{Confirmation probe:} If $Z_{\text{SRV}} \ge 1.5$, Gate 3 runs a 15-iteration SQUAREM probe for $M=2$ (2 extra parameters) and, if $Z_{\text{SRV}} > 3.5$, for $M=3$ (4 extra parameters), selecting the $M \in \{1, 2, 3\}$ that minimizes $\text{AIC}_c$.
-\end{itemize}
+where $u_p$ and $v_p$ are the pattern synonymous score and Fisher information, followed by SQUAREM weight updates and Nelder-Mead / Brent optimization of the unit-mean synonymous rates $\alpha_m$ ($\sum_m q_m \alpha_m = 1$) for $M=3$ and $M=2$. Gate 3 selects $M=3$ if $\Delta \ell_{\text{SRV},3} > 4.5$ (or $Z_{\text{SRV}} \ge 2.0$ with $\Delta \ell_{\text{SRV},3} > 3.0$) and $\min_m q_m \ge 0.02$, or $M=2$ if $\Delta \ell_{\text{SRV},2} > 2.2$ (or $Z_{\text{SRV}} \ge 1.65$ with $\Delta \ell_{\text{SRV},2} > 1.5$) and $\min_m q_m \ge 0.02$; otherwise $M=1$.
 
-\subsection{Gate 4: Non-Synonymous Rate Classes ($K$) via Constrained-Null Collapse Pruning}
+\subsection{Gate 4: Non-Synonymous Rate Classes ($K$) via Constrained-Null AIC$_c$ Step-Up and Collapse Pruning}
 
-Using the selected $(E, H, M)$ configuration, Gate 4 compares $K=2$ ($\omega_1 \le 1, \omega_2 \ge 1$) against $K=3$ ($\omega_1 \le \omega_2 \le 1, \omega_3 \ge 1$) under the Constrained Null model ($\omega_K = 1.0$) before branch-length refinement. Because selecting $K$ under the Null model does not inspect the positive selection parameter $\omega_K > 1$, it preserves the asymptotic $\frac{1}{2}\chi^2_0 + \frac{1}{2}\chi^2_2$ distribution of the final Likelihood Ratio Test. Gate 4 selects $K=3$ if and only if all three conditions hold:
-\begin{enumerate}[nosep]
-    \item $\text{AIC}_c(\text{Null}, K=3) < \text{AIC}_c(\text{Null}, K=2)$ ($\Delta \ell > 2.0$ for the 2 extra parameters);
-    \item Background rate separation: $|\hat{\omega}_2 - \hat{\omega}_1| \ge 0.05$;
-    \item Non-degenerate class weights: $\min_{k \in \{1,2,3\}} \hat{p}_k \ge 0.01$.
-\end{enumerate}
-Otherwise, Gate 4 prunes the collapsed rate class and selects $K=2$. Finally, \textsc{HyPhy}~3 performs full joint L-BFGS + SQUAREM optimization of the Unconstrained Alternative and Constrained Null models for the single winning configuration $(E^*, H^*, M^*, K^*)$.
+Using the selected $(E, H, M)$ configuration, Gate 4 runs step-up $\text{AIC}_c$ model selection (`select\_optimal\_k`, requiring $\Delta \text{AIC}_c > 2.0$ per added rate class) under the Constrained Null model ($\omega_K = 1.0$) before branch-length refinement. Because selecting $K$ under the Null model does not inspect the positive selection parameter $\omega_K > 1$, it preserves the asymptotic $\frac{1}{2}\chi^2_0 + \frac{1}{2}\chi^2_2$ distribution of the final Likelihood Ratio Test. Gate 4 retains $K=3$ if and only if $\text{AIC}_c(\text{Null}, K=3) < \text{AIC}_c(\text{Null}, K=2) - 2.0$, $|\hat{\omega}_2 - \hat{\omega}_1| \ge 0.025$, and $\min(\hat{p}_1, \hat{p}_2) \ge 0.015$; otherwise it selects $K=2$. Finally, \textsc{HyPhy}~3 performs full joint optimization of the Unconstrained Alternative and Constrained Null models for the single winning configuration $(E^*, H^*, M^*, K^*)$.
 
 \section{Verification and Empirical Benchmarks}
 

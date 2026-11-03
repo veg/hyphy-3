@@ -19,10 +19,12 @@ struct Sequence {
     std::string name;
     std::string raw_seq;
     std::vector<int8_t> codons; // sense codon indices (or -1 for gap/stop/ambiguous)
+    std::vector<uint64_t> codon_masks; // resolved sense-codon bitmask for each codon site
 };
 
 struct SitePattern {
     std::vector<int8_t> states; // State per taxon (size = num_taxa)
+    std::vector<uint64_t> ambiguous_masks; // Bitmask of compatible states when states[t] < 0
     size_t weight = 0;          // Number of alignment sites matching this pattern
     std::vector<size_t> sites;  // Original site indices
 };
@@ -57,12 +59,50 @@ public:
     Vector codon_frequencies_f1x4;
     Vector codon_frequencies_f3x4;
 
-    static Alignment from_fasta(const std::string& filepath, std::shared_ptr<const GeneticCode> gcode = nullptr, bool as_nucleotide = false) {
-        Alignment aln;
-        std::ifstream file(filepath);
-        if (!file.is_open()) {
+    // Optional alignment quality & Partial Order Alignment (POA) metadata from JointAlignEngine
+    std::vector<Scalar> site_homology_posteriors; // Posterior column confidence in [0, 1] per codon site
+    std::string poa_gfa;                          // GFAv1 Partial Order Alignment codon DAG representation
+
+    static std::string read_file_or_gzip(const std::string& filepath) {
+        std::ifstream test_f(filepath, std::ios::binary);
+        if (!test_f.is_open()) {
             throw std::runtime_error("Could not open alignment file: " + filepath);
         }
+        unsigned char magic[2] = {0, 0};
+        test_f.read(reinterpret_cast<char*>(magic), 2);
+        bool is_gz = (magic[0] == 0x1f && magic[1] == 0x8b) ||
+                     (filepath.size() >= 3 && filepath.substr(filepath.size() - 3) == ".gz");
+        test_f.close();
+
+        if (is_gz) {
+            std::string cmd = "gzip -dc \"" + filepath + "\"";
+            FILE* pipe = popen(cmd.c_str(), "r");
+            if (!pipe) {
+                throw std::runtime_error("Failed to decompress gzip alignment file: " + filepath);
+            }
+            std::string out;
+            char buf[65536];
+            size_t nread = 0;
+            while ((nread = std::fread(buf, 1, sizeof(buf), pipe)) > 0) {
+                out.append(buf, nread);
+            }
+            pclose(pipe);
+            if (out.empty()) {
+                throw std::runtime_error("Decompressed gzip alignment is empty: " + filepath);
+            }
+            return out;
+        }
+
+        std::ifstream file(filepath);
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        return buffer.str();
+    }
+
+    static Alignment from_fasta(const std::string& filepath, std::shared_ptr<const GeneticCode> gcode = nullptr, bool as_nucleotide = false) {
+        Alignment aln;
+        std::string raw = read_file_or_gzip(filepath);
+        std::istringstream file(raw);
 
         std::string line;
         std::string current_name;
@@ -104,14 +144,7 @@ public:
 
     static Alignment from_nexus(const std::string& filepath, std::shared_ptr<const GeneticCode> gcode = nullptr, bool as_nucleotide = false) {
         Alignment aln;
-        std::ifstream file(filepath);
-        if (!file.is_open()) {
-            throw std::runtime_error("Could not open alignment file: " + filepath);
-        }
-
-        std::stringstream buffer;
-        buffer << file.rdbuf();
-        std::string raw = buffer.str();
+        std::string raw = read_file_or_gzip(filepath);
 
         // 1. Remove comments [ ... ]
         std::string text;
@@ -142,6 +175,47 @@ public:
         if (mat_pos == std::string::npos) {
             throw std::runtime_error("NEXUS file does not contain a MATRIX block: " + filepath);
         }
+
+        // Parse optional TAXLABELS block and FORMAT NOLABELS / DIMENSIONS NCHAR before MATRIX
+        std::vector<std::string> taxlabels;
+        size_t tl_pos = find_case_insensitive(text, "TAXLABELS");
+        if (tl_pos != std::string::npos && tl_pos < mat_pos) {
+            size_t tl_end = text.find(';', tl_pos + 9);
+            if (tl_end != std::string::npos && tl_end < mat_pos) {
+                std::string tl_body = text.substr(tl_pos + 9, tl_end - (tl_pos + 9));
+                size_t ti = 0, tn = tl_body.size();
+                while (ti < tn) {
+                    while (ti < tn && std::isspace(static_cast<unsigned char>(tl_body[ti]))) ti++;
+                    if (ti >= tn) break;
+                    std::string name;
+                    if (tl_body[ti] == '\'' || tl_body[ti] == '"') {
+                        char q = tl_body[ti++];
+                        while (ti < tn && tl_body[ti] != q) name += tl_body[ti++];
+                        if (ti < tn) ti++;
+                    } else {
+                        while (ti < tn && !std::isspace(static_cast<unsigned char>(tl_body[ti]))) {
+                            name += tl_body[ti++];
+                        }
+                    }
+                    if (!name.empty()) taxlabels.push_back(name);
+                }
+            }
+        }
+
+        bool nolabels = false;
+        size_t fmt_pos = find_case_insensitive(text, "FORMAT");
+        while (fmt_pos != std::string::npos && fmt_pos < mat_pos) {
+            size_t fmt_end = text.find(';', fmt_pos);
+            if (fmt_end != std::string::npos && fmt_end <= mat_pos) {
+                std::string fmt_block = text.substr(fmt_pos, fmt_end - fmt_pos);
+                if (find_case_insensitive(fmt_block, "NOLABELS") != std::string::npos) {
+                    nolabels = true;
+                    break;
+                }
+            }
+            fmt_pos = find_case_insensitive(text, "FORMAT", fmt_pos + 6);
+        }
+
         mat_pos += 6; // skip "MATRIX"
 
         size_t mat_end = text.find(';', mat_pos);
@@ -154,6 +228,7 @@ public:
         // Parse sequences in MATRIX
         size_t idx = 0;
         size_t n = mat_content.size();
+        size_t nolabel_row_idx = 0;
         while (idx < n) {
             // skip whitespace
             while (idx < n && std::isspace(static_cast<unsigned char>(mat_content[idx]))) {
@@ -162,23 +237,31 @@ public:
             if (idx >= n) break;
 
             std::string taxon;
-            if (mat_content[idx] == '\'' || mat_content[idx] == '"') {
-                char quote = mat_content[idx++];
-                while (idx < n && mat_content[idx] != quote) {
-                    taxon += mat_content[idx++];
+            if (nolabels) {
+                if (taxlabels.empty()) {
+                    throw std::runtime_error("NEXUS FORMAT specifies NOLABELS, but no TAXLABELS were found: " + filepath);
                 }
-                if (idx < n) idx++; // skip closing quote
+                taxon = taxlabels[nolabel_row_idx % taxlabels.size()];
+                nolabel_row_idx++;
             } else {
-                while (idx < n && !std::isspace(static_cast<unsigned char>(mat_content[idx]))) {
-                    taxon += mat_content[idx++];
+                if (mat_content[idx] == '\'' || mat_content[idx] == '"') {
+                    char quote = mat_content[idx++];
+                    while (idx < n && mat_content[idx] != quote) {
+                        taxon += mat_content[idx++];
+                    }
+                    if (idx < n) idx++; // skip closing quote
+                } else {
+                    while (idx < n && !std::isspace(static_cast<unsigned char>(mat_content[idx]))) {
+                        taxon += mat_content[idx++];
+                    }
                 }
-            }
 
-            // skip whitespace to sequence
-            while (idx < n && std::isspace(static_cast<unsigned char>(mat_content[idx]))) {
-                idx++;
+                // skip whitespace to sequence
+                while (idx < n && std::isspace(static_cast<unsigned char>(mat_content[idx]))) {
+                    idx++;
+                }
+                if (idx >= n) break;
             }
-            if (idx >= n) break;
 
             // read sequence characters
             std::string seq;
@@ -187,7 +270,15 @@ public:
                 if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.') {
                     seq += (c == '.' ? '-' : c);
                     idx++;
+                } else if (c == '\n' || c == '\r') {
+                    idx++;
+                    break;
                 } else if (std::isspace(static_cast<unsigned char>(c))) {
+                    if (nolabels) {
+                        // In NOLABELS mode, horizontal spaces within a line are ignored; newline ends row
+                        idx++;
+                        continue;
+                    }
                     // Check if next non-space character is the start of a new taxon
                     size_t lookahead = idx;
                     while (lookahead < n && std::isspace(static_cast<unsigned char>(mat_content[lookahead]))) lookahead++;
@@ -254,10 +345,8 @@ public:
     }
 
     static Alignment load(const std::string& filepath, std::shared_ptr<const GeneticCode> gcode = nullptr) {
-        std::ifstream file(filepath);
-        if (!file.is_open()) {
-            throw std::runtime_error("Could not open alignment file: " + filepath);
-        }
+        std::string raw = read_file_or_gzip(filepath);
+        std::istringstream file(raw);
         std::string line;
         while (std::getline(file, line)) {
             while (!line.empty() && std::isspace(static_cast<unsigned char>(line.front()))) line.erase(line.begin());
@@ -278,10 +367,8 @@ public:
     }
 
     static Alignment load_nucleotide(const std::string& filepath) {
-        std::ifstream file(filepath);
-        if (!file.is_open()) {
-            throw std::runtime_error("Could not open alignment file: " + filepath);
-        }
+        std::string raw = read_file_or_gzip(filepath);
+        std::istringstream file(raw);
         std::string line;
         while (std::getline(file, line)) {
             while (!line.empty() && std::isspace(static_cast<unsigned char>(line.front()))) line.erase(line.begin());
@@ -340,11 +427,18 @@ public:
         // Convert raw sequence to codons using genetic code
         for (auto& s : sequences) {
             s.codons.resize(num_codons, -1);
+            s.codon_masks.resize(num_codons, 0);
             for (size_t c = 0; c < num_codons; ++c) {
                 char c1 = s.raw_seq[c * 3];
                 char c2 = s.raw_seq[c * 3 + 1];
                 char c3 = s.raw_seq[c * 3 + 2];
-                s.codons[c] = code->triplet_to_sense(c1, c2, c3);
+                int8_t st = code->triplet_to_sense(c1, c2, c3);
+                s.codons[c] = st;
+                if (st >= 0) {
+                    s.codon_masks[c] = (uint64_t(1) << st);
+                } else {
+                    s.codon_masks[c] = code->resolve_triplet_mask(c1, c2, c3);
+                }
             }
         }
 
@@ -389,11 +483,14 @@ public:
         for (size_t site = 0; site < num_nucleotides; ++site) {
             std::string col(num_taxa, 'N');
             std::vector<int8_t> states(num_taxa, -1);
+            std::vector<uint64_t> masks(num_taxa, 0);
 
             for (size_t t = 0; t < num_taxa; ++t) {
                 char nuc = sequences[t].raw_seq[site];
-                col[t] = nuc;
+                uint8_t m = char_to_iupac_mask(nuc);
+                col[t] = static_cast<char>('A' + m);
                 states[t] = char_to_nuc(nuc);
+                masks[t] = static_cast<uint64_t>(m);
             }
 
             auto it = pattern_map.find(col);
@@ -408,6 +505,7 @@ public:
 
                 SitePattern p;
                 p.states = std::move(states);
+                p.ambiguous_masks = std::move(masks);
                 p.weight = 1;
                 p.sites.push_back(site);
                 patterns.push_back(std::move(p));
@@ -468,11 +566,14 @@ public:
         for (size_t site = 0; site < num_nucleotides; ++site) {
             std::string col(num_taxa, 'N');
             std::vector<int8_t> states(num_taxa, -1);
+            std::vector<uint64_t> masks(num_taxa, 0);
 
             for (size_t t = 0; t < num_taxa; ++t) {
                 char nuc = sequences[t].raw_seq[site];
-                col[t] = nuc;
+                uint8_t m = char_to_iupac_mask(nuc);
+                col[t] = static_cast<char>('A' + m);
                 states[t] = char_to_nuc(nuc);
+                masks[t] = static_cast<uint64_t>(m);
             }
 
             auto it = pattern_map.find(col);
@@ -486,10 +587,11 @@ public:
                 pattern_map[col] = p_idx;
 
                 SitePattern p;
-                p.states = states;
+                p.states = std::move(states);
+                p.ambiguous_masks = std::move(masks);
                 p.weight = 1;
                 p.sites.push_back(site);
-                nuc_aln.patterns.push_back(p);
+                nuc_aln.patterns.push_back(std::move(p));
                 nuc_aln.site_to_pattern[site] = p_idx;
             }
         }
@@ -521,11 +623,31 @@ private:
         if (total_nucs > 0.0) {
             nuc_frequencies = nuc_counts / total_nucs;
         }
+        bool padded_nuc = false;
+        for (int b = 0; b < 4; ++b) {
+            if (nuc_frequencies(b) < 1e-8) {
+                nuc_frequencies(b) = 1e-8;
+                padded_nuc = true;
+            }
+        }
+        if (padded_nuc) {
+            nuc_frequencies /= nuc_frequencies.sum();
+        }
 
         for (int pos = 0; pos < 3; ++pos) {
             Scalar pos_total = pos_counts.row(pos).sum();
             if (pos_total > 0.0) {
                 pos_nuc_frequencies.row(pos) = pos_counts.row(pos) / pos_total;
+            }
+            bool padded_pos = false;
+            for (int b = 0; b < 4; ++b) {
+                if (pos_nuc_frequencies(pos, b) < 1e-8) {
+                    pos_nuc_frequencies(pos, b) = 1e-8;
+                    padded_pos = true;
+                }
+            }
+            if (padded_pos) {
+                pos_nuc_frequencies.row(pos) /= pos_nuc_frequencies.row(pos).sum();
             }
         }
 
@@ -549,7 +671,8 @@ private:
 
         // Compute Corrected F3x4 (CF3x4) using fixed-point iteration matching HyPhy
         Eigen::Matrix<Scalar, 3, 4> p_cur = pos_nuc_frequencies;
-        for (int it = 0; it < 50; ++it) {
+        for (int it = 0; it < 200; ++it) {
+            Eigen::Matrix<Scalar, 3, 4> p_prev = p_cur;
             Scalar sum_cf3x4 = 0.0;
             for (int idx = 0; idx < S; ++idx) {
                 const auto& codon = code->sense_codons[idx];
@@ -583,6 +706,10 @@ private:
                     p_cur.row(pos) /= s;
                 }
             }
+
+            if ((p_cur - p_prev).cwiseAbs().maxCoeff() < 1e-14) {
+                break;
+            }
         }
 
         // Final CF3x4 normalize
@@ -605,31 +732,48 @@ private:
         patterns.clear();
         site_to_pattern.resize(num_codons);
 
-        // Pattern hash map
+        struct PatternKey {
+            std::vector<int8_t> states;
+            std::vector<uint64_t> masks;
+            bool operator==(const PatternKey& o) const {
+                return states == o.states && masks == o.masks;
+            }
+        };
+
         struct PatternHash {
-            size_t operator()(const std::vector<int8_t>& v) const {
-                size_t h = v.size();
-                for (auto x : v) {
-                    h ^= static_cast<size_t>(x + 1) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            size_t operator()(const PatternKey& k) const {
+                size_t h = k.states.size();
+                for (size_t i = 0; i < k.states.size(); ++i) {
+                    size_t v = (k.states[i] >= 0)
+                        ? static_cast<size_t>(k.states[i] + 1)
+                        : static_cast<size_t>(k.masks[i] ^ (k.masks[i] >> 32));
+                    h ^= v + 0x9e3779b9 + (h << 6) + (h >> 2);
                 }
                 return h;
             }
         };
 
-        std::unordered_map<std::vector<int8_t>, size_t, PatternHash> pattern_map;
+        std::unordered_map<PatternKey, size_t, PatternHash> pattern_map;
 
-        std::vector<int8_t> col_states(num_taxa);
+        PatternKey key;
+        key.states.resize(num_taxa);
+        key.masks.resize(num_taxa);
+
         for (size_t c = 0; c < num_codons; ++c) {
             for (size_t t = 0; t < num_taxa; ++t) {
-                col_states[t] = sequences[t].codons[c];
+                key.states[t] = sequences[t].codons[c];
+                key.masks[t] = (sequences[t].codon_masks.size() > c)
+                    ? sequences[t].codon_masks[c]
+                    : ((key.states[t] >= 0) ? (uint64_t(1) << key.states[t]) : ~uint64_t(0));
             }
 
-            auto it = pattern_map.find(col_states);
+            auto it = pattern_map.find(key);
             if (it == pattern_map.end()) {
                 size_t new_idx = patterns.size();
-                pattern_map[col_states] = new_idx;
+                pattern_map[key] = new_idx;
                 SitePattern p;
-                p.states = col_states;
+                p.states = key.states;
+                p.ambiguous_masks = key.masks;
                 p.weight = 1;
                 p.sites.push_back(c);
                 patterns.push_back(std::move(p));

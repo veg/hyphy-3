@@ -7,6 +7,7 @@
 #include <nanobind/stl/unordered_map.h>
 #include <nanobind/stl/map.h>
 #include <nanobind/stl/function.h>
+#include <nanobind/stl/array.h>
 #include <nanobind/eigen/dense.h>
 
 #include "hyphy/core/types.hpp"
@@ -26,6 +27,9 @@
 #include "hyphy/analyses/gard.hpp"
 #include "hyphy/analyses/slac.hpp"
 #include "hyphy/analyses/directional_fel.hpp"
+#include "hyphy/core/ohmic_network.hpp"
+#include "hyphy/core/wheatstone_likelihood.hpp"
+#include "hyphy/analyses/ohmic.hpp"
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -54,8 +58,8 @@ NB_MODULE(_hyphy3, m) {
     // Tree
     nb::class_<Tree>(m, "Tree")
         .def(nb::init<>())
-        .def_static("from_newick", &Tree::from_newick, "newick"_a)
-        .def_static("from_newick_file", &Tree::from_newick_file, "filepath"_a)
+        .def_static("from_newick", &Tree::from_newick, "newick"_a, "keep_rooted"_a = true)
+        .def_static("from_newick_file", &Tree::from_newick_file, "filepath"_a, "keep_rooted"_a = true)
         .def("num_nodes", &Tree::num_nodes)
         .def("num_leaves", &Tree::num_leaves)
         .def_ro("root_id", &Tree::root_id)
@@ -243,6 +247,7 @@ NB_MODULE(_hyphy3, m) {
     // BUSTED Results & Analyzer
     nb::class_<BUSTEDSettings>(m, "BUSTEDSettings")
         .def(nb::init<>())
+        .def_rw("full_auto", &BUSTEDSettings::full_auto)
         .def_rw("num_rate_classes", &BUSTEDSettings::num_rate_classes)
         .def_rw("srv", &BUSTEDSettings::srv)
         .def_rw("num_syn_rate_classes", &BUSTEDSettings::num_syn_rate_classes)
@@ -250,6 +255,14 @@ NB_MODULE(_hyphy3, m) {
         .def_rw("max_k", &BUSTEDSettings::max_k)
         .def_rw("refine_branch_lengths", &BUSTEDSettings::refine_branch_lengths)
         .def_rw("multiple_hits", &BUSTEDSettings::multiple_hits)
+        .def_rw("error_sink", &BUSTEDSettings::error_sink)
+        .def_rw("error_sink_max_weight", &BUSTEDSettings::error_sink_max_weight)
+        .def_rw("error_sink_bf_threshold", &BUSTEDSettings::error_sink_bf_threshold)
+        .def_rw("test_branches", &BUSTEDSettings::test_branches)
+        .def_rw("phenotype_mode", &BUSTEDSettings::phenotype_mode)
+        .def_rw("relax_mode", &BUSTEDSettings::relax_mode)
+        .def_rw("include_relax_in_ph", &BUSTEDSettings::include_relax_in_ph)
+        .def_rw("comparison_branches", &BUSTEDSettings::comparison_branches)
         .def_rw("p_value_threshold", &BUSTEDSettings::p_value_threshold);
 
     nb::class_<BUSTEDRateDistribution>(m, "BUSTEDRateDistribution")
@@ -257,6 +270,7 @@ NB_MODULE(_hyphy3, m) {
         .def_ro("weights", &BUSTEDRateDistribution::weights)
         .def_ro("syn_rates", &BUSTEDRateDistribution::syn_rates)
         .def_ro("syn_weights", &BUSTEDRateDistribution::syn_weights)
+        .def_ro("error_sink_weight", &BUSTEDRateDistribution::error_sink_weight)
         .def_ro("annotations", &BUSTEDRateDistribution::annotations);
 
     nb::class_<BUSTEDFit>(m, "BUSTEDFit")
@@ -265,11 +279,14 @@ NB_MODULE(_hyphy3, m) {
         .def_ro("tree_scale", &BUSTEDFit::tree_scale)
         .def_ro("num_rate_classes", &BUSTEDFit::num_rate_classes)
         .def_ro("test_distribution", &BUSTEDFit::test_distribution)
+        .def_ro("has_background_distribution", &BUSTEDFit::has_background_distribution)
+        .def_ro("background_distribution", &BUSTEDFit::background_distribution)
         .def_ro("branch_lengths", &BUSTEDFit::branch_lengths)
         .def_ro("delta", &BUSTEDFit::delta)
         .def_ro("psi", &BUSTEDFit::psi)
         .def_ro("frac_delta", &BUSTEDFit::frac_delta)
-        .def_ro("frac_psi", &BUSTEDFit::frac_psi);
+        .def_ro("frac_psi", &BUSTEDFit::frac_psi)
+        .def_ro("error_sink_weight", &BUSTEDFit::error_sink_weight);
 
     nb::class_<BUSTEDResult>(m, "BUSTEDResult")
         .def_ro("optimal_k", &BUSTEDResult::optimal_k)
@@ -277,6 +294,26 @@ NB_MODULE(_hyphy3, m) {
         .def_ro("p_value", &BUSTEDResult::p_value)
         .def_ro("unconstrained", &BUSTEDResult::unconstrained)
         .def_ro("constrained", &BUSTEDResult::constrained)
+        .def_ro("has_background_test", &BUSTEDResult::has_background_test)
+        .def_ro("background_lrt", &BUSTEDResult::background_lrt)
+        .def_ro("background_p_value", &BUSTEDResult::background_p_value)
+        .def_ro("shared_lrt", &BUSTEDResult::shared_lrt)
+        .def_ro("shared_p_value", &BUSTEDResult::shared_p_value)
+        .def_ro("shared_df", &BUSTEDResult::shared_df)
+        .def_ro("union_intersection_p_value", &BUSTEDResult::union_intersection_p_value)
+        .def_ro("background_delta_aicc", &BUSTEDResult::background_delta_aicc)
+        .def_ro("background_neutral_supported", &BUSTEDResult::background_neutral_supported)
+        .def_ro("ranking_score", &BUSTEDResult::ranking_score)
+        .def_ro("phenotype_associated", &BUSTEDResult::phenotype_associated)
+        .def_ro("phenotype_verdict", &BUSTEDResult::phenotype_verdict)
+        .def_ro("constrained_background", &BUSTEDResult::constrained_background)
+        .def_ro("shared_distributions", &BUSTEDResult::shared_distributions)
+        .def_ro("has_relax_test", &BUSTEDResult::has_relax_test)
+        .def_ro("relax_k", &BUSTEDResult::relax_k)
+        .def_ro("relax_lrt", &BUSTEDResult::relax_lrt)
+        .def_ro("relax_p_value", &BUSTEDResult::relax_p_value)
+        .def_ro("relax_direction", &BUSTEDResult::relax_direction)
+        .def_ro("relax_alternative", &BUSTEDResult::relax_alternative)
         .def_ro("settings", &BUSTEDResult::settings)
         .def_ro("evidence_ratios", &BUSTEDResult::evidence_ratios)
         .def_ro("runtime_seconds", &BUSTEDResult::runtime_seconds);
@@ -285,7 +322,9 @@ NB_MODULE(_hyphy3, m) {
         .def("__init__", [](BUSTEDAnalyzer* self, Tree tree, Alignment aln, const MG94Parameters& params) {
             new (self) BUSTEDAnalyzer(std::move(tree), std::move(aln), params);
         }, "tree"_a, "alignment"_a, "params"_a = MG94Parameters{})
-        .def_static("create_and_fit", &BUSTEDAnalyzer::create_and_fit, "tree"_a, "alignment"_a)
+        .def_static("create_and_fit", [](Tree tree, Alignment aln) {
+            return BUSTEDAnalyzer::create_and_fit(std::move(tree), std::move(aln));
+        }, "tree"_a, "alignment"_a)
         .def("run", &BUSTEDAnalyzer::run, "settings"_a = BUSTEDSettings{}, "show_progress"_a = false, "force_progress"_a = false)
         .def("to_json", [](const BUSTEDAnalyzer& busted, const BUSTEDResult& res, const std::string& fmt) {
             auto format = (fmt == "legacy") ? JSONFormat::Legacy : JSONFormat::ModernV3;
@@ -304,8 +343,6 @@ NB_MODULE(_hyphy3, m) {
         .def_rw("max_rate_classes", &ABSRELSettings::max_rate_classes)
         .def_rw("p_threshold", &ABSRELSettings::p_threshold)
         .def_rw("test_branches", &ABSRELSettings::test_branches)
-        .def_rw("do_srv", &ABSRELSettings::do_srv)
-        .def_rw("syn_rate_classes", &ABSRELSettings::syn_rate_classes)
         .def_rw("verbose", &ABSRELSettings::verbose);
 
     nb::class_<ABSRELRateDistribution>(m, "ABSRELRateDistribution")
@@ -377,6 +414,8 @@ NB_MODULE(_hyphy3, m) {
         .def_rw("reference_branch_regex", &RELAXSettings::reference_branch_regex)
         .def_rw("reference_branch_names", &RELAXSettings::reference_branch_names)
         .def_rw("refine_branch_lengths", &RELAXSettings::refine_branch_lengths)
+        .def_rw("max_joint_cycles", &RELAXSettings::max_joint_cycles)
+        .def_rw("joint_tolerance", &RELAXSettings::joint_tolerance)
         .def_rw("verbose", &RELAXSettings::verbose);
 
     nb::class_<RELAXRateDistribution>(m, "RELAXRateDistribution")
@@ -391,8 +430,11 @@ NB_MODULE(_hyphy3, m) {
         .def_ro("parameters", &RELAXModelFit::parameters)
         .def_ro("tree_scale", &RELAXModelFit::tree_scale)
         .def_ro("k", &RELAXModelFit::k)
+        .def_ro("realized_cycles", &RELAXModelFit::realized_cycles)
+        .def_ro("converged", &RELAXModelFit::converged)
         .def_ro("reference_distribution", &RELAXModelFit::reference_distribution)
         .def_ro("test_distribution", &RELAXModelFit::test_distribution)
+        .def_ro("unclassified_distribution", &RELAXModelFit::unclassified_distribution)
         .def_ro("branch_lengths", &RELAXModelFit::branch_lengths)
         .def_ro("site_log_likelihoods", &RELAXModelFit::site_log_likelihoods);
 
@@ -408,6 +450,7 @@ NB_MODULE(_hyphy3, m) {
         .def_ro("mg94_omega_T", &RELAXResult::mg94_omega_T)
         .def_ro("alternative_fit", &RELAXResult::alternative_fit)
         .def_ro("null_fit", &RELAXResult::null_fit)
+        .def_ro("branch_switched_evidence_ratios", &RELAXResult::branch_switched_evidence_ratios)
         .def_ro("lrt", &RELAXResult::lrt)
         .def_ro("p_value", &RELAXResult::p_value)
         .def_ro("k", &RELAXResult::k)
@@ -815,4 +858,105 @@ NB_MODULE(_hyphy3, m) {
         .def_ro("branch_regime_ids", &DirectionalFELAnalyzer::branch_regime_ids)
         .def_ro("branch_regime_weights", &DirectionalFELAnalyzer::branch_regime_weights)
         .def_ro("site_results", &DirectionalFELAnalyzer::site_results);
+
+    // Ohmic Phylogenetic Networks & Wheatstone Pruning
+    nb::enum_<OhmicScaleMode>(m, "OhmicScaleMode")
+        .value("Auto", OhmicScaleMode::Auto)
+        .value("ExactDense", OhmicScaleMode::ExactDense)
+        .value("ScalableWoodbury", OhmicScaleMode::ScalableWoodbury);
+
+    nb::class_<OhmicSettings>(m, "OhmicSettings")
+        .def(nb::init<>())
+        .def_rw("scale_mode", &OhmicSettings::scale_mode)
+        .def_rw("dense_switch_threshold", &OhmicSettings::dense_switch_threshold)
+        .def_rw("rank_ratio_threshold", &OhmicSettings::rank_ratio_threshold)
+        .def_rw("woodbury_rank", &OhmicSettings::woodbury_rank)
+        .def_rw("min_shunt_stress", &OhmicSettings::min_shunt_stress)
+        .def_rw("max_bridges", &OhmicSettings::max_bridges)
+        .def_rw("collapse_ohmic_polytomies", &OhmicSettings::collapse_ohmic_polytomies)
+        .def_rw("include_tertiary", &OhmicSettings::include_tertiary)
+        .def_rw("use_hamming_distance", &OhmicSettings::use_hamming_distance)
+        .def_rw("fixed_sigma", &OhmicSettings::fixed_sigma)
+        .def_rw("epsilon_0", &OhmicSettings::epsilon_0);
+
+    nb::class_<WheatstoneBridge>(m, "WheatstoneBridge")
+        .def(nb::init<>())
+        .def_rw("hub_node_id", &WheatstoneBridge::hub_node_id)
+        .def_rw("bridge_node_id", &WheatstoneBridge::bridge_node_id)
+        .def_rw("children", &WheatstoneBridge::children)
+        .def_rw("weights", &WheatstoneBridge::weights)
+        .def_rw("branch_lengths", &WheatstoneBridge::branch_lengths)
+        .def_rw("ohmic_support", &WheatstoneBridge::ohmic_support)
+        .def_rw("shunt_stress", &WheatstoneBridge::shunt_stress);
+
+    nb::class_<OhmicNetwork>(m, "OhmicNetwork")
+        .def(nb::init<>())
+        .def_ro("backbone_tree", &OhmicNetwork::backbone_tree)
+        .def_ro("collapsed_tree", &OhmicNetwork::collapsed_tree)
+        .def_rw("bridges", &OhmicNetwork::bridges)
+        .def_ro("node_to_bridge_idx", &OhmicNetwork::node_to_bridge_idx)
+        .def_ro("active_mode", &OhmicNetwork::active_mode)
+        .def_ro("num_super_nodes", &OhmicNetwork::num_super_nodes)
+        .def_ro("num_collapsed_polytomies", &OhmicNetwork::num_collapsed_polytomies)
+        .def_ro("D_tn93", &OhmicNetwork::D_tn93)
+        .def_ro("Omega", &OhmicNetwork::Omega)
+        .def_ro("P_edge", &OhmicNetwork::P_edge)
+        .def_ro("foster_sum", &OhmicNetwork::foster_sum)
+        .def_ro("inv_aug_degrees", &OhmicNetwork::inv_aug_degrees)
+        .def_ro("Z_resistance_coords", &OhmicNetwork::Z_resistance_coords)
+        .def("effective_resistance", &OhmicNetwork::effective_resistance, "i"_a, "j"_a)
+        .def_static("infer", [](const Alignment& aln, const OhmicSettings& settings) {
+            return OhmicNetwork::infer(aln, settings, nullptr);
+        }, "alignment"_a, "settings"_a = OhmicSettings{});
+
+    nb::class_<OhmicAnalysisSettings>(m, "OhmicAnalysisSettings")
+        .def(nb::init<>())
+        .def_rw("network_settings", &OhmicAnalysisSettings::network_settings)
+        .def_rw("use_codon_model", &OhmicAnalysisSettings::use_codon_model)
+        .def_rw("optimize_bridge_weights", &OhmicAnalysisSettings::optimize_bridge_weights)
+        .def_rw("optimize_branch_lengths", &OhmicAnalysisSettings::optimize_branch_lengths)
+        .def_rw("quiet", &OhmicAnalysisSettings::quiet)
+        .def_rw("input_file", &OhmicAnalysisSettings::input_file)
+        .def_rw("output_file", &OhmicAnalysisSettings::output_file);
+
+    nb::class_<OhmicBridgeSummary>(m, "OhmicBridgeSummary")
+        .def_ro("bridge_index", &OhmicBridgeSummary::bridge_index)
+        .def_ro("hub_name", &OhmicBridgeSummary::hub_name)
+        .def_ro("bridge_name", &OhmicBridgeSummary::bridge_name)
+        .def_ro("child_names", &OhmicBridgeSummary::child_names)
+        .def_ro("initial_weights", &OhmicBridgeSummary::initial_weights)
+        .def_ro("fitted_weights", &OhmicBridgeSummary::fitted_weights)
+        .def_ro("fitted_branch_lengths", &OhmicBridgeSummary::fitted_branch_lengths)
+        .def_ro("ohmic_support", &OhmicBridgeSummary::ohmic_support)
+        .def_ro("shunt_stress", &OhmicBridgeSummary::shunt_stress);
+
+    nb::class_<OhmicResult>(m, "OhmicResult")
+        .def_ro("network", &OhmicResult::network)
+        .def_ro("num_taxa", &OhmicResult::num_taxa)
+        .def_ro("num_sites", &OhmicResult::num_sites)
+        .def_ro("num_patterns", &OhmicResult::num_patterns)
+        .def_ro("num_super_nodes", &OhmicResult::num_super_nodes)
+        .def_ro("num_bridges", &OhmicResult::num_bridges)
+        .def_ro("num_collapsed_polytomies", &OhmicResult::num_collapsed_polytomies)
+        .def_ro("foster_sum", &OhmicResult::foster_sum)
+        .def_ro("single_tree_log_l", &OhmicResult::single_tree_log_l)
+        .def_ro("single_tree_aicc", &OhmicResult::single_tree_aicc)
+        .def_ro("ohmic_log_l", &OhmicResult::ohmic_log_l)
+        .def_ro("ohmic_aicc", &OhmicResult::ohmic_aicc)
+        .def_ro("delta_log_l", &OhmicResult::delta_log_l)
+        .def_ro("delta_aicc", &OhmicResult::delta_aicc)
+        .def_ro("bridge_summaries", &OhmicResult::bridge_summaries)
+        .def_ro("runtime_seconds", &OhmicResult::runtime_seconds)
+        .def("to_modern_json", [](const OhmicResult& res, const std::string& filepath) {
+            return res.to_modern_json(filepath).dump();
+        }, "filepath"_a = "")
+        .def("to_legacy_json", [](const OhmicResult& res, const std::string& filepath) {
+            return res.to_legacy_json(filepath).dump();
+        }, "filepath"_a = "");
+
+    nb::class_<OhmicAnalyzer>(m, "OhmicAnalyzer")
+        .def(nb::init<Alignment, OhmicAnalysisSettings>(), "alignment"_a, "settings"_a = OhmicAnalysisSettings{})
+        .def("run", [](OhmicAnalyzer& analyzer) {
+            return analyzer.run(nullptr);
+        });
 }

@@ -61,6 +61,7 @@ public:
     Scalar current_best_caic = std::numeric_limits<Scalar>::infinity();
     Scalar baseline_caic = 0.0;
     std::string ga_status_details;
+    std::string ga_status_compact;
 
     std::mutex render_mutex;
     int lines_rendered = 0;
@@ -188,6 +189,7 @@ public:
         models_evaluated.store(0);
         reset_density();
         ga_status_details = "Initializing population...";
+        ga_status_compact = "Init pop...";
         stage_start_time = std::chrono::steady_clock::now();
         last_render_time = stage_start_time;
         last_log_time = stage_start_time;
@@ -217,6 +219,12 @@ public:
            << " • Diversity: " << std::fixed << std::setprecision(3) << diversity
            << " • Stagnant: " << stagnant << "/" << max_stagnant;
         ga_status_details = ss.str();
+
+        std::ostringstream css;
+        css << "G" << generation
+            << " (stg " << stagnant << "/" << max_stagnant
+            << ", div " << std::fixed << std::setprecision(2) << diversity << ")";
+        ga_status_compact = css.str();
 
         update_best(best_bps_for_B, best_caic_for_B);
 
@@ -290,6 +298,199 @@ public:
         std::cout << "\n" << std::flush;
     }
 
+    // Helper to safely truncate a styled ANSI line to at most max_w printable columns
+    static std::string truncate_ansi_line(std::string_view s, size_t max_w) {
+        if (core::Console::printable_len(s) <= max_w) {
+            return std::string(s);
+        }
+
+        std::string result;
+        result.reserve(s.size());
+        size_t cur_w = 0;
+        size_t i = 0;
+        bool has_active_ansi = false;
+
+        while (i < s.size()) {
+            if (s[i] == '\033' && i + 1 < s.size() && s[i + 1] == '[') {
+                size_t start_esc = i;
+                i += 2;
+                while (i < s.size() && s[i] != 'm') i++;
+                if (i < s.size()) i++;
+                std::string_view esc = s.substr(start_esc, i - start_esc);
+                result.append(esc);
+                if (esc == "\033[0m") {
+                    has_active_ansi = false;
+                } else {
+                    has_active_ansi = true;
+                }
+            } else if ((static_cast<unsigned char>(s[i]) & 0xC0) == 0x80) {
+                // UTF-8 continuation byte
+                result.push_back(s[i]);
+                i++;
+            } else {
+                // Start of a character / code point
+                if (cur_w >= max_w) {
+                    break;
+                }
+                result.push_back(s[i]);
+                cur_w++;
+                i++;
+            }
+        }
+
+        if (has_active_ansi) {
+            result.append("\033[0m");
+        }
+        return result;
+    }
+
+    // Formats the partition site intervals with adaptive multi-tier resolution detail
+    std::string format_partitions_line(const std::vector<size_t>& bps, int avail_w) const {
+        static const auto get_seg_style = [](int seg_idx, const std::string& ch) -> std::string {
+            switch (seg_idx % 6) {
+                case 0: return core::Console::brand(ch);    // Cyan
+                case 1: return core::Console::warning(ch);  // Amber
+                case 2: return core::Console::accent(ch);   // Purple
+                case 3: return core::Console::success(ch);  // Green
+                case 4: return core::Console::info(ch);     // Sky blue
+                default: return core::Console::number(ch);  // Gold
+            }
+        };
+
+        if (bps.empty()) {
+            return get_seg_style(0, "[1.." + std::to_string(num_sites) + "] (" + std::to_string(num_sites) + " bp)");
+        }
+
+        struct PartInfo {
+            size_t start;
+            size_t end;
+            size_t len;
+        };
+
+        std::vector<PartInfo> parts;
+        parts.reserve(bps.size() + 1);
+        size_t prev_site = 1;
+        for (size_t b : bps) {
+            size_t bp_site = b + 1;
+            if (bp_site >= prev_site) {
+                parts.push_back({prev_site, bp_site, bp_site - prev_site + 1});
+                prev_site = bp_site + 1;
+            }
+        }
+        if (prev_site <= num_sites) {
+            parts.push_back({prev_site, num_sites, num_sites - prev_site + 1});
+        }
+
+        if (parts.empty()) {
+            return get_seg_style(0, "[1.." + std::to_string(num_sites) + "]");
+        }
+
+        size_t min_len = parts[0].len;
+        size_t max_len = parts[0].len;
+        for (const auto& p : parts) {
+            if (p.len < min_len) min_len = p.len;
+            if (p.len > max_len) max_len = p.len;
+        }
+
+        // --- Tier 1: Full partition intervals with lengths [start..end] (len bp) ---
+        {
+            std::ostringstream ss;
+            for (size_t p = 0; p < parts.size(); ++p) {
+                if (p > 0) ss << core::Console::muted(" ── ");
+                ss << get_seg_style(static_cast<int>(p),
+                    "[" + std::to_string(parts[p].start) + ".." + std::to_string(parts[p].end) + "] (" + std::to_string(parts[p].len) + "bp)");
+            }
+            std::string t1 = ss.str();
+            if (core::Console::printable_len(t1) <= static_cast<size_t>(avail_w)) {
+                return t1;
+            }
+        }
+
+        // --- Tier 2: Compact partition intervals without lengths [start..end] ---
+        {
+            std::ostringstream ss;
+            for (size_t p = 0; p < parts.size(); ++p) {
+                if (p > 0) ss << core::Console::muted(" ── ");
+                ss << get_seg_style(static_cast<int>(p),
+                    "[" + std::to_string(parts[p].start) + ".." + std::to_string(parts[p].end) + "]");
+            }
+            std::string t2 = ss.str();
+            if (core::Console::printable_len(t2) <= static_cast<size_t>(avail_w)) {
+                return t2;
+            }
+        }
+
+        // --- Tier 3A: Breakpoint chain with min/max partition stats ---
+        // e.g.: 9 parts (min 43, max 165bp) • 1 ── 86 ── 159 ── ... ── 762
+        {
+            std::string prefix = std::to_string(parts.size()) + " parts (min " +
+                                 std::to_string(min_len) + ", max " + std::to_string(max_len) + "bp) • ";
+            std::ostringstream ss;
+            ss << core::Console::muted(prefix);
+            ss << core::Console::bold("1");
+            for (size_t p = 0; p < bps.size(); ++p) {
+                ss << get_seg_style(static_cast<int>(p), " ── ");
+                ss << core::Console::bold(core::Console::brand(std::to_string(bps[p] + 1)));
+            }
+            ss << get_seg_style(static_cast<int>(bps.size()), " ── ");
+            ss << core::Console::bold(std::to_string(num_sites));
+            std::string t3a = ss.str();
+            if (core::Console::printable_len(t3a) <= static_cast<size_t>(avail_w)) {
+                return t3a;
+            }
+        }
+
+        // --- Tier 3B: Breakpoint chain with compact prefix ---
+        // e.g.: 9 parts • 1 ── 86 ── 159 ── ... ── 762
+        {
+            std::string prefix = std::to_string(parts.size()) + " parts • ";
+            std::ostringstream ss;
+            ss << core::Console::muted(prefix);
+            ss << core::Console::bold("1");
+            for (size_t p = 0; p < bps.size(); ++p) {
+                ss << get_seg_style(static_cast<int>(p), " ── ");
+                ss << core::Console::bold(core::Console::brand(std::to_string(bps[p] + 1)));
+            }
+            ss << get_seg_style(static_cast<int>(bps.size()), " ── ");
+            ss << core::Console::bold(std::to_string(num_sites));
+            std::string t3b = ss.str();
+            if (core::Console::printable_len(t3b) <= static_cast<size_t>(avail_w)) {
+                return t3b;
+            }
+        }
+
+        // --- Tier 4: Head & Tail omission summary with partition stats ---
+        // e.g.: 10 parts (min 35, max 180bp) • [1..86] ── … (8 more) … ── [641..762]
+        {
+            std::string prefix = std::to_string(parts.size()) + " parts (min " +
+                                 std::to_string(min_len) + ", max " + std::to_string(max_len) + "bp) • ";
+            std::string short_prefix = std::to_string(parts.size()) + " parts • ";
+
+            for (const auto& pref : {prefix, short_prefix}) {
+                std::ostringstream ss;
+                ss << core::Console::muted(pref);
+                ss << get_seg_style(0, "[" + std::to_string(parts.front().start) + ".." + std::to_string(parts.front().end) + "]");
+                size_t omitted = parts.size() > 2 ? parts.size() - 2 : 0;
+                ss << core::Console::muted(" ── … (" + std::to_string(omitted) + " more) … ── ");
+                ss << get_seg_style(static_cast<int>(parts.size() - 1),
+                    "[" + std::to_string(parts.back().start) + ".." + std::to_string(parts.back().end) + "]");
+                std::string t4 = ss.str();
+                if (core::Console::printable_len(t4) <= static_cast<size_t>(avail_w)) {
+                    return t4;
+                }
+            }
+
+            // Minimalist fallback: 10 parts • [1..86] … [641..762]
+            std::ostringstream ss_min;
+            ss_min << core::Console::muted(std::to_string(parts.size()) + " parts • ")
+                   << get_seg_style(0, "[" + std::to_string(parts.front().start) + ".." + std::to_string(parts.front().end) + "]")
+                   << core::Console::muted(" … ")
+                   << get_seg_style(static_cast<int>(parts.size() - 1),
+                        "[" + std::to_string(parts.back().start) + ".." + std::to_string(parts.back().end) + "]");
+            return ss_min.str();
+        }
+    }
+
     // Formats the 5-line dynamic dashboard:
     // Line 0: Status & Speed
     // Line 1: Ruler coordinates
@@ -313,8 +514,8 @@ public:
         double speed = (elapsed_sec > 1e-3) ? (eval_count / elapsed_sec) : 0.0;
 
         int term_w = core::Console::terminal_width(80);
-        (void)term_w;
-        int chart_w = chart_width;
+        int max_line_w = std::max(30, term_w - 1);
+        int chart_w = std::clamp(term_w - 14, 25, chart_width);
 
         // --- Line 0: Status line ---
         std::ostringstream status_ss;
@@ -347,16 +548,60 @@ public:
             status_ss << core::Console::muted("GARD Analysis in progress...");
         }
 
+        std::string status_str = status_ss.str();
+        if (core::Console::printable_len(status_str) > static_cast<size_t>(max_line_w)) {
+            // Build compact status line
+            std::ostringstream css;
+            css << core::Console::bold("Status:  ");
+            if (current_stage == Stage::SingleBP) {
+                double pct = (total_candidates > 0) ? (100.0 * eval_count / total_candidates) : 0.0;
+                css << core::Console::accent("[B=1] ")
+                    << eval_count << "/" << total_candidates << " (" << std::fixed << std::setprecision(0) << pct << "%)"
+                    << " [" << format_duration(elapsed_sec) << "]";
+                if (!std::isinf(caic) && !bps.empty()) {
+                    Scalar delta = base_caic - caic;
+                    css << " • Best: " << core::Console::number(format_scalar(caic, 2))
+                        << " (site " << core::Console::brand(std::to_string(bps[0] + 1))
+                        << ", Δ: " << (delta >= 0 ? core::Console::success("-" + format_scalar(delta, 1)) : format_scalar(delta, 1)) << ")";
+                }
+            } else if (current_stage == Stage::MultiBP_GA) {
+                css << core::Console::accent("[B=" + std::to_string(current_B) + "] ")
+                    << eval_count << " mod [" << format_duration(elapsed_sec) << ", " << std::fixed << std::setprecision(0) << speed << "/s]";
+                if (!ga_status_compact.empty()) {
+                    css << " • " << ga_status_compact;
+                }
+                if (!std::isinf(caic)) {
+                    Scalar delta = base_caic - caic;
+                    css << " • Best: " << core::Console::number(format_scalar(caic, 2));
+                    if (delta > 0) {
+                        css << " (Δ: " << core::Console::success("-" + format_scalar(delta, 1)) << ")";
+                    }
+                }
+            }
+            std::string c_str = css.str();
+            if (core::Console::printable_len(c_str) <= static_cast<size_t>(max_line_w)) {
+                status_str = c_str;
+            }
+        }
+
         // --- Line 1: Ruler line ---
         std::vector<std::string> ruler_chars(chart_w, " ");
+        std::vector<bool> ruler_occupied(chart_w, false);
+
         ruler_chars[0] = core::Console::muted("1");
+        ruler_occupied[0] = true;
+        if (chart_w > 1) ruler_occupied[1] = true;
 
         std::string end_str = std::to_string(num_sites) + " bp";
         int end_start = chart_w - static_cast<int>(end_str.length());
-        for (int i = 0; i < static_cast<int>(end_str.length()); ++i) {
-            if (end_start + i < chart_w && end_start + i >= 0) {
-                ruler_chars[end_start + i] = core::Console::muted(std::string(1, end_str[i]));
+        if (end_start > 2) {
+            for (int i = 0; i < static_cast<int>(end_str.length()); ++i) {
+                if (end_start + i < chart_w && end_start + i >= 0) {
+                    ruler_chars[end_start + i] = core::Console::muted(std::string(1, end_str[i]));
+                    ruler_occupied[end_start + i] = true;
+                }
             }
+            if (end_start - 1 >= 0) ruler_occupied[end_start - 1] = true;
         }
 
         std::vector<int> bp_cols;
@@ -368,14 +613,28 @@ public:
             bp_cols.push_back(col);
         }
 
-        // Place breakpoint numbers on ruler
+        // Place breakpoint numbers on ruler with collision avoidance
         for (size_t i = 0; i < bps.size(); ++i) {
             std::string b_str = std::to_string(bps[i] + 1);
             int col = bp_cols[i];
             int b_start = col - static_cast<int>(b_str.length()) / 2;
-            if (b_start > 2 && b_start + static_cast<int>(b_str.length()) < end_start - 1) {
-                for (size_t j = 0; j < b_str.length(); ++j) {
-                    ruler_chars[b_start + j] = core::Console::bold(core::Console::brand(std::string(1, b_str[j])));
+            int b_end = b_start + static_cast<int>(b_str.length()) - 1;
+
+            if (b_start >= 1 && b_end < chart_w) {
+                int check_start = std::max(0, b_start - 1);
+                int check_end = std::min(chart_w - 1, b_end + 1);
+                bool collision = false;
+                for (int c = check_start; c <= check_end; ++c) {
+                    if (ruler_occupied[c]) {
+                        collision = true;
+                        break;
+                    }
+                }
+                if (!collision) {
+                    for (size_t j = 0; j < b_str.length(); ++j) {
+                        ruler_chars[b_start + j] = core::Console::bold(core::Console::brand(std::string(1, b_str[j])));
+                        ruler_occupied[b_start + j] = true;
+                    }
                 }
             }
         }
@@ -421,7 +680,10 @@ public:
         density_ss << core::Console::info("Density: ");
         size_t max_d = max_density.load(std::memory_order_relaxed);
 
-        for (int bin = 0; bin < chart_w; ++bin) {
+        for (int col = 0; col < chart_w; ++col) {
+            int bin = (chart_w > 1 && !density_bins.empty())
+                ? std::clamp(static_cast<int>(std::round(static_cast<double>(col) / (chart_w - 1) * (density_bins.size() - 1))), 0, static_cast<int>(density_bins.size() - 1))
+                : 0;
             size_t val = (bin < static_cast<int>(density_bins.size()))
                 ? density_bins[bin].load(std::memory_order_relaxed) : 0;
             if (val == 0 || max_d == 0) {
@@ -442,33 +704,15 @@ public:
         // --- Line 4: Partition breakdown ---
         std::ostringstream parts_ss;
         parts_ss << core::Console::accent("Parts:   ");
-
-        if (bps.empty()) {
-            parts_ss << get_seg_style(0, "[1.." + std::to_string(num_sites) + "] (" + std::to_string(num_sites) + " bp)");
-        } else {
-            size_t prev_site = 1;
-            for (size_t p = 0; p < bps.size(); ++p) {
-                size_t bp_site = bps[p] + 1;
-                size_t len = bp_site - prev_site + 1;
-                if (p > 0) parts_ss << core::Console::muted(" ── ");
-                parts_ss << get_seg_style(static_cast<int>(p),
-                    "[" + std::to_string(prev_site) + ".." + std::to_string(bp_site) + "] (" + std::to_string(len) + "bp)");
-                prev_site = bp_site + 1;
-            }
-            if (prev_site <= num_sites) {
-                size_t len = num_sites - prev_site + 1;
-                parts_ss << core::Console::muted(" ── ")
-                         << get_seg_style(static_cast<int>(bps.size()),
-                            "[" + std::to_string(prev_site) + ".." + std::to_string(num_sites) + "] (" + std::to_string(len) + "bp)");
-            }
-        }
+        int avail_parts_w = std::max(20, max_line_w - 9);
+        parts_ss << format_partitions_line(bps, avail_parts_w);
 
         return {
-            status_ss.str(),
-            ruler_ss.str(),
-            track_ss.str(),
-            density_ss.str(),
-            parts_ss.str()
+            truncate_ansi_line(status_str, max_line_w),
+            truncate_ansi_line(ruler_ss.str(), max_line_w),
+            truncate_ansi_line(track_ss.str(), max_line_w),
+            truncate_ansi_line(density_ss.str(), max_line_w),
+            truncate_ansi_line(parts_ss.str(), max_line_w)
         };
     }
 

@@ -83,26 +83,21 @@ public:
 
                     bool valid_tn93 = false;
                     if (!use_k2p) {
-                        Scalar d1 = 1.0 - (K1 > 1e-12 ? (AG / K1) : 0.0) - (0.5 * TV / fR);
-                        Scalar d2 = 1.0 - (K2 > 1e-12 ? (CT / K2) : 0.0) - (0.5 * TV / fY);
-                        Scalar d3 = 1.0 - (0.5 * TV / (fR * fY));
+                        Scalar d1 = std::max<Scalar>(0.02, 1.0 - (K1 > 1e-12 ? (AG / K1) : 0.0) - (0.5 * TV / fR));
+                        Scalar d2 = std::max<Scalar>(0.02, 1.0 - (K2 > 1e-12 ? (CT / K2) : 0.0) - (0.5 * TV / fY));
+                        Scalar d3 = std::max<Scalar>(0.02, 1.0 - (0.5 * TV / (fR * fY)));
 
-                        if (d1 > 1e-12 && d2 > 1e-12 && d3 > 1e-12) {
-                            d = -K1 * std::log(d1) - K2 * std::log(d2) - K3 * std::log(d3);
-                            if (d >= 0.0 && !std::isnan(d) && !std::isinf(d)) {
-                                valid_tn93 = true;
-                            }
+                        d = -K1 * std::log(d1) - K2 * std::log(d2) - K3 * std::log(d3);
+                        if (d >= 0.0 && !std::isnan(d) && !std::isinf(d)) {
+                            valid_tn93 = true;
                         }
                     }
 
                     if (!valid_tn93) {
-                        // Fall back to Jukes-Cantor
+                        // Fall back to continuous clamped Jukes-Cantor
                         Scalar p = AG + CT + TV;
-                        if (p < 0.75) {
-                            d = -0.75 * std::log(1.0 - 4.0 / 3.0 * p);
-                        } else {
-                            d = 1.0;
-                        }
+                        Scalar jc_arg = std::max<Scalar>(0.02, 1.0 - 4.0 / 3.0 * p);
+                        d = -0.75 * std::log(jc_arg);
                     }
                 }
 
@@ -188,10 +183,11 @@ public:
         std::vector<int32_t> active(N);
         for (size_t i = 0; i < N; ++i) active[i] = static_cast<int32_t>(i);
         Matrix D_curr = D;
+        Matrix V_curr = D;
 
         int node_counter = 1;
 
-        // Reduce active clusters down to 3
+        // Reduce active clusters down to 3 using BioNJ variance-weighted updates (Gascuel 1997)
         while (active.size() > 3) {
             size_t m = active.size();
             Vector R = Vector::Zero(m);
@@ -239,7 +235,7 @@ public:
 
             tree.nodes.push_back(std::move(internal_node));
 
-            // Construct new distance matrix of size m - 1
+            // Construct new distance and variance matrices of size m - 1
             std::vector<int32_t> next_active;
             next_active.reserve(m - 1);
             std::vector<size_t> old_indices;
@@ -253,21 +249,43 @@ public:
             }
             next_active.push_back(new_id);
 
+            Scalar var_ij = V_curr(best_i, best_j);
+            Scalar lam = 0.5;
+            if (var_ij > 1e-12 && scale > 0.0) {
+                Scalar sum_v_diff = 0.0;
+                for (size_t k : old_indices) {
+                    sum_v_diff += (V_curr(best_j, k) - V_curr(best_i, k));
+                }
+                lam = std::clamp<Scalar>(0.5 + sum_v_diff / (2.0 * scale * var_ij), 0.0, 1.0);
+            }
+
             size_t new_m = m - 1;
             Matrix D_next = Matrix::Zero(new_m, new_m);
+            Matrix V_next = Matrix::Zero(new_m, new_m);
             for (size_t a = 0; a < old_indices.size(); ++a) {
+                size_t ka = old_indices[a];
                 for (size_t b = a + 1; b < old_indices.size(); ++b) {
-                    D_next(a, b) = D_curr(old_indices[a], old_indices[b]);
-                    D_next(b, a) = D_next(a, b);
+                    size_t kb = old_indices[b];
+                    D_next(a, b) = D_curr(ka, kb);
+                    D_next(b, a) = D_curr(ka, kb);
+                    V_next(a, b) = V_curr(ka, kb);
+                    V_next(b, a) = V_curr(ka, kb);
                 }
-                Scalar d_uk = 0.5 * (D_curr(best_i, old_indices[a]) + D_curr(best_j, old_indices[a]) - dist_ij);
+                Scalar d_uk = lam * (D_curr(best_i, ka) - v_i) + (1.0 - lam) * (D_curr(best_j, ka) - v_j);
                 d_uk = std::max(d_uk, static_cast<Scalar>(1e-6));
+                Scalar v_uk = std::max<Scalar>(
+                    1e-12,
+                    lam * V_curr(best_i, ka) + (1.0 - lam) * V_curr(best_j, ka) - lam * (1.0 - lam) * var_ij
+                );
                 D_next(a, new_m - 1) = d_uk;
                 D_next(new_m - 1, a) = d_uk;
+                V_next(a, new_m - 1) = v_uk;
+                V_next(new_m - 1, a) = v_uk;
             }
 
             active = std::move(next_active);
             D_curr = std::move(D_next);
+            V_curr = std::move(V_next);
         }
 
         // Final 3 nodes connect to root (trifurcating unrooted tree)

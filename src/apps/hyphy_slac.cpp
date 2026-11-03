@@ -1,15 +1,9 @@
 #include "hyphy/core/types.hpp"
-#include "hyphy/core/genetic_code.hpp"
-#include "hyphy/core/alignment.hpp"
-#include "hyphy/core/tree.hpp"
+#include "hyphy/core/cli_common.hpp"
 #include "hyphy/core/rate_matrix.hpp"
 #include "hyphy/core/likelihood.hpp"
-#include "hyphy/core/console.hpp"
-#include "hyphy/core/progress_bar.hpp"
-#include "hyphy/core/provenance.hpp"
 #include "hyphy/opt/optimizer.hpp"
 #include "hyphy/analyses/slac.hpp"
-#include "hyphy/report/html_report.hpp"
 
 #include <iostream>
 #include <string>
@@ -17,10 +11,6 @@
 #include <chrono>
 #include <iomanip>
 #include <numeric>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 using namespace hyphy::core;
 using namespace hyphy::analyses;
@@ -41,7 +31,10 @@ static void print_usage(const char* prog) {
               << Console::bold("Required arguments:") << "\n"
               << "  " << Console::brand("--alignment") << " <file>   Path to codon alignment (FASTA or NEXUS)\n\n"
               << Console::bold("Optional arguments:") << "\n"
-              << "  " << Console::brand("--tree") << " <file>        Path to Newick tree file (optional if embedded in NEXUS)\n"
+              << "  " << Console::brand("--tree") << " <file>        Path to Newick tree file or 'auto' (optional; auto-inferred via TreeEngine if omitted or 'auto')\n"
+              << "  " << Console::brand("--ohmic, --omhic") << "     Infer Ohmic network & Wheatstone bridges (empirical conductances)\n"
+              << "  " << Console::brand("--hyphaeon") << "           Opt-in: HyphAeon 384D transformer conductances (needs Python aeon-core)\n"
+              << "  " << Console::brand("--embeddings") << " <file>  Path to precomputed [N x D] taxon embeddings TSV/CSV for Ohmic\n"
               << "  " << Console::brand("--code") << " <name>        Genetic code (default: Universal; e.g. Vertebrate-mtDNA)\n"
               << "  " << Console::brand("--branches") << " <set>     Branches to test: 'All' (default), 'Internal', 'Leaves', 'Unlabeled', tag name, or comma-separated names\n"
               << "  " << Console::brand("--branch-regex") << " <reg> Regular expression to match branch names to test\n"
@@ -61,67 +54,37 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--help, -h") << "           Show this help message\n\n"
               << Console::bold("Examples:") << "\n"
               << "  " << prog << " --alignment data/cd2.fna --tree data/cd2.nwk --output cd2.SLAC.json\n"
+              << "  " << prog << " --alignment data/cd2.fna --tree auto --output cd2.SLAC.json\n"
               << "  " << prog << " --alignment tests/data/adh.nex --samples 100 --pvalue 0.05\n"
               << "  " << prog << " --alignment data/cd2.fna --branches Internal --legacy-json\n\n";
 }
 
 int run_slac(int argc, char* argv[]) {
-    std::string alignment_file;
-    std::string tree_file;
-    std::string output_file;
-    std::string html_file;
-    std::string code_name = "Universal";
+    CommonCLIOptions cli;
     std::string test_branches = "All";
     std::string test_branch_regex = "";
-    int num_threads = 0;
     size_t samples = 100;
     Scalar pvalue_threshold = 0.1;
-    bool show_progress = ProgressBar::is_terminal();
-    bool force_progress = false;
     bool full_model = true;
-    bool all_sites = false;
-    JSONFormat json_format = JSONFormat::ModernV3;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--alignment" && i + 1 < argc) {
-            alignment_file = argv[++i];
-        } else if (arg == "--tree" && i + 1 < argc) {
-            tree_file = argv[++i];
-        } else if (arg == "--code" && i + 1 < argc) {
-            code_name = argv[++i];
-        } else if ((arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
+        auto status = parse_common_cli_arg(i, argc, argv, cli);
+        if (status == CommonArgParseStatus::Handled) continue;
+        if (status == CommonArgParseStatus::Error) return 1;
+
+        if ((arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
             test_branches = argv[++i];
         } else if ((arg == "--branch-regex" || arg == "--test-branch-regex") && i + 1 < argc) {
             test_branch_regex = argv[++i];
         } else if (arg == "--samples" && i + 1 < argc) {
             samples = static_cast<size_t>(std::stoul(argv[++i]));
-        } else if (arg == "--pvalue" && i + 1 < argc) {
+        } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
             pvalue_threshold = std::stod(argv[++i]);
-        } else if (arg == "--threads" && i + 1 < argc) {
-            num_threads = std::stoi(argv[++i]);
-        } else if (arg == "--output" && i + 1 < argc) {
-            output_file = argv[++i];
-        } else if (arg == "--html" && i + 1 < argc) {
-            html_file = argv[++i];
-        } else if (arg == "--json-format" && i + 1 < argc) {
-            json_format = parse_json_format(argv[++i]);
-        } else if (arg == "--legacy-json") {
-            json_format = JSONFormat::Legacy;
-        } else if (arg == "--modern-json") {
-            json_format = JSONFormat::ModernV3;
         } else if (arg == "--full-model") {
             full_model = true;
-        } else if (arg == "--quick") {
+        } else if (arg == "--quick" || arg == "--no-full-model") {
             full_model = false;
-        } else if (arg == "--all-sites") {
-            all_sites = true;
-        } else if (arg == "--progress") {
-            show_progress = true;
-            force_progress = true;
-        } else if (arg == "--no-progress") {
-            show_progress = false;
-            force_progress = false;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
@@ -132,49 +95,33 @@ int run_slac(int argc, char* argv[]) {
         }
     }
 
-    if (alignment_file.empty()) {
+    if (cli.alignment_file.empty()) {
         std::cerr << "Error: --alignment argument is required.\n\n";
         print_usage(argv[0]);
         return 1;
     }
 
-    if (num_threads > 0) {
-#ifdef _OPENMP
-        omp_set_num_threads(num_threads);
-#endif
-    }
-
+    finalize_common_cli_options(cli, ".SLAC.json");
     print_banner();
 
-    auto gcode = GeneticCode::from_name(code_name);
-    if (!gcode) {
-        std::cerr << "Error: Unknown genetic code '" << code_name << "'\n";
+    auto start_time = std::chrono::high_resolution_clock::now();
+    std::string start_iso = Provenance::current_iso8601();
+    std::string cli_cmd = join_cli_command(argc, argv);
+
+    std::cout << Console::bold("Loading alignment:") << " " << cli.alignment_file << "\n";
+    LoadedCodonDataset ds;
+    if (!load_codon_dataset(cli, ds, false)) {
         return 1;
     }
+    auto& gcode = ds.gcode;
+    auto& aln = ds.aln;
+    auto& tree = ds.tree;
+    std::cout << Console::bold("Phylogeny:") << " " << ds.tree_source << "\n";
 
-    std::cout << Console::bold("Loading alignment:") << " " << alignment_file << "\n";
-    Alignment aln;
     try {
-        aln = Alignment::load(alignment_file, gcode);
+        (void)tree.select_branches(test_branches, test_branch_regex);
     } catch (const std::exception& e) {
-        std::cerr << "Error loading alignment: " << e.what() << "\n";
-        return 1;
-    }
-
-    Tree tree;
-    if (!tree_file.empty()) {
-        std::cout << Console::bold("Loading phylogeny:") << " " << tree_file << "\n";
-        try {
-            tree = Tree::from_newick_file(tree_file);
-        } catch (const std::exception& e) {
-            std::cerr << "Error loading tree: " << e.what() << "\n";
-            return 1;
-        }
-    } else if (!aln.embedded_tree_newick.empty()) {
-        std::cout << Console::bold("Using embedded phylogeny from NEXUS file\n");
-        tree = Tree::from_newick(aln.embedded_tree_newick);
-    } else {
-        std::cerr << "Error: No tree specified and no tree embedded in NEXUS file.\n";
+        std::cerr << Console::danger("Error in branch selection: ") << e.what() << "\n";
         return 1;
     }
 
@@ -191,19 +138,17 @@ int run_slac(int argc, char* argv[]) {
     settings.test_branches = test_branches;
     settings.test_branch_regex = test_branch_regex;
     settings.full_model = full_model;
-    settings.all_sites = all_sites;
+    settings.all_sites = cli.all_sites;
 
     std::function<void(const std::string&, double)> progress_cb = nullptr;
-    if (!show_progress && !force_progress) {
+    if (!cli.show_progress && !cli.force_progress) {
         progress_cb = [](const std::string& msg, double) {
             std::cout << "  " << Console::muted("↳ ") << msg << "...\n";
         };
     }
 
-    auto start_time = std::chrono::high_resolution_clock::now();
-
     SLACAnalyzer analyzer = SLACAnalyzer::create_and_fit(tree, aln, settings, progress_cb);
-    SLACResult result = analyzer.run(progress_cb, show_progress, force_progress);
+    SLACResult result = analyzer.run(progress_cb, cli.show_progress, cli.force_progress);
 
     // Results table
     Table table;
@@ -241,7 +186,7 @@ int run_slac(int argc, char* argv[]) {
     }
 
     std::vector<size_t> display_indices;
-    if (all_sites) {
+    if (cli.all_sites) {
         display_indices.resize(result.total_sites);
         std::iota(display_indices.begin(), display_indices.end(), 0);
     } else if (!sig_indices.empty()) {
@@ -320,7 +265,7 @@ int run_slac(int argc, char* argv[]) {
     std::cout << "\n";
     table.print();
 
-    if (!all_sites) {
+    if (!cli.all_sites) {
         if (!sig_indices.empty()) {
             std::cout << Console::muted("  Showing " + std::to_string(sig_indices.size()) + 
                                        " significant site(s) at p <= " + std::to_string(pvalue_threshold) + 
@@ -337,14 +282,6 @@ int run_slac(int argc, char* argv[]) {
     auto end_time = std::chrono::high_resolution_clock::now();
     double total_sec = std::chrono::duration<double>(end_time - start_time).count();
 
-    auto fmt_pct = [](size_t n, size_t tot) {
-        if (tot == 0) return std::string("0.0%");
-        double p = (100.0 * n) / tot;
-        std::ostringstream ss;
-        ss << std::fixed << std::setprecision(1) << p << "%";
-        return ss.str();
-    };
-
     std::string branch_summary = (result.num_background_branches > 0)
         ? (std::to_string(result.num_tested_branches) + " test, " + std::to_string(result.num_background_branches) + " background")
         : ("All (" + std::to_string(result.num_tested_branches) + " branches)");
@@ -354,11 +291,11 @@ int run_slac(int argc, char* argv[]) {
         {"Tested Codon Sites", std::to_string(result.total_sites)},
         {"Diversifying Selection (Positive)", 
          Console::success(std::to_string(result.diversifying_sites)) + " sites (" + 
-         fmt_pct(result.diversifying_sites, result.total_sites) + ") [p <= " + std::to_string(pvalue_threshold) + "]"},
+         format_percentage(result.diversifying_sites, result.total_sites) + ") [p <= " + std::to_string(pvalue_threshold) + "]"},
         {"Purifying Selection (Negative)", 
          Console::info(std::to_string(result.purifying_sites)) + " sites (" + 
-         fmt_pct(result.purifying_sites, result.total_sites) + ") [p <= " + std::to_string(pvalue_threshold) + "]"},
-        {"Neutral Sites", std::to_string(result.neutral_sites) + " sites (" + fmt_pct(result.neutral_sites, result.total_sites) + ")"},
+         format_percentage(result.purifying_sites, result.total_sites) + ") [p <= " + std::to_string(pvalue_threshold) + "]"},
+        {"Neutral Sites", std::to_string(result.neutral_sites) + " sites (" + format_percentage(result.neutral_sites, result.total_sites) + ")"},
         {"Global dN/dS (omega)", fmt_val(result.global_omega, 4)},
         {"Nucleotide GTR Log-L", fmt_val(result.gtr_log_l, 2) + " (AICc: " + fmt_val(result.gtr_aicc, 2) + ")"},
         {"Global MG94xREV Log-L", fmt_val(result.baseline_log_l, 2) + " (AICc: " + fmt_val(result.baseline_aicc, 2) + ")"},
@@ -368,51 +305,21 @@ int run_slac(int argc, char* argv[]) {
 
     Panel::print_summary_card("SLAC Analysis Summary", sum_items);
 
-    // Save JSON
-    if (output_file.empty()) {
-        output_file = alignment_file + ".SLAC.json";
-    }
-
-    std::cout << Console::bold("Writing JSON output:") << " " << output_file << "\n";
     nlohmann::json out_json;
-    if (json_format == JSONFormat::Legacy) {
-        out_json = result.to_legacy_json(alignment_file, tree.to_newick());
+    if (cli.json_format == JSONFormat::Legacy) {
+        out_json = result.to_legacy_json(cli.alignment_file, tree.to_newick());
     } else {
-        Provenance prov;
-        prov.invocation.cli_command = "hyphy3 slac";
-        prov.invocation.working_directory = Provenance::get_cwd();
-        size_t sz = 0;
-        std::string hash = crypto::SHA256::hash_file(alignment_file, &sz);
-        prov.inputs["alignment"] = {alignment_file, "FASTA/NEXUS", hash, sz};
-        prov.execution.start_time = Provenance::current_iso8601();
-        prov.execution.end_time = Provenance::current_iso8601();
-        prov.execution.wall_time_seconds = total_sec;
-        prov.execution.cpu_threads = num_threads > 0 ? num_threads : 1;
-        prov.execution.hostname = Provenance::get_hostname();
-        prov.execution.os = Provenance::detect_os();
-        prov.execution.compiler = Provenance::detect_compiler();
-
-        out_json = result.to_modern_json(alignment_file, tree.to_newick(), prov);
+        Provenance prov = build_cli_provenance(cli, cli_cmd, start_iso, total_sec, {
+            {"branches", test_branches},
+            {"samples", std::to_string(samples)},
+            {"pvalue", std::to_string(pvalue_threshold)},
+            {"full_model", full_model ? "true" : "false"}
+        });
+        out_json = result.to_modern_json(cli.alignment_file, tree.to_newick(), prov);
     }
 
-    std::ofstream out_file(output_file);
-    if (!out_file.is_open()) {
-        std::cerr << "Warning: Could not open output file " << output_file << " for writing.\n";
-    } else {
-        out_file << out_json.dump(2) << "\n";
-        out_file.close();
-        std::cout << Console::success("Saved SLAC results successfully to ") << output_file << "\n";
-    }
-
-    if (!html_file.empty()) {
-        try {
-            hyphy::report::write_html_report(output_file, html_file);
-            std::cout << Console::success("✔") << " " << Console::bold("Saved HTML report to: ")
-                      << Console::brand(html_file) << "\n\n";
-        } catch (const std::exception& e) {
-            std::cerr << Console::danger("Error writing HTML report: ") << e.what() << "\n";
-            return 1;
-        }
+    if (!write_cli_json_and_html(cli, out_json.dump(2))) {
+        return 1;
     }
 
     return 0;

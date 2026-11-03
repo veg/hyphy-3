@@ -1,6 +1,5 @@
 #include "hyphy/analyses/directional_fel.hpp"
-#include "hyphy/core/console.hpp"
-#include "hyphy/report/html_report.hpp"
+#include "hyphy/core/cli_common.hpp"
 #include <iostream>
 #include <iomanip>
 #include <chrono>
@@ -27,7 +26,10 @@ void print_dfel_usage(const char* prog) {
               << "  " << Console::brand("--alignment, -a  ") << "  Path to in-frame codon alignment (FASTA or NEXUS)\n\n";
 
     std::cout << Console::bold("Model & Rooting Options:") << "\n"
-              << "  " << Console::brand("--tree, -t       ") << "  Path to Newick phylogenetic tree (optional if embedded in NEXUS)\n"
+              << "  " << Console::brand("--tree, -t       ") << "  Path to Newick phylogenetic tree or 'auto' (optional; auto-inferred via TreeEngine if omitted or 'auto')\n"
+              << "  " << Console::brand("--ohmic, --omhic ") << "  Infer Ohmic network & Wheatstone bridges (empirical conductances)\n"
+              << "  " << Console::brand("--hyphaeon    ") << "     Opt-in: HyphAeon 384D transformer conductances (needs Python aeon-core)\n"
+              << "  " << Console::brand("--embeddings <f> ") << "  Path to precomputed [N x D] taxon embeddings TSV/CSV for Ohmic\n"
               << "  " << Console::brand("--root, -r       ") << "  Rooting strategy: 'auto' (ML auto-rooting, default), 'keep' (input root), or <taxon>\n"
               << "  " << Console::brand("--heterogeneity  ") << "  P-value threshold to trigger directional regimes (default: 0.05)\n"
               << "  " << Console::brand("--regimes, -k    ") << "  Compositional regimes: 'auto' (default: 3 if heterogeneous, 1 if homogeneous), 1, or 3\n"
@@ -37,7 +39,7 @@ void print_dfel_usage(const char* prog) {
 
     std::cout << Console::bold("Output & Performance Options:") << "\n"
               << "  " << Console::brand("--output, -o     ") << "  Output JSON filepath (default: <alignment>.dFEL.json)\n"
-              << "  " << Console::brand("--html           ") << "  Also write a self-contained interactive HTML report\n"
+              << "  " << Console::brand("--html <file>    ") << "  Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--modern-json    ") << "  Export HyPhy 3.0 Modern JSON schema (default)\n"
               << "  " << Console::brand("--legacy-json    ") << "  Export backward-compatible HyPhy 2.5 legacy JSON format\n"
               << "  " << Console::brand("--threads, -T    ") << "  Number of OpenMP worker threads (default: system auto)\n"
@@ -79,58 +81,31 @@ static std::string render_rate_spark(Scalar alpha, Scalar beta) {
 }
 
 int run_dfel(int argc, char* argv[]) {
-    std::string alignment_file;
-    std::string tree_file;
-    std::string output_file;
-    std::string html_file;
-    std::string code_name = "Universal";
+    CommonCLIOptions cli;
     std::string root_strategy = "auto";
     std::string regimes_opt = "auto";
-    int num_threads = 0;
     Scalar pvalue_threshold = 0.1;
     Scalar het_threshold = 0.05;
-    bool show_progress = ProgressBar::is_terminal();
-    bool force_progress = false;
     bool full_model = true;
-    bool all_sites = false;
-    JSONFormat json_format = JSONFormat::ModernV3;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if ((arg == "--alignment" || arg == "-a") && i + 1 < argc) {
-            alignment_file = argv[++i];
-        } else if ((arg == "--tree" || arg == "-t") && i + 1 < argc) {
-            tree_file = argv[++i];
-        } else if ((arg == "--code" || arg == "-c") && i + 1 < argc) {
-            code_name = argv[++i];
-        } else if ((arg == "--root" || arg == "-r") && i + 1 < argc) {
+        auto status = parse_common_cli_arg(i, argc, argv, cli);
+        if (status == CommonArgParseStatus::Handled) continue;
+        if (status == CommonArgParseStatus::Error) return 1;
+
+        if ((arg == "--root" || arg == "-r") && i + 1 < argc) {
             root_strategy = argv[++i];
         } else if ((arg == "--regimes" || arg == "-k") && i + 1 < argc) {
             regimes_opt = argv[++i];
         } else if ((arg == "--heterogeneity" || arg == "--heterogeneity-threshold") && i + 1 < argc) {
             het_threshold = std::stod(argv[++i]);
-        } else if ((arg == "--threads" || arg == "-T") && i + 1 < argc) {
-            num_threads = std::stoi(argv[++i]);
-        } else if ((arg == "--output" || arg == "-o") && i + 1 < argc) {
-            output_file = argv[++i];
-        } else if (arg == "--html" && i + 1 < argc) {
-            html_file = argv[++i];
         } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
             pvalue_threshold = std::stod(argv[++i]);
-        } else if (arg == "--legacy-json") {
-            json_format = JSONFormat::Legacy;
-        } else if (arg == "--modern-json") {
-            json_format = JSONFormat::ModernV3;
         } else if (arg == "--quick" || arg == "--no-full-model") {
             full_model = false;
-        } else if (arg == "--all-sites") {
-            all_sites = true;
-        } else if (arg == "--progress") {
-            show_progress = true;
-            force_progress = true;
-        } else if (arg == "--no-progress") {
-            show_progress = false;
-            force_progress = false;
+        } else if (arg == "--full-model") {
+            full_model = true;
         } else if (arg == "--help" || arg == "-h") {
             print_dfel_usage(argv[0]);
             return 0;
@@ -141,71 +116,28 @@ int run_dfel(int argc, char* argv[]) {
         }
     }
 
-    if (alignment_file.empty()) {
+    if (cli.alignment_file.empty()) {
         std::cerr << Console::danger("Error: --alignment is required.\n\n");
         print_dfel_usage(argv[0]);
         return 1;
     }
 
-#ifdef _OPENMP
-    if (num_threads > 0) {
-        omp_set_num_threads(num_threads);
-    }
-#endif
-
-    if (output_file.empty()) {
-        output_file = alignment_file + ".dFEL.json";
-    }
-
+    finalize_common_cli_options(cli, ".dFEL.json");
     print_dfel_banner();
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
-    // 0. Genetic Code
-    std::shared_ptr<const GeneticCode> gcode;
-    try {
-        gcode = GeneticCode::from_name(code_name);
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error resolving genetic code: ") << e.what() << "\n";
+    LoadedCodonDataset ds;
+    if (!load_codon_dataset(cli, ds, false)) {
         return 1;
     }
-
-    // 1. Load Alignment
-    Alignment aln;
-    try {
-        aln = Alignment::load(alignment_file, gcode);
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error loading alignment: ") << e.what() << "\n";
-        return 1;
-    }
-
-    // 2. Load Tree
-    Tree tree;
-    std::string tree_source;
-    if (!tree_file.empty()) {
-        try {
-            tree = Tree::from_newick_file(tree_file);
-            tree_source = tree_file;
-        } catch (const std::exception& e) {
-            std::cerr << Console::danger("Error loading tree: ") << e.what() << "\n";
-            return 1;
-        }
-    } else if (!aln.embedded_tree_newick.empty()) {
-        try {
-            tree = Tree::from_newick(aln.embedded_tree_newick);
-            tree_source = "embedded in NEXUS";
-        } catch (const std::exception& e) {
-            std::cerr << Console::danger("Error parsing embedded tree: ") << e.what() << "\n";
-            return 1;
-        }
-    } else {
-        std::cerr << Console::danger("Error: No tree provided via --tree and no embedded tree found in alignment.\n\n");
-        print_dfel_usage(argv[0]);
-        return 1;
-    }
+    auto& gcode = ds.gcode;
+    auto& aln = ds.aln;
+    auto& tree = ds.tree;
+    const auto& tree_source = ds.tree_source;
 
     Panel::print_card("Dataset & Phylogeny", {
-        {"Alignment File", alignment_file},
+        {"Alignment File", cli.alignment_file},
         {"Sequences / Taxa", std::to_string(aln.num_taxa)},
         {"Codon Sites", std::to_string(aln.num_codons) + " (" + std::to_string(aln.num_codons * 3) + " nt)"},
         {"Unique Patterns", std::to_string(aln.patterns.size())},
@@ -337,7 +269,7 @@ int run_dfel(int argc, char* argv[]) {
 
     // Step 4: Site-Level Testing
     Panel::print_step(4, 4, "Site-by-Site Directional Selection Testing", "Testing alpha vs beta with directed substitutions");
-    auto results = dfel.run(show_progress, force_progress);
+    auto results = dfel.run(cli.show_progress, cli.force_progress);
 
     // Candidates Table
     std::vector<size_t> sig_indices;
@@ -348,7 +280,7 @@ int run_dfel(int argc, char* argv[]) {
     }
 
     std::vector<size_t> display_indices;
-    if (all_sites) {
+    if (cli.all_sites) {
         display_indices.resize(results.size());
         for (size_t s = 0; s < results.size(); ++s) display_indices[s] = s;
     } else if (!sig_indices.empty()) {
@@ -412,41 +344,33 @@ int run_dfel(int argc, char* argv[]) {
     auto end_time = std::chrono::high_resolution_clock::now();
     double total_sec = std::chrono::duration<double>(end_time - start_time).count();
 
-    auto fmt_pct = [](size_t n, size_t tot) {
-        if (tot == 0) return std::string("0.0%");
-        double p = (100.0 * n) / tot;
-        std::ostringstream ss;
-        ss << std::fixed << std::setprecision(1) << p << "%";
-        return ss.str();
-    };
-
     Panel::print_card("Directional FEL Execution Summary", {
         {"Compositional Heterogeneity", comp_res.is_heterogeneous ? "Detected (Regimes Activated)" : "Homogeneous"},
         {"Selected Root Branch", root_res.chosen_branch_name + " (Support: " + SiteVisualizer::format_scalar(root_res.chosen_weight * 100.0, 1) + "%)"},
         {"Directional Regimes", std::to_string(dfel.regimes.size())},
         {"Tested Codon Sites", std::to_string(summary.tested_sites)},
-        {"Diversifying Selection (Positive)", Console::success(std::to_string(summary.positively_selected)) + " sites (" + fmt_pct(summary.positively_selected, summary.tested_sites) + ")"},
-        {"Purifying Selection (Negative)", Console::info(std::to_string(summary.negatively_selected)) + " sites (" + fmt_pct(summary.negatively_selected, summary.tested_sites) + ")"},
-        {"Neutral Sites", std::to_string(summary.neutral_sites) + " sites (" + fmt_pct(summary.neutral_sites, summary.tested_sites) + ")"},
+        {"Diversifying Selection (Positive)", Console::success(std::to_string(summary.positively_selected)) + " sites (" + format_percentage(summary.positively_selected, summary.tested_sites) + ")"},
+        {"Purifying Selection (Negative)", Console::info(std::to_string(summary.negatively_selected)) + " sites (" + format_percentage(summary.negatively_selected, summary.tested_sites) + ")"},
+        {"Neutral Sites", std::to_string(summary.neutral_sites) + " sites (" + format_percentage(summary.neutral_sites, summary.tested_sites) + ")"},
         {"Global MG94 Fit", SiteVisualizer::format_scalar(dfel.global_log_l, 2) + " (AICc: " + SiteVisualizer::format_scalar(dfel.global_aicc, 2) + ")"},
-        {"Output JSON", output_file},
+        {"Output JSON", cli.output_file},
         {"Total Runtime", SiteVisualizer::format_scalar(total_sec, 2) + " s"}
     });
 
     // Export JSON
     try {
-        dfel.export_json(output_file, json_format, alignment_file, dfel.tree.to_newick(true));
-        std::cout << Console::success("✓ ") << "Analysis results written to " << Console::bold(output_file) << "\n\n";
+        dfel.export_json(cli.output_file, cli.json_format, cli.alignment_file, dfel.tree.to_newick(true));
+        std::cout << Console::success("✓ ") << "Analysis results written to " << Console::bold(cli.output_file) << "\n\n";
     } catch (const std::exception& e) {
         std::cerr << Console::danger("Error exporting JSON: ") << e.what() << "\n";
         return 1;
     }
 
-    if (!html_file.empty()) {
+    if (!cli.html_file.empty()) {
         try {
-            hyphy::report::write_html_report(output_file, html_file);
+            hyphy::report::write_html_report(cli.output_file, cli.html_file);
             std::cout << Console::success("✔") << " " << Console::bold("Saved HTML report to: ")
-                      << Console::brand(html_file) << "\n\n";
+                      << Console::brand(cli.html_file) << "\n\n";
         } catch (const std::exception& e) {
             std::cerr << Console::danger("Error writing HTML report: ") << e.what() << "\n";
             return 1;
@@ -458,6 +382,11 @@ int run_dfel(int argc, char* argv[]) {
 
 #ifndef HYPHY3_COMBINED_DRIVER
 int main(int argc, char* argv[]) {
-    return run_dfel(argc, argv);
+    try {
+        return run_dfel(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
 }
 #endif

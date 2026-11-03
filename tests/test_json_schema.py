@@ -538,6 +538,45 @@ def test_dfel_json_schema():
     assert len(instance["site_results"]["data"]["site"]) == 254
     print("dFEL Modern JSON Schema validation passed successfully!")
 
+def test_ohmic_modern_and_legacy_json_schema():
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    aln_path = os.path.join(repo_root, "tests", "data", "adh.nex")
+    schema_path = os.path.join(repo_root, "schemas", "v3", "ohmic.v3.schema.json")
+
+    assert os.path.exists(aln_path), f"Missing alignment: {aln_path}"
+    assert os.path.exists(schema_path), f"Missing schema: {schema_path}"
+
+    with open(schema_path) as sf:
+        schema = json.load(sf)
+
+    aln = hp.Alignment.load_nucleotide(aln_path)
+
+    settings = hp.OhmicAnalysisSettings()
+    settings.input_file = aln_path
+    settings.quiet = True
+
+    analyzer = hp.OhmicAnalyzer(aln, settings)
+    result = analyzer.run()
+
+    # 1. Modern JSON
+    modern = json.loads(result.to_modern_json(aln_path))
+    jsonschema.validate(instance=modern, schema=schema)
+    assert modern["$schema"] == "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/ohmic.v3.schema.json"
+    assert modern["schema_version"] == "3.0.0"
+    assert modern["analysis"]["id"] == "ohmic"
+    assert modern["software"]["name"] == "hyphy"
+    assert modern["dataset"]["taxa_count"] == 23
+    assert modern["dataset"]["sites_count"] == 762
+    assert modern["electrical_network"]["num_bridges"] == len(modern["wheatstone_bridges"])
+    assert modern["fits"]["ohmic_network"]["delta_log_likelihood"] >= -1e-9
+
+    # 2. Legacy JSON carries the compatibility input block
+    legacy = json.loads(result.to_legacy_json(aln_path))
+    assert "input" in legacy
+    assert legacy["input"]["number of sequences"] == 23
+
+    print("Ohmic Modern & Legacy JSON Schema tests passed successfully!")
+
 if __name__ == "__main__":
     test_fel_modern_and_legacy_json_schema()
     test_fel_branch_subset_json_schema()
@@ -550,6 +589,7 @@ if __name__ == "__main__":
     test_gard_modern_and_legacy_json_schema()
     test_slac_modern_and_legacy_json_schema()
     test_dfel_json_schema()
+    test_ohmic_modern_and_legacy_json_schema()
 
 
 

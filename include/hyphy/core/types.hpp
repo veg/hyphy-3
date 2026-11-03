@@ -46,90 +46,26 @@ inline constexpr char nuc_to_char(int8_t idx) {
     return (idx >= 0 && idx < 4) ? nucs[idx] : '-';
 }
 
-// Universal Genetic Code Sense Codons in standard HyPhy alphabetical order (0..60)
-inline const std::array<std::string_view, 61> SENSE_CODONS = {
-    "AAA", "AAC", "AAG", "AAT", "ACA", "ACC", "ACG", "ACT",
-    "AGA", "AGC", "AGG", "AGT", "ATA", "ATC", "ATG", "ATT",
-    "CAA", "CAC", "CAG", "CAT", "CCA", "CCC", "CCG", "CCT",
-    "CGA", "CGC", "CGG", "CGT", "CTA", "CTC", "CTG", "CTT",
-    "GAA", "GAC", "GAG", "GAT", "GCA", "GCC", "GCG", "GCT",
-    "GGA", "GGC", "GGG", "GGT", "GTA", "GTC", "GTG", "GTT",
-    "TAC", "TAT", "TCA", "TCC", "TCG", "TCT", "TGC", "TGG",
-    "TGT", "TTA", "TTC", "TTG", "TTT"
-};
-
-// Amino Acid translation for each of the 61 sense codons in Universal code
-inline const std::array<char, 61> SENSE_CODON_AA = {
-    'K', 'N', 'K', 'N', 'T', 'T', 'T', 'T',
-    'R', 'S', 'R', 'S', 'I', 'I', 'M', 'I',
-    'Q', 'H', 'Q', 'H', 'P', 'P', 'P', 'P',
-    'R', 'R', 'R', 'R', 'L', 'L', 'L', 'L',
-    'E', 'D', 'E', 'D', 'A', 'A', 'A', 'A',
-    'G', 'G', 'G', 'G', 'V', 'V', 'V', 'V',
-    'Y', 'Y', 'S', 'S', 'S', 'S', 'C', 'W',
-    'C', 'L', 'F', 'L', 'F'
-};
-
-// Fast lookup from 3-nucleotide indices (0..3 each) to 61 sense codon index (-1 for stops)
-struct GeneticCodeTable {
-    int8_t codon_lookup[4][4][4];
-    char   codon_aa[4][4][4];
-    bool   is_stop[4][4][4];
-
-    GeneticCodeTable() {
-        // Initialize all to stop / invalid
-        for (int i = 0; i < 4; ++i) {
-            for (int j = 0; j < 4; ++j) {
-                for (int k = 0; k < 4; ++k) {
-                    codon_lookup[i][j][k] = -1;
-                    codon_aa[i][j][k] = '*';
-                    is_stop[i][j][k] = false;
-                }
-            }
-        }
-        // Universal stops: TAA (3,0,0), TAG (3,0,2), TGA (3,2,0)
-        is_stop[3][0][0] = true;
-        is_stop[3][0][2] = true;
-        is_stop[3][2][0] = true;
-
-        for (size_t idx = 0; idx < SENSE_CODONS.size(); ++idx) {
-            auto s = SENSE_CODONS[idx];
-            int8_t n1 = char_to_nuc(s[0]);
-            int8_t n2 = char_to_nuc(s[1]);
-            int8_t n3 = char_to_nuc(s[2]);
-            codon_lookup[n1][n2][n3] = static_cast<int8_t>(idx);
-            codon_aa[n1][n2][n3] = SENSE_CODON_AA[idx];
-        }
+// Maps standard nucleotide and IUPAC ambiguity characters to a 4-bit mask:
+// bit 0 (1): A, bit 1 (2): C, bit 2 (4): G, bit 3 (8): T/U, 0xF: N/-/?
+inline constexpr uint8_t char_to_iupac_mask(char c) {
+    switch (c) {
+        case 'A': case 'a': return 0b0001; // A
+        case 'C': case 'c': return 0b0010; // C
+        case 'G': case 'g': return 0b0100; // G
+        case 'T': case 't': case 'U': case 'u': return 0b1000; // T/U
+        case 'R': case 'r': return 0b0101; // A or G
+        case 'Y': case 'y': return 0b1010; // C or T
+        case 'S': case 's': return 0b0110; // C or G
+        case 'W': case 'w': return 0b1001; // A or T
+        case 'K': case 'k': return 0b1100; // G or T
+        case 'M': case 'm': return 0b0011; // A or C
+        case 'B': case 'b': return 0b1110; // C, G, or T (not A)
+        case 'D': case 'd': return 0b1101; // A, G, or T (not C)
+        case 'H': case 'h': return 0b1011; // A, C, or T (not G)
+        case 'V': case 'v': return 0b0111; // A, C, or G (not T)
+        default:            return 0b1111; // N, -, ?, or unknown
     }
-
-    static const GeneticCodeTable& universal() {
-        static GeneticCodeTable table;
-        return table;
-    }
-};
-
-inline int8_t triplet_to_sense_codon(char c1, char c2, char c3) {
-    int8_t n1 = char_to_nuc(c1);
-    int8_t n2 = char_to_nuc(c2);
-    int8_t n3 = char_to_nuc(c3);
-    if (n1 < 0 || n2 < 0 || n3 < 0) return -1;
-    return GeneticCodeTable::universal().codon_lookup[n1][n2][n3];
-}
-
-inline bool is_synonymous(int8_t codon_from, int8_t codon_to) {
-    if (codon_from < 0 || codon_from >= 61 || codon_to < 0 || codon_to >= 61) return false;
-    return SENSE_CODON_AA[codon_from] == SENSE_CODON_AA[codon_to];
-}
-
-inline int count_nucleotide_differences(int8_t codon_from, int8_t codon_to) {
-    if (codon_from == codon_to) return 0;
-    auto s1 = SENSE_CODONS[codon_from];
-    auto s2 = SENSE_CODONS[codon_to];
-    int diffs = 0;
-    if (s1[0] != s2[0]) ++diffs;
-    if (s1[1] != s2[1]) ++diffs;
-    if (s1[2] != s2[2]) ++diffs;
-    return diffs;
 }
 
 } // namespace hyphy::core

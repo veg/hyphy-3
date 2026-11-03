@@ -8,17 +8,45 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Optimization flags
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall -Wextra")
 
-# Header-only Eigen 3.4.0
+# Build-speed options -----------------------------------------------------------
+# All targets share the same large header stack (nlohmann/json, Eigen, core and
+# analysis headers), so full builds parse it once per translation unit.
+#
+# - ccache: if found on PATH, identical translation units are served from
+#   cache. Harmless when absent.
+find_program(HYPHY3_CCACHE_PROGRAM ccache)
+if(HYPHY3_CCACHE_PROGRAM)
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${HYPHY3_CCACHE_PROGRAM}")
+endif()
+#
+# - HYPHY3_FAST_COMPILE=ON: compiles at -O1 for faster iteration builds.
+#   Release artifacts must be built without it.
+option(HYPHY3_FAST_COMPILE "Trade optimization for compile speed (dev builds)" OFF)
+if(HYPHY3_FAST_COMPILE)
+    string(REGEX REPLACE "-O3" "-O1" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+endif()
+#
+# - HYPHY3_PCH (default ON): precompile the stable part of the shared header
+#   stack once (src/pch.hpp) and reuse it for every target. Set
+#   -DHYPHY3_PCH=OFF to disable.
+option(HYPHY3_PCH "Shared precompiled header for all executable targets" ON)
+#
+# - HYPHY3_BUILD_TESTS (default ON): build the test executables and register the
+#   ctest suite. Needs tests/ and benchmarks/data. The Dockerfile passes
+#   -DHYPHY3_BUILD_TESTS=OFF so the image build does not need them.
+option(HYPHY3_BUILD_TESTS "Build the test suite" ON)
+
+# Header-only Eigen 3.4.0 (SOURCE_SUBDIR points to a non-existent subdir so
+# FetchContent_MakeAvailable populates the headers without running Eigen's
+# legacy CMakeLists.txt or triggering CMP0169 warnings).
 include(FetchContent)
 FetchContent_Declare(
     Eigen3
     URL https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR _cmake_header_only_noop
 )
-FetchContent_GetProperties(Eigen3)
-if(NOT eigen3_POPULATED)
-    FetchContent_Populate(Eigen3)
-endif()
+FetchContent_MakeAvailable(Eigen3)
 
 # Core interface library
 add_library(hyphy3_core INTERFACE)
@@ -27,6 +55,35 @@ add_library(hyphy_core ALIAS hyphy3_core)
 target_include_directories(hyphy3_core INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${eigen3_SOURCE_DIR}
+)
+
+# Build metadata for the JSON output software block (consumed by
+# include/hyphy/core/json_output.hpp). git_commit is captured at configure
+# time; falls back to "unknown" outside a git checkout. Pass
+# -DHYPHY3_GIT_COMMIT=<value> to pin it: the commit becomes a compile
+# definition of every target, so a value that changes per commit defeats ccache
+# (CI pins it to "ci").
+if(NOT DEFINED HYPHY3_GIT_COMMIT)
+    execute_process(
+        COMMAND git rev-parse --short HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE HYPHY3_GIT_COMMIT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+endif()
+if(NOT HYPHY3_GIT_COMMIT)
+    set(HYPHY3_GIT_COMMIT "unknown")
+endif()
+if(NOT CMAKE_BUILD_TYPE)
+    set(HYPHY3_BUILD_TYPE_VALUE "unknown")
+else()
+    set(HYPHY3_BUILD_TYPE_VALUE "${CMAKE_BUILD_TYPE}")
+endif()
+target_compile_definitions(hyphy3_core INTERFACE
+    HYPHY3_VERSION="${PROJECT_VERSION}"
+    HYPHY3_GIT_COMMIT="${HYPHY3_GIT_COMMIT}"
+    HYPHY3_BUILD_TYPE="${HYPHY3_BUILD_TYPE_VALUE}"
 )
 
 # OpenMP support
@@ -40,21 +97,35 @@ if(OpenMP_CXX_FOUND)
     target_link_libraries(hyphy3_core INTERFACE OpenMP::OpenMP_CXX)
 endif()
 
+# Apple Accelerate (AMX / vDSP) hardware BLAS backend for batched 61xP GEMM Inside-Outside
+if(APPLE)
+    find_library(ACCELERATE_FRAMEWORK Accelerate)
+    if(ACCELERATE_FRAMEWORK)
+        message(STATUS "Apple Accelerate framework found: ${ACCELERATE_FRAMEWORK}")
+        target_link_libraries(hyphy3_core INTERFACE ${ACCELERATE_FRAMEWORK})
+        target_compile_definitions(hyphy3_core INTERFACE EIGEN_USE_BLAS ACCELERATE_NEW_LAPACK)
+    endif()
+endif()
+
 # HTML results viewer (viz/fel-viewer), embedded into the binaries at build time so hyphy3 can
 # write self-contained reports with no Node, Python or companion files (cmake/EmbedViewer.cmake)
 set(HYPHY3_VIEWER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/viz/fel-viewer)
+set(HYPHY3_OHMIC_VIEWER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/viz/ohmic-viewer)
 set(HYPHY3_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
 set(HYPHY3_VIEWER_HEADER ${HYPHY3_GENERATED_DIR}/hyphy/report/viewer_assets.hpp)
 set(HYPHY3_VIEWER_STAMP ${HYPHY3_GENERATED_DIR}/viewer_assets.stamp)
 file(GLOB_RECURSE HYPHY3_VIEWER_SOURCES CONFIGURE_DEPENDS
     ${HYPHY3_VIEWER_DIR}/src/*.js
     ${HYPHY3_VIEWER_DIR}/src/*.css
+    ${HYPHY3_OHMIC_VIEWER_DIR}/src/*.js
+    ${HYPHY3_OHMIC_VIEWER_DIR}/src/*.css
 )
 add_custom_command(
     OUTPUT ${HYPHY3_VIEWER_STAMP}
     BYPRODUCTS ${HYPHY3_VIEWER_HEADER}
     COMMAND ${CMAKE_COMMAND}
         -DVIEWER_DIR=${HYPHY3_VIEWER_DIR}
+        -DOHMIC_VIEWER_DIR=${HYPHY3_OHMIC_VIEWER_DIR}
         -DOUTPUT=${HYPHY3_VIEWER_HEADER}
         -DSTAMP=${HYPHY3_VIEWER_STAMP}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedViewer.cmake
@@ -69,96 +140,180 @@ target_include_directories(hyphy3_report INTERFACE ${HYPHY3_GENERATED_DIR})
 target_link_libraries(hyphy3_report INTERFACE hyphy3_core)
 add_dependencies(hyphy3_report hyphy3_viewer_assets)
 
-# Test targets
-enable_testing()
-# Lets tests locate benchmarks/ and tests/data/ regardless of working directory
-add_compile_definitions(HYPHY3_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-add_executable(hyphy_test tests/test_core.cpp)
-target_link_libraries(hyphy_test PRIVATE hyphy3_core)
-add_test(NAME CoreTests COMMAND hyphy_test)
+# Also expose generated viewer_assets.hpp on hyphy3_core so any target including
+# hyphy/core/cli_common.hpp -> hyphy/report/html_report.hpp finds it cleanly.
+target_include_directories(hyphy3_core INTERFACE ${HYPHY3_GENERATED_DIR})
+add_dependencies(hyphy3_core hyphy3_viewer_assets)
 
-add_executable(hyphy_fel_test tests/test_fel.cpp)
-target_link_libraries(hyphy_fel_test PRIVATE hyphy3_core)
-add_test(NAME FELTests COMMAND hyphy_fel_test)
-
-add_executable(hyphy_fel_cd2_parity_test tests/test_fel_cd2_parity.cpp)
-target_link_libraries(hyphy_fel_cd2_parity_test PRIVATE hyphy3_core)
-add_test(NAME CD2ParityTest COMMAND hyphy_fel_cd2_parity_test)
-
-add_executable(hyphy_fel_multi_dataset_test tests/test_fel_multi_dataset.cpp)
-target_link_libraries(hyphy_fel_multi_dataset_test PRIVATE hyphy3_core)
-add_test(NAME MultiDatasetParityTest COMMAND hyphy_fel_multi_dataset_test)
-
-add_executable(hyphy_meme_test tests/test_meme.cpp)
-target_link_libraries(hyphy_meme_test PRIVATE hyphy3_core)
-add_test(NAME MEMEParityTest COMMAND hyphy_meme_test)
-
-add_executable(hyphy_busted_test tests/test_busted.cpp)
-target_link_libraries(hyphy_busted_test PRIVATE hyphy3_core)
-add_test(NAME BUSTEDTest COMMAND hyphy_busted_test)
-
-add_executable(hyphy_busted_mh_test tests/test_busted_mh.cpp)
-target_link_libraries(hyphy_busted_mh_test PRIVATE hyphy3_core)
-add_test(NAME BUSTEDMHTest COMMAND hyphy_busted_mh_test)
-
-add_executable(hyphy_cpp_autograd_test tests/test_cpp_autograd.cpp)
-target_link_libraries(hyphy_cpp_autograd_test PRIVATE hyphy3_core)
-add_test(NAME CppAutogradTest COMMAND hyphy_cpp_autograd_test)
-
-add_executable(hyphy_absrel_test tests/test_absrel.cpp)
-target_link_libraries(hyphy_absrel_test PRIVATE hyphy3_core)
-add_test(NAME ABSRELTest COMMAND hyphy_absrel_test)
-
-add_executable(hyphy_relax_test tests/test_relax.cpp)
-target_link_libraries(hyphy_relax_test PRIVATE hyphy3_core)
-add_test(NAME RELAXTest COMMAND hyphy_relax_test)
-
-add_executable(hyphy_contrast_fel_test tests/test_contrast_fel.cpp)
-target_link_libraries(hyphy_contrast_fel_test PRIVATE hyphy3_core)
-add_test(NAME ContrastFELTest COMMAND hyphy_contrast_fel_test)
-
-add_executable(hyphy_fubar_test tests/test_fubar.cpp)
-target_link_libraries(hyphy_fubar_test PRIVATE hyphy3_core)
-add_test(NAME FUBARTest COMMAND hyphy_fubar_test)
-
-add_executable(hyphy_prime_test tests/test_prime.cpp)
-target_link_libraries(hyphy_prime_test PRIVATE hyphy3_core)
-add_test(NAME PRIMETest COMMAND hyphy_prime_test)
-
-add_executable(hyphy_gard_test tests/test_gard.cpp)
-target_link_libraries(hyphy_gard_test PRIVATE hyphy3_core)
-add_test(NAME GARDTest COMMAND hyphy_gard_test)
-
-add_executable(hyphy_slac_test tests/test_slac.cpp)
-target_link_libraries(hyphy_slac_test PRIVATE hyphy3_core)
-add_test(NAME SLACTest COMMAND hyphy_slac_test)
-
-add_executable(hyphy_dfel_test tests/test_dfel.cpp)
-target_link_libraries(hyphy_dfel_test PRIVATE hyphy3_core)
-add_test(NAME DirectionalFELTest COMMAND hyphy_dfel_test)
-
-add_executable(hyphy_report_test tests/test_report.cpp)
-target_link_libraries(hyphy_report_test PRIVATE hyphy3_report)
-add_test(NAME ReportTest COMMAND hyphy_report_test)
-
-add_test(NAME HTMLReportEndToEndTest
-    COMMAND ${CMAKE_COMMAND}
-        -DHYPHY3=$<TARGET_FILE:hyphy3>
-        -DDATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/data
-        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/html_report_test
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_html_report.cmake
+# Out-of-line JSON emitters (src/analyses/*.cpp). The emitter bodies live in
+# this one static library instead of the analysis headers so that editing an
+# emitter recompiles a single TU rather than all ~45 consumers.
+add_library(hyphy3_emitters STATIC
+    src/analyses/absrel.cpp
+    src/analyses/busted.cpp
+    src/analyses/contrast_fel.cpp
+    src/analyses/directional_fel.cpp
+    src/analyses/fel.cpp
+    src/analyses/fubar.cpp
+    src/analyses/gard.cpp
+    src/analyses/meme.cpp
+    src/analyses/mss.cpp
+    src/analyses/ohmic.cpp
+    src/analyses/prime.cpp
+    src/analyses/relax.cpp
+    src/analyses/slac.cpp
+    src/analyses/tree_engine.cpp
 )
+target_link_libraries(hyphy3_emitters PUBLIC hyphy3_core)
+# The nanobind module links this static lib into a MODULE: it needs PIC.
+set_target_properties(hyphy3_emitters PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# Viewer unit tests (node:test, no packages). Node expands the glob itself; a bare
-# directory argument is resolved as a module by Node 22 and fails.
-find_program(NODE_EXECUTABLE node)
-if(NODE_EXECUTABLE)
-    add_test(NAME ViewerUnitTests
-        COMMAND ${NODE_EXECUTABLE} --test ${CMAKE_CURRENT_SOURCE_DIR}/viz/fel-viewer/tests/*.test.mjs)
+# Test targets
+if(HYPHY3_BUILD_TESTS)
+    enable_testing()
+    # Lets tests locate benchmarks/ and tests/data/ regardless of working directory
+    add_compile_definitions(HYPHY3_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_executable(hyphy_test tests/test_core.cpp)
+    target_link_libraries(hyphy_test PRIVATE hyphy3_core)
+    add_test(NAME CoreTests COMMAND hyphy_test)
+
+    add_executable(hyphy_fel_test tests/test_fel.cpp)
+    target_link_libraries(hyphy_fel_test PRIVATE hyphy3_core)
+    add_test(NAME FELTests COMMAND hyphy_fel_test)
+
+    add_executable(hyphy_fel_cd2_parity_test tests/test_fel_cd2_parity.cpp)
+    target_link_libraries(hyphy_fel_cd2_parity_test PRIVATE hyphy3_core)
+    add_test(NAME CD2ParityTest COMMAND hyphy_fel_cd2_parity_test)
+
+    add_executable(hyphy_fel_multi_dataset_test tests/test_fel_multi_dataset.cpp)
+    target_link_libraries(hyphy_fel_multi_dataset_test PRIVATE hyphy3_core)
+    add_test(NAME MultiDatasetParityTest COMMAND hyphy_fel_multi_dataset_test)
+
+    add_executable(hyphy_meme_test tests/test_meme.cpp)
+    target_link_libraries(hyphy_meme_test PRIVATE hyphy3_core)
+    add_test(NAME MEMEParityTest COMMAND hyphy_meme_test)
+
+    add_executable(hyphy_busted_test tests/test_busted.cpp)
+    target_link_libraries(hyphy_busted_test PRIVATE hyphy3_core)
+    add_test(NAME BUSTEDTest COMMAND hyphy_busted_test)
+
+    add_executable(hyphy_busted_mh_test tests/test_busted_mh.cpp)
+    target_link_libraries(hyphy_busted_mh_test PRIVATE hyphy3_core)
+    add_test(NAME BUSTEDMHTest COMMAND hyphy_busted_mh_test)
+
+    add_executable(hyphy_cpp_autograd_test tests/test_cpp_autograd.cpp)
+    target_link_libraries(hyphy_cpp_autograd_test PRIVATE hyphy3_core)
+    add_test(NAME CppAutogradTest COMMAND hyphy_cpp_autograd_test)
+
+    add_executable(hyphy_absrel_test tests/test_absrel.cpp)
+    target_link_libraries(hyphy_absrel_test PRIVATE hyphy3_core)
+    add_test(NAME ABSRELTest COMMAND hyphy_absrel_test)
+
+    add_executable(hyphy_relax_test tests/test_relax.cpp)
+    target_link_libraries(hyphy_relax_test PRIVATE hyphy3_core)
+    add_test(NAME RELAXTest COMMAND hyphy_relax_test)
+
+    add_executable(hyphy_contrast_fel_test tests/test_contrast_fel.cpp)
+    target_link_libraries(hyphy_contrast_fel_test PRIVATE hyphy3_core)
+    add_test(NAME ContrastFELTest COMMAND hyphy_contrast_fel_test)
+
+    add_executable(hyphy_fubar_test tests/test_fubar.cpp)
+    target_link_libraries(hyphy_fubar_test PRIVATE hyphy3_core)
+    add_test(NAME FUBARTest COMMAND hyphy_fubar_test)
+
+    add_executable(hyphy_prime_test tests/test_prime.cpp)
+    target_link_libraries(hyphy_prime_test PRIVATE hyphy3_core)
+    add_test(NAME PRIMETest COMMAND hyphy_prime_test)
+
+    add_executable(hyphy_gard_test tests/test_gard.cpp)
+    target_link_libraries(hyphy_gard_test PRIVATE hyphy3_core)
+    add_test(NAME GARDTest COMMAND hyphy_gard_test)
+
+    add_executable(hyphy_slac_test tests/test_slac.cpp)
+    target_link_libraries(hyphy_slac_test PRIVATE hyphy3_core)
+    add_test(NAME SLACTest COMMAND hyphy_slac_test)
+
+    add_executable(hyphy_dfel_test tests/test_dfel.cpp)
+    target_link_libraries(hyphy_dfel_test PRIVATE hyphy3_core)
+    add_test(NAME DirectionalFELTest COMMAND hyphy_dfel_test)
+
+    add_executable(hyphy_mss_test tests/test_mss.cpp)
+    target_link_libraries(hyphy_mss_test PRIVATE hyphy3_core)
+    add_test(NAME MSSTest COMMAND hyphy_mss_test)
+
+    add_executable(hyphy_ohmic_test tests/test_ohmic.cpp)
+    target_link_libraries(hyphy_ohmic_test PRIVATE hyphy3_core)
+    add_test(NAME OhmicTest COMMAND hyphy_ohmic_test)
+
+    add_executable(hyphy_report_test tests/test_report.cpp)
+    target_link_libraries(hyphy_report_test PRIVATE hyphy3_report)
+    add_test(NAME ReportTest COMMAND hyphy_report_test)
+
+    add_executable(hyphy_tree_engine_test tests/test_tree_engine.cpp)
+    target_link_libraries(hyphy_tree_engine_test PRIVATE hyphy3_core)
+    add_test(NAME TreeEngineTest COMMAND hyphy_tree_engine_test)
+
+    add_executable(hyphy_joint_align_test tests/test_joint_align.cpp)
+    target_link_libraries(hyphy_joint_align_test PRIVATE hyphy3_core)
+    add_test(NAME JointAlignTest COMMAND hyphy_joint_align_test)
+
+    add_executable(hyphy_expcm_test tests/test_expcm.cpp)
+    target_link_libraries(hyphy_expcm_test PRIVATE hyphy3_core)
+    add_test(NAME ExpcmTest COMMAND hyphy_expcm_test)
+
+    add_executable(hyphy_expcm_optimizer_test tests/test_expcm_optimizer.cpp src/analyses/expcm_optimizer.cpp)
+    target_link_libraries(hyphy_expcm_optimizer_test PRIVATE hyphy3_core)
+    add_test(NAME ExpcmOptimizerTest COMMAND hyphy_expcm_optimizer_test)
+
+    add_executable(hyphy_gradient_validation_test tests/test_gradient_validation.cpp src/analyses/expcm_optimizer.cpp)
+    target_link_libraries(hyphy_gradient_validation_test PRIVATE hyphy3_core)
+    add_test(NAME GradientValidationTest COMMAND hyphy_gradient_validation_test)
+
+    add_executable(hyphy_optimizer_quick_test tests/test_optimizer_quick.cpp src/analyses/expcm_optimizer.cpp)
+    target_link_libraries(hyphy_optimizer_quick_test PRIVATE hyphy3_core)
+    add_test(NAME OptimizerQuickTest COMMAND hyphy_optimizer_quick_test)
+
+    add_executable(hyphy_phase4_persite_test tests/test_phase4_persite.cpp)
+    target_link_libraries(hyphy_phase4_persite_test PRIVATE hyphy3_core)
+    add_test(NAME Phase4PersiteTest COMMAND hyphy_phase4_persite_test)
+
+    add_executable(hyphy_phase4_optimizer_test tests/test_phase4_optimizer.cpp src/analyses/persite_optimizer.cpp)
+    target_link_libraries(hyphy_phase4_optimizer_test PRIVATE hyphy3_core)
+    add_test(NAME Phase4OptimizerTest COMMAND hyphy_phase4_optimizer_test)
+
+    add_executable(hyphy_phase4_validation_test tests/test_phase4_validation.cpp src/analyses/persite_optimizer.cpp)
+    target_link_libraries(hyphy_phase4_validation_test PRIVATE hyphy3_core)
+    add_test(NAME Phase4ValidationTest COMMAND hyphy_phase4_validation_test)
+
+    add_test(NAME HTMLReportEndToEndTest
+        COMMAND ${CMAKE_COMMAND}
+            -DHYPHY3=$<TARGET_FILE:hyphy3>
+            -DDATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/data
+            -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/html_report_test
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_html_report.cmake
+    )
+
+    # Slow tests (a minute or more each on CI) carry the "deep" label: CI runs them nightly,
+    # on manual dispatch and on PRs labelled full-ci; every other run uses `ctest -LE deep`.
+    # Label any new test that takes a minute or more. The Python tests (PythonAutogradTest,
+    # JSONSchemaTest) only exist when nanobind is installed, which only the deep tier does.
+    set_tests_properties(
+        MultiDatasetParityTest MEMEParityTest BUSTEDTest BUSTEDMHTest ABSRELTest
+        RELAXTest ContrastFELTest PRIMETest MSSTest JointAlignTest
+        PROPERTIES LABELS deep
+    )
+
+    # Viewer unit tests (node:test, no packages). Node expands the glob itself; a bare
+    # directory argument is resolved as a module by Node 22 and fails.
+    find_program(NODE_EXECUTABLE node)
+    if(NODE_EXECUTABLE)
+        add_test(NAME ViewerUnitTests
+            COMMAND ${NODE_EXECUTABLE} --test ${CMAKE_CURRENT_SOURCE_DIR}/viz/fel-viewer/tests/*.test.mjs)
+    endif()
 endif()
 
 
-# Unified HyPhy 3 CLI Driver (hyphy3 fel ..., hyphy3 meme ..., hyphy3 busted ..., hyphy3 absrel ..., hyphy3 relax ..., hyphy3 fubar ..., hyphy3 prime ..., hyphy3 gard ..., hyphy3 slac ..., hyphy3 dfel ...)
+# Unified HyPhy 3 CLI Driver (hyphy3 fel ..., hyphy3 meme ..., hyphy3 busted ..., hyphy3 absrel ..., hyphy3 relax ..., hyphy3 fubar ..., hyphy3 prime ..., hyphy3 gard ..., hyphy3 slac ..., hyphy3 dfel ..., hyphy3 mss ..., hyphy3 ohmic ..., hyphy3 joint-align ..., hyphy3 expcm ...)
 add_executable(hyphy3
     src/apps/hyphy3.cpp
     src/apps/hyphy_fel.cpp
@@ -172,7 +327,15 @@ add_executable(hyphy3
     src/apps/hyphy_gard.cpp
     src/apps/hyphy_slac.cpp
     src/apps/hyphy_dfel.cpp
+    src/apps/hyphy_mss.cpp
+    src/apps/hyphy_ohmic.cpp
+    src/apps/hyphy_tree.cpp
+    src/apps/hyphy_joint_align.cpp
+    src/apps/hyphy_characterize.cpp
+    src/apps/hyphy_expcm.cpp
     src/apps/hyphy_report.cpp
+    src/analyses/expcm_optimizer.cpp
+    src/analyses/persite_optimizer.cpp
 )
 target_compile_definitions(hyphy3 PRIVATE HYPHY3_COMBINED_DRIVER)
 target_link_libraries(hyphy3 PRIVATE hyphy3_report)
@@ -182,25 +345,25 @@ add_executable(hyphy3-fel src/apps/hyphy_fel.cpp)
 target_link_libraries(hyphy3-fel PRIVATE hyphy3_report)
 
 add_executable(hyphy3-contrast-fel src/apps/hyphy_contrast_fel.cpp)
-target_link_libraries(hyphy3-contrast-fel PRIVATE hyphy3_core)
+target_link_libraries(hyphy3-contrast-fel PRIVATE hyphy3_report)
 
 add_executable(hyphy3-meme src/apps/hyphy_meme.cpp)
 target_link_libraries(hyphy3-meme PRIVATE hyphy3_report)
 
 add_executable(hyphy3-busted src/apps/hyphy_busted.cpp)
-target_link_libraries(hyphy3-busted PRIVATE hyphy3_core)
+target_link_libraries(hyphy3-busted PRIVATE hyphy3_report)
 
 add_executable(hyphy3-absrel src/apps/hyphy_absrel.cpp)
-target_link_libraries(hyphy3-absrel PRIVATE hyphy3_core)
+target_link_libraries(hyphy3-absrel PRIVATE hyphy3_report)
 
 add_executable(hyphy3-relax src/apps/hyphy_relax.cpp)
-target_link_libraries(hyphy3-relax PRIVATE hyphy3_core)
+target_link_libraries(hyphy3-relax PRIVATE hyphy3_report)
 
 add_executable(hyphy3-fubar src/apps/hyphy_fubar.cpp)
 target_link_libraries(hyphy3-fubar PRIVATE hyphy3_report)
 
 add_executable(hyphy3-prime src/apps/hyphy_prime.cpp)
-target_link_libraries(hyphy3-prime PRIVATE hyphy3_core)
+target_link_libraries(hyphy3-prime PRIVATE hyphy3_report)
 
 add_executable(hyphy3-gard src/apps/hyphy_gard.cpp)
 target_link_libraries(hyphy3-gard PRIVATE hyphy3_core)
@@ -210,6 +373,29 @@ target_link_libraries(hyphy3-slac PRIVATE hyphy3_report)
 
 add_executable(hyphy3-dfel src/apps/hyphy_dfel.cpp)
 target_link_libraries(hyphy3-dfel PRIVATE hyphy3_report)
+
+add_executable(hyphy3-mss src/apps/hyphy_mss.cpp)
+target_link_libraries(hyphy3-mss PRIVATE hyphy3_report)
+
+add_executable(hyphy3-ohmic src/apps/hyphy_ohmic.cpp)
+target_link_libraries(hyphy3-ohmic PRIVATE hyphy3_report)
+
+add_executable(hyphy3-tree src/apps/hyphy_tree.cpp)
+target_link_libraries(hyphy3-tree PRIVATE hyphy3_core)
+
+add_executable(hyphy3-joint-align src/apps/hyphy_joint_align.cpp)
+target_link_libraries(hyphy3-joint-align PRIVATE hyphy3_core)
+
+add_executable(hyphy3-characterize src/apps/hyphy_characterize.cpp)
+target_link_libraries(hyphy3-characterize PRIVATE hyphy3_core)
+
+add_executable(hyphy3-expcm
+    src/apps/hyphy_expcm.cpp
+    src/apps/hyphy_expcm_main.cpp
+    src/analyses/expcm_optimizer.cpp
+    src/analyses/persite_optimizer.cpp
+)
+target_link_libraries(hyphy3-expcm PRIVATE hyphy3_core)
 
 # Backward-compatible aliases
 add_executable(hyphy-fel ALIAS hyphy3-fel)
@@ -223,6 +409,12 @@ add_executable(hyphy-prime ALIAS hyphy3-prime)
 add_executable(hyphy-gard ALIAS hyphy3-gard)
 add_executable(hyphy-slac ALIAS hyphy3-slac)
 add_executable(hyphy-dfel ALIAS hyphy3-dfel)
+add_executable(hyphy-mss ALIAS hyphy3-mss)
+add_executable(hyphy-ohmic ALIAS hyphy3-ohmic)
+add_executable(hyphy-tree ALIAS hyphy3-tree)
+add_executable(hyphy-joint-align ALIAS hyphy3-joint-align)
+add_executable(hyphy-characterize ALIAS hyphy3-characterize)
+add_executable(hyphy-expcm ALIAS hyphy3-expcm)
 
 # Python & nanobind bindings
 find_package(Python 3.8 COMPONENTS Interpreter Development.Module)
@@ -240,27 +432,57 @@ if(Python_FOUND)
             nanobind_add_module(_hyphy3 NB_STATIC
                 src/python/bindings.cpp
             )
-            target_link_libraries(_hyphy3 PRIVATE hyphy3_core)
+            target_link_libraries(_hyphy3 PRIVATE hyphy3_core hyphy3_emitters)
             set_target_properties(_hyphy3 PROPERTIES
                 LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python"
             )
 
-            add_test(NAME PythonAutogradTest
-                COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/tests/test_python_autograd.py"
-                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-            )
-            set_tests_properties(PythonAutogradTest PROPERTIES
-                ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/python;KMP_DUPLICATE_LIB_OK=TRUE"
-            )
+            if(HYPHY3_BUILD_TESTS)
+                add_test(NAME PythonAutogradTest
+                    COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/tests/test_python_autograd.py"
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                )
+                set_tests_properties(PythonAutogradTest PROPERTIES
+                    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/python;KMP_DUPLICATE_LIB_OK=TRUE"
+                )
 
-            add_test(NAME JSONSchemaTest
-                COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_json_schema.py"
-                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-            )
-            set_tests_properties(JSONSchemaTest PROPERTIES
-                ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/python;KMP_DUPLICATE_LIB_OK=TRUE"
-            )
+                add_test(NAME JSONSchemaTest
+                    COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_json_schema.py"
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                )
+                set_tests_properties(JSONSchemaTest PROPERTIES
+                    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/python;KMP_DUPLICATE_LIB_OK=TRUE"
+                )
+            endif()
         endif()
     endif()
 endif()
 
+
+# Consumer wiring ----------------------------------------------------------------
+# Every executable links hyphy3_emitters (out-of-line emitter definitions) and,
+# when HYPHY3_PCH is on, reuses the shared precompiled header compiled by
+# hyphy3_pch instead of re-parsing nlohmann/json + Eigen + the ubiquitous core
+# headers. Per-analysis emitters are intentionally excluded from the PCH (see
+# src/pch.hpp). Disable PCH with -DHYPHY3_PCH=OFF if it causes toolchain issues.
+if(HYPHY3_PCH)
+    add_library(hyphy3_pch STATIC src/pch.cpp)
+    target_link_libraries(hyphy3_pch PUBLIC hyphy3_core)
+    target_precompile_headers(hyphy3_pch PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/pch.hpp>")
+endif()
+
+get_property(_hyphy3_all_targets DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+             PROPERTY BUILDSYSTEM_TARGETS)
+foreach(_tgt IN LISTS _hyphy3_all_targets)
+    if(_tgt STREQUAL "hyphy3_pch" OR _tgt STREQUAL "hyphy3_emitters")
+        continue()
+    endif()
+    get_target_property(_tgt_type ${_tgt} TYPE)
+    if(_tgt_type STREQUAL "EXECUTABLE")
+        target_link_libraries(${_tgt} PRIVATE hyphy3_emitters)
+        if(HYPHY3_PCH)
+            target_link_libraries(${_tgt} PRIVATE hyphy3_pch)
+            target_precompile_headers(${_tgt} REUSE_FROM hyphy3_pch)
+        endif()
+    endif()
+endforeach()

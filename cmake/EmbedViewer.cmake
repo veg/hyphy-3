@@ -9,6 +9,7 @@
 # dependency order, drop the import lines and `export` keywords, and wrap everything in
 # one function scope that publishes the entry module's exports as window.HyPhyFELViewer
 # (the same global the former UMD build exposed) and under the neutral window.HyPhyViewer.
+# The Ohmic viewer (viz/ohmic-viewer) is bundled the same way as window.HyPhyOhmicViewer.
 
 cmake_minimum_required(VERSION 3.20)
 
@@ -16,91 +17,117 @@ if(NOT VIEWER_DIR OR NOT OUTPUT)
     message(FATAL_ERROR "EmbedViewer.cmake needs -DVIEWER_DIR=... and -DOUTPUT=...")
 endif()
 
-set(_ordered "")
-set(_visiting "")
+# global_names: the window properties that receive the entry module's exports
+function(_bundle_viewer viewer_dir global_names js_out_var css_out_var n_modules_out_var)
+    set(_ordered "")
+    set(_visiting "")
 
-function(_visit module_path)
-    get_filename_component(module_path "${module_path}" REALPATH)
-    if(module_path IN_LIST _ordered)
-        return()
-    endif()
-    if(module_path IN_LIST _visiting)
-        message(FATAL_ERROR "Circular import involving ${module_path}")
-    endif()
-    list(APPEND _visiting "${module_path}")
-    set(_visiting "${_visiting}" PARENT_SCOPE)
-
-    if(NOT EXISTS "${module_path}")
-        message(FATAL_ERROR "Viewer module not found: ${module_path}")
-    endif()
-    file(STRINGS "${module_path}" _imports REGEX "^import ")
-    get_filename_component(_dir "${module_path}" DIRECTORY)
-    foreach(_line IN LISTS _imports)
-        if(NOT _line MATCHES "from '(\\./|\\.\\./)[^']+\\.js'")
-            message(FATAL_ERROR "Unsupported import in ${module_path}: ${_line}\n"
-                                "Only static named imports of relative .js modules can be embedded.")
+    function(_visit module_path)
+        get_filename_component(module_path "${module_path}" REALPATH)
+        if(module_path IN_LIST _ordered)
+            return()
         endif()
-        string(REGEX REPLACE "^.*from '([^']+)'.*$" "\\1" _rel "${_line}")
-        _visit("${_dir}/${_rel}")
+        if(module_path IN_LIST _visiting)
+            message(FATAL_ERROR "Circular import involving ${module_path}")
+        endif()
+        list(APPEND _visiting "${module_path}")
+        set(_visiting "${_visiting}" PARENT_SCOPE)
+
+        if(NOT EXISTS "${module_path}")
+            message(FATAL_ERROR "Viewer module not found: ${module_path}")
+        endif()
+        file(STRINGS "${module_path}" _imports REGEX "^import ")
+        get_filename_component(_dir "${module_path}" DIRECTORY)
+        foreach(_line IN LISTS _imports)
+            if(_line MATCHES "\\.css'")
+                continue()
+            endif()
+            if(NOT _line MATCHES "from '(\\./|\\.\\./)[^']+\\.js'")
+                message(FATAL_ERROR "Unsupported import in ${module_path}: ${_line}\n"
+                                    "Only static named imports of relative .js modules can be embedded.")
+            endif()
+            string(REGEX REPLACE "^.*from '([^']+)'.*$" "\\1" _rel "${_line}")
+            _visit("${_dir}/${_rel}")
+            set(_ordered "${_ordered}" PARENT_SCOPE)
+        endforeach()
+
+        list(APPEND _ordered "${module_path}")
         set(_ordered "${_ordered}" PARENT_SCOPE)
+    endfunction()
+
+    set(_entry "${viewer_dir}/src/index.js")
+    _visit("${_entry}")
+
+    # Names exported by the entry module become the public API
+    file(STRINGS "${_entry}" _entry_exports REGEX "^export (class|function|const|let) ")
+    set(_api "")
+    foreach(_line IN LISTS _entry_exports)
+        string(REGEX REPLACE "^export (class|function|const|let) ([A-Za-z_$][A-Za-z0-9_$]*).*$" "\\2" _name "${_line}")
+        list(APPEND _api "${_name}")
+    endforeach()
+    list(JOIN _api ", " _api_list)
+
+    # All modules share one scope after bundling, so top-level names must be unique across modules
+    set(_declared "")
+    foreach(_module IN LISTS _ordered)
+        file(STRINGS "${_module}" _decls REGEX "^(export )?(async )?(class|function|const|let|var) [A-Za-z_$][A-Za-z0-9_$]*")
+        foreach(_decl IN LISTS _decls)
+            string(REGEX REPLACE "^(export )?(async )?(class|function|const|let|var) ([A-Za-z_$][A-Za-z0-9_$]*).*$" "\\4" _name "${_decl}")
+            if(_name IN_LIST _declared)
+                message(FATAL_ERROR "Top-level name '${_name}' is declared in more than one viewer module "
+                                    "(again in ${_module}). Bundled modules share one scope; rename one of them.")
+            endif()
+            list(APPEND _declared "${_name}")
+        endforeach()
     endforeach()
 
-    list(APPEND _ordered "${module_path}")
-    set(_ordered "${_ordered}" PARENT_SCOPE)
+    set(_js "(function () {\n'use strict';\n")
+    foreach(_module IN LISTS _ordered)
+        file(READ "${_module}" _src)
+        file(RELATIVE_PATH _rel "${viewer_dir}" "${_module}")
+        # Drop import statements (one per line in this codebase) and strip `export` keywords
+        string(REGEX REPLACE "(^|\n)import [^\n]*" "\\1" _src "${_src}")
+        string(REGEX REPLACE "(^|\n)export (class|function|const|let|async function) " "\\1\\2 " _src "${_src}")
+        string(REGEX REPLACE "(^|\n)export \\{[^}]*\\};?" "\\1" _src "${_src}")
+        if(_src MATCHES "(^|\n)export ")
+            message(FATAL_ERROR "Unsupported export form in ${_module}; use `export class|function|const|let`.")
+        endif()
+        string(APPEND _js "\n// ---- ${_rel} ----\n${_src}\n")
+    endforeach()
+    set(_targets "")
+    foreach(_global IN LISTS global_names)
+        string(APPEND _targets "window.${_global} = ")
+    endforeach()
+    string(APPEND _js "\n${_targets}{ ${_api_list} };\n})();\n")
+
+    # Stylesheets are linked from the dev page rather than imported, so embed them all
+    file(GLOB _css_files "${viewer_dir}/src/styles/*.css")
+    list(SORT _css_files)
+    set(_css "")
+    foreach(_file IN LISTS _css_files)
+        file(READ "${_file}" _content)
+        string(APPEND _css "${_content}\n")
+    endforeach()
+
+    list(LENGTH _ordered _n_mod)
+    set(${js_out_var} "${_js}" PARENT_SCOPE)
+    set(${css_out_var} "${_css}" PARENT_SCOPE)
+    set(${n_modules_out_var} "${_n_mod}" PARENT_SCOPE)
 endfunction()
 
-set(_entry "${VIEWER_DIR}/src/index.js")
-_visit("${_entry}")
+_bundle_viewer("${VIEWER_DIR}" "HyPhyFELViewer;HyPhyViewer" _js _css _n_modules)
 
-# Names exported by the entry module become the public API
-file(STRINGS "${_entry}" _entry_exports REGEX "^export (class|function|const|let) ")
-set(_api "")
-foreach(_line IN LISTS _entry_exports)
-    string(REGEX REPLACE "^export (class|function|const|let) ([A-Za-z_$][A-Za-z0-9_$]*).*$" "\\2" _name "${_line}")
-    list(APPEND _api "${_name}")
-endforeach()
-list(JOIN _api ", " _api_list)
-
-# All modules share one scope after bundling, so top-level names must be unique across modules
-set(_declared "")
-foreach(_module IN LISTS _ordered)
-    file(STRINGS "${_module}" _decls REGEX "^(export )?(async )?(class|function|const|let|var) [A-Za-z_$][A-Za-z0-9_$]*")
-    foreach(_decl IN LISTS _decls)
-        string(REGEX REPLACE "^(export )?(async )?(class|function|const|let|var) ([A-Za-z_$][A-Za-z0-9_$]*).*$" "\\4" _name "${_decl}")
-        if(_name IN_LIST _declared)
-            message(FATAL_ERROR "Top-level name '${_name}' is declared in more than one viewer module "
-                                "(again in ${_module}). Bundled modules share one scope; rename one of them.")
-        endif()
-        list(APPEND _declared "${_name}")
-    endforeach()
-endforeach()
-
-set(_js "(function () {\n'use strict';\n")
-foreach(_module IN LISTS _ordered)
-    file(READ "${_module}" _src)
-    file(RELATIVE_PATH _rel "${VIEWER_DIR}" "${_module}")
-    # Drop import statements (one per line in this codebase) and strip `export` keywords
-    string(REGEX REPLACE "(^|\n)import [^\n]*" "\\1" _src "${_src}")
-    string(REGEX REPLACE "(^|\n)export (class|function|const|let|async function) " "\\1\\2 " _src "${_src}")
-    if(_src MATCHES "(^|\n)export ")
-        message(FATAL_ERROR "Unsupported export form in ${_module}; use `export class|function|const|let`.")
-    endif()
-    string(APPEND _js "\n// ---- ${_rel} ----\n${_src}\n")
-endforeach()
-string(APPEND _js "\nwindow.HyPhyFELViewer = window.HyPhyViewer = { ${_api_list} };\n})();\n")
-
-# Stylesheets are linked from the dev page rather than imported, so embed them all
-file(GLOB _css_files "${VIEWER_DIR}/src/styles/*.css")
-list(SORT _css_files)
-set(_css "")
-foreach(_file IN LISTS _css_files)
-    file(READ "${_file}" _content)
-    string(APPEND _css "${_content}\n")
-endforeach()
+if(OHMIC_VIEWER_DIR AND EXISTS "${OHMIC_VIEWER_DIR}/src/index.js")
+    _bundle_viewer("${OHMIC_VIEWER_DIR}" "HyPhyOhmicViewer" _ohmic_js _ohmic_css _n_ohmic_modules)
+else()
+    set(_ohmic_js "")
+    set(_ohmic_css "")
+    set(_n_ohmic_modules 0)
+endif()
 
 # Emit as chunks of raw string literals: some compilers cap a single literal at 64 KB
 set(_delim "HYV3")
-foreach(_text IN ITEMS _js _css)
+foreach(_text IN ITEMS _js _css _ohmic_js _ohmic_css)
     string(FIND "${${_text}}" ")${_delim}\"" _clash)
     if(NOT _clash EQUAL -1)
         message(FATAL_ERROR "Viewer source contains the raw-string delimiter )${_delim}\"")
@@ -121,9 +148,10 @@ endfunction()
 
 _chunks("${_js}" _js_chunks)
 _chunks("${_css}" _css_chunks)
-list(LENGTH _ordered _n_modules)
+_chunks("${_ohmic_js}" _ohmic_js_chunks)
+_chunks("${_ohmic_css}" _ohmic_css_chunks)
 
-set(_header "// Generated by cmake/EmbedViewer.cmake from viz/fel-viewer. Do not edit.
+set(_header "// Generated by cmake/EmbedViewer.cmake from viz/fel-viewer and viz/ohmic-viewer. Do not edit.
 #pragma once
 
 #include <string>
@@ -133,7 +161,8 @@ namespace hyphy::report::assets {
 // ${_n_modules} modules from viz/fel-viewer/src, bundled in dependency order
 inline const std::string& viewer_js() {
     static const char* const chunks[] = {
-${_js_chunks}    };
+${_js_chunks}        \"\"
+    };
     static const std::string joined = [] {
         std::string s;
         for (const char* c : chunks) s += c;
@@ -144,7 +173,32 @@ ${_js_chunks}    };
 
 inline const std::string& viewer_css() {
     static const char* const chunks[] = {
-${_css_chunks}    \"\"
+${_css_chunks}        \"\"
+    };
+    static const std::string joined = [] {
+        std::string s;
+        for (const char* c : chunks) s += c;
+        return s;
+    }();
+    return joined;
+}
+
+// ${_n_ohmic_modules} modules from viz/ohmic-viewer/src, bundled in dependency order
+inline const std::string& ohmic_viewer_js() {
+    static const char* const chunks[] = {
+${_ohmic_js_chunks}        \"\"
+    };
+    static const std::string joined = [] {
+        std::string s;
+        for (const char* c : chunks) s += c;
+        return s;
+    }();
+    return joined;
+}
+
+inline const std::string& ohmic_viewer_css() {
+    static const char* const chunks[] = {
+${_ohmic_css_chunks}        \"\"
     };
     static const std::string joined = [] {
         std::string s;
@@ -168,7 +222,7 @@ if(EXISTS "${OUTPUT}")
 endif()
 if(_changed)
     file(WRITE "${OUTPUT}" "${_header}")
-    message(STATUS "Embedded ${_n_modules} viewer modules into ${OUTPUT}")
+    message(STATUS "Embedded ${_n_modules} results viewer modules and ${_n_ohmic_modules} Ohmic viewer modules into ${OUTPUT}")
 endif()
 if(STAMP)
     file(TOUCH "${STAMP}")

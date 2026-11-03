@@ -7,6 +7,7 @@
 #include "hyphy/core/likelihood.hpp"
 #include "hyphy/opt/nelder_mead.hpp"
 #include "hyphy/opt/optimizer.hpp"
+#include "hyphy/core/json_output.hpp"
 #include "hyphy/analyses/fel.hpp"
 #include "hyphy/analyses/site_visualizer.hpp"
 #include "hyphy/core/progress_bar.hpp"
@@ -43,6 +44,7 @@ struct MEMESiteResult {
     Scalar p_value_meme_vs_fel = 1.0;
     Scalar fel_alpha = 0.0;
     Scalar fel_beta = 0.0;
+    Scalar beta_bg = 0.0;
     std::vector<Scalar> branch_ebf;
     SiteSubstitutions subs;
 };
@@ -69,11 +71,25 @@ public:
 
     std::string input_filepath;
     std::string tree_string;
+    std::string test_branches = "All";
+    std::vector<bool> is_test_branch;
+    size_t num_tested = 0;
+    size_t num_background = 0;
 
-
-    MEMEAnalyzer(Tree t, Alignment a, MG94Parameters params = MG94Parameters{})
-        : tree(t), aln(std::move(a)), base_params(params), fel_analyzer(t, aln, params) {
+    MEMEAnalyzer(Tree t, Alignment a, MG94Parameters params = MG94Parameters{}, std::string branches_spec = "All")
+        : tree(t), aln(std::move(a)), base_params(params), fel_analyzer(t, aln, params), test_branches(std::move(branches_spec)) {
         prepare_branch_lengths();
+        select_test_branches(test_branches);
+    }
+
+    void select_test_branches(const std::string& spec) {
+        test_branches = spec;
+        auto sel = tree.select_branches(spec, "", {}, false);
+        is_test_branch = std::move(sel.is_selected);
+        num_tested = sel.num_selected;
+        num_background = sel.num_unselected;
+        fel_analyzer.settings.test_branches = spec;
+        fel_analyzer.partition_branches();
     }
 
     static MEMEAnalyzer create_and_fit(
@@ -81,8 +97,12 @@ public:
         Alignment aln,
         Scalar pvalue_threshold = 0.1,
         std::function<void(const std::string&, double)> progress_cb = nullptr,
-        bool full_model = true
+        bool full_model = true,
+        std::string branches_spec = "All"
     ) {
+        // Validate branch selection upfront before fitting GTR/MG94
+        input_tree.select_branches(branches_spec, "", {}, false);
+
         if (progress_cb) progress_cb("Phase 1: Fitting Nucleotide GTR Model", 0.1);
         GTRFitter gtr_fitter(input_tree, aln);
         auto gtr_res = gtr_fitter.fit();
@@ -95,10 +115,12 @@ public:
         base_p.theta_CT = gtr_res.params.theta_CT;
         base_p.theta_GT = gtr_res.params.theta_GT;
 
+        auto sel = gtr_res.tree.select_branches(branches_spec, "", {}, true);
         MG94Fitter mg_fitter(gtr_res.tree, aln);
         FitResult mg_res;
         if (full_model) {
-            mg_res = mg_fitter.fit_full_model(1.0, base_p, progress_cb);
+            const std::vector<bool>* p_sel = (sel.num_selected > 0 && sel.num_unselected > 0) ? &sel.is_selected : nullptr;
+            mg_res = mg_fitter.fit_full_model(1.0, base_p, progress_cb, 250, 1e-5, p_sel);
             base_p = mg_res.params;
         } else {
             mg_res = mg_fitter.fit_omega_and_scale(1.0, base_p);
@@ -106,10 +128,10 @@ public:
             base_p.beta = mg_res.x_opt(0);
         }
 
-        MEMEAnalyzer analyzer(mg_res.tree, std::move(aln), base_p);
+        MEMEAnalyzer analyzer(mg_res.tree, std::move(aln), base_p, std::move(branches_spec));
         analyzer.p_value_threshold = pvalue_threshold;
         analyzer.global_log_l = mg_res.log_likelihood;
-        size_t K_mg = 5 + 1 + (mg_res.tree.num_nodes() - 1);
+        size_t K_mg = 5 + ((sel.num_selected > 0 && sel.num_unselected > 0) ? 2 : 1) + (mg_res.tree.num_nodes() - 1);
         size_t N_codons = analyzer.aln.num_codons;
         analyzer.global_aicc = -2.0 * mg_res.log_likelihood + 2.0 * K_mg * N_codons / (N_codons - K_mg - 1.0);
 
@@ -138,6 +160,7 @@ public:
                 node.branch_length *= conversion_factor;
             }
         }
+        tree.scale_bridge_lengths(conversion_factor);
     }
 
     MEMESiteResult analyze_pattern(
@@ -193,7 +216,8 @@ public:
         std::vector<double> thread_node_scale(num_nodes, 0.0);
         std::vector<Matrix> P_branches(num_nodes);
 
-        auto eval_pattern_meme_lnl = [&](Scalar a, Scalar w1, Scalar p1, Scalar b_plus) -> Scalar {
+        bool has_bg = (num_background > 0);
+        auto eval_pattern_meme_lnl = [&](Scalar a, Scalar w1, Scalar p1, Scalar b_plus, Scalar b_bg) -> Scalar {
             Scalar b1 = a * w1;
             MG94Parameters p_1 = base_params;
             p_1.alpha = a;
@@ -203,34 +227,82 @@ public:
             p_p.alpha = a;
             p_p.beta = b_plus;
 
-            MG94Matrix mg1, mg_plus;
+            MG94Matrix mg1, mg_plus, mg_bg;
             mg1.update(p_1, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
             mg_plus.update(p_p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+            if (has_bg) {
+                MG94Parameters p_bg = base_params;
+                p_bg.alpha = a;
+                p_bg.beta = b_bg;
+                mg_bg.update(p_bg, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+            }
 
             Scalar p_plus_wt = 1.0 - p1;
             for (const auto& node : tree.nodes) {
                 if (node.id != tree.root_id) {
-                    P_branches[node.id] = p1 * mg1.transition_matrix(node.branch_length) +
-                                          p_plus_wt * mg_plus.transition_matrix(node.branch_length);
+                    bool is_test = (static_cast<size_t>(node.id) < is_test_branch.size()) ? is_test_branch[node.id] : true;
+                    if (is_test) {
+                        P_branches[node.id] = p1 * mg1.transition_matrix(node.branch_length) +
+                                              p_plus_wt * mg_plus.transition_matrix(node.branch_length);
+                    } else {
+                        P_branches[node.id] = mg_bg.transition_matrix(node.branch_length);
+                    }
                 }
             }
 
-            return FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_branches, thread_node_L, thread_node_scale);
+            std::vector<std::array<Matrix, 3>> P_bridges;
+            const std::vector<std::array<Matrix, 3>>* p_bridges_ptr = nullptr;
+            if (!tree.bridges.empty()) {
+                P_bridges.resize(tree.bridges.size());
+                for (size_t k = 0; k < tree.bridges.size(); ++k) {
+                    const auto& wb = tree.bridges[k];
+                    int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                    bool is_test = (bid >= 0 && static_cast<size_t>(bid) < is_test_branch.size()) ? is_test_branch[bid] : true;
+                    for (int r = 0; r < 3; ++r) {
+                        if (wb.weights[r] > 0.0 || r == 0) {
+                            Scalar tbl = wb.branch_lengths[r];
+                            if (is_test) {
+                                P_bridges[k][r] = p1 * mg1.transition_matrix(tbl) +
+                                                  p_plus_wt * mg_plus.transition_matrix(tbl);
+                            } else {
+                                P_bridges[k][r] = mg_bg.transition_matrix(tbl);
+                            }
+                        } else {
+                            P_bridges[k][r] = Matrix::Identity(S, S);
+                        }
+                    }
+                }
+                p_bridges_ptr = &P_bridges;
+            }
+
+            return FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_branches, thread_node_L, thread_node_scale, p_bridges_ptr);
         };
 
         // Construct grid starting points matching HyPhy 2.5 MEME.bf
-        Scalar alpha_fel = std::clamp(fel_res.alpha, 1e-4, 100.0);
-        Scalar beta_fel = std::clamp(fel_res.beta, 1e-4, 1000.0);
+        Scalar alpha_fel = std::clamp(fel_res.alpha, 1e-4, 10000.0);
+        Scalar beta_fel = std::clamp(fel_res.beta, 1e-4, 100000.0);
+        Scalar beta_bg_0 = (has_bg && fel_res.beta_nuisance > 0.0)
+            ? std::clamp(fel_res.beta_nuisance, 1e-4, 100000.0)
+            : beta_fel;
         std::vector<std::array<Scalar, 4>> start_grid;
 
         Scalar w1_0 = std::clamp(beta_fel / std::max(alpha_fel, 1e-4), 0.0, 1.0);
 
         if (alpha_fel >= beta_fel) {
-            // Conserved Site Regime: targeted grid points matching HyPhy
+            // Conserved Site Regime: targeted grid points + episodic beta_plus > alpha probes (F-040)
             start_grid.push_back({alpha_fel, w1_0, 0.75, beta_fel});
             start_grid.push_back({alpha_fel, 0.0, 0.75, beta_fel});
             start_grid.push_back({alpha_fel, 0.0, 0.95, alpha_fel * 0.5});
             start_grid.push_back({alpha_fel, 0.25, 0.85, alpha_fel * 0.9});
+            Scalar bp1 = std::max(alpha_fel * 1.5, beta_fel * 2.0);
+            Scalar bp2 = std::max(alpha_fel * 2.5, beta_fel * 4.0);
+            Scalar bp3 = std::max(alpha_fel * 4.0, beta_fel * 8.0);
+            for (Scalar p_plus_probe : {0.05, 0.10, 0.20}) {
+                Scalar p1_probe = 1.0 - p_plus_probe;
+                start_grid.push_back({alpha_fel, w1_0, p1_probe, bp1});
+                start_grid.push_back({alpha_fel, w1_0, p1_probe, bp2});
+                start_grid.push_back({alpha_fel, w1_0, p1_probe, bp3});
+            }
         } else {
             // Positive Selection Regime: structured grid points matching HyPhy
             start_grid.push_back({alpha_fel, w1_0, 0.75, beta_fel});
@@ -242,46 +314,161 @@ public:
             start_grid.push_back({alpha_fel, 1.00, 0.01, std::max(beta_fel, alpha_fel * 1.5)});
         }
 
-        // Optimize Alternative Model (4D Nelder-Mead: alpha, omega1, p1, beta_plus)
-        auto obj_alt = [&](const std::array<Scalar, 4>& x) -> Scalar {
-            return -eval_pattern_meme_lnl(x[0], x[1], x[2], x[3]);
-        };
-
-        std::array<Scalar, 4> lb_alt = {1e-4, 0.0, 1e-6, 1e-4};
-        std::array<Scalar, 4> ub_alt = {100.0, 1.0, 1.0 - 1e-6, 2000.0};
-        auto opt_alt = NelderMeadND<4>::minimize(obj_alt, start_grid[0], lb_alt, ub_alt, 1e-4, 400, start_grid);
-
-        res.alpha = opt_alt.x[0];
-        Scalar omega1 = opt_alt.x[1];
-        res.p1 = opt_alt.x[2];
-        res.beta_plus = opt_alt.x[3];
-        res.beta1 = res.alpha * omega1;
-        res.p_plus = 1.0 - res.p1;
-        res.log_l_meme = -opt_alt.f;
+        Scalar omega1 = w1_0;
+        if (has_bg) {
+            // F-012: Optimize Alternative Model with free background rate beta_bg (5D Nelder-Mead: alpha, omega1, p1, beta_plus, beta_bg)
+            auto obj_alt5 = [&](const std::array<Scalar, 5>& x) -> Scalar {
+                return -eval_pattern_meme_lnl(x[0], x[1], x[2], x[3], x[4]);
+            };
+            std::vector<std::array<Scalar, 5>> start_grid5;
+            start_grid5.reserve(start_grid.size());
+            for (const auto& pt : start_grid) {
+                start_grid5.push_back({pt[0], pt[1], pt[2], pt[3], beta_bg_0});
+            }
+            std::array<Scalar, 5> lb_alt5 = {1e-4, 0.0, 1e-6, 1e-4, 1e-4};
+            std::array<Scalar, 5> ub_alt5 = {10000.0, 1.0, 1.0 - 1e-6, 100000.0, 100000.0};
+            auto opt_alt5 = NelderMeadND<5>::minimize(obj_alt5, start_grid5[0], lb_alt5, ub_alt5, 1e-5, 800, start_grid5);
+            res.alpha = opt_alt5.x[0];
+            omega1 = opt_alt5.x[1];
+            res.p1 = opt_alt5.x[2];
+            res.beta_plus = opt_alt5.x[3];
+            res.beta_bg = opt_alt5.x[4];
+            res.beta1 = res.alpha * omega1;
+            res.p_plus = 1.0 - res.p1;
+            res.log_l_meme = -opt_alt5.f;
+        } else {
+            // Optimize Alternative Model (4D Nelder-Mead: alpha, omega1, p1, beta_plus)
+            auto obj_alt = [&](const std::array<Scalar, 4>& x) -> Scalar {
+                return -eval_pattern_meme_lnl(x[0], x[1], x[2], x[3], 0.0);
+            };
+            std::array<Scalar, 4> lb_alt = {1e-4, 0.0, 1e-6, 1e-4};
+            std::array<Scalar, 4> ub_alt = {10000.0, 1.0, 1.0 - 1e-6, 100000.0};
+            auto opt_alt = NelderMeadND<4>::minimize(obj_alt, start_grid[0], lb_alt, ub_alt, 1e-5, 800, start_grid);
+            res.alpha = opt_alt.x[0];
+            omega1 = opt_alt.x[1];
+            res.p1 = opt_alt.x[2];
+            res.beta_plus = opt_alt.x[3];
+            res.beta_bg = 0.0;
+            res.beta1 = res.alpha * omega1;
+            res.p_plus = 1.0 - res.p1;
+            res.log_l_meme = -opt_alt.f;
+        }
 
         // Hypothesis Testing: Alternative vs. Null (beta_plus == alpha)
         if (res.beta_plus > res.alpha && res.p_plus > 1e-6) {
-            auto obj_null = [&](const std::array<Scalar, 3>& x) -> Scalar {
-                return -eval_pattern_meme_lnl(x[0], x[1], x[2], x[0]); // beta_plus = alpha
-            };
+            Scalar log_l_null = -1e20;
+            Scalar alpha_null = res.alpha;
+            Scalar omega1_null = omega1;
+            Scalar p1_null = res.p1;
+            Scalar beta_bg_null = res.beta_bg;
 
-            std::vector<std::array<Scalar, 3>> null_grid;
-            null_grid.push_back({res.alpha, omega1, res.p1});
-            null_grid.push_back({std::clamp(fel_res.alpha_null, 1e-4, 50.0), 1.0, 0.5});
-            null_grid.push_back({std::clamp(fel_res.alpha_null, 1e-4, 50.0), omega1, res.p1});
-            null_grid.push_back({std::clamp(res.alpha, 1e-4, 50.0), 1.0, 0.5});
-            for (Scalar a_cand : {0.01, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0}) {
-                null_grid.push_back({a_cand, 0.5, 0.5});
-                null_grid.push_back({a_cand, 0.0, 0.9});
+            if (has_bg) {
+                auto obj_null4 = [&](const std::array<Scalar, 4>& x) -> Scalar {
+                    return -eval_pattern_meme_lnl(x[0], x[1], x[2], x[0], x[3]); // beta_plus = alpha, free beta_bg
+                };
+                std::vector<std::array<Scalar, 4>> null_grid4;
+                null_grid4.push_back({res.alpha, omega1, res.p1, res.beta_bg});
+                null_grid4.push_back({std::clamp(fel_res.alpha_null, 1e-4, 50.0), 1.0, 0.5, beta_bg_0});
+                null_grid4.push_back({std::clamp(fel_res.alpha_null, 1e-4, 50.0), omega1, res.p1, beta_bg_0});
+                null_grid4.push_back({std::clamp(res.alpha, 1e-4, 50.0), 1.0, 0.5, res.beta_bg});
+                for (Scalar a_cand : {0.01, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0}) {
+                    null_grid4.push_back({a_cand, 0.5, 0.5, res.beta_bg});
+                    null_grid4.push_back({a_cand, 0.0, 0.9, res.beta_bg});
+                }
+                std::array<Scalar, 4> lb_null4 = {1e-4, 0.0, 1e-6, 1e-4};
+                std::array<Scalar, 4> ub_null4 = {10000.0, 1.0, 1.0 - 1e-6, 100000.0};
+                auto opt_null4 = NelderMeadND<4>::minimize(obj_null4, null_grid4[0], lb_null4, ub_null4, 1e-5, 800, null_grid4);
+                log_l_null = -opt_null4.f;
+                alpha_null = opt_null4.x[0];
+                omega1_null = opt_null4.x[1];
+                p1_null = opt_null4.x[2];
+                beta_bg_null = opt_null4.x[3];
+
+                if (log_l_null > res.log_l_meme && std::isfinite(log_l_null)) {
+                    auto obj_alt5 = [&](const std::array<Scalar, 5>& x) -> Scalar {
+                        return -eval_pattern_meme_lnl(x[0], x[1], x[2], x[3], x[4]);
+                    };
+                    std::vector<std::array<Scalar, 5>> warm_alt_grid5 = {
+                        {alpha_null, omega1_null, p1_null, alpha_null, beta_bg_null},
+                        {alpha_null, omega1_null, 0.99, alpha_null, beta_bg_null}
+                    };
+                    std::array<Scalar, 5> lb_alt5 = {1e-4, 0.0, 1e-6, 1e-4, 1e-4};
+                    std::array<Scalar, 5> ub_alt5 = {10000.0, 1.0, 1.0 - 1e-6, 100000.0, 100000.0};
+                    auto opt_alt2 = NelderMeadND<5>::minimize(obj_alt5, warm_alt_grid5[0], lb_alt5, ub_alt5, 1e-5, 800, warm_alt_grid5);
+                    if (-opt_alt2.f > res.log_l_meme) {
+                        res.alpha = opt_alt2.x[0];
+                        omega1 = opt_alt2.x[1];
+                        res.p1 = opt_alt2.x[2];
+                        res.beta_plus = opt_alt2.x[3];
+                        res.beta_bg = opt_alt2.x[4];
+                        res.beta1 = res.alpha * omega1;
+                        res.p_plus = 1.0 - res.p1;
+                        res.log_l_meme = -opt_alt2.f;
+                    }
+                }
+            } else {
+                auto obj_null = [&](const std::array<Scalar, 3>& x) -> Scalar {
+                    return -eval_pattern_meme_lnl(x[0], x[1], x[2], x[0], 0.0); // beta_plus = alpha
+                };
+                std::vector<std::array<Scalar, 3>> null_grid;
+                null_grid.push_back({res.alpha, omega1, res.p1});
+                null_grid.push_back({std::clamp(fel_res.alpha_null, 1e-4, 50.0), 1.0, 0.5});
+                null_grid.push_back({std::clamp(fel_res.alpha_null, 1e-4, 50.0), omega1, res.p1});
+                null_grid.push_back({std::clamp(res.alpha, 1e-4, 50.0), 1.0, 0.5});
+                for (Scalar a_cand : {0.01, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0}) {
+                    null_grid.push_back({a_cand, 0.5, 0.5});
+                    null_grid.push_back({a_cand, 0.0, 0.9});
+                }
+
+                std::array<Scalar, 3> lb_null = {1e-4, 0.0, 1e-6};
+                std::array<Scalar, 3> ub_null = {10000.0, 1.0, 1.0 - 1e-6};
+                auto opt_null = NelderMeadND<3>::minimize(obj_null, null_grid[0], lb_null, ub_null, 1e-5, 800, null_grid);
+
+                log_l_null = -opt_null.f;
+                alpha_null = opt_null.x[0];
+                omega1_null = opt_null.x[1];
+                p1_null = opt_null.x[2];
+                if (log_l_null > res.log_l_meme && std::isfinite(log_l_null)) {
+                    // Warm-start alternative model directly from the null MLE (F-074, F-094)
+                    auto obj_alt = [&](const std::array<Scalar, 4>& x) -> Scalar {
+                        return -eval_pattern_meme_lnl(x[0], x[1], x[2], x[3], 0.0);
+                    };
+                    std::array<Scalar, 4> lb_alt = {1e-4, 0.0, 1e-6, 1e-4};
+                    std::array<Scalar, 4> ub_alt = {10000.0, 1.0, 1.0 - 1e-6, 100000.0};
+                    std::vector<std::array<Scalar, 4>> warm_alt_grid = {
+                        {alpha_null, omega1_null, p1_null, alpha_null},
+                        {alpha_null, omega1_null, 0.99, alpha_null}
+                    };
+                    auto opt_alt2 = NelderMeadND<4>::minimize(obj_alt, warm_alt_grid[0], lb_alt, ub_alt, 1e-5, 800, warm_alt_grid);
+                    if (-opt_alt2.f > res.log_l_meme) {
+                        res.alpha = opt_alt2.x[0];
+                        omega1 = opt_alt2.x[1];
+                        res.p1 = opt_alt2.x[2];
+                        res.beta_plus = opt_alt2.x[3];
+                        res.beta1 = res.alpha * omega1;
+                        res.p_plus = 1.0 - res.p1;
+                        res.log_l_meme = -opt_alt2.f;
+                    }
+                }
             }
 
-            std::array<Scalar, 3> lb_null = {1e-4, 0.0, 1e-6};
-            std::array<Scalar, 3> ub_null = {100.0, 1.0, 1.0 - 1e-6};
-            auto opt_null = NelderMeadND<3>::minimize(obj_null, null_grid[0], lb_null, ub_null, 1e-4, 400, null_grid);
-
-            Scalar log_l_null = -opt_null.f;
-            if (log_l_null > res.log_l_meme) {
+            if (log_l_null <= -1e10 || res.log_l_meme <= -1e10 || !std::isfinite(log_l_null) || !std::isfinite(res.log_l_meme)) {
+                res.lrt = 0.0;
+                res.p_value = 1.0;
+                res.branches_under_selection = 0;
+            } else if (log_l_null > res.log_l_meme) {
+                Scalar beta1_null = alpha_null * omega1_null;
+                res.alpha = alpha_null;
+                res.beta1 = beta1_null;
+                res.p1 = p1_null;
+                res.beta_plus = alpha_null;
+                res.beta_bg = beta_bg_null;
+                res.p_plus = 1.0 - p1_null;
                 res.log_l_meme = log_l_null;
+                res.lrt = 0.0;
+                res.p_value = 2.0 / 3.0;
+                res.branches_under_selection = 0;
+            } else if (std::abs(res.log_l_meme - log_l_null) <= 1e-12) {
                 res.lrt = 0.0;
                 res.p_value = 2.0 / 3.0;
                 res.branches_under_selection = 0;
@@ -293,7 +480,6 @@ public:
                 res.p_value = (2.0 / 3.0) * (0.45 * std::erfc(std::sqrt(lrt / 2.0)) + 0.55 * std::exp(-lrt / 2.0));
             }
 
-
             // Compute branch Empirical Bayes Factors (EBF)
             MG94Parameters p_1 = base_params;
             p_1.alpha = res.alpha;
@@ -303,32 +489,99 @@ public:
             p_p.alpha = res.alpha;
             p_p.beta = res.beta_plus;
 
-            MG94Matrix mg1, mg_plus;
+            MG94Matrix mg1, mg_plus, mg_bg;
             mg1.update(p_1, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
             mg_plus.update(p_p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+            if (has_bg) {
+                MG94Parameters p_bg = base_params;
+                p_bg.alpha = res.alpha;
+                p_bg.beta = (res.beta_bg > 0.0) ? res.beta_bg : res.beta1;
+                mg_bg.update(p_bg, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+            }
 
             std::vector<Matrix> P1(num_nodes), P_plus(num_nodes), P_mix(num_nodes);
             for (const auto& node : tree.nodes) {
                 if (node.id != tree.root_id) {
+                    bool is_test = (static_cast<size_t>(node.id) < is_test_branch.size()) ? is_test_branch[node.id] : true;
                     P1[node.id] = mg1.transition_matrix(node.branch_length);
                     P_plus[node.id] = mg_plus.transition_matrix(node.branch_length);
-                    P_mix[node.id] = res.p1 * P1[node.id] + res.p_plus * P_plus[node.id];
+                    if (is_test) {
+                        P_mix[node.id] = res.p1 * P1[node.id] + res.p_plus * P_plus[node.id];
+                    } else {
+                        P_mix[node.id] = mg_bg.transition_matrix(node.branch_length);
+                    }
                 }
+            }
+
+            std::vector<std::array<Matrix, 3>> P_bridges_1, P_bridges_plus, P_bridges_mix, P_bridges_temp;
+            const std::vector<std::array<Matrix, 3>>* p_bridges_temp_ptr = nullptr;
+            if (!tree.bridges.empty()) {
+                P_bridges_1.resize(tree.bridges.size());
+                P_bridges_plus.resize(tree.bridges.size());
+                P_bridges_mix.resize(tree.bridges.size());
+                for (size_t k = 0; k < tree.bridges.size(); ++k) {
+                    const auto& wb = tree.bridges[k];
+                    int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                    bool is_test = (bid >= 0 && static_cast<size_t>(bid) < is_test_branch.size()) ? is_test_branch[bid] : true;
+                    for (int r = 0; r < 3; ++r) {
+                        if (wb.weights[r] > 0.0 || r == 0) {
+                            Scalar tbl = wb.branch_lengths[r];
+                            P_bridges_1[k][r] = mg1.transition_matrix(tbl);
+                            P_bridges_plus[k][r] = mg_plus.transition_matrix(tbl);
+                            if (is_test) {
+                                P_bridges_mix[k][r] = res.p1 * P_bridges_1[k][r] + res.p_plus * P_bridges_plus[k][r];
+                            } else {
+                                P_bridges_mix[k][r] = mg_bg.transition_matrix(tbl);
+                            }
+                        } else {
+                            P_bridges_1[k][r] = Matrix::Identity(S, S);
+                            P_bridges_plus[k][r] = Matrix::Identity(S, S);
+                            P_bridges_mix[k][r] = Matrix::Identity(S, S);
+                        }
+                    }
+                }
+                P_bridges_temp = P_bridges_mix;
+                p_bridges_temp_ptr = &P_bridges_temp;
             }
 
             int branches_under_sel = 0;
             std::vector<Matrix> P_temp = P_mix;
             for (const auto& node : tree.nodes) {
                 if (node.id != tree.root_id) {
-                    // Conditional on branch node.id being in class 1
-                    P_temp[node.id] = P1[node.id];
-                    Scalar log_L1 = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale);
+                    bool is_test = (static_cast<size_t>(node.id) < is_test_branch.size()) ? is_test_branch[node.id] : true;
+                    if (!is_test) {
+                        res.branch_ebf[node.id] = 1.0;
+                        continue;
+                    }
+                    int bridge_k = -1;
+                    for (size_t k = 0; k < tree.bridges.size(); ++k) {
+                        const auto& wb = tree.bridges[k];
+                        if (wb.bridge_node_id == node.id && wb.bridge_node_id != wb.hub_node_id) {
+                            bridge_k = static_cast<int>(k);
+                            break;
+                        }
+                    }
+                    Scalar log_L1 = -1e20;
+                    Scalar log_L_plus = -1e20;
+                    if (bridge_k >= 0) {
+                        P_bridges_temp[static_cast<size_t>(bridge_k)] = P_bridges_1[static_cast<size_t>(bridge_k)];
+                        log_L1 = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale, p_bridges_temp_ptr);
+                        P_bridges_temp[static_cast<size_t>(bridge_k)] = P_bridges_plus[static_cast<size_t>(bridge_k)];
+                        log_L_plus = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale, p_bridges_temp_ptr);
+                        P_bridges_temp[static_cast<size_t>(bridge_k)] = P_bridges_mix[static_cast<size_t>(bridge_k)];
+                    } else if (node.parent_id != INVALID_INDEX) {
+                        // Conditional on branch node.id being in class 1
+                        P_temp[node.id] = P1[node.id];
+                        log_L1 = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale, p_bridges_temp_ptr);
 
-                    // Conditional on branch node.id being in class +
-                    P_temp[node.id] = P_plus[node.id];
-                    Scalar log_L_plus = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale);
+                        // Conditional on branch node.id being in class +
+                        P_temp[node.id] = P_plus[node.id];
+                        log_L_plus = FELAnalyzer::compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg1, P_temp, thread_node_L, thread_node_scale, p_bridges_temp_ptr);
 
-                    P_temp[node.id] = P_mix[node.id]; // restore
+                        P_temp[node.id] = P_mix[node.id]; // restore
+                    } else {
+                        continue;
+                    }
 
                     Scalar ebf = 1.0;
                     if (log_L1 > -1e10 && log_L_plus > -1e10) {
@@ -418,441 +671,9 @@ public:
         return site_results;
     }
 
-    nlohmann::json to_legacy_json() const {
-        nlohmann::json j;
+nlohmann::json to_legacy_json() const;
 
-        // Analysis metadata
-        j["analysis"] = {
-            {"authors", "Sergei L. Kosakovsky Pond, Steven Weaver"},
-            {"citation", "Detecting Individual Sites Subject to Episodic Diversifying Selection. PLoS Genet 8(7): e1002764."},
-            {"contact", "spond@temple.edu"},
-            {"info", "MEME (Mixed Effects Model of Evolution) estimates a site-wise synonymous (alpha) and a two-category mixture of non-synonymous (beta1 with p1, and beta+ with p+) rates, and uses a likelihood ratio test to determine if beta+ > alpha at a site."},
-            {"requirements", "in-frame codon alignment and a phylogenetic tree"},
-            {"settings", {{"p-value", p_value_threshold}, {"code", aln.code ? aln.code->name : "Universal"}}},
-            {"version", "4.1 (Modern C++ hyphy-next)"}
-        };
-
-        // Input
-        j["input"]["file name"] = input_filepath;
-        j["input"]["genetic code"] = aln.code ? aln.code->name : "Universal";
-        j["input"]["number of sequences"] = aln.num_taxa;
-        j["input"]["number of sites"] = aln.num_codons;
-        j["input"]["partition count"] = 1;
-        if (!tree_string.empty()) {
-            j["input"]["trees"]["0"] = tree_string;
-        }
-
-        // Fits
-        nlohmann::json fits_json;
-        if (has_gtr_fit) {
-            fits_json["Nucleotide GTR"] = {
-                {"AIC-c", gtr_aicc},
-                {"Log Likelihood", gtr_log_l},
-                {"Equilibrium frequencies", {
-                    aln.nuc_frequencies(0),
-                    aln.nuc_frequencies(1),
-                    aln.nuc_frequencies(2),
-                    aln.nuc_frequencies(3)
-                }},
-                {"Rate Distributions", {
-                    {"Substitution rate from nucleotide A to nucleotide C", gtr_rates.theta_AC},
-                    {"Substitution rate from nucleotide A to nucleotide G", 1.0},
-                    {"Substitution rate from nucleotide A to nucleotide T", gtr_rates.theta_AT},
-                    {"Substitution rate from nucleotide C to nucleotide G", gtr_rates.theta_CG},
-                    {"Substitution rate from nucleotide C to nucleotide T", gtr_rates.theta_CT},
-                    {"Substitution rate from nucleotide G to nucleotide T", gtr_rates.theta_GT}
-                }}
-            };
-        }
-
-        std::vector<Scalar> eq_freqs(aln.codon_frequencies_f3x4.data(), aln.codon_frequencies_f3x4.data() + aln.codon_frequencies_f3x4.size());
-        fits_json["Global MG94xREV"] = {
-            {"AIC-c", global_aicc},
-            {"Log Likelihood", global_log_l},
-            {"Equilibrium frequencies", eq_freqs},
-            {"Rate Distributions", {
-                {"non-synonymous/synonymous rate ratio", base_params.beta / std::max(base_params.alpha, 1e-12)}
-            }}
-        };
-        j["fits"] = fits_json;
-
-        // Branch Attributes
-        nlohmann::json branch_attrs;
-        nlohmann::json branch_dict;
-        for (const auto& node : tree.nodes) {
-            if (node.id != tree.root_id) {
-                nlohmann::json b_info;
-                b_info["Global MG94xREV"] = node.branch_length / conversion_factor;
-                auto it = gtr_branch_lengths.find(node.name);
-                if (it != gtr_branch_lengths.end()) {
-                    b_info["Nucleotide GTR"] = it->second;
-                }
-                branch_dict[node.name] = b_info;
-            }
-        }
-        branch_attrs["0"] = branch_dict;
-        j["branch attributes"] = branch_attrs;
-
-        // MLE headers and content
-        j["MLE"]["headers"] = {
-            {"&alpha;", "Synonymous substitution rate at a site"},
-            {"&beta;<sup>1</sup>", "Non-synonymous substitution rate at a site for the negative/neutral evolution component 1"},
-            {"p<sup>1</sup>", "Mixture distribution weight allocated to negative/neutral evolution component 1"},
-            {"&beta;<sup>+</sup>", "Non-synonymous substitution rate at a site for the positive selection component"},
-            {"p<sup>+</sup>", "Mixture distribution weight allocated to the positive selection component"},
-            {"LRT", "Likelihood ratio test statistic for episodic diversification, i.e., p<sup>+</sup> > 0 and &beta;<sup>+</sup> > &alpha;"},
-            {"p-value", "Asymptotic p-value for episodic diversification, i.e., p<sup>+</sup> > 0 and &beta;<sup>+</sup> > &alpha;"},
-            {"# branches under selection", "The count of branches with empirical Bayes factor >= 100 for the &beta;<sup>+</sup> rate"},
-            {"Total branch length", "The total length of branches contributing to inference at this site"},
-            {"MEME LogL", "Site Log-likelihood under the MEME model"},
-            {"FEL LogL", "Site Log-likelihood under the FEL model"},
-            {"LRT MEME vs FEL", "Likelihood ratio test statistic p-value for MEME vs FEL"},
-            {"FEL &alpha;", "Synonymous substitution rate at a site under the FEL model"},
-            {"FEL &beta;", "Non-synonymous substitution rate at a site under the FEL model"}
-        };
-
-        std::vector<std::vector<Scalar>> content(site_results.size());
-        for (size_t s = 0; s < site_results.size(); ++s) {
-            const auto& r = site_results[s];
-            content[s] = {
-                r.alpha,
-                r.beta1,
-                r.p1,
-                r.beta_plus,
-                r.p_plus,
-                r.lrt,
-                r.p_value,
-                static_cast<Scalar>(r.branches_under_selection),
-                r.total_branch_length,
-                r.log_l_meme,
-                r.log_l_fel,
-                r.p_value_meme_vs_fel,
-                r.fel_alpha,
-                r.fel_beta
-            };
-        }
-        j["MLE"]["content"]["0"] = content;
-
-        // Tested branches
-        nlohmann::json tested_dict;
-        for (const auto& node : tree.nodes) {
-            if (node.id != tree.root_id) {
-                tested_dict[node.name] = "test";
-            }
-        }
-        j["tested"]["0"] = tested_dict;
-
-        return j;
-    }
-
-    nlohmann::json to_modern_json(const Provenance& prov = {}) const {
-        nlohmann::json j;
-
-        j["$schema"] = "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/meme.v3.schema.json";
-        j["schema_version"] = "3.0.0";
-
-        // Analysis block
-        j["analysis"]["id"] = "meme";
-        j["analysis"]["name"] = "Mixed Effects Model of Evolution";
-        j["analysis"]["version"] = "3.0.0";
-        j["analysis"]["category"] = "episodic_site_selection";
-        j["analysis"]["description"] = "MEME (Mixed Effects Model of Evolution) estimates site-wise synonymous (alpha) and two-category non-synonymous rates (beta1 with p1, and beta+ with p+), using a likelihood ratio test for episodic diversifying selection.";
-        j["analysis"]["citations"] = nlohmann::json::array({
-            {
-                {"citation", "Murrell B, Wertheim JO, Moola S, Weighill T, Scheffler K, Kosakovsky Pond SL (2012). Detecting Individual Sites Subject to Episodic Diversifying Selection. PLoS Genet 8(7): e1002764."},
-                {"doi", "10.1371/journal.pgen.1002764"},
-                {"pmid", "22844254"}
-            }
-        });
-        j["analysis"]["settings"]["pvalue_threshold"] = p_value_threshold;
-        j["analysis"]["settings"]["code"] = aln.code ? aln.code->name : "Universal";
-
-        // Software block
-        j["software"]["name"] = "hyphy";
-        j["software"]["version"] = "3.0.0";
-        j["software"]["git_commit"] = "6e22db3";
-        j["software"]["build_type"] = "Release";
-        j["software"]["compiler"] = Provenance::detect_compiler();
-
-        // Provenance block
-        if (!prov.invocation.cli_command.empty() || !prov.inputs.empty()) {
-            j["provenance"] = prov.to_json();
-        } else {
-            Provenance auto_prov;
-            auto_prov.invocation.cli_command = "hyphy3 meme";
-            auto_prov.invocation.working_directory = Provenance::get_cwd();
-            if (!input_filepath.empty()) {
-                size_t sz = 0;
-                std::string hash = crypto::SHA256::hash_file(input_filepath, &sz);
-                auto_prov.inputs["alignment"] = {input_filepath, "FASTA/NEXUS", hash, sz};
-            }
-            auto_prov.execution.start_time = Provenance::current_iso8601();
-            auto_prov.execution.end_time = Provenance::current_iso8601();
-            auto_prov.execution.wall_time_seconds = 0.0;
-            auto_prov.execution.cpu_threads = 1;
-            auto_prov.execution.hostname = Provenance::get_hostname();
-            auto_prov.execution.os = Provenance::detect_os();
-            auto_prov.execution.compiler = Provenance::detect_compiler();
-            j["provenance"] = auto_prov.to_json();
-        }
-
-        // Dataset block
-        j["dataset"]["taxa_count"] = aln.num_taxa;
-        j["dataset"]["codon_sites"] = aln.num_codons;
-        j["dataset"]["nucleotide_sites"] = aln.num_codons * 3;
-        j["dataset"]["unique_patterns"] = aln.patterns.size();
-        j["dataset"]["taxa"] = aln.taxon_names;
-
-        nlohmann::json seqs_json = nlohmann::json::object();
-        for (const auto& s : aln.sequences) {
-            seqs_json[s.name] = s.raw_seq;
-        }
-        j["dataset"]["sequences"] = seqs_json;
-
-        nlohmann::json gcode;
-        gcode["id"] = aln.code ? aln.code->name : "Universal";
-        gcode["name"] = aln.code ? aln.code->name : "Universal";
-        gcode["sense_codons"] = aln.code ? static_cast<int>(aln.code->sense_codons.size()) : 61;
-        if (aln.code) {
-            gcode["stop_codons"] = aln.code->stop_codons;
-        } else {
-            gcode["stop_codons"] = {"TAA", "TAG", "TGA"};
-        }
-        j["dataset"]["genetic_code"] = gcode;
-
-        j["dataset"]["partitions"] = nlohmann::json::array({
-            {
-                {"id", "default"},
-                {"name", "Full Alignment"},
-                {"span", nlohmann::json::array({nlohmann::json::array({1, aln.num_codons})})},
-                {"sites_count", aln.num_codons},
-                {"patterns_count", aln.patterns.size()}
-            }
-        });
-
-        // Phylogeny block
-        std::string nwk = tree_string.empty() ? tree.to_newick() : tree_string;
-        j["phylogeny"]["newick"] = nwk;
-
-        nlohmann::json nodes_json;
-        double sum_bl_mg94 = 0.0;
-        double sum_bl_gtr = 0.0;
-
-        for (const auto& node : tree.nodes) {
-            nlohmann::json node_entry;
-            node_entry["type"] = node.children.empty() ? "leaf" : "internal";
-
-            Scalar mg_bl = (conversion_factor > 0.0) ? (node.branch_length / conversion_factor) : node.branch_length;
-            node_entry["branch_lengths"]["codon_mg94"] = mg_bl;
-            if (node.id != tree.root_id) sum_bl_mg94 += mg_bl;
-
-            if (has_gtr_fit) {
-                auto it = gtr_branch_lengths.find(node.name);
-                Scalar gtr_bl = (it != gtr_branch_lengths.end()) ? it->second : mg_bl;
-                node_entry["branch_lengths"]["nucleotide_gtr"] = gtr_bl;
-                if (node.id != tree.root_id) sum_bl_gtr += gtr_bl;
-            }
-
-            if (!node.model_tag.empty()) {
-                node_entry["model_tags"] = nlohmann::json::array({node.model_tag});
-            }
-
-            nodes_json[node.name] = node_entry;
-        }
-        j["phylogeny"]["nodes"] = nodes_json;
-        j["phylogeny"]["tree_lengths"]["codon_mg94"] = sum_bl_mg94;
-        if (has_gtr_fit) {
-            j["phylogeny"]["tree_lengths"]["nucleotide_gtr"] = sum_bl_gtr;
-        }
-
-        // Model fits block
-        if (has_gtr_fit) {
-            j["model_fits"]["nucleotide_gtr"]["description"] = "General Time Reversible nucleotide model with empirical frequencies";
-            j["model_fits"]["nucleotide_gtr"]["log_likelihood"] = gtr_log_l;
-            j["model_fits"]["nucleotide_gtr"]["aicc"] = gtr_aicc;
-            j["model_fits"]["nucleotide_gtr"]["parameters_count"] = 5 + static_cast<int>(tree.nodes.size()) - 1;
-            j["model_fits"]["nucleotide_gtr"]["equilibrium_frequencies"] = {
-                {"A", aln.nuc_frequencies(0)},
-                {"C", aln.nuc_frequencies(1)},
-                {"G", aln.nuc_frequencies(2)},
-                {"T", aln.nuc_frequencies(3)}
-            };
-            j["model_fits"]["nucleotide_gtr"]["substitution_rates"] = {
-                {"AC", gtr_rates.theta_AC},
-                {"AG", 1.0},
-                {"AT", gtr_rates.theta_AT},
-                {"CG", gtr_rates.theta_CG},
-                {"CT", gtr_rates.theta_CT},
-                {"GT", gtr_rates.theta_GT}
-            };
-        }
-
-        j["model_fits"]["codon_mg94"]["description"] = "Muse-Gaut 1994 x GTR codon model with shared global omega";
-        j["model_fits"]["codon_mg94"]["log_likelihood"] = global_log_l;
-        j["model_fits"]["codon_mg94"]["aicc"] = global_aicc;
-        j["model_fits"]["codon_mg94"]["parameters_count"] = 6 + static_cast<int>(tree.nodes.size()) - 1;
-        j["model_fits"]["codon_mg94"]["global_parameters"] = {
-            {"omega", (base_params.alpha > 0.0) ? (base_params.beta / base_params.alpha) : 1.0},
-            {"tree_scale", 1.0}
-        };
-
-        // Statistical tests block
-        int diversifying_sites = 0;
-        for (const auto& r : site_results) {
-            if (r.p_value <= p_value_threshold) diversifying_sites++;
-        }
-
-        j["statistical_tests"]["site_level_summary"] = {
-            {"method", "Mixed Effects Model of Evolution (MEME)"},
-            {"test_statistic", "Likelihood Ratio Test (LRT)"},
-            {"distribution", "Asymptotic Chi-squared Mixture (0.5 chi^2_0 + 0.5 chi^2_2)"},
-            {"degrees_of_freedom", 2},
-            {"null_hypothesis", "beta+ <= alpha or p+ = 0 (No episodic positive selection)"},
-            {"alternative_hypothesis", "beta+ > alpha and p+ > 0 (Episodic positive selection on a subset of branches)"},
-            {"threshold", p_value_threshold},
-            {"total_sites", static_cast<int>(site_results.size())},
-            {"diversifying_count", diversifying_sites}
-        };
-
-        // Site Results (Columnar format)
-        j["site_results"]["columns"] = {
-            {"site", {{"type", "integer"}, {"unit", "1-based codon position"}, {"description", "Alignment codon site index (1-based)"}}},
-            {"alpha", {{"type", "float"}, {"unit", "substitutions/site"}, {"description", "Synonymous substitution rate estimate (alpha)"}}},
-            {"beta1", {{"type", "float"}, {"unit", "substitutions/site"}, {"description", "Non-synonymous rate for negative/neutral component"}}},
-            {"p1", {{"type", "float"}, {"description", "Weight allocated to negative/neutral component"}}},
-            {"beta_plus", {{"type", "float"}, {"unit", "substitutions/site"}, {"description", "Non-synonymous rate for positive selection component"}}},
-            {"p_plus", {{"type", "float"}, {"description", "Weight allocated to positive selection component"}}},
-            {"lrt", {{"type", "float"}, {"description", "Likelihood ratio test statistic for episodic diversification"}}},
-            {"p_value", {{"type", "float"}, {"description", "Asymptotic p-value from mixture chi^2 distribution"}}},
-            {"branches_under_selection", {{"type", "integer"}, {"description", "Number of branches with empirical Bayes factor >= 100"}}},
-            {"total_branch_length", {{"type", "float"}, {"unit", "substitutions/site"}, {"description", "Total length of branches contributing to inference at this site"}}},
-            {"log_l_meme", {{"type", "float"}, {"description", "Site log-likelihood under MEME model"}}},
-            {"log_l_fel", {{"type", "float"}, {"description", "Site log-likelihood under FEL model"}}},
-            {"classification", {{"type", "string"}, {"description", "Selection classification at threshold (diversifying, neutral)"}}},
-            {"substitution_history", {{"type", "string"}, {"description", "Formatted string of observed substitution events at this site"}}},
-            {"mean_substitution_surprise", {{"type", "float"}, {"unit", "bits"}, {"description", "Mean Shannon perplexity surprise across substitution events at this site"}}},
-            {"site_perplexity", {{"type", "float"}, {"description", "Empirical site perplexity metric"}}},
-            {"synonymous_substitutions", {{"type", "integer"}, {"description", "Count of synonymous substitutions at this site"}}},
-            {"nonsynonymous_substitutions", {{"type", "integer"}, {"description", "Count of non-synonymous substitutions at this site"}}},
-            {"branch_ebf", {{"type", "object"}, {"description", "Map of branch names to Empirical Bayes Factors (EBF >= 1.0) under positive selection"}}}
-        };
-
-        std::vector<int> col_site, col_branches;
-        std::vector<double> col_alpha, col_beta1, col_p1, col_beta_plus, col_p_plus;
-        std::vector<double> col_lrt, col_pval, col_tbl, col_ll_meme, col_ll_fel;
-        std::vector<std::string> col_class, col_history;
-        std::vector<double> col_surprise, col_perplexity;
-        std::vector<int> col_syn, col_nonsyn;
-        nlohmann::json col_branch_ebf = nlohmann::json::array();
-
-        col_site.reserve(site_results.size());
-        col_alpha.reserve(site_results.size());
-        col_beta1.reserve(site_results.size());
-        col_p1.reserve(site_results.size());
-        col_beta_plus.reserve(site_results.size());
-        col_p_plus.reserve(site_results.size());
-        col_lrt.reserve(site_results.size());
-        col_pval.reserve(site_results.size());
-        col_branches.reserve(site_results.size());
-        col_tbl.reserve(site_results.size());
-        col_ll_meme.reserve(site_results.size());
-        col_ll_fel.reserve(site_results.size());
-        col_class.reserve(site_results.size());
-        col_history.reserve(site_results.size());
-        col_surprise.reserve(site_results.size());
-        col_perplexity.reserve(site_results.size());
-        col_syn.reserve(site_results.size());
-        col_nonsyn.reserve(site_results.size());
-
-        for (size_t i = 0; i < site_results.size(); ++i) {
-            const auto& r = site_results[i];
-            col_site.push_back(static_cast<int>(i + 1));
-            col_alpha.push_back(r.alpha);
-            col_beta1.push_back(r.beta1);
-            col_p1.push_back(r.p1);
-            col_beta_plus.push_back(r.beta_plus);
-            col_p_plus.push_back(r.p_plus);
-            col_lrt.push_back(r.lrt);
-            col_pval.push_back(r.p_value);
-            col_branches.push_back(r.branches_under_selection);
-            col_tbl.push_back(r.total_branch_length);
-            col_ll_meme.push_back(r.log_l_meme);
-            col_ll_fel.push_back(r.log_l_fel);
-            col_class.push_back((r.p_value <= p_value_threshold) ? "diversifying" : "neutral");
-
-            col_history.push_back(r.subs.summary_string);
-            col_surprise.push_back(r.subs.mean_surprise_bits);
-            col_perplexity.push_back(r.subs.site_perplexity);
-            col_syn.push_back(static_cast<int>(r.subs.syn_test + r.subs.syn_bg));
-            col_nonsyn.push_back(static_cast<int>(r.subs.nonsyn_test + r.subs.nonsyn_bg));
-
-            nlohmann::json site_ebf = nlohmann::json::object();
-            for (const auto& node : tree.nodes) {
-                if (node.id != tree.root_id && node.id >= 0 && static_cast<size_t>(node.id) < r.branch_ebf.size()) {
-                    Scalar ebf = r.branch_ebf[node.id];
-                    if (ebf >= 1.0) {
-                        site_ebf[node.name] = ebf;
-                    }
-                }
-            }
-            col_branch_ebf.push_back(site_ebf);
-        }
-
-        j["site_results"]["data"]["site"] = col_site;
-        j["site_results"]["data"]["alpha"] = col_alpha;
-        j["site_results"]["data"]["beta1"] = col_beta1;
-        j["site_results"]["data"]["p1"] = col_p1;
-        j["site_results"]["data"]["beta_plus"] = col_beta_plus;
-        j["site_results"]["data"]["p_plus"] = col_p_plus;
-        j["site_results"]["data"]["lrt"] = col_lrt;
-        j["site_results"]["data"]["p_value"] = col_pval;
-        j["site_results"]["data"]["branches_under_selection"] = col_branches;
-        j["site_results"]["data"]["total_branch_length"] = col_tbl;
-        j["site_results"]["data"]["log_l_meme"] = col_ll_meme;
-        j["site_results"]["data"]["log_l_fel"] = col_ll_fel;
-        j["site_results"]["data"]["classification"] = col_class;
-        j["site_results"]["data"]["substitution_history"] = col_history;
-        j["site_results"]["data"]["mean_substitution_surprise"] = col_surprise;
-        j["site_results"]["data"]["site_perplexity"] = col_perplexity;
-        j["site_results"]["data"]["synonymous_substitutions"] = col_syn;
-        j["site_results"]["data"]["nonsynonymous_substitutions"] = col_nonsyn;
-        j["site_results"]["data"]["branch_ebf"] = col_branch_ebf;
-
-        // Substitution events block (Root level)
-        nlohmann::json sub_events_arr = nlohmann::json::array();
-        for (size_t i = 0; i < site_results.size(); ++i) {
-            const auto& r = site_results[i];
-            if (r.subs.events.empty()) continue;
-
-            nlohmann::json site_entry;
-            site_entry["site"] = static_cast<int>(i + 1);
-            site_entry["root_codon"] = r.subs.root_codon;
-            site_entry["root_aa"] = std::string(1, r.subs.root_aa);
-
-            nlohmann::json ev_list = nlohmann::json::array();
-            for (const auto& ev : r.subs.events) {
-                nlohmann::json ev_j;
-                ev_j["branch"] = ev.branch_name;
-                ev_j["parent_codon"] = ev.parent_codon;
-                ev_j["child_codon"] = ev.child_codon;
-                ev_j["parent_aa"] = std::string(1, ev.parent_aa);
-                ev_j["child_aa"] = std::string(1, ev.child_aa);
-                ev_j["is_synonymous"] = ev.is_synonymous;
-                ev_j["nucleotide_differences"] = ev.nt_distance;
-                ev_j["transition_probability"] = ev.transition_prob;
-                ev_j["surprise_bits"] = ev.surprise_bits;
-                ev_j["branch_length"] = ev.branch_length;
-                ev_j["is_tested"] = ev.is_tested;
-                ev_list.push_back(ev_j);
-            }
-            site_entry["events"] = ev_list;
-            sub_events_arr.push_back(site_entry);
-        }
-        j["substitution_events"] = sub_events_arr;
-
-        return j;
-    }
-
+nlohmann::json to_modern_json(const Provenance& prov = {}) const;
     nlohmann::json to_json(JSONFormat format = JSONFormat::ModernV3, const Provenance& prov = {}) const {
         if (format == JSONFormat::Legacy) {
             return to_legacy_json();

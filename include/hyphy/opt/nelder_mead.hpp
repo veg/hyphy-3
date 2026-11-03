@@ -14,7 +14,14 @@ using namespace hyphy::core;
 // 1D Brent's method / Golden section search for bounded minimization
 class Brent1D {
 public:
-    static std::pair<Scalar, Scalar> minimize(
+    struct Point {
+        Scalar x = 0.0;
+        Scalar f = 0.0;
+        int iterations = 0;
+        bool converged = false;
+    };
+
+    static Point minimize_point(
         std::function<Scalar(Scalar)> f,
         Scalar ax, Scalar bx, Scalar cx,
         Scalar tol = 1e-4, int max_iter = 60
@@ -28,13 +35,17 @@ public:
         Scalar e = 0.0;
         Scalar fx = f(x), fv = fx, fw = fx;
 
+        int iters_done = 0;
+        bool converged = false;
         for (int iter = 0; iter < max_iter; ++iter) {
+            iters_done = iter + 1;
             Scalar xm = 0.5 * (a + b);
             Scalar tol1 = tol * std::abs(x) + ZEPS;
             Scalar tol2 = 2.0 * tol1;
 
             if (std::abs(x - xm) <= (tol2 - 0.5 * (b - a))) {
-                return {x, fx};
+                converged = true;
+                break;
             }
 
             Scalar d = 0.0;
@@ -83,7 +94,16 @@ public:
             }
         }
 
-        return {x, fx};
+        return {x, fx, iters_done, converged};
+    }
+
+    static std::pair<Scalar, Scalar> minimize(
+        std::function<Scalar(Scalar)> f,
+        Scalar ax, Scalar bx, Scalar cx,
+        Scalar tol = 1e-4, int max_iter = 60
+    ) {
+        Point pt = minimize_point(std::move(f), ax, bx, cx, tol, max_iter);
+        return {pt.x, pt.f};
     }
 };
 
@@ -94,6 +114,8 @@ public:
         Scalar a = 0.0;
         Scalar b = 0.0;
         Scalar f = 0.0;
+        int iterations = 0;
+        bool converged = false;
     };
 
     static Point minimize(
@@ -127,7 +149,10 @@ public:
         const Scalar rho = 0.5;   // contraction
         const Scalar sigma = 0.5; // shrink
 
+        int iters_done = 0;
+        bool converged = false;
         for (int iter = 0; iter < max_iter; ++iter) {
+            iters_done = iter + 1;
             // Sort: s[0] best, s[2] worst
             std::sort(s.begin(), s.end(), [](const Point& p1, const Point& p2) {
                 return p1.f < p2.f;
@@ -136,6 +161,7 @@ public:
             if (std::abs(s[2].f - s[0].f) < tol &&
                 std::abs(s[2].a - s[0].a) < tol &&
                 std::abs(s[2].b - s[0].b) < tol) {
+                converged = true;
                 break;
             }
 
@@ -173,6 +199,8 @@ public:
         std::sort(s.begin(), s.end(), [](const Point& p1, const Point& p2) {
             return p1.f < p2.f;
         });
+        s[0].iterations = iters_done;
+        s[0].converged = converged;
         return s[0];
     }
 };
@@ -184,6 +212,8 @@ public:
     struct Point {
         std::array<Scalar, Dim> x{};
         Scalar f = 0.0;
+        int iterations = 0;
+        bool converged = false;
     };
 
     static Point minimize(
@@ -238,7 +268,10 @@ public:
         const Scalar rho   = 0.5; // contraction
         const Scalar sigma = 0.5; // shrink
 
+        int iters_done = 0;
+        bool converged = false;
         for (int iter = 0; iter < max_iter; ++iter) {
+            iters_done = iter + 1;
             // Sort vertices so s[0] is best, s[Dim] is worst
             std::sort(s.begin(), s.end(), [](const Point& p1, const Point& p2) {
                 return p1.f < p2.f;
@@ -250,6 +283,7 @@ public:
                 max_x_diff = std::max(max_x_diff, std::abs(s[Dim].x[d] - s[0].x[d]));
             }
             if (std::abs(s[Dim].f - s[0].f) < tol && max_x_diff < tol) {
+                converged = true;
                 break;
             }
 
@@ -316,6 +350,8 @@ public:
         std::sort(s.begin(), s.end(), [](const Point& p1, const Point& p2) {
             return p1.f < p2.f;
         });
+        s[0].iterations = iters_done;
+        s[0].converged = converged;
         return s[0];
     }
 };
@@ -326,6 +362,8 @@ public:
     struct Point {
         std::vector<Scalar> x;
         Scalar f = 0.0;
+        int iterations = 0;
+        bool converged = false;
     };
 
     static Point minimize(
@@ -379,7 +417,10 @@ public:
         const Scalar rho   = 0.5; // contraction
         const Scalar sigma = 0.5; // shrink
 
+        int iters_done = 0;
+        bool converged = false;
         for (int iter = 0; iter < max_iter; ++iter) {
+            iters_done = iter + 1;
             std::sort(s.begin(), s.end(), [](const Point& p1, const Point& p2) {
                 return p1.f < p2.f;
             });
@@ -389,6 +430,7 @@ public:
                 max_x_diff = std::max(max_x_diff, std::abs(s[dim].x[d] - s[0].x[d]));
             }
             if (std::abs(s[dim].f - s[0].f) < tol && max_x_diff < tol) {
+                converged = true;
                 break;
             }
 
@@ -453,6 +495,8 @@ public:
         std::sort(s.begin(), s.end(), [](const Point& p1, const Point& p2) {
             return p1.f < p2.f;
         });
+        s[0].iterations = iters_done;
+        s[0].converged = converged;
         return s[0];
     }
 };

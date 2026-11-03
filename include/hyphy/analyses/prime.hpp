@@ -7,6 +7,8 @@
 #include "hyphy/core/likelihood.hpp"
 #include "hyphy/core/progress_bar.hpp"
 #include "hyphy/core/provenance.hpp"
+#include "hyphy/core/json_output.hpp"
+#include "hyphy/core/stats.hpp"
 #include "hyphy/opt/nelder_mead.hpp"
 #include "hyphy/opt/optimizer.hpp"
 #include "hyphy/analyses/fel.hpp"
@@ -313,21 +315,13 @@ public:
 // PRIMEMatrix: Numerically Stabilized Property-Informed Codon Substitution Matrix
 // ============================================================================
 
-class PRIMEMatrix {
+// PRIMEMatrix extends MG94Matrix with the property-informed rate model. It
+// inherits the whole eigensystem layout (Q, pi, eigen*, U_pi, V_pi,
+// scale_factor, transition_matrix) so it can be passed to likelihood routines
+// as a const MG94Matrix& — a plain upcast, not a layout-dependent
+// reinterpret_cast.
+class PRIMEMatrix : public MG94Matrix {
 public:
-    Matrix Q;
-    Vector pi;
-    Vector sqrt_pi;
-    Vector inv_sqrt_pi;
-
-    Vector eigenvalues;
-    Matrix eigenvectors;
-    Matrix inv_eigenvectors;
-    Matrix U_pi;
-    Matrix V_pi;
-
-    Scalar scale_factor = 1.0;
-
     // Updates Q and performs exact self-adjoint eigendecomposition
     void update(
         Scalar alpha,
@@ -414,11 +408,6 @@ public:
         inv_eigenvectors = eigenvectors.transpose();
         U_pi = inv_sqrt_pi.asDiagonal() * eigenvectors;
         V_pi = inv_eigenvectors * sqrt_pi.asDiagonal();
-    }
-
-    Matrix transition_matrix(Scalar branch_length) const {
-        Vector exp_lambda = (eigenvalues * branch_length).array().exp();
-        return (U_pi * exp_lambda.asDiagonal()) * V_pi;
     }
 };
 
@@ -741,24 +730,24 @@ public:
                 }
             }
 
-            Scalar total_lnl = 0.0;
+            std::vector<Scalar> pat_w_lnl(num_patterns, 0.0);
             #pragma omp parallel
             {
                 std::vector<Vector> thread_node_L(num_nodes, Vector::Zero(S));
                 std::vector<double> thread_node_scale(num_nodes, 0.0);
 
-                #pragma omp for reduction(+:total_lnl) schedule(dynamic, 8)
+                #pragma omp for schedule(static)
                 for (size_t p = 0; p < num_patterns; ++p) {
                     Scalar lnl = FELAnalyzer::compute_pattern_log_likelihood(
                         tree, aln.patterns[p], leaf_to_taxon,
                         // Passing dummy MG94 with same pi
-                        reinterpret_cast<const MG94Matrix&>(pm),
+                        static_cast<const MG94Matrix&>(pm),
                         P_branches, thread_node_L, thread_node_scale
                     );
-                    total_lnl += aln.patterns[p].weight * lnl;
+                    pat_w_lnl[p] = aln.patterns[p].weight * lnl;
                 }
             }
-            return total_lnl;
+            return LikelihoodEngine::neumaier_sum(pat_w_lnl);
         };
 
         auto obj = [&](const std::vector<Scalar>& x) -> Scalar {
@@ -921,20 +910,13 @@ public:
 
         // Hierarchical False Discovery Rate (HRFDR) Corrections
         // Stage 1: Benjamini-Hochberg FDR on Omnibus p-values
-        std::vector<std::pair<Scalar, size_t>> p_val_order;
-        p_val_order.reserve(num_codons);
+        std::vector<Scalar> omnibus_p_vals(num_codons);
         for (size_t site = 0; site < num_codons; ++site) {
-            p_val_order.emplace_back(site_results[site].omnibus_p_value, site);
+            omnibus_p_vals[site] = site_results[site].omnibus_p_value;
         }
-        std::sort(p_val_order.begin(), p_val_order.end());
-
-        Scalar min_q = 1.0;
-        for (int i = static_cast<int>(num_codons) - 1; i >= 0; --i) {
-            Scalar rank = static_cast<Scalar>(i + 1);
-            Scalar q = (p_val_order[i].first * static_cast<Scalar>(num_codons)) / rank;
-            min_q = std::min(min_q, q);
-            min_q = std::clamp(min_q, 0.0, 1.0);
-            site_results[p_val_order[i].second].omnibus_q_value = min_q;
+        std::vector<Scalar> omnibus_q_vals = hyphy::core::stats::benjamini_hochberg_fdr(omnibus_p_vals);
+        for (size_t site = 0; site < num_codons; ++site) {
+            site_results[site].omnibus_q_value = omnibus_q_vals[site];
         }
 
         // Stage 2: Holm-Bonferroni correction on individual property p-values
@@ -953,19 +935,13 @@ public:
 
         for (size_t site = 0; site < num_codons; ++site) {
             auto& sr = site_results[site];
-            std::vector<std::pair<Scalar, size_t>> prop_p_order;
+            std::vector<Scalar> prop_p_vals(K);
             for (size_t k = 0; k < K; ++k) {
-                prop_p_order.emplace_back(sr.properties[k].p_value, k);
+                prop_p_vals[k] = sr.properties[k].p_value;
             }
-            std::sort(prop_p_order.begin(), prop_p_order.end());
-
-            Scalar running_max = 0.0;
-            for (size_t rank = 0; rank < K; ++rank) {
-                Scalar multiplier = static_cast<Scalar>(K - rank);
-                Scalar adj_p = prop_p_order[rank].first * multiplier;
-                running_max = std::max(running_max, adj_p);
-                running_max = std::clamp(running_max, 0.0, 1.0);
-                sr.properties[prop_p_order[rank].second].adjusted_p_value = running_max;
+            std::vector<Scalar> prop_adj_p = hyphy::core::stats::holm_bonferroni(prop_p_vals);
+            for (size_t k = 0; k < K; ++k) {
+                sr.properties[k].adjusted_p_value = prop_adj_p[k];
             }
 
             // Classify each property
@@ -1096,7 +1072,7 @@ private:
 
             return FELAnalyzer::compute_pattern_log_likelihood(
                 tree, pattern, leaf_to_taxon,
-                reinterpret_cast<const MG94Matrix&>(pm),
+                static_cast<const MG94Matrix&>(pm),
                 P_branches, thread_node_L, thread_node_scale
             );
         };
@@ -1203,12 +1179,19 @@ private:
         }
 
         // Omnibus LRT & p-value vs FEL (df = K)
-        Scalar omnibus_lrt = 2.0 * (res.log_l_alt - res.log_l_fel);
-        if (omnibus_lrt < 0.0) omnibus_lrt = 0.0;
+        bool valid_omnibus = (res.log_l_alt > -1e10 && res.log_l_fel > -1e10 &&
+                              std::isfinite(res.log_l_alt) && std::isfinite(res.log_l_fel));
+        Scalar omnibus_lrt = 0.0;
+        if (valid_omnibus) {
+            omnibus_lrt = 2.0 * (res.log_l_alt - res.log_l_fel);
+            if (omnibus_lrt < 0.0) omnibus_lrt = 0.0;
+        }
         res.omnibus_lrt = omnibus_lrt;
 
         // Chi-squared p-value for df = K
-        if (K == 1) {
+        if (!valid_omnibus) {
+            res.omnibus_p_value = 1.0;
+        } else if (K == 1) {
             res.omnibus_p_value = std::erfc(std::sqrt(omnibus_lrt / 2.0));
         } else if (K == 2) {
             res.omnibus_p_value = std::exp(-0.5 * omnibus_lrt);
@@ -1289,10 +1272,15 @@ private:
                 res.properties[k].lambda = 0.0;
             }
 
-            Scalar prop_lrt = 2.0 * (res.log_l_alt - res.properties[k].log_l_null);
-            if (prop_lrt < 0.0) prop_lrt = 0.0;
+            bool valid_prop = (res.log_l_alt > -1e10 && res.properties[k].log_l_null > -1e10 &&
+                               std::isfinite(res.log_l_alt) && std::isfinite(res.properties[k].log_l_null));
+            Scalar prop_lrt = 0.0;
+            if (valid_prop) {
+                prop_lrt = 2.0 * (res.log_l_alt - res.properties[k].log_l_null);
+                if (prop_lrt < 0.0) prop_lrt = 0.0;
+            }
             res.properties[k].lrt = prop_lrt;
-            res.properties[k].p_value = std::erfc(std::sqrt(prop_lrt / 2.0));
+            res.properties[k].p_value = valid_prop ? std::erfc(std::sqrt(prop_lrt / 2.0)) : 1.0;
         }
 
         res.total_branch_length = res.alpha * baseline_tested_tree_length;
@@ -1303,332 +1291,5 @@ private:
 // ============================================================================
 // JSON Serialization Implementations
 // ============================================================================
-
-inline nlohmann::json PRIMEResult::to_modern_json(
-    const Tree& tree,
-    const Alignment& aln,
-    const std::string& cli_cmd,
-    const std::string& input_filepath
-) const {
-    nlohmann::json j;
-    j["$schema"] = "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/prime.v3.schema.json";
-    j["schema_version"] = "3.0.0";
-
-    j["analysis"] = {
-        {"id", "prime"},
-        {"name", "PRoperty Informed Models of Evolution (PRIME)"},
-        {"type", "selection_property"},
-        {"version", "3.0.0"},
-        {"authors", "Sergei L. Kosakovsky Pond"},
-        {"citation", "Pond, SLK et al. PRoperty Informed Models of Evolution (PRIME)"},
-        {"contact", "spond@temple.edu"}
-    };
-
-    j["software"] = {
-        {"name", "hyphy"},
-        {"version", "3.0.0"},
-        {"homepage", "https://hyphy.org"}
-    };
-
-    Provenance auto_prov;
-    auto_prov.invocation.cli_command = cli_cmd;
-    auto_prov.invocation.working_directory = Provenance::get_cwd();
-    if (!input_filepath.empty()) {
-        size_t sz = 0;
-        std::string hash = crypto::SHA256::hash_file(input_filepath, &sz);
-        auto_prov.inputs["alignment"] = {input_filepath, "FASTA/NEXUS", hash, sz};
-    }
-    auto_prov.execution.start_time = Provenance::current_iso8601();
-    auto_prov.execution.end_time = Provenance::current_iso8601();
-    auto_prov.execution.wall_time_seconds = runtime_seconds;
-    auto_prov.execution.cpu_threads = 1;
-    auto_prov.execution.hostname = Provenance::get_hostname();
-    auto_prov.execution.os = Provenance::detect_os();
-    auto_prov.execution.compiler = Provenance::detect_compiler();
-    j["provenance"] = auto_prov.to_json();
-
-    // Dataset & Genetic Code
-    const auto& gcode = *(aln.code ? aln.code : GeneticCode::universal());
-    j["dataset"] = {
-        {"taxa_count", aln.num_taxa},
-        {"codon_sites", aln.num_codons},
-        {"nucleotide_sites", aln.num_nucleotides},
-        {"unique_patterns", aln.patterns.size()},
-        {"taxa", aln.taxon_names},
-        {"genetic_code", {
-            {"id", std::to_string(gcode.id)},
-            {"name", gcode.name},
-            {"sense_codons", gcode.num_sense_codons},
-            {"stop_codons", gcode.stop_codons}
-        }}
-    };
-
-    // Properties metadata
-    nlohmann::json prop_meta = nlohmann::json::array();
-    for (size_t k = 0; k < properties.size(); ++k) {
-        nlohmann::json p_entry;
-        p_entry["index"] = k + 1;
-        p_entry["name"] = properties[k].name;
-        p_entry["description"] = properties[k].description;
-        p_entry["mean"] = properties[k].mean;
-        p_entry["std_dev"] = properties[k].std_dev;
-        prop_meta.push_back(p_entry);
-    }
-    j["properties"] = prop_meta;
-
-    // Phylogeny
-    nlohmann::json nodes_j = nlohmann::json::object();
-    for (const auto& node : tree.nodes) {
-        nlohmann::json nd;
-        nd["type"] = node.is_leaf ? "leaf" : "internal";
-        nd["branch_lengths"] = {{"MLE", node.branch_length}};
-        nodes_j[node.name] = nd;
-    }
-    j["phylogeny"] = {
-        {"newick", tree.to_newick()},
-        {"nodes", nodes_j},
-        {"tree_lengths", {{"baseline", global_fit.baseline_tree_length}}}
-    };
-
-    // Model Fits
-    j["model_fits"] = {
-        {"G-PRIME", {
-            {"description", "Global property-informed codon model fit across all sites"},
-            {"log_likelihood", global_fit.log_likelihood},
-            {"aicc", global_fit.aicc},
-            {"alpha", global_fit.alpha},
-            {"beta", global_fit.beta},
-            {"lambdas", global_fit.lambdas}
-        }}
-    };
-
-    // Statistical Tests Summary
-    nlohmann::json summary_j = {
-        {"method", "Site-Level PRoperty Informed Models of Evolution (S-PRIME)"},
-        {"test_statistic", "Likelihood Ratio Test (LRT)"},
-        {"threshold", settings.p_value_threshold},
-        {"stage2_threshold", settings.stage2_p_value},
-        {"shrinkage_lambda", settings.shrinkage_lambda},
-        {"total_sites", total_sites},
-        {"invariant_sites", invariant_sites},
-        {"significant_sites", significant_sites},
-        {"properties_count", properties.size()}
-    };
-    for (const auto& p : properties) {
-        summary_j["conserved_" + p.name] = conserved_counts.at(p.name);
-        summary_j["changing_" + p.name] = changing_counts.at(p.name);
-    }
-    j["statistical_tests"] = {{"site_level_summary", summary_j}};
-
-    // Site Results: Columnar Data
-    nlohmann::json cols_j = {
-        {"site", {{"type", "integer"}, {"description", "1-based codon site index"}}},
-        {"alpha", {{"type", "float"}, {"description", "Synonymous rate at site under PRIME"}}},
-        {"beta", {{"type", "float"}, {"description", "Baseline non-synonymous rate under PRIME"}}},
-        {"fel_alpha", {{"type", "float"}, {"description", "Synonymous rate under neutral FEL"}}},
-        {"fel_beta", {{"type", "float"}, {"description", "Non-synonymous rate under neutral FEL"}}},
-        {"log_l_prime", {{"type", "float"}, {"description", "Site log-likelihood under PRIME"}}},
-        {"log_l_fel", {{"type", "float"}, {"description", "Site log-likelihood under FEL"}}},
-        {"omnibus_lrt", {{"type", "float"}, {"description", "LRT statistic for any property effect"}}},
-        {"omnibus_p_value", {{"type", "float"}, {"description", "Omnibus p-value"}}},
-        {"omnibus_q_value", {{"type", "float"}, {"description", "Benjamini-Hochberg FDR q-value"}}},
-        {"total_branch_length", {{"type", "float"}, {"description", "Total branch length contributing to site"}}},
-        {"nonsynonymous_substitutions", {{"type", "integer"}, {"description", "Inferred non-synonymous substitution count"}}},
-        {"unique_amino_acids", {{"type", "integer"}, {"description", "Number of unique observed amino acids"}}},
-        {"redundancy_ratio", {{"type", "float"}, {"description", "Substitutions to unique amino acids ratio"}}}
-    };
-
-    for (const auto& p : properties) {
-        cols_j["lambda_" + p.name] = {{"type", "float"}, {"description", "Constraint parameter for " + p.name}};
-        cols_j["p_" + p.name] = {{"type", "float"}, {"description", "p-value for " + p.name}};
-        cols_j["adj_p_" + p.name] = {{"type", "float"}, {"description", "Holm-Bonferroni adjusted p-value for " + p.name}};
-        cols_j["class_" + p.name] = {{"type", "string"}, {"description", "Classification for " + p.name + " (Conserved, Changing, Neutral)"}};
-    }
-
-    std::vector<int> col_site;
-    std::vector<Scalar> col_a, col_b, col_fa, col_fb, col_llp, col_llf, col_olrt, col_op, col_oq, col_tbl, col_rr;
-    std::vector<int> col_ns, col_ua;
-    std::map<std::string, std::vector<Scalar>> col_lams;
-    std::map<std::string, std::vector<Scalar>> col_pv;
-    std::map<std::string, std::vector<Scalar>> col_adj_pv;
-    std::map<std::string, std::vector<std::string>> col_cls;
-
-    for (const auto& p : properties) {
-        col_lams[p.name] = {};
-        col_pv[p.name] = {};
-        col_adj_pv[p.name] = {};
-        col_cls[p.name] = {};
-    }
-
-    for (const auto& sr : site_results) {
-        col_site.push_back(static_cast<int>(sr.site_index + 1));
-        col_a.push_back(sr.alpha);
-        col_b.push_back(sr.beta);
-        col_fa.push_back(sr.fel_alpha);
-        col_fb.push_back(sr.fel_beta);
-        col_llp.push_back(sr.log_l_alt);
-        col_llf.push_back(sr.log_l_fel);
-        col_olrt.push_back(sr.omnibus_lrt);
-        col_op.push_back(sr.omnibus_p_value);
-        col_oq.push_back(sr.omnibus_q_value);
-        col_tbl.push_back(sr.total_branch_length);
-        col_ns.push_back(static_cast<int>(sr.nonsyn_subs));
-        col_ua.push_back(static_cast<int>(sr.unique_aa));
-        col_rr.push_back(sr.redundancy_ratio);
-
-        for (const auto& p_inf : sr.properties) {
-            col_lams[p_inf.property_name].push_back(p_inf.lambda);
-            col_pv[p_inf.property_name].push_back(p_inf.p_value);
-            col_adj_pv[p_inf.property_name].push_back(p_inf.adjusted_p_value);
-            col_cls[p_inf.property_name].push_back(p_inf.classification);
-        }
-    }
-
-    nlohmann::json data_j = {
-        {"site", col_site},
-        {"alpha", col_a},
-        {"beta", col_b},
-        {"fel_alpha", col_fa},
-        {"fel_beta", col_fb},
-        {"log_l_prime", col_llp},
-        {"log_l_fel", col_llf},
-        {"omnibus_lrt", col_olrt},
-        {"omnibus_p_value", col_op},
-        {"omnibus_q_value", col_oq},
-        {"total_branch_length", col_tbl},
-        {"nonsynonymous_substitutions", col_ns},
-        {"unique_amino_acids", col_ua},
-        {"redundancy_ratio", col_rr}
-    };
-
-    for (const auto& p : properties) {
-        data_j["lambda_" + p.name] = col_lams[p.name];
-        data_j["p_" + p.name] = col_pv[p.name];
-        data_j["adj_p_" + p.name] = col_adj_pv[p.name];
-        data_j["class_" + p.name] = col_cls[p.name];
-    }
-
-    j["site_results"] = {
-        {"columns", cols_j},
-        {"data", data_j}
-    };
-
-    return j;
-}
-
-inline nlohmann::json PRIMEResult::to_legacy_json(
-    const Tree& tree,
-    const Alignment& aln,
-    const std::string& input_filepath
-) const {
-    nlohmann::json j;
-
-    j["analysis"] = {
-        {"authors", "Sergei L. Kosakovsky Pond"},
-        {"citation", "Pond, SLK et al. PRoperty Informed Models of Evolution (PRIME)"},
-        {"contact", "spond@temple.edu"},
-        {"info", "PRIME (PRoperty Informed Model of Evolution)."},
-        {"requirements", "in-frame codon alignment and a phylogenetic tree"},
-        {"residue_properties", nullptr},
-        {"version", "0.2.6"}
-    };
-
-    j["input"] = {
-        {"file name", input_filepath},
-        {"number of sequences", aln.num_taxa},
-        {"number of sites", aln.num_codons},
-        {"partition count", 1},
-        {"trees", {{"0", tree.to_newick()}}}
-    };
-
-    // Legacy MLE Table Headers
-    // Index 0..11: alpha, beta, FEL alpha, FEL beta, Total branch length, # subs, # aa, PRIME LogL, FEL LogL, p-value, q-value, R
-    // Followed by 3 columns per property: &lambda;k, pk, LogLk
-    nlohmann::json headers = nlohmann::json::array();
-    headers.push_back({"&alpha;", "Synonymous substitution rate at a site"});
-    headers.push_back({"&beta;", "Property independent non-synonymous rate a site"});
-    headers.push_back({"FEL &alpha;", "Synonymous substitution rate at a site (FEL model)"});
-    headers.push_back({"FEL &beta;", "Log of property independent non-synonymous rate a site"});
-    headers.push_back({"Total branch length", "The total length of branches contributing to inference at this site, and used to scale dN-dS"});
-    headers.push_back({"# subs", "The number of amino-acid substitutions that occurred at this site"});
-    headers.push_back({"# aa", "The number of unique amino-acids occurring at that site"});
-    headers.push_back({"PRIME LogL", "Site Log-likelihood under the PRIME model"});
-    headers.push_back({"FEL LogL", "Site Log-likelihood under the FEL model"});
-    headers.push_back({"p-value", "Omnibus p-value (any property is important)"});
-    headers.push_back({"q-value", "Omnibus q-value (any property is important)"});
-    headers.push_back({"R", "Redundancy ratio (subs / unique aa)"});
-
-    for (size_t k = 0; k < properties.size(); ++k) {
-        std::string k_str = std::to_string(k + 1);
-        headers.push_back({"&lambda;" + k_str, "Importance for " + properties[k].name});
-        headers.push_back({"p" + k_str, "p-value for non-zero effect of " + properties[k].name});
-        headers.push_back({"LogL" + k_str, "Log likelihood when there is no effect of " + properties[k].name});
-    }
-
-    nlohmann::json content_rows = nlohmann::json::array();
-    for (const auto& sr : site_results) {
-        nlohmann::json row = nlohmann::json::array();
-        row.push_back(sr.alpha);
-        row.push_back(sr.beta);
-        row.push_back(sr.fel_alpha);
-        row.push_back(sr.fel_beta);
-        row.push_back(sr.total_branch_length);
-        row.push_back(static_cast<int>(sr.nonsyn_subs));
-        row.push_back(static_cast<int>(sr.unique_aa));
-        row.push_back(sr.log_l_alt);
-        row.push_back(sr.log_l_fel);
-        row.push_back(sr.omnibus_p_value);
-        row.push_back(sr.omnibus_q_value);
-        row.push_back(sr.redundancy_ratio);
-
-        for (const auto& p_inf : sr.properties) {
-            row.push_back(p_inf.lambda);
-            row.push_back(p_inf.adjusted_p_value); // Stage 2 adjusted p-value
-            row.push_back(p_inf.log_l_null);
-        }
-        content_rows.push_back(row);
-    }
-
-    j["MLE"] = {
-        {"headers", headers},
-        {"content", {{"0", content_rows}}}
-    };
-
-    // Legacy "test results"
-    nlohmann::json sig_sites_map = nlohmann::json::object();
-    size_t sig_idx = 0;
-    for (const auto& sr : site_results) {
-        if (sr.is_significant(settings.p_value_threshold)) {
-            nlohmann::json site_entry;
-            site_entry["codon"] = static_cast<int>(sr.site_index);
-            site_entry["partiton"] = 0;
-            site_entry["q-value"] = sr.omnibus_q_value;
-
-            nlohmann::json prop_obj = nlohmann::json::object();
-            for (const auto& p_inf : sr.properties) {
-                if (p_inf.classification != "Neutral") {
-                    prop_obj[p_inf.property_name] = p_inf.adjusted_p_value;
-                }
-            }
-            site_entry["properties"] = prop_obj;
-            sig_sites_map[std::to_string(sig_idx++)] = site_entry;
-        }
-    }
-
-    j["test results"] = {
-        {"terms.qvalue", settings.p_value_threshold},
-        {"Global test significant sites", sig_sites_map}
-    };
-
-    j["fits"] = {
-        {"Global MG94xREV", {{"Log-likelihood", global_fit.log_likelihood}}},
-        {"Nucleotide GTR", {{"Log-likelihood", global_fit.gtr_log_l}}}
-    };
-
-    j["runtime"] = "3.0.0";
-    j["timers"] = {{"Total time", runtime_seconds}};
-
-    return j;
-}
 
 } // namespace hyphy::analyses

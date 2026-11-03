@@ -1,13 +1,9 @@
 #include "hyphy/core/types.hpp"
-#include "hyphy/core/genetic_code.hpp"
-#include "hyphy/core/alignment.hpp"
-#include "hyphy/core/tree.hpp"
+#include "hyphy/core/cli_common.hpp"
 #include "hyphy/core/rate_matrix.hpp"
 #include "hyphy/core/likelihood.hpp"
-#include "hyphy/core/console.hpp"
 #include "hyphy/opt/optimizer.hpp"
 #include "hyphy/analyses/fel.hpp"
-#include "hyphy/report/html_report.hpp"
 
 #include <iostream>
 #include <string>
@@ -15,9 +11,6 @@
 #include <chrono>
 #include <iomanip>
 #include <numeric>
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 using namespace hyphy::core;
 using namespace hyphy::analyses;
@@ -38,7 +31,11 @@ static void print_usage(const char* prog) {
               << Console::bold("Required arguments:") << "\n"
               << "  " << Console::brand("--alignment") << " <file>   Path to codon alignment (FASTA or NEXUS)\n\n"
               << Console::bold("Optional arguments:") << "\n"
-              << "  " << Console::brand("--tree") << " <file>        Path to Newick tree file (optional if embedded in NEXUS)\n"
+              << "  " << Console::brand("--tree") << " <file>        Path to Newick tree file or 'auto' (optional; auto-infers ML tree via TreeEngine if omitted or 'auto')\n"
+              << "  " << Console::brand("--ohmic") << "              Build Ohmic Phylogenetic Network with Wheatstone bridges\n"
+              << "  " << Console::brand("--hyphaeon") << "           Opt-in: HyphAeon 384D transformer conductances (needs Python aeon-core)\n"
+              << "  " << Console::brand("--no-hyphaeon") << "        Use empirical codon conductances only (default)\n"
+              << "  " << Console::brand("--embeddings") << " <file>  Path to precomputed [N x 384] HyphAeon embeddings (.bin/.csv/.tsv)\n"
               << "  " << Console::brand("--code") << " <name>        Genetic code (default: Universal; e.g. Vertebrate-mtDNA)\n"
               << "  " << Console::brand("--branches") << " <set>     Branches to test: 'All' (default), 'Internal', 'Leaves', 'Unlabeled', tag name, or comma-separated names\n"
               << "  " << Console::brand("--branch-regex") << " <reg> Regular expression to match branch names to test\n"
@@ -57,64 +54,20 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--help, -h") << "           Show this help message\n\n"
               << Console::bold("Examples:") << "\n"
               << "  " << prog << " --alignment data/cd2.fna --tree data/cd2.nwk --output cd2.FEL.json\n"
-              << "  " << prog << " --alignment data/cd2.fna --branches Leaves --output cd2.FEL.json\n"
+              << "  " << prog << " --alignment data/cd2.fna --tree auto --output cd2.FEL.json\n"
+              << "  " << prog << " --alignment data/cd2.fna --ohmic --output cd2.FEL.json\n"
               << "  " << prog << " --alignment tests/data/COXI.nex --code Vertebrate-mtDNA --legacy-json\n\n";
 }
 
 int run_fel(int argc, char* argv[]) {
-    std::string alignment_file;
-    std::string tree_file;
-    std::string output_file;
-    std::string html_file;
-    std::string code_name = "Universal";
-    std::string test_branches = "All";
-    std::string test_branch_regex = "";
-    int num_threads = 0;
-    Scalar pvalue_threshold = 0.1;
-    bool show_progress = ProgressBar::is_terminal();
-    bool force_progress = false;
-    bool full_model = true;
-    bool all_sites = false;
-    JSONFormat json_format = JSONFormat::ModernV3;
+    CommonCLIOptions opts;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--alignment" && i + 1 < argc) {
-            alignment_file = argv[++i];
-        } else if (arg == "--tree" && i + 1 < argc) {
-            tree_file = argv[++i];
-        } else if (arg == "--code" && i + 1 < argc) {
-            code_name = argv[++i];
-        } else if ((arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
-            test_branches = argv[++i];
-        } else if ((arg == "--branch-regex" || arg == "--test-branch-regex") && i + 1 < argc) {
-            test_branch_regex = argv[++i];
-        } else if (arg == "--threads" && i + 1 < argc) {
-            num_threads = std::stoi(argv[++i]);
-        } else if (arg == "--output" && i + 1 < argc) {
-            output_file = argv[++i];
-        } else if (arg == "--html" && i + 1 < argc) {
-            html_file = argv[++i];
-        } else if (arg == "--pvalue" && i + 1 < argc) {
-            pvalue_threshold = std::stod(argv[++i]);
-        } else if (arg == "--json-format" && i + 1 < argc) {
-            json_format = parse_json_format(argv[++i]);
-        } else if (arg == "--legacy-json") {
-            json_format = JSONFormat::Legacy;
-        } else if (arg == "--modern-json") {
-            json_format = JSONFormat::ModernV3;
-        } else if (arg == "--full-model") {
-            full_model = true;
-        } else if (arg == "--no-full-model" || arg == "--quick") {
-            full_model = false;
-        } else if (arg == "--all-sites") {
-            all_sites = true;
-        } else if (arg == "--progress") {
-            show_progress = true;
-            force_progress = true;
-        } else if (arg == "--no-progress") {
-            show_progress = false;
-            force_progress = false;
+        if (parse_common_cli_arg(i, argc, argv, opts)) {
+            if (opts.has_error) {
+                return 1;
+            }
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
@@ -125,72 +78,40 @@ int run_fel(int argc, char* argv[]) {
         }
     }
 
-    if (alignment_file.empty()) {
+    if (opts.alignment_file.empty()) {
         std::cerr << Console::danger("Error: --alignment is required.\n\n");
         print_usage(argv[0]);
         return 1;
     }
 
-#ifdef _OPENMP
-    if (num_threads > 0) {
-        omp_set_num_threads(num_threads);
-    }
-#endif
-
-    if (output_file.empty()) {
-        output_file = alignment_file + ".FEL.json";
-    }
-
+    finalize_common_cli_options(opts, ".FEL.json");
     print_banner();
 
     auto start_time = std::chrono::high_resolution_clock::now();
     std::string start_iso = Provenance::current_iso8601();
-    std::string cli_cmd = argv[0];
-    for (int i = 1; i < argc; ++i) {
-        cli_cmd += " ";
-        cli_cmd += argv[i];
-    }
+    std::string cli_cmd = join_cli_command(argc, argv);
 
-    // 0. Genetic Code
-    std::shared_ptr<const GeneticCode> gcode;
-    try {
-        gcode = GeneticCode::from_name(code_name);
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error resolving genetic code: ") << e.what() << "\n";
+    LoadedCodonDataset data;
+    if (!load_codon_dataset(opts, data)) {
         return 1;
     }
+    auto& [gcode, aln, tree, ohmic_net, tree_source] = data;
+    const auto& alignment_file = opts.alignment_file;
+    const auto& output_file = opts.output_file;
+    const auto& test_branches = opts.branches;
+    const auto& test_branch_regex = opts.branch_regex;
+    const Scalar pvalue_threshold = opts.pvalue_threshold;
+    const bool full_model = opts.full_model;
+    const bool all_sites = opts.all_sites;
+    const bool show_progress = opts.show_progress;
+    const bool force_progress = opts.force_progress;
+    const JSONFormat json_format = opts.json_format;
 
-    // 1. Load Alignment
-    Alignment aln;
+    // Validate branch selection upfront before global model fitting
     try {
-        aln = Alignment::load(alignment_file, gcode);
+        (void)tree.select_branches(test_branches, test_branch_regex);
     } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error loading alignment: ") << e.what() << "\n";
-        return 1;
-    }
-
-    // 2. Load Tree
-    Tree tree;
-    std::string tree_source;
-    if (!tree_file.empty()) {
-        try {
-            tree = Tree::from_newick_file(tree_file);
-            tree_source = tree_file;
-        } catch (const std::exception& e) {
-            std::cerr << Console::danger("Error loading tree: ") << e.what() << "\n";
-            return 1;
-        }
-    } else if (!aln.embedded_tree_newick.empty()) {
-        try {
-            tree = Tree::from_newick(aln.embedded_tree_newick);
-            tree_source = "embedded in NEXUS";
-        } catch (const std::exception& e) {
-            std::cerr << Console::danger("Error parsing embedded tree: ") << e.what() << "\n";
-            return 1;
-        }
-    } else {
-        std::cerr << Console::danger("Error: No tree provided via --tree and no embedded tree found in alignment.\n\n");
-        print_usage(argv[0]);
+        std::cerr << Console::danger("Error in branch selection: ") << e.what() << "\n";
         return 1;
     }
 
@@ -230,6 +151,8 @@ int run_fel(int argc, char* argv[]) {
     base_p.theta_GT = gtr_res.params.theta_GT;
 
     MG94Fitter mg_fitter(gtr_res.tree, aln);
+    auto sel = gtr_res.tree.select_branches(test_branches, test_branch_regex, {}, true);
+    const std::vector<bool>* p_sel = (sel.num_selected > 0 && sel.num_unselected > 0) ? &sel.is_selected : nullptr;
     FitResult mg_res;
     if (full_model) {
         std::function<void(const std::string&, double)> mg_cb = nullptr;
@@ -238,7 +161,7 @@ int run_fel(int argc, char* argv[]) {
                 std::cout << "  " << Console::muted("↳ ") << msg << "...\n";
             };
         }
-        mg_res = mg_fitter.fit_full_model(1.0, base_p, mg_cb);
+        mg_res = mg_fitter.fit_full_model(1.0, base_p, mg_cb, 250, 1e-5, p_sel);
         base_p = mg_res.params;
     } else {
         mg_res = mg_fitter.fit_omega_and_scale(1.0, base_p);
@@ -259,7 +182,7 @@ int run_fel(int argc, char* argv[]) {
 
     FELAnalyzer fel(mg_res.tree, aln, base_p, fel_settings);
     fel.global_log_l = mg_res.log_likelihood;
-    size_t K_mg = 5 + 1 + (mg_res.tree.num_nodes() - 1);
+    size_t K_mg = 5 + (p_sel ? 2 : 1) + (mg_res.tree.num_nodes() - 1);
     size_t N_codons = aln.num_codons;
     fel.global_aicc = -2.0 * mg_res.log_likelihood + 2.0 * K_mg * N_codons / (N_codons - K_mg - 1.0);
 
@@ -467,63 +390,12 @@ int run_fel(int argc, char* argv[]) {
 
     Panel::print_summary_card("FEL Selection Analysis Summary", sum_items, conclusion, true);
 
-    // Build Provenance
-    Provenance prov;
-    prov.invocation.cli_command = cli_cmd;
-    prov.invocation.working_directory = Provenance::get_cwd();
-    prov.invocation.arguments["alignment"] = alignment_file;
-    if (!tree_file.empty()) prov.invocation.arguments["tree"] = tree_file;
-    prov.invocation.arguments["code"] = code_name;
-    prov.invocation.arguments["branches"] = test_branches;
-    if (!test_branch_regex.empty()) {
-        prov.invocation.arguments["branch_regex"] = test_branch_regex;
-    }
-    prov.invocation.arguments["pvalue_threshold"] = std::to_string(pvalue_threshold);
-    prov.invocation.arguments["full_model"] = full_model ? "true" : "false";
-    prov.invocation.arguments["json_format"] = (json_format == JSONFormat::Legacy) ? "legacy" : "modern_v3";
-
-    size_t aln_sz = 0;
-    std::string aln_hash = crypto::SHA256::hash_file(alignment_file, &aln_sz);
-    prov.inputs["alignment"] = {alignment_file, "FASTA/NEXUS", aln_hash, aln_sz};
-
-    if (!tree_file.empty()) {
-        size_t tree_sz = 0;
-        std::string tree_hash = crypto::SHA256::hash_file(tree_file, &tree_sz);
-        prov.inputs["tree"] = {tree_file, "Newick", tree_hash, tree_sz};
-    }
-
-    prov.execution.start_time = start_iso;
-    prov.execution.end_time = Provenance::current_iso8601();
-    prov.execution.wall_time_seconds = total_sec;
-#ifdef _OPENMP
-    prov.execution.cpu_threads = (num_threads > 0) ? num_threads : omp_get_max_threads();
-#else
-    prov.execution.cpu_threads = 1;
-#endif
-    prov.execution.hostname = Provenance::get_hostname();
-    prov.execution.os = Provenance::detect_os();
-    prov.execution.compiler = Provenance::detect_compiler();
-
-    // Save JSON
-    try {
-        fel.save_json(output_file, alignment_file, "", json_format, prov);
-        std::string fmt_desc = (json_format == JSONFormat::Legacy) ? "Legacy Datamonkey JSON" : "Modern HyPhy v3.0 JSON";
-        std::cout << Console::success("✔") << " " << Console::bold("Saved " + fmt_desc + " report to: ")
-                  << Console::brand(output_file) << "\n\n";
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error writing JSON: ") << e.what() << "\n";
+    Provenance prov = build_cli_provenance(opts, cli_cmd, start_iso, total_sec);
+    nlohmann::json out_j = (json_format == JSONFormat::Legacy)
+        ? fel.to_legacy_json(alignment_file, "")
+        : fel.to_modern_json(alignment_file, "", prov);
+    if (!write_cli_json_and_html(opts, out_j)) {
         return 1;
-    }
-
-    if (!html_file.empty()) {
-        try {
-            hyphy::report::write_html_report(output_file, html_file);
-            std::cout << Console::success("✔") << " " << Console::bold("Saved HTML report to: ")
-                      << Console::brand(html_file) << "\n\n";
-        } catch (const std::exception& e) {
-            std::cerr << Console::danger("Error writing HTML report: ") << e.what() << "\n";
-            return 1;
-        }
     }
 
     return 0;

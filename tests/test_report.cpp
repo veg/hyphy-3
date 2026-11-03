@@ -65,7 +65,7 @@ TEST_CASE("Report: FEL and MEME reports embed the viewer, stylesheet and data") 
     CHECK(meme.find("<hyphy-meme-viewer") != std::string::npos);
     CHECK(meme.find("MEME &bull; Episodic Selection") != std::string::npos);
     CHECK(meme.find("whenDefined('hyphy-meme-viewer')") != std::string::npos);
-    CHECK(meme.find("hyphy-fel-viewer, hyphy-meme-viewer, hyphy-viewer { width: 100%;") != std::string::npos);
+    CHECK(meme.find("hyphy-fel-viewer, hyphy-meme-viewer, hyphy-viewer, hyphy-ohmic-viewer { width: 100%;") != std::string::npos);
 
     // FUBAR mounts the neutral element, which picks its viewer from the result itself
     std::string fubar = render_html(R"J({"analysis": {"id": "fubar"}})J", "f.json");
@@ -82,11 +82,22 @@ TEST_CASE("Report: FEL and MEME reports embed the viewer, stylesheet and data") 
     std::string dfel = render_html(R"J({"analysis": {"id": "dfel"}})J", "d.json");
     CHECK(dfel.find("<hyphy-viewer id=\"hyphy-viewer\"") != std::string::npos);
     CHECK(dfel.find("dFEL &bull; Directional Selection") != std::string::npos);
+    // Other spellings of the dFEL id get the same report
+    std::string dfel_alias = render_html(R"J({"analysis": {"id": "directional_fel"}})J", "d.json");
+    CHECK(dfel_alias.find("<hyphy-viewer id=\"hyphy-viewer\"") != std::string::npos);
+    CHECK(dfel_alias.find("dFEL &bull; Directional Selection") != std::string::npos);
+
+    // Ohmic mounts its own viewer from its own bundle
+    std::string ohmic = render_html(R"J({"analysis": {"id": "ohmic"}})J", "o.json");
+    CHECK(ohmic.find("<hyphy-ohmic-viewer") != std::string::npos);
+    CHECK(ohmic.find("window.HyPhyOhmicViewer") != std::string::npos);
+    CHECK(ohmic.find("window.HyPhyFELViewer") == std::string::npos);
+    CHECK(ohmic.find("OHMIC &bull; Phylogenetic Network") != std::string::npos);
 }
 
 TEST_CASE("Report: the viewer table drives the supported analyses") {
-    CHECK(supported_analyses() == std::vector<std::string>{"fel", "meme", "fubar", "slac", "dfel"});
-    CHECK(supported_analyses_text() == "FEL, MEME, FUBAR, SLAC, DFEL");
+    CHECK(supported_analyses() == std::vector<std::string>{"fel", "meme", "fubar", "slac", "dfel", "ohmic"});
+    CHECK(supported_analyses_text() == "FEL, MEME, FUBAR, SLAC, DFEL, OHMIC");
     REQUIRE(find_viewer("meme") != nullptr);
     CHECK(find_viewer("meme")->tag == "hyphy-meme-viewer");
     REQUIRE(find_viewer("fubar") != nullptr);
@@ -95,6 +106,8 @@ TEST_CASE("Report: the viewer table drives the supported analyses") {
     CHECK(find_viewer("slac")->tag == "hyphy-viewer");
     REQUIRE(find_viewer("dfel") != nullptr);
     CHECK(find_viewer("dfel")->tag == "hyphy-viewer");
+    REQUIRE(find_viewer("ohmic") != nullptr);
+    CHECK(find_viewer("ohmic")->tag == "hyphy-ohmic-viewer");
     CHECK(find_viewer("busted") == nullptr);
     CHECK(find_viewer("") == nullptr);
 }
@@ -108,3 +121,4 @@ TEST_CASE("Report: data cannot break out of the inline script") {
     CHECK(html.find("<evil>") == std::string::npos);  // file name is HTML-escaped
     CHECK(html.find("&lt;evil&gt;&amp;.json") != std::string::npos);
 }
+

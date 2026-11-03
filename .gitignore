@@ -34,11 +34,15 @@ dist/
 
 # Test and benchmark temporary outputs
 Testing/
+generated/
 *.json
 !benchmarks/data/*.json
 !benchmarks/ground_truth/*.json
 !tests/data/*.json
 !schemas/**/*.json
+!viz/**/*.json
+*.html
+!viz/**/*.html
 *.cache
 *.log
 *.FEL.json
@@ -46,6 +50,8 @@ Testing/
 *.PRIME.json
 *.MEME.json
 *.BUSTED.json
+*.OHMIC.json
+*.TREE.json
 scratch/
 *.trace/
 *.trace

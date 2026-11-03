@@ -1,707 +1,1217 @@
 {
+  "$schema": "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/absrel.v3.schema.json",
   "analysis": {
-    "info": "aBSREL (Adaptive branch-site random effects likelihood) uses an adaptive random effects branch-site model framework to test whether each branch has evolved under positive selection, inferring an optimal number of rate categories per branch.",
-    "reference": "Less Is More: An Adaptive Branch-Site Random Effects Model for Efficient Detection of Episodic Diversifying Selection (2015). Mol Biol Evol 32 (5): 1342-1353.",
+    "category": "branch_site_selection",
+    "citations": [
+      {
+        "citation": "Smith MD, Wertheim JO, Weaver S, Murrell B, Scheffler K, Kosakovsky Pond SL (2015). Less Is More: An Adaptive Branch-Site Random Effects Model for Efficient Detection of Episodic Diversifying Selection. Mol Biol Evol 32(5): 1342-1353.",
+        "doi": "10.1093/molbev/msv022",
+        "pmid": "25697341"
+      }
+    ],
+    "description": "aBSREL (Adaptive branch-site random effects likelihood) uses an adaptive random effects branch-site model framework to test whether each branch has evolved under positive selection, inferring an optimal number of rate categories per branch.",
+    "id": "absrel",
+    "name": "Adaptive Branch-Site Random Effects Likelihood",
+    "settings": {
+      "p_threshold": 0.05,
+      "tested_branches": 31
+    },
     "version": "3.0.0"
   },
-  "branch attributes": {
-    "0": {
-      "Node10": {
-        "Baseline MG94xREV": 0.07275678935452573,
-        "Baseline MG94xREV omega ratio": 0.2786788743951137,
-        "Corrected P-value": 0.002893733584044985,
-        "Full adaptive model": 0.9912700883063406,
-        "Full adaptive model (non-synonymous subs/site)": 0.9810540479529672,
-        "Full adaptive model (synonymous subs/site)": 0.0102160403533733,
-        "LRT": 16.32000416851224,
-        "Rate Distributions": [
+  "branch_results": {
+    "columns": {
+      "baseline_omega": {
+        "description": "Baseline single omega estimate",
+        "type": "float"
+      },
+      "branch": {
+        "description": "Branch name in phylogeny",
+        "type": "string"
+      },
+      "corrected_p_value": {
+        "description": "Holm-Bonferroni corrected p-value",
+        "type": "float"
+      },
+      "full_branch_length": {
+        "description": "Estimated branch length under full adaptive model",
+        "type": "float",
+        "unit": "substitutions/site"
+      },
+      "lrt": {
+        "description": "Likelihood ratio test statistic for episodic positive selection",
+        "type": "float"
+      },
+      "positive": {
+        "description": "Flag indicating episodic diversifying selection at threshold",
+        "type": "boolean"
+      },
+      "rate_classes": {
+        "description": "Number of inferred omega rate classes",
+        "type": "integer"
+      },
+      "sites_ebf_100": {
+        "description": "Number of sites with Empirical Bayes Factor (EBF) >= 100 favoring selection",
+        "type": "integer"
+      },
+      "uncorrected_p_value": {
+        "description": "Asymptotic uncorrected p-value",
+        "type": "float"
+      }
+    },
+    "data": {
+      "baseline_omega": [
+        0.06142185765869265,
+        0.1970011701023364,
+        0.3136908867451447,
+        0.19197308159397036,
+        0.2952107827606748,
+        0.6835590552130416,
+        0.45740444019068643,
+        0.7530776492557592,
+        0.27314920862527414,
+        0.6624368290745088,
+        0.45129352997988265,
+        0.20660016159065667,
+        0.3947890032356467,
+        0.5807029693207532,
+        0.7436281183968544,
+        0.14152997787320812,
+        0.12199583455661037,
+        0.224284002487399,
+        0.6934249730210815,
+        5.886793531229029,
+        0.1356428366618933,
+        0.5089083392890147,
+        0.24893177174322134,
+        0.1948963375105685,
+        0.13221738080888268,
+        0.29375204092240276,
+        0.05760624502095455,
+        0.02477764487993723,
+        0.1460071436471376,
+        0.27712533451817484,
+        0.20894128078237037
+      ],
+      "branch": [
+        "Node2",
+        "Node3",
+        "elephseal",
+        "Node4",
+        "pig",
+        "Node5",
+        "cow",
+        "sheep",
+        "Node6",
+        "Node7",
+        "bushbaby",
+        "Node8",
+        "hare",
+        "rabbit",
+        "Node9",
+        "human",
+        "tarsier",
+        "Node10",
+        "hamster",
+        "Node11",
+        "rat",
+        "mouse",
+        "Node12",
+        "marsupial",
+        "Node13",
+        "Node14",
+        "duck",
+        "chicken",
+        "Node15",
+        "xenlaev",
+        "xentrop"
+      ],
+      "corrected_p_value": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.02607660291683851,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.18105480736390916,
+        0.04289189811543542,
+        1.0,
+        1.0,
+        0.005029982464448043,
+        0.5157763594114035,
+        1.0,
+        1.0,
+        0.1970061656325605,
+        0.6314107789978063,
+        0.036782499676184785,
+        1.0,
+        0.3907453807273175,
+        1.0,
+        1.0,
+        1.0,
+        0.8316762802604246,
+        1.0
+      ],
+      "full_branch_length": [
+        0.05171718311298571,
+        0.021568220197877755,
+        0.07313023030808134,
+        0.03199182370164048,
+        0.11659750927422681,
+        0.07175744369122278,
+        0.021161848994509715,
+        0.06214046662277111,
+        0.018025826802387047,
+        0.0055644240477502795,
+        0.07033596187573922,
+        0.05286821701850365,
+        0.009453576173571655,
+        0.024645838673848876,
+        0.036018350971882336,
+        0.061186756680358875,
+        0.07730680108592816,
+        1.0125354092135193,
+        0.13947706275363,
+        0.02182202644965432,
+        5.516545118952548,
+        0.10440183367557894,
+        0.6354385659784798,
+        26.285974947632326,
+        0.07417368398507873,
+        179.04447380979084,
+        0.06418646527991714,
+        0.019346042764626092,
+        0.5260885070674254,
+        0.15266396964466863,
+        0.3247213776061134
+      ],
+      "lrt": [
+        0.0,
+        0.0,
+        0.0,
+        4.023706871339527,
+        1.8912298383747839,
+        3.3909980181369974,
+        0.0,
+        11.955749131111588,
+        0.0,
+        0.25491424056872347,
+        3.839519309971365,
+        0.0,
+        0.0,
+        7.917362352226519,
+        10.833466473720364,
+        0.0,
+        0.0,
+        15.286473754563303,
+        5.631078495664951,
+        1.220208083696889,
+        2.4157010630306104,
+        7.676787210186376,
+        5.1530362306575626,
+        11.207155791753394,
+        0.0,
+        6.254400299825647,
+        0.0,
+        0.0,
+        0.16824299180370872,
+        4.5303424904741405,
+        3.087346118217283
+      ],
+      "positive": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "rate_classes": [
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        1,
+        2,
+        1,
+        1,
+        2,
+        1,
+        1,
+        2,
+        2,
+        1,
+        1,
+        2,
+        2,
+        1,
+        2,
+        2,
+        2,
+        2,
+        1,
+        2,
+        1,
+        1,
+        2,
+        2,
+        2
+      ],
+      "sites_ebf_100": [
+        0,
+        0,
+        0,
+        2,
+        10,
+        3,
+        0,
+        6,
+        0,
+        0,
+        2,
+        0,
+        0,
+        3,
+        3,
+        0,
+        0,
+        6,
+        19,
+        0,
+        1,
+        3,
+        3,
+        9,
+        0,
+        5,
+        0,
+        0,
+        1,
+        6,
+        2
+      ],
+      "uncorrected_p_value": [
+        1.0,
+        1.0,
+        1.0,
+        0.049095169880562325,
+        0.15034484601128276,
+        0.06816294212591847,
+        1.0,
+        0.0008692200972279503,
+        1.0,
+        0.3868265229430315,
+        0.05400423488991128,
+        1.0,
+        1.0,
+        0.006705733606070709,
+        0.0015318535041226938,
+        1.0,
+        1.0,
+        0.00016225749885316268,
+        0.021490681642141816,
+        0.21685226611116712,
+        0.11367651660975905,
+        0.007577160216636942,
+        0.02745264256512201,
+        0.0012683620577994754,
+        1.0,
+        0.0156298152290927,
+        1.0,
+        1.0,
+        0.4121314787959103,
+        0.037803467284564754,
+        0.07985921313340895
+      ]
+    }
+  },
+  "dataset": {
+    "codon_sites": 144,
+    "genetic_code": {
+      "id": "Universal",
+      "name": "Universal",
+      "sense_codons": 61,
+      "stop_codons": [
+        "TAA",
+        "TAG",
+        "TGA"
+      ]
+    },
+    "nucleotide_sites": 432,
+    "partitions": [
+      {
+        "id": "default",
+        "name": "Full Alignment",
+        "patterns_count": 142,
+        "sites_count": 144,
+        "span": [
           [
-            0.10977234258022601,
-            0.9268265287667053
-          ],
-          [
-            400.3755329624739,
-            0.07317347123329465
+            1,
+            144
           ]
+        ]
+      }
+    ],
+    "taxa": [
+      "human",
+      "tarsier",
+      "bushbaby",
+      "hare",
+      "rabbit",
+      "cow",
+      "sheep",
+      "pig",
+      "elephseal",
+      "rat",
+      "mouse",
+      "hamster",
+      "marsupial",
+      "duck",
+      "chicken",
+      "xenlaev",
+      "xentrop"
+    ],
+    "taxa_count": 17,
+    "unique_patterns": 142
+  },
+  "model_fits": {
+    "baseline_mg94": {
+      "aicc": 7694.526362591115,
+      "description": "Baseline MG94xREV model with individual branch omegas and branch lengths",
+      "log_likelihood": -3768.795024399733,
+      "parameters_count": 76
+    },
+    "full_adaptive": {
+      "aicc": 7490.767392098628,
+      "description": "Full adaptive aBSREL mixture model with branch-specific rate categories",
+      "log_likelihood": -3630.159049066002,
+      "parameters_count": 110
+    },
+    "nucleotide_gtr": {
+      "aicc": 7936.236582697717,
+      "description": "General Time Reversible nucleotide model with empirical frequencies",
+      "log_likelihood": -3928.7461394501242,
+      "parameters_count": 39
+    }
+  },
+  "phylogeny": {
+    "newick": "(((elephseal:0,(pig:0,(cow:0,sheep:0)Node5:0)Node4:0)Node3:0,((bushbaby:0,(hare:0,rabbit:0)Node8:0)Node7:0,(human:0,tarsier:0)Node9:0)Node6:0)Node2:0,(hamster:0,(rat:0,mouse:0)Node11:0)Node10:0,(marsupial:0,((duck:0,chicken:0)Node14:0,(xenlaev:0,xentrop:0)Node15:0)Node13:0)Node12:0)Node1;",
+    "nodes": {
+      "Node1": {
+        "type": "internal"
+      },
+      "Node10": {
+        "baseline_omega": 0.224284002487399,
+        "branch_lengths": {
+          "baseline_mg94": 0.08396526164809955,
+          "full_adaptive": 1.0125354092135193
+        },
+        "corrected_p_value": 0.005029982464448043,
+        "is_positive": true,
+        "is_tested": true,
+        "lrt": 15.286473754563303,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.12253277406923038,
+            "proportion": 0.927636297259178
+          },
+          {
+            "omega": 419.9149967279794,
+            "proportion": 0.07236370274082204
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 6,
-        "Uncorrected P-value": 9.645778613483284e-05
+        "sites_ebf_100": 6,
+        "type": "internal",
+        "uncorrected_p_value": 0.00016225749885316268
       },
       "Node11": {
-        "Baseline MG94xREV": 0.02410297308794938,
-        "Baseline MG94xREV omega ratio": 1402.6920201289556,
-        "Corrected P-value": 8.021624140362815e-07,
-        "Full adaptive model": 0.021936957323142776,
-        "Full adaptive model (non-synonymous subs/site)": 0.021936407942926724,
-        "Full adaptive model (synonymous subs/site)": 5.493802160516547e-07,
-        "LRT": 32.70502074082924,
-        "Rate Distributions": [
-          [
-            12223.875648422701,
-            1.0
-          ]
+        "baseline_omega": 5.886793531229029,
+        "branch_lengths": {
+          "baseline_mg94": 0.026145156032928694,
+          "full_adaptive": 0.02182202644965432
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 1.220208083696889,
+        "rate_classes": 1,
+        "rate_distribution": [
+          {
+            "omega": 12712.40116262435,
+            "proportion": 1.0
+          }
         ],
-        "Rate classes": 1,
-        "Sites @ EBF>=100": 0,
-        "Uncorrected P-value": 2.5876206904396178e-08
+        "sites_ebf_100": 0,
+        "type": "internal",
+        "uncorrected_p_value": 0.21685226611116712
       },
       "Node12": {
-        "Baseline MG94xREV": 0.08268113945485785,
-        "Baseline MG94xREV omega ratio": 0.4756261439389703,
-        "Corrected P-value": 0.4911531820512357,
-        "Full adaptive model": 0.625077092118413,
-        "Full adaptive model (non-synonymous subs/site)": 0.604204678799336,
-        "Full adaptive model (synonymous subs/site)": 0.020872413319076983,
-        "LRT": 5.373383295976055,
-        "Rate Distributions": [
-          [
-            0.31444335546875546,
-            0.9449633034845787
-          ],
-          [
-            155.6194952465309,
-            0.05503669651542131
-          ]
+        "baseline_omega": 0.24893177174322134,
+        "branch_lengths": {
+          "baseline_mg94": 0.11516828242429994,
+          "full_adaptive": 0.6354385659784798
+        },
+        "corrected_p_value": 0.6314107789978063,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 5.1530362306575626,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.31039632896355757,
+            "proportion": 0.9446496377459751
+          },
+          {
+            "omega": 156.74285352185623,
+            "proportion": 0.0553503622540249
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 3,
-        "Uncorrected P-value": 0.024521021907440186
+        "sites_ebf_100": 3,
+        "type": "internal",
+        "uncorrected_p_value": 0.02745264256512201
       },
       "Node13": {
-        "Baseline MG94xREV": 0.06351757043646296,
-        "Baseline MG94xREV omega ratio": 0.258383318768716,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.07624631789078594,
-        "Full adaptive model (non-synonymous subs/site)": 0.021755167270454026,
-        "Full adaptive model (synonymous subs/site)": 0.05449115062033191,
-        "LRT": 0.0,
-        "Rate Distributions": [
-          [
-            0.1222229814583965,
-            1.0
-          ]
+        "baseline_omega": 0.13221738080888268,
+        "branch_lengths": {
+          "baseline_mg94": 0.1001516405006574,
+          "full_adaptive": 0.07417368398507873
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 0.0,
+        "rate_classes": 1,
+        "rate_distribution": [
+          {
+            "omega": 0.12543128803586692,
+            "proportion": 1.0
+          }
         ],
-        "Rate classes": 1,
-        "Sites @ EBF>=100": 0,
-        "Uncorrected P-value": 1.0
+        "sites_ebf_100": 0,
+        "type": "internal",
+        "uncorrected_p_value": 1.0
       },
       "Node14": {
-        "Baseline MG94xREV": 0.13405631872509566,
-        "Baseline MG94xREV omega ratio": 0.5542734181024985,
-        "Corrected P-value": 0.3019829227380966,
-        "Full adaptive model": 13.074683673384062,
-        "Full adaptive model (non-synonymous subs/site)": 13.000265043623962,
-        "Full adaptive model (synonymous subs/site)": 0.07441862976009922,
-        "LRT": 6.596235025003807,
-        "Rate Distributions": [
-          [
-            0.11044427766673391,
-            0.9123839758620428
-          ],
-          [
-            609.2342886339954,
-            0.08761602413795722
-          ]
+        "baseline_omega": 0.29375204092240276,
+        "branch_lengths": {
+          "baseline_mg94": 0.18385303086806018,
+          "full_adaptive": 179.04447380979084
+        },
+        "corrected_p_value": 0.3907453807273175,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 6.254400299825647,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.10493942572543886,
+            "proportion": 0.912641318822768
+          },
+          {
+            "omega": 7958.763612667692,
+            "proportion": 0.087358681177232
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 5,
-        "Uncorrected P-value": 0.013129692292960723
+        "sites_ebf_100": 5,
+        "type": "internal",
+        "uncorrected_p_value": 0.0156298152290927
       },
       "Node15": {
-        "Baseline MG94xREV": 0.5102675344904691,
-        "Baseline MG94xREV omega ratio": 0.17157650441633446,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.5842470118877199,
-        "Full adaptive model (non-synonymous subs/site)": 0.36636971314473965,
-        "Full adaptive model (synonymous subs/site)": 0.2178772987429802,
-        "LRT": 0.34776256404438755,
-        "Rate Distributions": [
-          [
-            0.11587809442527036,
-            0.8407400753005341
-          ],
-          [
-            2.620617953808591,
-            0.15925992469946593
-          ]
+        "baseline_omega": 0.1460071436471376,
+        "branch_lengths": {
+          "baseline_mg94": 0.5687796769824036,
+          "full_adaptive": 0.5260885070674254
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 0.16824299180370872,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.10110993650983385,
+            "proportion": 0.8098186071386493
+          },
+          {
+            "omega": 1.7943292590346125,
+            "proportion": 0.19018139286135072
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 1,
-        "Uncorrected P-value": 0.3631954843977009
+        "sites_ebf_100": 1,
+        "type": "internal",
+        "uncorrected_p_value": 0.4121314787959103
       },
       "Node2": {
-        "Baseline MG94xREV": 0.040879904229243834,
-        "Baseline MG94xREV omega ratio": 0.08207830823528095,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.05147957072587517,
-        "Full adaptive model (non-synonymous subs/site)": 0.002341510126862019,
-        "Full adaptive model (synonymous subs/site)": 0.04913806059901315,
-        "LRT": 0.0,
-        "Rate Distributions": [
-          [
-            0.014587956310549606,
-            1.0
-          ]
+        "baseline_omega": 0.06142185765869265,
+        "branch_lengths": {
+          "baseline_mg94": 0.051765657928752026,
+          "full_adaptive": 0.05171718311298571
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 0.0,
+        "rate_classes": 1,
+        "rate_distribution": [
+          {
+            "omega": 0.014332048358249692,
+            "proportion": 1.0
+          }
         ],
-        "Rate classes": 1,
-        "Sites @ EBF>=100": 0,
-        "Uncorrected P-value": 1.0
+        "sites_ebf_100": 0,
+        "type": "internal",
+        "uncorrected_p_value": 1.0
       },
       "Node3": {
-        "Baseline MG94xREV": 0.017833904899388287,
-        "Baseline MG94xREV omega ratio": 0.2478379914026718,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.02134458779964676,
-        "Full adaptive model (non-synonymous subs/site)": 0.006610857397009411,
-        "Full adaptive model (synonymous subs/site)": 0.01473373040263735,
-        "LRT": 0.0,
-        "Rate Distributions": [
-          [
-            0.1373603837084936,
-            1.0
-          ]
+        "baseline_omega": 0.1970011701023364,
+        "branch_lengths": {
+          "baseline_mg94": 0.02074547195212447,
+          "full_adaptive": 0.021568220197877755
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 0.0,
+        "rate_classes": 1,
+        "rate_distribution": [
+          {
+            "omega": 0.14072939627151546,
+            "proportion": 1.0
+          }
         ],
-        "Rate classes": 1,
-        "Sites @ EBF>=100": 0,
-        "Uncorrected P-value": 1.0
+        "sites_ebf_100": 0,
+        "type": "internal",
+        "uncorrected_p_value": 1.0
       },
       "Node4": {
-        "Baseline MG94xREV": 0.017649329697647924,
-        "Baseline MG94xREV omega ratio": 0.3472188646075395,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.015957925575132717,
-        "Full adaptive model (non-synonymous subs/site)": 0.006810427417352544,
-        "Full adaptive model (synonymous subs/site)": 0.009147498157780173,
-        "LRT": 0.0,
-        "Rate Distributions": [
-          [
-            0.22792316300777263,
-            1.0
-          ]
+        "baseline_omega": 0.19197308159397036,
+        "branch_lengths": {
+          "baseline_mg94": 0.023233004630569258,
+          "full_adaptive": 0.03199182370164048
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 4.023706871339527,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.0003353512927109113,
+            "proportion": 0.9744860874596915
+          },
+          {
+            "omega": 30.53164499587626,
+            "proportion": 0.025513912540308548
+          }
         ],
-        "Rate classes": 1,
-        "Sites @ EBF>=100": 0,
-        "Uncorrected P-value": 1.0
+        "sites_ebf_100": 2,
+        "type": "internal",
+        "uncorrected_p_value": 0.049095169880562325
       },
       "Node5": {
-        "Baseline MG94xREV": 0.04219900056595871,
-        "Baseline MG94xREV omega ratio": 0.8648789540088389,
-        "Corrected P-value": 0.6716199944149546,
-        "Full adaptive model": 0.07531432362765424,
-        "Full adaptive model (non-synonymous subs/site)": 0.0627119475185069,
-        "Full adaptive model (synonymous subs/site)": 0.01260237610914734,
-        "LRT": 4.660821573526846,
-        "Rate Distributions": [
-          [
-            0.3245528703454502,
-            0.9489930069288868
-          ],
-          [
-            23.82815890787288,
-            0.05100699307111323
-          ]
+        "baseline_omega": 0.6835590552130416,
+        "branch_lengths": {
+          "baseline_mg94": 0.045001029407686285,
+          "full_adaptive": 0.07175744369122278
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 3.3909980181369974,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.3150159584072727,
+            "proportion": 0.9518810870196017
+          },
+          {
+            "omega": 22.56045436719167,
+            "proportion": 0.048118912980398276
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 3,
-        "Uncorrected P-value": 0.03534842075868182
+        "sites_ebf_100": 3,
+        "type": "internal",
+        "uncorrected_p_value": 0.06816294212591847
       },
       "Node6": {
-        "Baseline MG94xREV": 0.022595732939869353,
-        "Baseline MG94xREV omega ratio": 0.4330742741137725,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.01780785354370351,
-        "Full adaptive model (non-synonymous subs/site)": 0.011420579761217343,
-        "Full adaptive model (synonymous subs/site)": 0.0063872737824861685,
-        "LRT": 0.0,
-        "Rate Distributions": [
-          [
-            0.5473801501076039,
-            1.0
-          ]
+        "baseline_omega": 0.27314920862527414,
+        "branch_lengths": {
+          "baseline_mg94": 0.029192964331849022,
+          "full_adaptive": 0.018025826802387047
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 0.0,
+        "rate_classes": 1,
+        "rate_distribution": [
+          {
+            "omega": 0.5276398169861088,
+            "proportion": 1.0
+          }
         ],
-        "Rate classes": 1,
-        "Sites @ EBF>=100": 0,
-        "Uncorrected P-value": 1.0
+        "sites_ebf_100": 0,
+        "type": "internal",
+        "uncorrected_p_value": 1.0
       },
       "Node7": {
-        "Baseline MG94xREV": 0.005760413568562688,
-        "Baseline MG94xREV omega ratio": 334.3457149260236,
-        "Corrected P-value": 0.17211251449937418,
-        "Full adaptive model": 0.005733669284672223,
-        "Full adaptive model (non-synonymous subs/site)": 0.005733119904456171,
-        "Full adaptive model (synonymous subs/site)": 5.493802160516547e-07,
-        "LRT": 7.865544410777147,
-        "Rate Distributions": [
-          [
-            3194.732016832614,
-            1.0
-          ]
+        "baseline_omega": 0.6624368290745088,
+        "branch_lengths": {
+          "baseline_mg94": 0.008994404240014808,
+          "full_adaptive": 0.0055644240477502795
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 0.25491424056872347,
+        "rate_classes": 1,
+        "rate_distribution": [
+          {
+            "omega": 3241.418180901015,
+            "proportion": 1.0
+          }
         ],
-        "Rate classes": 1,
-        "Sites @ EBF>=100": 0,
-        "Uncorrected P-value": 0.006884500579974967
+        "sites_ebf_100": 0,
+        "type": "internal",
+        "uncorrected_p_value": 0.3868265229430315
       },
       "Node8": {
-        "Baseline MG94xREV": 0.05365340029066562,
-        "Baseline MG94xREV omega ratio": 0.2177478807528589,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.052748341002403755,
-        "Full adaptive model (non-synonymous subs/site)": 0.017844615471273292,
-        "Full adaptive model (synonymous subs/site)": 0.03490372553113046,
-        "LRT": 0.0,
-        "Rate Distributions": [
-          [
-            0.15651351109556177,
-            1.0
-          ]
+        "baseline_omega": 0.20660016159065667,
+        "branch_lengths": {
+          "baseline_mg94": 0.054267577030572306,
+          "full_adaptive": 0.05286821701850365
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 0.0,
+        "rate_classes": 1,
+        "rate_distribution": [
+          {
+            "omega": 0.15436963027591358,
+            "proportion": 1.0
+          }
         ],
-        "Rate classes": 1,
-        "Sites @ EBF>=100": 0,
-        "Uncorrected P-value": 1.0
+        "sites_ebf_100": 0,
+        "type": "internal",
+        "uncorrected_p_value": 1.0
       },
       "Node9": {
-        "Baseline MG94xREV": 0.014531663347079173,
-        "Baseline MG94xREV omega ratio": 1.3817925508821414,
-        "Corrected P-value": 0.0421959792390529,
-        "Full adaptive model": 0.035168296715680544,
-        "Full adaptive model (non-synonymous subs/site)": 0.03142634126303127,
-        "Full adaptive model (synonymous subs/site)": 0.003741955452649279,
-        "LRT": 10.865845403644016,
-        "Rate Distributions": [
-          [
-            0.0003371611362712327,
-            0.9755530196348011
-          ],
-          [
-            105.15522265172248,
-            0.024446980365198878
-          ]
+        "baseline_omega": 0.7436281183968544,
+        "branch_lengths": {
+          "baseline_mg94": 0.01708760933429422,
+          "full_adaptive": 0.036018350971882336
+        },
+        "corrected_p_value": 0.04289189811543542,
+        "is_positive": true,
+        "is_tested": true,
+        "lrt": 10.833466473720364,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.0003353501304664781,
+            "proportion": 0.9749794282993026
+          },
+          {
+            "omega": 114.47900930911702,
+            "proportion": 0.02502057170069738
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 3,
-        "Uncorrected P-value": 0.0015069992585376034
+        "sites_ebf_100": 3,
+        "type": "internal",
+        "uncorrected_p_value": 0.0015318535041226938
       },
       "bushbaby": {
-        "Baseline MG94xREV": 0.04615576475592027,
-        "Baseline MG94xREV omega ratio": 0.4820185314996587,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.06921866832013311,
-        "Full adaptive model (non-synonymous subs/site)": 0.04805990319070712,
-        "Full adaptive model (synonymous subs/site)": 0.02115876512942599,
-        "LRT": 3.741963606743411,
-        "Rate Distributions": [
-          [
-            0.18270155662870818,
-            0.9743558317878028
-          ],
-          [
-            20.17388666186708,
-            0.02564416821219717
-          ]
+        "baseline_omega": 0.45129352997988265,
+        "branch_lengths": {
+          "baseline_mg94": 0.04747058714182661,
+          "full_adaptive": 0.07033596187573922
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 3.839519309971365,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.17949875709320676,
+            "proportion": 0.9742995999742311
+          },
+          {
+            "omega": 20.362093435959824,
+            "proportion": 0.0257004000257689
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 2,
-        "Uncorrected P-value": 0.056804135749644775
+        "sites_ebf_100": 2,
+        "type": "leaf",
+        "uncorrected_p_value": 0.05400423488991128
       },
       "chicken": {
-        "Baseline MG94xREV": 0.02573741876092171,
-        "Baseline MG94xREV omega ratio": 0.0314261576369576,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.02052747621449118,
-        "Full adaptive model (non-synonymous subs/site)": 0.0022341946331390534,
-        "Full adaptive model (synonymous subs/site)": 0.018293281581352128,
-        "LRT": 0.0,
-        "Rate Distributions": [
-          [
-            0.03738916876311402,
-            1.0
-          ]
+        "baseline_omega": 0.02477764487993723,
+        "branch_lengths": {
+          "baseline_mg94": 0.0319115799014371,
+          "full_adaptive": 0.019346042764626092
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 0.0,
+        "rate_classes": 1,
+        "rate_distribution": [
+          {
+            "omega": 0.03941490454044085,
+            "proportion": 1.0
+          }
         ],
-        "Rate classes": 1,
-        "Sites @ EBF>=100": 0,
-        "Uncorrected P-value": 1.0
+        "sites_ebf_100": 0,
+        "type": "leaf",
+        "uncorrected_p_value": 1.0
       },
       "cow": {
-        "Baseline MG94xREV": 0.02042655507331585,
-        "Baseline MG94xREV omega ratio": 0.5130798300641881,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.019359932748873727,
-        "Full adaptive model (non-synonymous subs/site)": 0.008554645976460124,
-        "Full adaptive model (synonymous subs/site)": 0.010805286772413603,
-        "LRT": 0.0,
-        "Rate Distributions": [
-          [
-            0.24237184514174417,
-            1.0
-          ]
+        "baseline_omega": 0.45740444019068643,
+        "branch_lengths": {
+          "baseline_mg94": 0.02089306935049971,
+          "full_adaptive": 0.021161848994509715
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 0.0,
+        "rate_classes": 1,
+        "rate_distribution": [
+          {
+            "omega": 0.29431821760090826,
+            "proportion": 1.0
+          }
         ],
-        "Rate classes": 1,
-        "Sites @ EBF>=100": 0,
-        "Uncorrected P-value": 1.0
+        "sites_ebf_100": 0,
+        "type": "leaf",
+        "uncorrected_p_value": 1.0
       },
       "duck": {
-        "Baseline MG94xREV": 0.054885607615427344,
-        "Baseline MG94xREV omega ratio": 0.060783698964120614,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.0626889596994523,
-        "Full adaptive model (non-synonymous subs/site)": 0.007099324423880227,
-        "Full adaptive model (synonymous subs/site)": 0.05558963527557208,
-        "LRT": 0.0,
-        "Rate Distributions": [
-          [
-            0.039096656933750897,
-            1.0
-          ]
+        "baseline_omega": 0.05760624502095455,
+        "branch_lengths": {
+          "baseline_mg94": 0.05621954918728981,
+          "full_adaptive": 0.06418646527991714
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 0.0,
+        "rate_classes": 1,
+        "rate_distribution": [
+          {
+            "omega": 0.03762963948221589,
+            "proportion": 1.0
+          }
         ],
-        "Rate classes": 1,
-        "Sites @ EBF>=100": 0,
-        "Uncorrected P-value": 1.0
+        "sites_ebf_100": 0,
+        "type": "leaf",
+        "uncorrected_p_value": 1.0
       },
       "elephseal": {
-        "Baseline MG94xREV": 0.07085801794393154,
-        "Baseline MG94xREV omega ratio": 0.3368527215210348,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.07280976437579817,
-        "Full adaptive model (non-synonymous subs/site)": 0.03260157430765336,
-        "Full adaptive model (synonymous subs/site)": 0.04020819006814481,
-        "LRT": 0.0,
-        "Rate Distributions": [
-          [
-            0.24822211588019893,
-            1.0
-          ]
+        "baseline_omega": 0.3136908867451447,
+        "branch_lengths": {
+          "baseline_mg94": 0.07413853246887503,
+          "full_adaptive": 0.07313023030808134
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 0.0,
+        "rate_classes": 1,
+        "rate_distribution": [
+          {
+            "omega": 0.24526529097147184,
+            "proportion": 1.0
+          }
         ],
-        "Rate classes": 1,
-        "Sites @ EBF>=100": 0,
-        "Uncorrected P-value": 1.0
+        "sites_ebf_100": 0,
+        "type": "leaf",
+        "uncorrected_p_value": 1.0
       },
       "hamster": {
-        "Baseline MG94xREV": 0.1069322694673796,
-        "Baseline MG94xREV omega ratio": 0.7323498604000692,
-        "Corrected P-value": 0.48314084684604636,
-        "Full adaptive model": 0.13788122976007489,
-        "Full adaptive model (non-synonymous subs/site)": 0.10204176509854646,
-        "Full adaptive model (synonymous subs/site)": 0.03583946466152843,
-        "LRT": 5.588769184062585,
-        "Rate Distributions": [
-          [
-            0.0003354637485241465,
-            0.7758044277411021
-          ],
-          [
-            3.8866564133682737,
-            0.22419557225889786
-          ]
+        "baseline_omega": 0.6934249730210815,
+        "branch_lengths": {
+          "baseline_mg94": 0.10774323397273514,
+          "full_adaptive": 0.13947706275363
+        },
+        "corrected_p_value": 0.5157763594114035,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 5.631078495664951,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.00033539269287078056,
+            "proportion": 0.7777410440179509
+          },
+          {
+            "omega": 3.904149800936174,
+            "proportion": 0.22225895598204914
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 19,
-        "Uncorrected P-value": 0.0219609475839112
+        "sites_ebf_100": 19,
+        "type": "leaf",
+        "uncorrected_p_value": 0.021490681642141816
       },
       "hare": {
-        "Baseline MG94xREV": 0.008539199486801229,
-        "Baseline MG94xREV omega ratio": 0.4181790721202846,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.009428143382618825,
-        "Full adaptive model (non-synonymous subs/site)": 0.005032985928516862,
-        "Full adaptive model (synonymous subs/site)": 0.004395157454101964,
-        "LRT": 0.0,
-        "Rate Distributions": [
-          [
-            0.35056431289885714,
-            1.0
-          ]
+        "baseline_omega": 0.3947890032356467,
+        "branch_lengths": {
+          "baseline_mg94": 0.008362344973797063,
+          "full_adaptive": 0.009453576173571655
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 0.0,
+        "rate_classes": 1,
+        "rate_distribution": [
+          {
+            "omega": 0.34909646641581465,
+            "proportion": 1.0
+          }
         ],
-        "Rate classes": 1,
-        "Sites @ EBF>=100": 0,
-        "Uncorrected P-value": 1.0
+        "sites_ebf_100": 0,
+        "type": "leaf",
+        "uncorrected_p_value": 1.0
       },
       "human": {
-        "Baseline MG94xREV": 0.060662913931428614,
-        "Baseline MG94xREV omega ratio": 0.15579508268637177,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.06100416955768105,
-        "Full adaptive model (non-synonymous subs/site)": 0.016509128813248175,
-        "Full adaptive model (synonymous subs/site)": 0.044495040744432876,
-        "LRT": 0.0,
-        "Rate Distributions": [
-          [
-            0.113587089748052,
-            1.0
-          ]
+        "baseline_omega": 0.14152997787320812,
+        "branch_lengths": {
+          "baseline_mg94": 0.06401623953242937,
+          "full_adaptive": 0.061186756680358875
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 0.0,
+        "rate_classes": 1,
+        "rate_distribution": [
+          {
+            "omega": 0.11012234359513245,
+            "proportion": 1.0
+          }
         ],
-        "Rate classes": 1,
-        "Sites @ EBF>=100": 0,
-        "Uncorrected P-value": 1.0
+        "sites_ebf_100": 0,
+        "type": "leaf",
+        "uncorrected_p_value": 1.0
       },
       "marsupial": {
-        "Baseline MG94xREV": 0.24858602598505167,
-        "Baseline MG94xREV omega ratio": 0.21642039314186012,
-        "Corrected P-value": 0.030656517886359726,
-        "Full adaptive model": 20.56694085253582,
-        "Full adaptive model (non-synonymous subs/site)": 20.446071419177315,
-        "Full adaptive model (synonymous subs/site)": 0.12086943335850235,
-        "LRT": 11.56797630800429,
-        "Rate Distributions": [
-          [
-            0.049252409229170784,
-            0.8710416061663198
-          ],
-          [
-            401.23634422927654,
-            0.12895839383368024
-          ]
+        "baseline_omega": 0.1948963375105685,
+        "branch_lengths": {
+          "baseline_mg94": 0.26434956388663905,
+          "full_adaptive": 26.285974947632326
+        },
+        "corrected_p_value": 0.036782499676184785,
+        "is_positive": true,
+        "is_tested": true,
+        "lrt": 11.207155791753394,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.047859255139487925,
+            "proportion": 0.8706054723513709
+          },
+          {
+            "omega": 500.2273453921943,
+            "proportion": 0.12939452764862913
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 9,
-        "Uncorrected P-value": 0.0010571213064261974
+        "sites_ebf_100": 9,
+        "type": "leaf",
+        "uncorrected_p_value": 0.0012683620577994754
       },
       "mouse": {
-        "Baseline MG94xREV": 0.058206542161403196,
-        "Baseline MG94xREV omega ratio": 0.520753563592375,
-        "Corrected P-value": 0.19175698355052417,
-        "Full adaptive model": 0.10271593689737825,
-        "Full adaptive model (non-synonymous subs/site)": 0.078564967613715,
-        "Full adaptive model (synonymous subs/site)": 0.02415096928366325,
-        "LRT": 7.5723976532262895,
-        "Rate Distributions": [
-          [
-            0.1151473079261303,
-            0.9442955182788224
-          ],
-          [
-            15.926108000679724,
-            0.05570448172117759
-          ]
+        "baseline_omega": 0.5089083392890147,
+        "branch_lengths": {
+          "baseline_mg94": 0.05810060269435612,
+          "full_adaptive": 0.10440183367557894
+        },
+        "corrected_p_value": 0.1970061656325605,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 7.676787210186376,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.1099881938980616,
+            "proportion": 0.9433041167091811
+          },
+          {
+            "omega": 15.825986752892735,
+            "proportion": 0.05669588329081887
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 3,
-        "Uncorrected P-value": 0.007989874314605174
+        "sites_ebf_100": 3,
+        "type": "leaf",
+        "uncorrected_p_value": 0.007577160216636942
       },
       "pig": {
-        "Baseline MG94xREV": 0.10273642399337912,
-        "Baseline MG94xREV omega ratio": 0.311590898047778,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.1207441080792153,
-        "Full adaptive model (non-synonymous subs/site)": 0.06461047774891669,
-        "Full adaptive model (synonymous subs/site)": 0.05613363033029861,
-        "LRT": 2.0139010309903824,
-        "Rate Distributions": [
-          [
-            0.0003353536012144422,
-            0.8535441520603235
-          ],
-          [
-            2.4040118031592295,
-            0.14645584793967648
-          ]
+        "baseline_omega": 0.2952107827606748,
+        "branch_lengths": {
+          "baseline_mg94": 0.10471740239826827,
+          "full_adaptive": 0.11659750927422681
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 1.8912298383747839,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.00033537901182987114,
+            "proportion": 0.8643598038758783
+          },
+          {
+            "omega": 2.3686495181379037,
+            "proportion": 0.1356401961241217
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 11,
-        "Uncorrected P-value": 0.1407722244457251
+        "sites_ebf_100": 10,
+        "type": "leaf",
+        "uncorrected_p_value": 0.15034484601128276
       },
       "rabbit": {
-        "Baseline MG94xREV": 0.019930940894203598,
-        "Baseline MG94xREV omega ratio": 0.6377754051348576,
-        "Corrected P-value": 0.160929343158676,
-        "Full adaptive model": 0.024823926330712558,
-        "Full adaptive model (non-synonymous subs/site)": 0.017354402501111917,
-        "Full adaptive model (synonymous subs/site)": 0.0074695238296006395,
-        "LRT": 8.07514909191832,
-        "Rate Distributions": [
-          [
-            0.0003353501304664781,
-            0.9736792252161107
-          ],
-          [
-            27.010653166845618,
-            0.026320774783889278
-          ]
+        "baseline_omega": 0.5807029693207532,
+        "branch_lengths": {
+          "baseline_mg94": 0.020722284947846874,
+          "full_adaptive": 0.024645838673848876
+        },
+        "corrected_p_value": 0.18105480736390916,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 7.917362352226519,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.0003357119832669019,
+            "proportion": 0.9736200332977375
+          },
+          {
+            "omega": 26.27322736105639,
+            "proportion": 0.026379966702262503
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 3,
-        "Uncorrected P-value": 0.006189590121487538
+        "sites_ebf_100": 3,
+        "type": "leaf",
+        "uncorrected_p_value": 0.006705733606070709
       },
       "rat": {
-        "Baseline MG94xREV": 0.04290508970693037,
-        "Baseline MG94xREV omega ratio": 0.14587659380654433,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 4.464200252761012,
-        "Full adaptive model (non-synonymous subs/site)": 4.434284254994966,
-        "Full adaptive model (synonymous subs/site)": 0.029915997766045428,
-        "LRT": 2.4870922750333193,
-        "Rate Distributions": [
-          [
-            0.040878589597588076,
-            0.9902384946712367
-          ],
-          [
-            4644.4262682052085,
-            0.009761505328763298
-          ]
+        "baseline_omega": 0.1356428366618933,
+        "branch_lengths": {
+          "baseline_mg94": 0.04416406089954714,
+          "full_adaptive": 5.516545118952548
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 2.4157010630306104,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.03898798330874124,
+            "proportion": 0.9901062419903944
+          },
+          {
+            "omega": 5590.845555678744,
+            "proportion": 0.009893758009605569
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 1,
-        "Uncorrected P-value": 0.10946467456354252
+        "sites_ebf_100": 1,
+        "type": "leaf",
+        "uncorrected_p_value": 0.11367651660975905
       },
       "sheep": {
-        "Baseline MG94xREV": 0.03109010071063793,
-        "Baseline MG94xREV omega ratio": 0.7954570632150664,
-        "Corrected P-value": 0.043684382074305195,
-        "Full adaptive model": 0.06036072555388867,
-        "Full adaptive model (non-synonymous subs/site)": 0.05136414432496815,
-        "Full adaptive model (synonymous subs/site)": 0.008996581228920515,
-        "LRT": 10.7252517435154,
-        "Rate Distributions": [
-          [
-            0.021215329765164572,
-            0.9472087856639434
-          ],
-          [
-            32.72767677844911,
-            0.0527912143360566
-          ]
+        "baseline_omega": 0.7530776492557592,
+        "branch_lengths": {
+          "baseline_mg94": 0.03167627282573885,
+          "full_adaptive": 0.06214046662277111
+        },
+        "corrected_p_value": 0.02607660291683851,
+        "is_positive": true,
+        "is_tested": true,
+        "lrt": 11.955749131111588,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.00033535114562808593,
+            "proportion": 0.9530951621556177
+          },
+          {
+            "omega": 37.48181749617562,
+            "proportion": 0.04690483784438226
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 5,
-        "Uncorrected P-value": 0.0016179400768261184
+        "sites_ebf_100": 6,
+        "type": "leaf",
+        "uncorrected_p_value": 0.0008692200972279503
       },
       "tarsier": {
-        "Baseline MG94xREV": 0.07526690646666409,
-        "Baseline MG94xREV omega ratio": 0.13264725336640704,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.07680884552965557,
-        "Full adaptive model (non-synonymous subs/site)": 0.019531655418911054,
-        "Full adaptive model (synonymous subs/site)": 0.057277190110744516,
-        "LRT": 0.0,
-        "Rate Distributions": [
-          [
-            0.10439357599996507,
-            1.0
-          ]
+        "baseline_omega": 0.12199583455661037,
+        "branch_lengths": {
+          "baseline_mg94": 0.07817375106839593,
+          "full_adaptive": 0.07730680108592816
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 0.0,
+        "rate_classes": 1,
+        "rate_distribution": [
+          {
+            "omega": 0.10313628048015148,
+            "proportion": 1.0
+          }
         ],
-        "Rate classes": 1,
-        "Sites @ EBF>=100": 0,
-        "Uncorrected P-value": 1.0
+        "sites_ebf_100": 0,
+        "type": "leaf",
+        "uncorrected_p_value": 1.0
       },
       "xenlaev": {
-        "Baseline MG94xREV": 0.09342260876624395,
-        "Baseline MG94xREV omega ratio": 0.7665556811013717,
-        "Corrected P-value": 0.4911531820512357,
-        "Full adaptive model": 0.1499560109593843,
-        "Full adaptive model (non-synonymous subs/site)": 0.11085546352856325,
-        "Full adaptive model (synonymous subs/site)": 0.039100547430821045,
-        "LRT": 5.465742914232578,
-        "Rate Distributions": [
-          [
-            0.0003374979282348042,
-            0.8543847127588753
-          ],
-          [
-            5.958533842536641,
-            0.1456152872411247
-          ]
+        "baseline_omega": 0.27712533451817484,
+        "branch_lengths": {
+          "baseline_mg94": 0.14700472739909487,
+          "full_adaptive": 0.15266396964466863
+        },
+        "corrected_p_value": 0.8316762802604246,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 4.5303424904741405,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.00033547091921033164,
+            "proportion": 0.8532971711477388
+          },
+          {
+            "omega": 5.7856092389855815,
+            "proportion": 0.14670282885226116
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 6,
-        "Uncorrected P-value": 0.023388246764344558
+        "sites_ebf_100": 6,
+        "type": "leaf",
+        "uncorrected_p_value": 0.037803467284564754
       },
       "xentrop": {
-        "Baseline MG94xREV": 0.246317075512468,
-        "Baseline MG94xREV omega ratio": 0.21929671911825616,
-        "Corrected P-value": 1.0,
-        "Full adaptive model": 0.3226060799786216,
-        "Full adaptive model (non-synonymous subs/site)": 0.20604608472231742,
-        "Full adaptive model (synonymous subs/site)": 0.1165599952563042,
-        "LRT": 2.9467533882734642,
-        "Rate Distributions": [
-          [
-            0.14247251320509227,
-            0.9400573978369798
-          ],
-          [
-            6.793742703995006,
-            0.059942602163020164
-          ]
+        "baseline_omega": 0.20894128078237037,
+        "branch_lengths": {
+          "baseline_mg94": 0.25219088613089413,
+          "full_adaptive": 0.3247213776061134
+        },
+        "corrected_p_value": 1.0,
+        "is_positive": false,
+        "is_tested": true,
+        "lrt": 3.087346118217283,
+        "rate_classes": 2,
+        "rate_distribution": [
+          {
+            "omega": 0.14184820581748786,
+            "proportion": 0.9395097532662804
+          },
+          {
+            "omega": 6.981163445056837,
+            "proportion": 0.06049024673371961
+          }
         ],
-        "Rate classes": 2,
-        "Sites @ EBF>=100": 2,
-        "Uncorrected P-value": 0.08595517553278703
+        "sites_ebf_100": 2,
+        "type": "leaf",
+        "uncorrected_p_value": 0.07985921313340895
       }
-    }
-  },
-  "fits": {
-    "Baseline MG94xREV": {
-      "AIC-c": 7688.794710632407,
-      "Log Likelihood": -3765.929198420379,
-      "display order": 1,
-      "estimated parameters": 76
     },
-    "Full adaptive model": {
-      "AIC-c": 7493.078271700239,
-      "Log Likelihood": -3633.506215798816,
-      "display order": 2,
-      "estimated parameters": 108
+    "tree_lengths": {
+      "baseline_mg94": 2.740205456091983,
+      "full_adaptive": 214.7273193000277
+    }
+  },
+  "provenance": {
+    "execution": {
+      "compiler": "Clang 17.0.0",
+      "cpu_threads": 18,
+      "end_time": "2026-10-15T10:10:45.258Z",
+      "hostname": "M5FEFE.local",
+      "os": "macOS",
+      "start_time": "2026-10-15T10:10:16.155Z",
+      "wall_time_seconds": 29.102899666
     },
-    "Nucleotide GTR": {
-      "AIC-c": 7930.804182554735,
-      "Log Likelihood": -3926.0299393786336,
-      "display order": 0,
-      "estimated parameters": 39
+    "inputs": {
+      "alignment": {
+        "format": "FASTA/NEXUS",
+        "path": "/Users/sergei/Development/hyphy-3/benchmarks/data/bglobin.nex",
+        "sha256": "378373d6ed942694ee1e72668721b5f3e443224ce4422c94b0dffb9cef38b85a",
+        "size_bytes": 8186
+      }
+    },
+    "invocation": {
+      "arguments": {
+        "alignment": "/Users/sergei/Development/hyphy-3/benchmarks/data/bglobin.nex",
+        "branches": "All",
+        "code": "Universal",
+        "json_format": "modern_v3",
+        "max_rates": "3",
+        "pvalue": "0.050000"
+      },
+      "cli_command": "/Users/sergei/Development/hyphy-3/build/hyphy3-absrel --alignment /Users/sergei/Development/hyphy-3/benchmarks/data/bglobin.nex --progress",
+      "working_directory": "/Users/sergei/Development/hyphy"
     }
   },
-  "input": {
-    "number of sequences": 17,
-    "number of sites": 144,
-    "partition count": 1,
-    "trees": {
-      "0": "(((elephseal,(pig,(cow,sheep))),((bushbaby,(hare,rabbit)),(human,tarsier))),(hamster,(rat,mouse)),(marsupial,((duck,chicken),(xenlaev,xentrop))));"
-    }
+  "schema_version": "3.0.0",
+  "software": {
+    "build_type": "Release",
+    "compiler": "Clang 17.0.0",
+    "git_commit": "6e22db3",
+    "name": "hyphy",
+    "version": "3.0.0"
   },
-  "test results": {
-    "P-value threshold": 0.05,
-    "positive test results": 5,
-    "tested": 31
-  },
-  "tested": {
-    "0": {
-      "Node10": "test",
-      "Node11": "test",
-      "Node12": "test",
-      "Node13": "test",
-      "Node14": "test",
-      "Node15": "test",
-      "Node2": "test",
-      "Node3": "test",
-      "Node4": "test",
-      "Node5": "test",
-      "Node6": "test",
-      "Node7": "test",
-      "Node8": "test",
-      "Node9": "test",
-      "bushbaby": "test",
-      "chicken": "test",
-      "cow": "test",
-      "duck": "test",
-      "elephseal": "test",
-      "hamster": "test",
-      "hare": "test",
-      "human": "test",
-      "marsupial": "test",
-      "mouse": "test",
-      "pig": "test",
-      "rabbit": "test",
-      "rat": "test",
-      "sheep": "test",
-      "tarsier": "test",
-      "xenlaev": "test",
-      "xentrop": "test"
-    }
-  },
-  "timers": {
-    "Overall": {
-      "order": 0,
-      "timer": 45
+  "statistical_tests": {
+    "branch_level_summary": {
+      "distribution": "Asymptotic mixture distribution",
+      "method": "Adaptive Branch-Site Random Effects Likelihood (aBSREL)",
+      "multiple_testing_correction": "Holm-Bonferroni step-down procedure",
+      "positive_branches": [
+        "Node10",
+        "sheep",
+        "marsupial",
+        "Node9"
+      ],
+      "positive_branches_count": 4,
+      "test_statistic": "Likelihood Ratio Test (LRT)",
+      "tested_branches_count": 31,
+      "threshold": 0.05
     }
   }
 }

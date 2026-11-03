@@ -1,10 +1,7 @@
 #include "hyphy/core/types.hpp"
-#include "hyphy/core/genetic_code.hpp"
-#include "hyphy/core/alignment.hpp"
-#include "hyphy/core/tree.hpp"
+#include "hyphy/core/cli_common.hpp"
 #include "hyphy/core/rate_matrix.hpp"
 #include "hyphy/core/likelihood.hpp"
-#include "hyphy/core/console.hpp"
 #include "hyphy/opt/optimizer.hpp"
 #include "hyphy/analyses/prime.hpp"
 
@@ -15,10 +12,6 @@
 #include <iomanip>
 #include <numeric>
 #include <fstream>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 using namespace hyphy::core;
 using namespace hyphy::analyses;
@@ -39,7 +32,10 @@ static void print_prime_usage(const char* prog) {
               << Console::bold("Required arguments:") << "\n"
               << "  " << Console::brand("--alignment") << " <file>       Path to codon alignment (FASTA or NEXUS)\n\n"
               << Console::bold("Optional arguments:") << "\n"
-              << "  " << Console::brand("--tree") << " <file>            Path to Newick tree file (optional if embedded in NEXUS)\n"
+              << "  " << Console::brand("--tree") << " <file>            Path to Newick tree file or 'auto' (optional; auto-inferred via TreeEngine if omitted or 'auto')\n"
+              << "  " << Console::brand("--ohmic, --omhic") << "         Infer Ohmic network & Wheatstone bridges (empirical conductances)\n"
+              << "  " << Console::brand("--hyphaeon") << "               Opt-in: HyphAeon 384D transformer conductances (needs Python aeon-core)\n"
+              << "  " << Console::brand("--embeddings") << " <file>      Path to precomputed [N x D] taxon embeddings TSV/CSV for Ohmic\n"
               << "  " << Console::brand("--code") << " <name>            Genetic code (default: Universal; e.g. Vertebrate-mtDNA)\n"
               << "  " << Console::brand("--property-set") << " <set>     Property set: 5PROP (default), Atchley, 3PROP, 4PROP, 2PROP\n"
               << "  " << Console::brand("--property-file") << " <file>   Custom amino acid properties JSON file\n"
@@ -47,6 +43,7 @@ static void print_prime_usage(const char* prog) {
               << "  " << Console::brand("--branches") << " <spec>        Branches to test: 'All' (default), 'Internal', 'Leaves', or regex\n"
               << "  " << Console::brand("--threads") << " <N>            Number of OpenMP worker threads\n"
               << "  " << Console::brand("--output") << " <file>          Path to output JSON file (default: <alignment>.PRIME.json)\n"
+              << "  " << Console::brand("--html") << " <file>            Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--pvalue") << " <float>         Omnibus FDR threshold for site reporting (default: 0.10)\n"
               << "  " << Console::brand("--pvalue2") << " <float>        Property-level adjusted p-value threshold (default: 0.10)\n"
               << "  " << Console::brand("--format") << " <fmt>           Output format: 'modern' (default), 'legacy', or 'both'\n"
@@ -56,36 +53,49 @@ static void print_prime_usage(const char* prog) {
               << "  " << Console::brand("--help, -h") << "               Show this help message\n\n"
               << Console::bold("Examples:") << "\n"
               << "  " << prog << " --alignment data/cd2.fna --tree data/cd2.nwk\n"
+              << "  " << prog << " --alignment data/cd2.fna --tree auto --output cd2.PRIME.json\n"
               << "  " << prog << " --alignment tests/data/bglobin.nex --property-set 3PROP\n"
               << "  " << prog << " --alignment data/yokoyama.nex --property-set Atchley --shrinkage 1.0\n\n";
 }
 
 int run_prime(int argc, char* argv[]) {
-    std::string alignment_file;
-    std::string tree_file;
-    std::string output_file;
-    std::string code_name = "Universal";
+    CommonCLIOptions cli;
     std::string property_set = "5PROP";
     std::string property_file = "";
     std::string branch_spec = "All";
     std::string output_format = "modern";
-    int num_threads = 0;
     Scalar pvalue_threshold = 0.10;
     Scalar stage2_pvalue = 0.10;
     Scalar shrinkage_lambda = 0.5;
-    bool show_progress = ProgressBar::is_terminal();
-    bool force_progress = false;
-    bool all_sites = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--alignment" && i + 1 < argc) {
-            alignment_file = argv[++i];
-        } else if (arg == "--tree" && i + 1 < argc) {
-            tree_file = argv[++i];
-        } else if (arg == "--code" && i + 1 < argc) {
-            code_name = argv[++i];
-        } else if (arg == "--property-set" && i + 1 < argc) {
+        if ((arg == "--format" || arg == "--json-format") && i + 1 < argc) {
+            std::string fmt = argv[++i];
+            if (fmt == "both") {
+                output_format = "both";
+                cli.json_format = JSONFormat::ModernV3;
+            } else {
+                JSONFormat jf;
+                if (!parse_json_format(fmt, jf)) {
+                    std::cerr << Console::danger("Error: unknown --json-format '") << fmt
+                              << "'. Expected 'modern' or 'legacy'.\n";
+                    return 1;
+                }
+                cli.json_format = jf;
+                output_format = (jf == JSONFormat::Legacy) ? "legacy" : "modern";
+            }
+            continue;
+        }
+
+        auto status = parse_common_cli_arg(i, argc, argv, cli);
+        if (status == CommonArgParseStatus::Handled) {
+            output_format = (cli.json_format == JSONFormat::Legacy) ? "legacy" : "modern";
+            continue;
+        }
+        if (status == CommonArgParseStatus::Error) return 1;
+
+        if (arg == "--property-set" && i + 1 < argc) {
             property_set = argv[++i];
         } else if (arg == "--property-file" && i + 1 < argc) {
             property_file = argv[++i];
@@ -93,96 +103,52 @@ int run_prime(int argc, char* argv[]) {
             shrinkage_lambda = std::stod(argv[++i]);
         } else if (arg == "--no-shrinkage") {
             shrinkage_lambda = 0.0;
-        } else if (arg == "--branches" && i + 1 < argc) {
+        } else if ((arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
             branch_spec = argv[++i];
-        } else if (arg == "--threads" && i + 1 < argc) {
-            num_threads = std::stoi(argv[++i]);
-        } else if (arg == "--output" && i + 1 < argc) {
-            output_file = argv[++i];
-        } else if (arg == "--pvalue" && i + 1 < argc) {
+        } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
             pvalue_threshold = std::stod(argv[++i]);
         } else if (arg == "--pvalue2" && i + 1 < argc) {
             stage2_pvalue = std::stod(argv[++i]);
-        } else if (arg == "--format" && i + 1 < argc) {
-            output_format = argv[++i];
-        } else if (arg == "--all-sites") {
-            all_sites = true;
-        } else if (arg == "--progress") {
-            show_progress = true;
-            force_progress = true;
-        } else if (arg == "--no-progress") {
-            show_progress = false;
         } else if (arg == "--help" || arg == "-h") {
             print_prime_usage(argv[0]);
             return 0;
+        } else {
+            std::cerr << Console::danger("Unknown argument: ") << arg << "\n";
+            print_prime_usage(argv[0]);
+            return 1;
         }
     }
 
-    if (alignment_file.empty()) {
+    if (cli.alignment_file.empty()) {
         std::cerr << Console::danger("Error: Missing required --alignment argument.\n\n");
         print_prime_usage(argv[0]);
         return 1;
     }
 
-    if (output_file.empty()) {
-        output_file = alignment_file + ".PRIME.json";
-    }
-
-#ifdef _OPENMP
-    if (num_threads > 0) {
-        omp_set_num_threads(num_threads);
-    }
-#endif
-
+    finalize_common_cli_options(cli, ".PRIME.json");
     print_prime_banner();
 
     std::cout << "\n" << Console::bold("Configuration:") << "\n"
-              << "  " << Console::muted("Alignment file : ") << Console::bold(alignment_file) << "\n";
-    if (!tree_file.empty()) {
-        std::cout << "  " << Console::muted("Tree file      : ") << Console::bold(tree_file) << "\n";
+              << "  " << Console::muted("Alignment file : ") << Console::bold(cli.alignment_file) << "\n";
+    if (!cli.tree_file.empty()) {
+        std::cout << "  " << Console::muted("Tree file      : ") << Console::bold(cli.tree_file) << "\n";
     }
-    std::cout << "  " << Console::muted("Genetic code   : ") << Console::bold(code_name) << "\n"
+    std::cout << "  " << Console::muted("Genetic code   : ") << Console::bold(cli.code_name) << "\n"
               << "  " << Console::muted("Property set   : ") << Console::bold(property_file.empty() ? property_set : ("Custom: " + property_file)) << "\n"
               << "  " << Console::muted("Shrinkage λ    : ") << Console::bold(std::to_string(shrinkage_lambda))
               << (shrinkage_lambda > 0.0 ? Console::success(" [Empirical Bayes Ridge Enabled]") : Console::warning(" [Unpenalized MLE]")) << "\n"
               << "  " << Console::muted("Branches       : ") << Console::bold(branch_spec) << "\n\n";
 
-    auto gcode = GeneticCode::from_name(code_name);
-    if (!gcode) {
-        std::cerr << Console::danger("Error: Unknown genetic code '") << code_name << "'.\n";
+    LoadedCodonDataset ds;
+    if (!load_codon_dataset(cli, ds, false)) {
         return 1;
     }
+    auto& aln = ds.aln;
+    auto& tree = ds.tree;
+    const auto& tree_source = ds.tree_source;
 
-    Alignment aln;
-    try {
-        if (alignment_file.ends_with(".nex") || alignment_file.ends_with(".nexus") ||
-            alignment_file.ends_with(".NEX") || alignment_file.ends_with(".NEXUS")) {
-            aln = Alignment::from_nexus(alignment_file, gcode);
-        } else {
-            aln = Alignment::from_fasta(alignment_file, gcode);
-        }
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error reading alignment: ") << e.what() << "\n";
-        return 1;
-    }
-
-    Tree tree;
-    try {
-        if (!tree_file.empty()) {
-            tree = Tree::from_newick_file(tree_file);
-        } else if (!aln.embedded_tree_newick.empty()) {
-            tree = Tree::from_newick(aln.embedded_tree_newick);
-            std::cout << "  " << Console::muted("Using tree embedded in NEXUS file.\n");
-        } else {
-            std::cerr << Console::danger("Error: No tree file specified and no tree embedded in NEXUS.\n");
-            return 1;
-        }
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error reading tree: ") << e.what() << "\n";
-        return 1;
-    }
-
-    std::cout << "  " << Console::muted("Sequences      : ") << Console::bold(std::to_string(aln.num_taxa)) << "\n"
+    std::cout << "  " << Console::muted("Tree source    : ") << Console::bold(tree_source) << "\n"
+              << "  " << Console::muted("Sequences      : ") << Console::bold(std::to_string(aln.num_taxa)) << "\n"
               << "  " << Console::muted("Codon sites    : ") << Console::bold(std::to_string(aln.num_codons)) << "\n"
               << "  " << Console::muted("Unique patterns: ") << Console::bold(std::to_string(aln.patterns.size())) << "\n\n";
 
@@ -211,7 +177,7 @@ int run_prime(int argc, char* argv[]) {
     }
 
     std::cout << "\n" << Console::bold("Step 2:") << " Running Site-by-Site S-PRIME Model Fitting...\n";
-    auto results = prime_analyzer.run(nullptr, show_progress, force_progress);
+    auto results = prime_analyzer.run(nullptr, cli.show_progress, cli.force_progress);
 
     auto format_float = [](Scalar val, int prec) -> std::string {
         std::ostringstream ss;
@@ -240,7 +206,7 @@ int run_prime(int argc, char* argv[]) {
 
     for (const auto& sr : results.site_results) {
         bool is_sig = sr.is_significant(pvalue_threshold);
-        if (!all_sites && !is_sig) continue;
+        if (!cli.all_sites && !is_sig) continue;
 
         std::string site_str = std::to_string(sr.site_index + 1);
         std::string a_str = format_float(sr.alpha, 2);
@@ -254,7 +220,6 @@ int run_prime(int argc, char* argv[]) {
         for (const auto& p_inf : sr.properties) {
             if (p_inf.classification != "Neutral") {
                 std::string short_name = p_inf.property_name;
-                // shorten name if ChouFasman or KyteDoolittle
                 if (short_name.find("Hydrophobicity") != std::string::npos) short_name = "Hydro";
                 else if (short_name.find("Volume") != std::string::npos) short_name = "Vol";
                 else if (short_name.find("Isoelectric") != std::string::npos) short_name = "pI";
@@ -306,28 +271,20 @@ int run_prime(int argc, char* argv[]) {
     }
     std::cout << "  " << Console::muted("Total runtime             : ") << std::fixed << std::setprecision(2) << results.runtime_seconds << "s\n\n";
 
-    // Write Output JSON File
-    try {
-        std::string final_json_str;
-        if (output_format == "legacy") {
-            final_json_str = results.to_legacy_json(tree, aln, alignment_file).dump(2);
-        } else if (output_format == "both") {
-            auto mj = results.to_modern_json(tree, aln, "hyphy3 prime", alignment_file);
-            mj["legacy_mle"] = results.to_legacy_json(tree, aln, alignment_file)["MLE"];
-            final_json_str = mj.dump(2);
-        } else {
-            final_json_str = results.to_modern_json(tree, aln, "hyphy3 prime", alignment_file).dump(2);
-        }
+    // Write Output JSON File (and optional HTML)
+    std::string cli_cmd = join_cli_command(argc, argv);
+    std::string final_json_str;
+    if (output_format == "legacy") {
+        final_json_str = results.to_legacy_json(tree, aln, cli.alignment_file).dump(2);
+    } else if (output_format == "both") {
+        auto mj = results.to_modern_json(tree, aln, cli_cmd, cli.alignment_file);
+        mj["legacy_mle"] = results.to_legacy_json(tree, aln, cli.alignment_file)["MLE"];
+        final_json_str = mj.dump(2);
+    } else {
+        final_json_str = results.to_modern_json(tree, aln, cli_cmd, cli.alignment_file).dump(2);
+    }
 
-        std::ofstream out(output_file);
-        if (!out.is_open()) {
-            std::cerr << Console::danger("Error: Could not write output JSON to ") << output_file << "\n";
-            return 1;
-        }
-        out << final_json_str << "\n";
-        std::cout << Console::success("Saved PRIME JSON results to: ") << Console::bold(output_file) << "\n\n";
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error writing JSON: ") << e.what() << "\n";
+    if (!write_cli_json_and_html(cli, final_json_str)) {
         return 1;
     }
 

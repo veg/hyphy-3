@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HyPhy 3 • OHMIC Electrical Network &amp; Wheatstone Pruning Viewer</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      background-color: #F2F2EF;
+      color: #1A1A18;
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    #app-container {
+      width: 100vw;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .app-nav {
+      height: 44px;
+      background-color: #FFFFFF;
+      border-bottom: 1px solid #D1D1CB;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      font-size: 11px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .app-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+    .app-brand-badge {
+      background: #1A1A18;
+      color: #FFFFFF;
+      padding: 2px 6px;
+      border-radius: 2px;
+      font-size: 10px;
+    }
+    .app-brand-dot {
+      color: #EB5E28;
+    }
+    .app-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .app-select, .app-btn {
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 10.5px;
+      padding: 4px 9px;
+      border: 1px solid #D1D1CB;
+      border-radius: 2px;
+      background: #F2F2EF;
+      color: #1A1A18;
+      cursor: pointer;
+    }
+    .app-btn:hover {
+      border-color: #EB5E28;
+      color: #EB5E28;
+    }
+    #viewer-mount {
+      flex: 1 1 auto;
+    }
+  </style>
+</head>
+<body>
+  <div id="app-container">
+    <nav class="app-nav">
+      <div class="app-brand">
+        <span class="app-brand-badge">HYPHY 3</span>
+        <span>OHMIC • ELECTRICAL PHYLOGENETICS &amp; WHEATSTONE PRUNING</span>
+        <span class="app-brand-dot">●</span>
+      </div>
+      <div class="app-controls">
+        <label for="sample-select" style="font-size:10px;color:#767672;font-weight:700;">DATASET:</label>
+        <select id="sample-select" class="app-select">
+          <option value="/samples/adh_ohmic.json">Drosophila ADH (23 taxa, 254 codons • 6 bridges, ΔAICc +32.02)</option>
+          <option value="/samples/bglobin_ohmic.json">Mammalian β-Globin (17 taxa, 144 codons • 5 bridges, ΔAICc +5.13)</option>
+          <option value="/samples/cd2_ohmic.json">Primate/Mammal CD2 (10 taxa, 187 codons • 2 bridges, ΔAICc +5.82)</option>
+        </select>
+        <label class="app-btn">
+          LOAD JSON…
+          <input type="file" id="json-file-input" accept=".json" style="display:none;" />
+        </label>
+        <button id="theme-toggle-btn" class="app-btn">THEME: LIGHT</button>
+      </div>
+    </nav>
+    <div id="viewer-mount">
+      <hyphy-ohmic-viewer id="ohmic-viewer" theme="light" src="/samples/adh_ohmic.json"></hyphy-ohmic-viewer>
+    </div>
+  </div>
+
+  <script type="module" src="/src/index.js"></script>
+  <script type="module">
+    const viewer = document.getElementById('ohmic-viewer');
+    const sampleSelect = document.getElementById('sample-select');
+    const fileInput = document.getElementById('json-file-input');
+    const themeBtn = document.getElementById('theme-toggle-btn');
+
+    sampleSelect.addEventListener('change', (e) => {
+      viewer.setAttribute('src', e.target.value);
+    });
+
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try {
+          const json = JSON.parse(ev.target.result);
+          viewer.load(json);
+        } catch (err) {
+          alert('Invalid OHMIC JSON file: ' + err.message);
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    window.addEventListener('dragover', (e) => e.preventDefault());
+    window.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const file = e.dataTransfer?.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try {
+          const json = JSON.parse(ev.target.result);
+          viewer.load(json);
+        } catch (err) {
+          alert('Invalid OHMIC JSON file: ' + err.message);
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    themeBtn.addEventListener('click', () => {
+      const current = viewer.getAttribute('theme') || 'light';
+      const next = current === 'light' ? 'dark' : 'light';
+      viewer.setAttribute('theme', next);
+      themeBtn.textContent = `THEME: ${next.toUpperCase()}`;
+    });
+  </script>
+</body>
+</html>

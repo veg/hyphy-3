@@ -7,6 +7,7 @@
 #include "hyphy/core/likelihood.hpp"
 #include "hyphy/core/progress_bar.hpp"
 #include "hyphy/core/provenance.hpp"
+#include "hyphy/core/json_output.hpp"
 #include "hyphy/core/console.hpp"
 #include "hyphy/opt/optimizer.hpp"
 #include "nlohmann/json.hpp"
@@ -76,7 +77,7 @@ struct FUBARSettings {
     std::string tree_scaling = "grid";       // "grid" (default, HyPhy 2.5 standard) or "mg94"
     
     // MCMC settings
-    int mcmc_chains = 1;
+    int mcmc_chains = 5;
     int64_t mcmc_chain_length = 2000000;
     int64_t mcmc_burn_in = 1000000;
     int64_t mcmc_samples = 100;
@@ -86,6 +87,58 @@ struct FUBARSettings {
     int vb_max_steps = 100000;
 };
 
+// Portable RNG distribution helpers built directly on std::mt19937_64 (F-073)
+// Guarantees bit-identical trajectories across libstdc++ and libc++.
+inline double portable_uniform01(std::mt19937_64& rng) {
+    return static_cast<double>(rng() >> 11) * (1.0 / 9007199254740992.0);
+}
+
+inline size_t portable_uniform_int(std::mt19937_64& rng, size_t n) {
+    if (n <= 1) return 0;
+    uint64_t limit = std::numeric_limits<uint64_t>::max() - (std::numeric_limits<uint64_t>::max() % n);
+    uint64_t r;
+    do {
+        r = rng();
+    } while (r >= limit);
+    return static_cast<size_t>(r % n);
+}
+
+inline double portable_standard_normal(std::mt19937_64& rng) {
+    double u1, u2, s;
+    do {
+        u1 = 2.0 * portable_uniform01(rng) - 1.0;
+        u2 = 2.0 * portable_uniform01(rng) - 1.0;
+        s = u1 * u1 + u2 * u2;
+    } while (s >= 1.0 || s <= 1e-300);
+    return u1 * std::sqrt(-2.0 * std::log(s) / s);
+}
+
+inline Scalar portable_gamma(std::mt19937_64& rng, Scalar alpha) {
+    if (alpha <= 0.0) return 0.0;
+    if (alpha < 1.0) {
+        double u = std::max(1e-300, portable_uniform01(rng));
+        return portable_gamma(rng, alpha + 1.0) * std::pow(u, 1.0 / alpha);
+    }
+    // Marsaglia and Tsang (2000) for alpha >= 1
+    double d = alpha - 1.0 / 3.0;
+    double c = 1.0 / std::sqrt(9.0 * d);
+    for (;;) {
+        double x, v;
+        do {
+            x = portable_standard_normal(rng);
+            v = 1.0 + c * x;
+        } while (v <= 0.0);
+        v = v * v * v;
+        double u = std::max(1e-300, portable_uniform01(rng));
+        if (u < 1.0 - 0.0331 * (x * x) * (x * x)) {
+            return static_cast<Scalar>(d * v);
+        }
+        if (std::log(u) < 0.5 * x * x + d * (1.0 - v + std::log(v))) {
+            return static_cast<Scalar>(d * v);
+        }
+    }
+}
+
 struct FUBARSiteResult {
     size_t site = 0;                          // 1-indexed codon site
     Scalar alpha = 0.0;                       // Mean posterior synonymous rate
@@ -94,6 +147,8 @@ struct FUBARSiteResult {
     Scalar prob_neg = 0.0;                    // Posterior prob P(alpha > beta | D_s)
     Scalar prob_pos = 0.0;                    // Posterior prob P(beta > alpha | D_s)
     Scalar bayes_factor = 1.0;                // Empirical Bayes Factor for positive selection
+    Scalar psrf = 1.0;                        // Potential Scale Reduction Factor (Gelman-Rubin R-hat)
+    Scalar neff = 0.0;                        // Effective Sample Size (N_eff)
     std::string classification = "neutral";   // "diversifying", "purifying", "neutral"
     std::vector<Scalar> posterior_weights;    // Size G: P(g | D_s)
 };
@@ -186,17 +241,33 @@ public:
         Scalar conv = (codon_scale > 1e-12) ? (3.0 / codon_scale) : 1.0;
 
         Tree codon_tree = gtr_res.tree;
-        for (auto& node : codon_tree.nodes) {
-            if (node.id != codon_tree.root_id) {
-                node.branch_length *= conv;
-            }
-        }
-
         if (settings.tree_scaling == "mg94") {
             if (progress_cb) progress_cb("Phase 1b: Refining Tree Scale under MG94", 0.15);
-            MG94Fitter mg_fitter(codon_tree, aln);
+            // Pass un-converted gtr_res.tree into MG94Fitter (which internally multiplies by s * conv(omega)),
+            // then apply conv(omega*) so branch lengths match the exact MG94 scale without double-scaling (F-038).
+            MG94Fitter mg_fitter(gtr_res.tree, aln);
             auto mg_res = mg_fitter.fit_omega_and_scale(1.0, base_p);
+            MG94Parameters opt_p = base_p;
+            opt_p.alpha = 1.0;
+            opt_p.beta = mg_res.x_opt(0);
+            MG94Matrix opt_mg;
+            opt_mg.update(opt_p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+            Scalar opt_conv = (opt_mg.scale_factor > 1e-12) ? (3.0 / opt_mg.scale_factor) : 1.0;
             codon_tree = mg_res.tree;
+            for (auto& node : codon_tree.nodes) {
+                if (node.id != codon_tree.root_id) {
+                    node.branch_length *= opt_conv;
+                }
+            }
+            codon_tree.scale_bridge_lengths(opt_conv);
+            conv = opt_conv * mg_res.x_opt(1);
+        } else {
+            for (auto& node : codon_tree.nodes) {
+                if (node.id != codon_tree.root_id) {
+                    node.branch_length *= conv;
+                }
+            }
+            codon_tree.scale_bridge_lengths(conv);
         }
 
         FUBARAnalyzer analyzer(codon_tree, std::move(aln), base_p, settings);
@@ -322,7 +393,7 @@ public:
 
             for (size_t p = 0; p < num_patterns; ++p) {
                 Scalar lnl = compute_pattern_log_likelihood(
-                    tree, aln.patterns[p], leaf_to_taxon, mg, P_branches, thread_node_L, thread_node_scale, S_codons
+                    tree, aln, gcode, aln.patterns[p], leaf_to_taxon, mg, P_branches, thread_node_L, thread_node_scale, S_codons
                 );
                 pattern_lnl[p] = lnl;
                 total_ll += aln.patterns[p].weight * lnl;
@@ -362,8 +433,27 @@ public:
 
         if (needs_rescaling) {
             if (progress_cb) progress_cb("Phase 2b: Re-evaluating Grid with Optimal Tree Scaling", 0.40);
-            Scalar scale_a = res.best_scaler_alpha;
-            Scalar scale_b = res.best_scaler_beta;
+            
+            MG94Matrix base_mg;
+            base_mg.update(base_params, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+
+            MG94Parameters opt_params = base_params;
+            opt_params.alpha = res.best_scaler_alpha;
+            opt_params.beta = res.best_scaler_beta;
+
+            MG94Matrix opt_mg;
+            opt_mg.update(opt_params, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+
+            Scalar tree_scale = (base_mg.scale_factor > 1e-12) ? (opt_mg.scale_factor / base_mg.scale_factor) : 1.0;
+
+            for (auto& node : tree.nodes) {
+                if (node.id != tree.root_id) {
+                    node.branch_length *= tree_scale;
+                }
+            }
+            tree.scale_bridge_lengths(tree_scale);
+            baseline_tree_length *= tree_scale;
+            res.baseline_tree_length = baseline_tree_length;
 
             std::unique_ptr<ProgressBar> pbar_rescale;
             if (verbose && ProgressBar::is_terminal()) {
@@ -374,8 +464,8 @@ public:
 
             #pragma omp parallel for schedule(dynamic)
             for (size_t g = 0; g < G; ++g) {
-                Scalar a = grid[g].first * scale_a;
-                Scalar b = grid[g].second * scale_b;
+                Scalar a = grid[g].first;
+                Scalar b = grid[g].second;
 
                 MG94Parameters params = base_params;
                 params.alpha = a;
@@ -398,7 +488,7 @@ public:
 
                 for (size_t p = 0; p < num_patterns; ++p) {
                     Scalar lnl = compute_pattern_log_likelihood(
-                        tree, aln.patterns[p], leaf_to_taxon, mg, P_branches, thread_node_L, thread_node_scale, S_codons
+                        tree, aln, gcode, aln.patterns[p], leaf_to_taxon, mg, P_branches, thread_node_L, thread_node_scale, S_codons
                     );
                     pattern_lnl[p] = lnl;
                 }
@@ -453,18 +543,45 @@ public:
         if (progress_cb) progress_cb("Phase 3: Estimating Posterior Grid Weights", 0.70);
 
         std::vector<Scalar> posterior_grid_weights;
+        // Multi-chain MCMC draws: chains_samples[c][m] is a Vector of size G (F-037, F-071)
+        std::vector<std::vector<Vector>> chains_samples;
+
         if (settings.method == FUBARMethod::VariationalBayes) {
             posterior_grid_weights = run_variational_bayes(
                 C, settings.concentration, settings.vb_tolerance, settings.vb_max_steps
             );
-        } else if (settings.method == FUBARMethod::CollapsedGibbs) {
-            posterior_grid_weights = run_collapsed_gibbs(
-                C, settings.concentration, settings.mcmc_chain_length, settings.mcmc_burn_in, settings.mcmc_samples
-            );
         } else {
-            posterior_grid_weights = run_metropolis_hastings(
-                C, settings.concentration, settings.mcmc_chain_length, settings.mcmc_burn_in, settings.mcmc_samples
-            );
+            int num_chains = std::max(1, settings.mcmc_chains);
+            chains_samples.resize(num_chains);
+            Vector total_w_sum = Vector::Zero(G);
+            size_t total_draws = 0;
+
+            for (int c = 0; c < num_chains; ++c) {
+                uint64_t seed = 42ULL + static_cast<uint64_t>(c) * 1337ULL;
+                if (settings.method == FUBARMethod::CollapsedGibbs) {
+                    run_collapsed_gibbs_chain(
+                        C, settings.concentration, settings.mcmc_chain_length,
+                        settings.mcmc_burn_in, settings.mcmc_samples, seed, chains_samples[c]
+                    );
+                } else {
+                    run_metropolis_hastings_chain(
+                        C, settings.concentration, settings.mcmc_chain_length,
+                        settings.mcmc_burn_in, settings.mcmc_samples, seed, chains_samples[c]
+                    );
+                }
+                for (const auto& w_draw : chains_samples[c]) {
+                    total_w_sum += w_draw;
+                    total_draws++;
+                }
+            }
+
+            posterior_grid_weights.resize(G, 1.0 / static_cast<Scalar>(G));
+            if (total_draws > 0) {
+                total_w_sum /= static_cast<Scalar>(total_draws);
+                for (size_t g = 0; g < G; ++g) {
+                    posterior_grid_weights[g] = total_w_sum(g);
+                }
+            }
         }
 
         auto end_post = std::chrono::high_resolution_clock::now();
@@ -486,43 +603,125 @@ public:
 
         std::vector<Scalar> p_err_positive;
 
-        for (size_t s = 0; s < num_sites; ++s) {
-            FUBARSiteResult& site_res = res.site_results[s];
-            site_res.site = s + 1;
-            site_res.posterior_weights.resize(G);
+        if (chains_samples.empty()) {
+            // Variational Bayes point estimate of posterior grid weights
+            for (size_t s = 0; s < num_sites; ++s) {
+                FUBARSiteResult& site_res = res.site_results[s];
+                site_res.site = s + 1;
+                site_res.posterior_weights.resize(G);
 
-            Scalar denom = 0.0;
-            for (size_t g = 0; g < G; ++g) {
-                Scalar unnorm = posterior_grid_weights[g] * C(g, s);
-                site_res.posterior_weights[g] = unnorm;
-                denom += unnorm;
+                Scalar denom = 0.0;
+                for (size_t g = 0; g < G; ++g) {
+                    Scalar unnorm = posterior_grid_weights[g] * C(g, s);
+                    site_res.posterior_weights[g] = unnorm;
+                    denom += unnorm;
+                }
+
+                Scalar inv_denom = (denom > 0.0) ? (1.0 / denom) : (1.0 / G);
+                Scalar mean_a = 0.0;
+                Scalar mean_b = 0.0;
+                Scalar p_neg = 0.0;
+                Scalar p_pos = 0.0;
+
+                for (size_t g = 0; g < G; ++g) {
+                    Scalar pp = site_res.posterior_weights[g] * inv_denom;
+                    site_res.posterior_weights[g] = pp;
+
+                    mean_a += grid[g].first * pp;
+                    mean_b += grid[g].second * pp;
+
+                    if (grid[g].first > grid[g].second) {
+                        p_neg += pp;
+                    } else if (grid[g].first < grid[g].second) {
+                        p_pos += pp;
+                    }
+                }
+
+                site_res.alpha = mean_a;
+                site_res.beta = mean_b;
+                site_res.beta_minus_alpha = mean_b - mean_a;
+                site_res.prob_neg = p_neg;
+                site_res.prob_pos = p_pos;
+                site_res.psrf = 1.0;
+                site_res.neff = 0.0;
             }
+        } else {
+            // Full MCMC per-sample site posterior averaging + Gelman-Rubin PSRF & N_eff (F-037, F-071)
+            size_t num_chains = chains_samples.size();
+            for (size_t s = 0; s < num_sites; ++s) {
+                FUBARSiteResult& site_res = res.site_results[s];
+                site_res.site = s + 1;
+                site_res.posterior_weights.assign(G, 0.0);
 
-            Scalar inv_denom = (denom > 0.0) ? (1.0 / denom) : (1.0 / G);
-            Scalar mean_a = 0.0;
-            Scalar mean_b = 0.0;
-            Scalar p_neg = 0.0;
-            Scalar p_pos = 0.0;
+                Scalar sum_a = 0.0;
+                Scalar sum_b = 0.0;
+                Scalar sum_p_neg = 0.0;
+                Scalar sum_p_pos = 0.0;
+                size_t total_draws = 0;
 
-            for (size_t g = 0; g < G; ++g) {
-                Scalar pp = site_res.posterior_weights[g] * inv_denom;
-                site_res.posterior_weights[g] = pp;
+                std::vector<std::vector<Scalar>> chain_trace(num_chains);
+                for (size_t c = 0; c < num_chains; ++c) {
+                    chain_trace[c].reserve(chains_samples[c].size());
+                    for (const auto& w_draw : chains_samples[c]) {
+                        Scalar denom = 0.0;
+                        for (size_t g = 0; g < G; ++g) {
+                            denom += w_draw(g) * C(g, s);
+                        }
+                        Scalar inv_denom = (denom > 0.0) ? (1.0 / denom) : (1.0 / static_cast<Scalar>(G));
 
-                mean_a += grid[g].first * pp;
-                mean_b += grid[g].second * pp;
+                        Scalar draw_a = 0.0;
+                        Scalar draw_b = 0.0;
+                        Scalar draw_neg = 0.0;
+                        Scalar draw_pos = 0.0;
 
-                if (grid[g].first > grid[g].second) {
-                    p_neg += pp;
-                } else if (grid[g].first < grid[g].second) {
-                    p_pos += pp;
+                        for (size_t g = 0; g < G; ++g) {
+                            Scalar pp = (denom > 0.0) ? (w_draw(g) * C(g, s) * inv_denom) : inv_denom;
+                            site_res.posterior_weights[g] += pp;
+                            draw_a += grid[g].first * pp;
+                            draw_b += grid[g].second * pp;
+                            if (grid[g].first > grid[g].second) {
+                                draw_neg += pp;
+                            } else if (grid[g].first < grid[g].second) {
+                                draw_pos += pp;
+                            }
+                        }
+
+                        sum_a += draw_a;
+                        sum_b += draw_b;
+                        sum_p_neg += draw_neg;
+                        sum_p_pos += draw_pos;
+                        chain_trace[c].push_back(draw_pos);
+                        total_draws++;
+                    }
+                }
+
+                if (total_draws > 0) {
+                    Scalar inv_draws = 1.0 / static_cast<Scalar>(total_draws);
+                    for (size_t g = 0; g < G; ++g) {
+                        site_res.posterior_weights[g] *= inv_draws;
+                    }
+                    site_res.alpha = sum_a * inv_draws;
+                    site_res.beta = sum_b * inv_draws;
+                    site_res.beta_minus_alpha = site_res.beta - site_res.alpha;
+                    site_res.prob_neg = sum_p_neg * inv_draws;
+                    site_res.prob_pos = sum_p_pos * inv_draws;
+                }
+
+                if (settings.method == FUBARMethod::MetropolisHastings) {
+                    auto [psrf_val, neff_val] = compute_psrf_and_neff(chain_trace);
+                    site_res.psrf = psrf_val;
+                    site_res.neff = neff_val;
+                } else {
+                    site_res.psrf = 0.0;
+                    site_res.neff = 0.0;
                 }
             }
+        }
 
-            site_res.alpha = mean_a;
-            site_res.beta = mean_b;
-            site_res.beta_minus_alpha = mean_b - mean_a;
-            site_res.prob_neg = p_neg;
-            site_res.prob_pos = p_pos;
+        for (size_t s = 0; s < num_sites; ++s) {
+            FUBARSiteResult& site_res = res.site_results[s];
+            Scalar p_pos = site_res.prob_pos;
+            Scalar p_neg = site_res.prob_neg;
 
             // Empirical Bayes Factor for positive selection
             if (weight_non_pos > 0.0 && weight_non_pos < 1.0 && p_pos < 1.0) {
@@ -558,6 +757,65 @@ public:
 
         if (progress_cb) progress_cb("FUBAR Analysis Complete", 1.0);
         return res;
+    }
+
+    // Compute Gelman-Rubin PSRF (R-hat) and Effective Sample Size (N_eff) across chains (FUBAR.bf ComputeRandNeff)
+    static std::pair<Scalar, Scalar> compute_psrf_and_neff(const std::vector<std::vector<Scalar>>& raw_chains) {
+        if (raw_chains.size() <= 1) {
+            return {0.0, 0.0};
+        }
+        std::vector<std::vector<Scalar>> chains;
+        for (const auto& ch : raw_chains) {
+            if (ch.size() >= 2) chains.push_back(ch);
+        }
+
+        size_t M = chains.size();
+        if (M <= 1) return {0.0, 0.0};
+        size_t N = chains[0].size();
+        for (const auto& ch : chains) N = std::min(N, ch.size());
+        if (N < 2) return {0.0, 0.0};
+
+        std::vector<Scalar> chain_means(M, 0.0);
+        std::vector<Scalar> chain_vars(M, 0.0);
+        Scalar grand_mean = 0.0;
+
+        for (size_t c = 0; c < M; ++c) {
+            Scalar m = 0.0;
+            for (size_t i = 0; i < N; ++i) m += chains[c][i];
+            m /= static_cast<Scalar>(N);
+            chain_means[c] = m;
+            grand_mean += m;
+
+            Scalar v = 0.0;
+            for (size_t i = 0; i < N; ++i) {
+                Scalar d = chains[c][i] - m;
+                v += d * d;
+            }
+            chain_vars[c] = v / static_cast<Scalar>(N - 1);
+        }
+        grand_mean /= static_cast<Scalar>(M);
+
+        Scalar W = 0.0;
+        for (size_t c = 0; c < M; ++c) W += chain_vars[c];
+        W /= static_cast<Scalar>(M);
+
+        Scalar B = 0.0;
+        for (size_t c = 0; c < M; ++c) {
+            Scalar d = chain_means[c] - grand_mean;
+            B += d * d;
+        }
+        B *= static_cast<Scalar>(N) / static_cast<Scalar>(M - 1);
+
+        if (W <= 1e-16 || B <= 1e-16) {
+            return {0.0, 0.0};
+        }
+
+        Scalar total_draws = static_cast<Scalar>(M * N);
+        Scalar var_hat = ((static_cast<Scalar>(N - 1)) / static_cast<Scalar>(N)) * W + (B / static_cast<Scalar>(N));
+        Scalar psrf = std::sqrt(var_hat / W);
+        Scalar neff = total_draws * var_hat / B;
+
+        return {psrf, neff};
     }
 
     // 0-th order Variational Bayes procedure
@@ -615,28 +873,31 @@ public:
         return result;
     }
 
-    // Collapsed Gibbs sampler
-    static std::vector<Scalar> run_collapsed_gibbs(
+    // Single-chain Collapsed Gibbs sampler collecting individual retained weight draws
+    static void run_collapsed_gibbs_chain(
         const Matrix& C,
         Scalar concentration,
-        int64_t chain_length = 2000000,
-        int64_t burn_in = 1000000,
-        int64_t samples = 100,
+        int64_t chain_length,
+        int64_t burn_in,
+        int64_t samples,
+        uint64_t seed,
+        std::vector<Vector>& out_samples,
         std::function<void(int64_t, int64_t)> progress_cb = nullptr
     ) {
         size_t G = C.rows();
         size_t S = C.cols();
 
-        std::mt19937_64 rng(42);
-        std::gamma_distribution<Scalar> init_gamma(concentration, 1.0);
+        std::mt19937_64 rng(seed);
         Vector current_weights(G);
         for (size_t g = 0; g < G; ++g) {
-            current_weights(g) = init_gamma(rng);
+            current_weights(g) = portable_gamma(rng, std::max<Scalar>(1e-4, concentration));
         }
-        current_weights /= current_weights.sum();
+        Scalar init_sum = current_weights.sum();
+        if (init_sum > 0.0) current_weights /= init_sum;
 
-        int64_t sample_interval = std::max<int64_t>(1, (chain_length - burn_in) / samples);
-        Vector sampled_weights_sum = Vector::Zero(G);
+        int64_t sample_interval = std::max<int64_t>(1, (chain_length - burn_in) / std::max<int64_t>(1, samples));
+        out_samples.clear();
+        if (samples > 0) out_samples.reserve(static_cast<size_t>(samples));
         int64_t samples_drawn = 0;
 
         for (int64_t step = 1; step <= chain_length; ++step) {
@@ -658,34 +919,25 @@ public:
             }
 
             for (size_t g = 0; g < G; ++g) {
-                std::gamma_distribution<Scalar> gamma_dist(std::max<Scalar>(1e-4, dir_params(g)), 1.0);
-                current_weights(g) = gamma_dist(rng);
+                current_weights(g) = portable_gamma(rng, std::max<Scalar>(1e-4, dir_params(g)));
             }
             Scalar sum_w = current_weights.sum();
             if (sum_w > 0.0) current_weights /= sum_w;
 
             if (step > burn_in && ((step - burn_in) % sample_interval == 0) && samples_drawn < samples) {
-                sampled_weights_sum += current_weights;
+                out_samples.push_back(current_weights);
                 samples_drawn++;
                 if (progress_cb) progress_cb(step, samples_drawn);
             }
         }
 
-        if (samples_drawn > 0) {
-            sampled_weights_sum /= static_cast<Scalar>(samples_drawn);
-        } else {
-            sampled_weights_sum = current_weights;
+        if (out_samples.empty()) {
+            out_samples.push_back(current_weights);
         }
-
-        std::vector<Scalar> result(G);
-        for (size_t g = 0; g < G; ++g) {
-            result[g] = sampled_weights_sum(g);
-        }
-        return result;
     }
 
-    // Full Metropolis-Hastings MCMC
-    static std::vector<Scalar> run_metropolis_hastings(
+    // Collapsed Gibbs sampler (returns mean weight vector for API compatibility)
+    static std::vector<Scalar> run_collapsed_gibbs(
         const Matrix& C,
         Scalar concentration,
         int64_t chain_length = 2000000,
@@ -694,44 +946,71 @@ public:
         std::function<void(int64_t, int64_t)> progress_cb = nullptr
     ) {
         size_t G = C.rows();
+        std::vector<Vector> draws;
+        run_collapsed_gibbs_chain(C, concentration, chain_length, burn_in, samples, 42ULL, draws, progress_cb);
+        Vector mean_w = Vector::Zero(G);
+        for (const auto& w : draws) mean_w += w;
+        if (!draws.empty()) mean_w /= static_cast<Scalar>(draws.size());
+        std::vector<Scalar> result(G);
+        for (size_t g = 0; g < G; ++g) result[g] = mean_w(g);
+        return result;
+    }
+
+    // Single-chain Metropolis-Hastings MCMC collecting individual retained weight draws
+    static void run_metropolis_hastings_chain(
+        const Matrix& C,
+        Scalar concentration,
+        int64_t chain_length,
+        int64_t burn_in,
+        int64_t samples,
+        uint64_t seed,
+        std::vector<Vector>& out_samples,
+        std::function<void(int64_t, int64_t)> progress_cb = nullptr
+    ) {
+        size_t G = C.rows();
         size_t S = C.cols();
 
-        std::mt19937_64 rng(42);
-        std::uniform_real_distribution<Scalar> unif(0.0, 1.0);
-        std::uniform_int_distribution<size_t> rand_grid(0, G - 1);
+        std::mt19937_64 rng(seed);
 
         // Initial loading from row sums jiggled by +/- 20%
         Vector sum_by_site = C.rowwise().sum();
         Vector weights(G);
         for (size_t g = 0; g < G; ++g) {
-            Scalar jitter = 0.8 + 0.4 * unif(rng);
+            Scalar jitter = 0.8 + 0.4 * portable_uniform01(rng);
             weights(g) = sum_by_site(g) * jitter;
         }
         weights /= weights.sum();
 
-        Scalar baseline_step = std::max(std::min(0.001, 1.0 / static_cast<Scalar>(S)), 0.0001);
+        // Match HyPhy's initial baseline_step = max(min(0.001, 1/sites), median(initial_weights)) (F-039)
+        std::vector<Scalar> sorted_w(weights.data(), weights.data() + G);
+        std::sort(sorted_w.begin(), sorted_w.end());
+        Scalar median_initial_weight = (G > 0) ? sorted_w[G / 2] : (1.0 / static_cast<Scalar>(std::max<size_t>(1, G)));
+        Scalar baseline_step = std::max<Scalar>(std::min<Scalar>(0.001, 1.0 / static_cast<Scalar>(std::max<size_t>(1, S))), median_initial_weight);
 
         Vector current_site_likelihoods = weights.transpose() * C;
 
-        int64_t sample_interval = std::max<int64_t>(1, (chain_length - burn_in) / samples);
-        Vector sampled_weights_sum = Vector::Zero(G);
+        int64_t sample_interval = std::max<int64_t>(1, (chain_length - burn_in) / std::max<int64_t>(1, samples));
+        out_samples.clear();
+        if (samples > 0) out_samples.reserve(static_cast<size_t>(samples));
         int64_t samples_drawn = 0;
         int64_t accepted_steps = 0;
+        const int64_t contracting_interval = std::max<int64_t>(1, 50 * chain_length);
 
         for (int64_t step = 1; step <= chain_length; ++step) {
-            size_t idx1 = rand_grid(rng);
-            size_t idx2 = rand_grid(rng);
-            while (idx1 == idx2) {
-                idx2 = rand_grid(rng);
+            size_t idx1 = portable_uniform_int(rng, G);
+            size_t idx2 = portable_uniform_int(rng, G);
+            while (idx1 == idx2 && G > 1) {
+                idx2 = portable_uniform_int(rng, G);
             }
 
-            if (step % 50000 == 0) {
+            // Match grid_compute.ibf:150 contracting = 50 * total_steps while keeping kernel stationary after burn_in (F-039)
+            if (step < burn_in && step % contracting_interval == 0) {
                 Scalar acc_rate = static_cast<Scalar>(accepted_steps) / static_cast<Scalar>(step);
                 if (acc_rate < 0.25) baseline_step /= 1.6;
                 else if (acc_rate > 0.5) baseline_step *= 1.6;
             }
 
-            Scalar change = unif(rng) * baseline_step;
+            Scalar change = portable_uniform01(rng) * baseline_step;
             if (weights(idx1) > change) {
                 Scalar logLDiff = 0.0;
                 for (size_t s = 0; s < S; ++s) {
@@ -746,7 +1025,7 @@ public:
                 );
 
                 Scalar costOfMove = logLDiff + diffPrior;
-                if (costOfMove >= 0.0 || unif(rng) <= std::exp(costOfMove)) {
+                if (costOfMove >= 0.0 || portable_uniform01(rng) <= std::exp(costOfMove)) {
                     for (size_t s = 0; s < S; ++s) {
                         current_site_likelihoods(s) += (C(idx2, s) - C(idx1, s)) * change;
                     }
@@ -757,22 +1036,34 @@ public:
             }
 
             if (step > burn_in && ((step - burn_in) % sample_interval == 0) && samples_drawn < samples) {
-                sampled_weights_sum += weights;
+                out_samples.push_back(weights);
                 samples_drawn++;
                 if (progress_cb) progress_cb(step, samples_drawn);
             }
         }
 
-        if (samples_drawn > 0) {
-            sampled_weights_sum /= static_cast<Scalar>(samples_drawn);
-        } else {
-            sampled_weights_sum = weights;
+        if (out_samples.empty()) {
+            out_samples.push_back(weights);
         }
+    }
 
+    // Full Metropolis-Hastings MCMC (returns mean weight vector for API compatibility)
+    static std::vector<Scalar> run_metropolis_hastings(
+        const Matrix& C,
+        Scalar concentration,
+        int64_t chain_length = 2000000,
+        int64_t burn_in = 1000000,
+        int64_t samples = 100,
+        std::function<void(int64_t, int64_t)> progress_cb = nullptr
+    ) {
+        size_t G = C.rows();
+        std::vector<Vector> draws;
+        run_metropolis_hastings_chain(C, concentration, chain_length, burn_in, samples, 42ULL, draws, progress_cb);
+        Vector mean_w = Vector::Zero(G);
+        for (const auto& w : draws) mean_w += w;
+        if (!draws.empty()) mean_w /= static_cast<Scalar>(draws.size());
         std::vector<Scalar> result(G);
-        for (size_t g = 0; g < G; ++g) {
-            result[g] = sampled_weights_sum(g);
-        }
+        for (size_t g = 0; g < G; ++g) result[g] = mean_w(g);
         return result;
     }
 
@@ -816,274 +1107,13 @@ public:
     }
 
     // Modern v3 JSON schema export
-    std::string to_modern_json(
+std::string to_modern_json(
         const FUBARResult& res,
         const std::string& cli_cmd = "hyphy3 fubar",
         const std::string& input_filepath = ""
-    ) const {
-        nlohmann::json j;
-        j["$schema"] = "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/fubar.v3.schema.json";
-        j["schema_version"] = "3.0.0";
+    ) const;
 
-        // Analysis
-        j["analysis"] = {
-            {"id", "fubar"},
-            {"name", "Fast, Unconstrained Bayesian AppRoximation"},
-            {"version", "3.0.0"},
-            {"category", "site-level selection"},
-            {"description", "Site-by-site detection of positive and purifying selection via Bayesian rate grid approximation"},
-            {"citations", nlohmann::json::array({
-                {
-                    {"citation", "Murrell B, et al. FUBAR: A Fast, Unconstrained Bayesian AppRoximation for Inferring Selection. Mol Biol Evol. 30(5):1196-1205 (2013)."},
-                    {"doi", "10.1093/molbev/mst030"},
-                    {"pmid", "23420840"}
-                }
-            })},
-            {"settings", {
-                {"grid_points", settings.grid_points},
-                {"total_grid_points", settings.grid_points * settings.grid_points},
-                {"method", fubar_method_to_string(settings.method)},
-                {"concentration", settings.concentration},
-                {"posterior_threshold", settings.posterior_threshold},
-                {"non_zero", settings.non_zero},
-                {"tree_scaling", settings.tree_scaling}
-            }}
-        };
-
-        // Software
-        j["software"] = {
-            {"name", "hyphy"},
-            {"version", "3.0.0"},
-            {"git_commit", "c566a240"},
-            {"build_type", "Release"},
-            {"compiler", Provenance::detect_compiler()}
-        };
-
-        // Provenance
-        Provenance prov;
-        prov.invocation.cli_command = cli_cmd;
-        prov.invocation.working_directory = Provenance::get_cwd();
-        prov.execution.start_time = Provenance::current_iso8601();
-        prov.execution.end_time = Provenance::current_iso8601();
-        prov.execution.wall_time_seconds = res.time_total_sec;
-        prov.execution.hostname = Provenance::get_hostname();
-        prov.execution.os = Provenance::detect_os();
-        prov.execution.compiler = Provenance::detect_compiler();
-        j["provenance"] = prov.to_json();
-
-        // Dataset
-        j["dataset"] = {
-            {"file", input_filepath},
-            {"taxa", aln.taxon_names},
-            {"taxa_count", aln.num_taxa},
-            {"codon_sites", aln.num_codons},
-            {"nucleotide_sites", aln.num_nucleotides > 0 ? aln.num_nucleotides : aln.num_codons * 3},
-            {"partitions", nlohmann::json::array({
-                {
-                    {"name", "default"},
-                    {"coverage", nlohmann::json::array()}
-                }
-            })}
-        };
-        for (size_t s = 0; s < aln.num_codons; ++s) {
-            j["dataset"]["partitions"][0]["coverage"].push_back(s);
-        }
-
-        // Phylogeny
-        j["phylogeny"] = {
-            {"tree", tree.to_newick(true)},
-            {"total_tree_length", res.baseline_tree_length},
-            {"nodes_count", tree.num_nodes()}
-        };
-
-        // Model Fits
-        j["model_fits"] = nlohmann::json::object();
-        if (res.has_gtr_fit) {
-            j["model_fits"]["nucleotide_gtr"] = {
-                {"log_likelihood", res.gtr_log_l},
-                {"aicc", res.gtr_aicc},
-                {"rates", {
-                    {"theta_AC", res.gtr_rates.theta_AC},
-                    {"theta_AT", res.gtr_rates.theta_AT},
-                    {"theta_CG", res.gtr_rates.theta_CG},
-                    {"theta_CT", res.gtr_rates.theta_CT},
-                    {"theta_GT", res.gtr_rates.theta_GT}
-                }},
-                {"branch_lengths", res.gtr_branch_lengths}
-            };
-        }
-
-        // Rate Grid
-        j["rate_grid"] = {
-            {"dimensions", {settings.grid_points, settings.grid_points}},
-            {"total_points", res.grid.size()},
-            {"prior_weight_non_positive", res.weight_non_positive},
-            {"best_scaler_alpha", res.best_scaler_alpha},
-            {"best_scaler_beta", res.best_scaler_beta},
-            {"data", {
-                {"alpha", nlohmann::json::array()},
-                {"beta", nlohmann::json::array()},
-                {"posterior_weight", nlohmann::json::array()}
-            }}
-        };
-        for (size_t g = 0; g < res.grid.size(); ++g) {
-            j["rate_grid"]["data"]["alpha"].push_back(res.grid[g].first);
-            j["rate_grid"]["data"]["beta"].push_back(res.grid[g].second);
-            j["rate_grid"]["data"]["posterior_weight"].push_back(res.posterior_grid_weights[g]);
-        }
-
-        // Summary
-        j["summary"] = {
-            {"positive_sites_count", res.positive_sites.size()},
-            {"purifying_sites_count", res.purifying_sites.size()},
-            {"posterior_threshold", settings.posterior_threshold},
-            {"expected_false_positives", res.expected_false_positives},
-            {"false_positives_ci_95", {res.false_positives_ci_95.first, res.false_positives_ci_95.second}},
-            {"positive_sites", res.positive_sites},
-            {"purifying_sites", res.purifying_sites}
-        };
-
-        // Site Results (Columnar v3 format)
-        j["site_results"] = {
-            {"columns", {
-                {"site", {{"type", "integer"}, {"description", "1-based codon site index"}}},
-                {"alpha", {{"type", "float"}, {"unit", "substitutions/site"}, {"description", "Mean posterior synonymous rate"}}},
-                {"beta", {{"type", "float"}, {"unit", "substitutions/site"}, {"description", "Mean posterior non-synonymous rate"}}},
-                {"beta_minus_alpha", {{"type", "float"}, {"unit", "substitutions/site"}, {"description", "Mean posterior beta - alpha"}}},
-                {"prob_neg", {{"type", "float"}, {"range", {0.0, 1.0}}, {"description", "Posterior probability of negative selection P(alpha > beta | Data)"}}},
-                {"prob_pos", {{"type", "float"}, {"range", {0.0, 1.0}}, {"description", "Posterior probability of positive selection P(beta > alpha | Data)"}}},
-                {"bayes_factor", {{"type", "float"}, {"description", "Empirical Bayes Factor for positive selection"}}},
-                {"classification", {{"type", "string"}, {"enum", {"diversifying", "purifying", "neutral"}}}}
-            }},
-            {"data", {
-                {"site", nlohmann::json::array()},
-                {"alpha", nlohmann::json::array()},
-                {"beta", nlohmann::json::array()},
-                {"beta_minus_alpha", nlohmann::json::array()},
-                {"prob_neg", nlohmann::json::array()},
-                {"prob_pos", nlohmann::json::array()},
-                {"bayes_factor", nlohmann::json::array()},
-                {"classification", nlohmann::json::array()}
-            }}
-        };
-
-        for (const auto& sr : res.site_results) {
-            j["site_results"]["data"]["site"].push_back(static_cast<int>(sr.site));
-            j["site_results"]["data"]["alpha"].push_back(sr.alpha);
-            j["site_results"]["data"]["beta"].push_back(sr.beta);
-            j["site_results"]["data"]["beta_minus_alpha"].push_back(sr.beta_minus_alpha);
-            j["site_results"]["data"]["prob_neg"].push_back(sr.prob_neg);
-            j["site_results"]["data"]["prob_pos"].push_back(sr.prob_pos);
-            j["site_results"]["data"]["bayes_factor"].push_back(sr.bayes_factor);
-            j["site_results"]["data"]["classification"].push_back(sr.classification);
-        }
-
-        return j.dump(2);
-    }
-
-    // Legacy JSON export for HyPhy-Vision and Datamonkey parity
-    std::string to_legacy_json(const FUBARResult& res, const std::string& input_filepath = "") const {
-        nlohmann::json j;
-
-        j["analysis"] = {
-            {"info", "Perform a Fast Unbiased AppRoximate Bayesian (FUBAR) analysis of a coding sequence alignment."},
-            {"version", "2.2"},
-            {"reference", "FUBAR: a fast, unconstrained bayesian approximation for inferring selection (2013), Mol Biol Evol. 30(5):1196-205"},
-            {"authors", "Sergei L Kosakovsky Pond"},
-            {"contact", "spond@temple.edu"}
-        };
-
-        j["input"] = {
-            {"file", input_filepath},
-            {"sequences", aln.num_taxa},
-            {"sites", aln.num_codons},
-            {"partition count", 1}
-        };
-
-        // GTR Fit
-        j["fits"] = nlohmann::json::object();
-        if (res.has_gtr_fit) {
-            j["fits"]["Nucleotide GTR"] = {
-                {"Log Likelihood", res.gtr_log_l},
-                {"AIC-c", res.gtr_aicc},
-                {"Rate Distributions", {
-                    {"Substitution rate from nucleotide A to nucleotide C", res.gtr_rates.theta_AC},
-                    {"Substitution rate from nucleotide A to nucleotide G", 1.0},
-                    {"Substitution rate from nucleotide A to nucleotide T", res.gtr_rates.theta_AT},
-                    {"Substitution rate from nucleotide C to nucleotide G", res.gtr_rates.theta_CG},
-                    {"Substitution rate from nucleotide C to nucleotide T", res.gtr_rates.theta_CT},
-                    {"Substitution rate from nucleotide G to nucleotide T", res.gtr_rates.theta_GT}
-                }},
-                {"display order", 0},
-                {"estimated parameters", 24}
-            };
-        }
-
-        // Settings
-        j["settings"] = {
-            {"grid size", settings.grid_points},
-            {"chains", settings.mcmc_chains},
-            {"chain-length", settings.mcmc_chain_length},
-            {"burn-in", settings.mcmc_burn_in},
-            {"samples", settings.mcmc_samples},
-            {"concentration", settings.concentration},
-            {"posterior", settings.posterior_threshold},
-            {"non-zero", settings.non_zero ? 1 : 0},
-            {"method", fubar_method_to_string(settings.method)}
-        };
-
-        // Grid: [G x 3] matrix
-        j["grid"] = nlohmann::json::array();
-        for (size_t g = 0; g < res.grid.size(); ++g) {
-            j["grid"].push_back({res.grid[g].first, res.grid[g].second, res.posterior_grid_weights[g]});
-        }
-
-        // Posterior: {"0": {"0": [weights...], ...}}
-        j["posterior"] = nlohmann::json::object();
-        j["posterior"]["0"] = nlohmann::json::object();
-        for (size_t s = 0; s < res.site_results.size(); ++s) {
-            j["posterior"]["0"][std::to_string(s)] = nlohmann::json::array({res.site_results[s].posterior_weights});
-        }
-
-        // MLE headers and content
-        j["MLE"] = {
-            {"headers", {
-                {"alpha", "Mean posterior synonymous substitution rate at a site"},
-                {"beta", "Mean posterior non-synonymous substitution rate at a site"},
-                {"beta-alpha", "Mean posterior beta-alpha"},
-                {"Prob[alpha>beta]", "Posterior probability of negative selection at a site"},
-                {"Prob[alpha<beta]", "Posterior probability of positive selection at a site"},
-                {"BayesFactor[alpha<beta]", "Empirical Bayes Factor for positive selection at a site"}
-            }},
-            {"content", {
-                {"0", nlohmann::json::array()}
-            }}
-        };
-
-        for (const auto& sr : res.site_results) {
-            j["MLE"]["content"]["0"].push_back({
-                sr.alpha,
-                sr.beta,
-                sr.beta_minus_alpha,
-                sr.prob_neg,
-                sr.prob_pos,
-                sr.bayes_factor,
-                0.0,
-                0.0
-            });
-        }
-
-        // Timers
-        j["timers"] = {
-            {"Nucleotide Fit", {{"timer", res.time_gtr_sec}}},
-            {"Grid Calculations", {{"timer", res.time_grid_sec}}},
-            {"Posterior estimation", {{"timer", res.time_posterior_sec}}},
-            {"Overall", {{"timer", res.time_total_sec}}}
-        };
-
-        j["runtime"] = "3.0.0";
-        return j.dump(2);
-    }
+std::string to_legacy_json(const FUBARResult& res, const std::string& input_filepath = "") const;
 
     // Unified JSON export: Modern v3.0 schema or legacy, with compatibility blocks
     std::string to_json(
@@ -1202,8 +1232,31 @@ public:
     }
 
 private:
+    // IUPAC nucleotide bitmask (bit 0=A, bit 1=C, bit 2=G, bit 3=T) for partial codon resolution (F-036)
+    static inline uint8_t iupac_nuc_mask(char c) {
+        switch (std::toupper(static_cast<unsigned char>(c))) {
+            case 'A': return 0b0001;
+            case 'C': return 0b0010;
+            case 'G': return 0b0100;
+            case 'T': case 'U': return 0b1000;
+            case 'R': return 0b0101; // A, G
+            case 'Y': return 0b1010; // C, T
+            case 'S': return 0b0110; // C, G
+            case 'W': return 0b1001; // A, T
+            case 'K': return 0b1100; // G, T
+            case 'M': return 0b0011; // A, C
+            case 'B': return 0b1110; // C, G, T
+            case 'D': return 0b1101; // A, G, T
+            case 'H': return 0b1011; // A, C, T
+            case 'V': return 0b0111; // A, C, G
+            default:  return 0b1111; // N, -, ?, etc.
+        }
+    }
+
     static Scalar compute_pattern_log_likelihood(
         const Tree& tree,
+        const Alignment& aln,
+        const GeneticCode& gcode,
         const SitePattern& pattern,
         const std::vector<size_t>& leaf_to_taxon,
         const MG94Matrix& mg94_model,
@@ -1212,43 +1265,19 @@ private:
         std::vector<double>& node_log_scale,
         int S
     ) {
-        const double SCALER_THRESH = 1e-150;
-        const double SCALER_UP = 1e150;
-        const double LOG_SCALER = std::log(SCALER_UP);
-
+        (void)aln;
+        (void)gcode;
         for (int32_t node_id : tree.post_order) {
             const auto& node = tree.nodes[node_id];
 
             if (node.is_leaf) {
                 size_t t_idx = leaf_to_taxon[node_id];
-                if (t_idx != static_cast<size_t>(-1)) {
-                    int8_t state = pattern.states[t_idx];
-                    if (state >= 0 && state < S) {
-                        node_L[node_id].setZero();
-                        node_L[node_id](state) = 1.0;
-                    } else {
-                        node_L[node_id].setOnes();
-                    }
-                } else {
-                    node_L[node_id].setOnes();
-                }
+                LikelihoodEngine::init_leaf_likelihood(pattern, t_idx, S, node_L[node_id]);
                 node_log_scale[node_id] = 0.0;
             } else {
-                node_L[node_id].setOnes();
                 double child_scale_sum = 0.0;
-                for (int32_t child_id : node.children) {
-                    node_L[node_id].array() *= (P_branches[child_id] * node_L[child_id]).array();
-                    child_scale_sum += node_log_scale[child_id];
-                }
-
-                double max_val = node_L[node_id].maxCoeff();
-                int boost_count = 0;
-                while (max_val < SCALER_THRESH && max_val > 0.0) {
-                    node_L[node_id] *= SCALER_UP;
-                    max_val *= SCALER_UP;
-                    boost_count++;
-                }
-                node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
+                tree.eval_internal_node_with_model(node_id, P_branches, mg94_model, node_L, node_log_scale, node_L[node_id], child_scale_sum);
+                node_log_scale[node_id] = child_scale_sum;
             }
         }
 

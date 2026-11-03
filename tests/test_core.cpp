@@ -222,4 +222,51 @@ TEST_CASE("LikelihoodEngine: Exact Spectral Fréchet Joint Gradients vs Finite D
     CHECK(fit_res.params.beta > 0.0);
 }
 
+TEST_CASE("Issue #2: NEXUS FORMAT NOLABELS with TAXLABELS block") {
+    std::string tmp_nex = "test_nolabels_issue2.nex";
+    {
+        std::ofstream out(tmp_nex);
+        out << "#NEXUS\n"
+            << "BEGIN TAXA;\n"
+            << "  DIMENSIONS NTAX=3;\n"
+            << "  TAXLABELS 'Taxon A' Taxon_B \"Taxon C\";\n"
+            << "END;\n"
+            << "BEGIN CHARACTERS;\n"
+            << "  DIMENSIONS NCHAR=9;\n"
+            << "  FORMAT DATATYPE=DNA NOLABELS;\n"
+            << "  MATRIX\n"
+            << "    ATGAAACCC\n"
+            << "    ATGAAACCA\n"
+            << "    ATGAAGCCC\n"
+            << "  ;\n"
+            << "END;\n";
+    }
+    auto aln = Alignment::load(tmp_nex);
+    std::remove(tmp_nex.c_str());
 
+    REQUIRE(aln.num_taxa == 3);
+    CHECK(aln.num_codons == 3);
+    CHECK(aln.taxon_names[0] == "Taxon A");
+    CHECK(aln.taxon_names[1] == "Taxon_B");
+    CHECK(aln.taxon_names[2] == "Taxon C");
+}
+
+TEST_CASE("Issue #3: Tree::select_branches supports model tags, keywords, branch lists, and throws on empty match") {
+    std::string nwk = "((A{FG}:0.1,B{FG}:0.2){FG}:0.3,(C{BG}:0.1,D:0.2):0.3);";
+    auto tree = Tree::from_newick(nwk);
+
+    // Tag selection (case-insensitive)
+    auto fg_sel = tree.select_branches("fg");
+    CHECK(fg_sel.num_selected == 3);
+
+    // Unlabeled selection
+    auto unl_sel = tree.select_branches("Unlabeled");
+    CHECK(unl_sel.num_selected == 2); // D and parent of (C,D)
+
+    // Comma-separated branch names + tags
+    auto combo_sel = tree.select_branches("BG,D");
+    CHECK(combo_sel.num_selected == 2); // C{BG} and D
+
+    // Zero matches should throw std::runtime_error
+    CHECK_THROWS_AS(tree.select_branches("NonExistentGroup"), std::runtime_error);
+}

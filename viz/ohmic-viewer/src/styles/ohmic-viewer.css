@@ -1,0 +1,689 @@
+/**
+ * Dieter Rams / Braun Industrial Minimalist Design System for HyPhy OHMIC Viewer.
+ */
+
+hyphy-ohmic-viewer,
+hyphy-ohmic-widget,
+.ohmic-viewer-root {
+  --ohmic-bg: #F2F2EF;
+  --ohmic-panel: #FFFFFF;
+  --ohmic-panel-alt: #EDEDE9;
+  --ohmic-border: #D1D1CB;
+  --ohmic-ink: #1A1A18;
+  --ohmic-muted: #767672;
+  --ohmic-accent: #EB5E28;
+  --ohmic-blue: #1E40AF;
+  --ohmic-teal: #0D9488;
+  --ohmic-ok: #15803D;
+  --ohmic-mono: "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+  --ohmic-sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+
+  display: block;
+  width: 100%;
+  height: 100%;
+  background-color: var(--ohmic-bg);
+  color: var(--ohmic-ink);
+  font-family: var(--ohmic-sans);
+  box-sizing: border-box;
+}
+
+hyphy-ohmic-viewer[theme="dark"],
+hyphy-ohmic-widget[theme="dark"],
+.ohmic-viewer-root[theme="dark"] {
+  --ohmic-bg: #121210;
+  --ohmic-panel: #181816;
+  --ohmic-panel-alt: #22221F;
+  --ohmic-border: #2E2E2A;
+  --ohmic-ink: #F2F2EF;
+  --ohmic-muted: #9A9A92;
+}
+
+.ohmic-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 18px 24px 18px;
+  min-height: 100%;
+  position: relative;
+  box-sizing: border-box;
+}
+
+/* KPI Header Grid */
+.ohmic-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 1200px) {
+  .ohmic-kpi-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.ohmic-kpi-card {
+  background: var(--ohmic-panel);
+  border: 1px solid var(--ohmic-border);
+  border-radius: 2px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.ohmic-kpi-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.ohmic-kpi-label {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.9px;
+  color: var(--ohmic-muted);
+  text-transform: uppercase;
+}
+
+.ohmic-badge {
+  font-family: var(--ohmic-mono);
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1.5px 5px;
+  border-radius: 2px;
+  background: var(--ohmic-panel-alt);
+  color: var(--ohmic-ink);
+  border: 1px solid var(--ohmic-border);
+  white-space: nowrap;
+}
+
+.ohmic-badge-accent {
+  background: rgba(235, 94, 40, 0.12);
+  color: var(--ohmic-accent);
+  border-color: rgba(235, 94, 40, 0.35);
+}
+
+.ohmic-badge-blue {
+  background: rgba(30, 64, 175, 0.1);
+  color: var(--ohmic-blue);
+  border-color: rgba(30, 64, 175, 0.3);
+}
+
+.ohmic-badge-ok {
+  background: rgba(21, 128, 61, 0.1);
+  color: var(--ohmic-ok);
+  border-color: rgba(21, 128, 61, 0.3);
+}
+
+.ohmic-kpi-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.ohmic-kpi-main {
+  font-family: var(--ohmic-mono);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+}
+
+.ohmic-kpi-unit {
+  font-family: var(--ohmic-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ohmic-muted);
+}
+
+.ohmic-kpi-sep {
+  color: var(--ohmic-muted);
+  font-size: 12px;
+}
+
+.ohmic-kpi-sub {
+  font-size: 10.5px;
+  color: var(--ohmic-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ohmic-text-accent {
+  color: var(--ohmic-accent);
+}
+
+.ohmic-text-blue {
+  color: var(--ohmic-blue);
+}
+
+.ohmic-kpi-mono-val {
+  font-family: var(--ohmic-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ohmic-accent);
+}
+
+.ohmic-slider-wrap {
+  display: flex;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.ohmic-slider {
+  width: 100%;
+  accent-color: var(--ohmic-accent);
+  cursor: pointer;
+}
+
+/* Split Workspace: Left Network Tree + Right Electrical Matrix */
+.ohmic-main-split {
+  display: grid;
+  grid-template-columns: 1.22fr 1fr;
+  gap: 12px;
+  min-height: 430px;
+}
+
+@media (max-width: 1024px) {
+  .ohmic-main-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ohmic-panel {
+  background: var(--ohmic-panel);
+  border: 1px solid var(--ohmic-border);
+  border-radius: 2px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ohmic-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--ohmic-panel-alt);
+  border-bottom: 1px solid var(--ohmic-border);
+  flex-wrap: wrap;
+}
+
+.ohmic-panel-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ohmic-panel-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.9px;
+  text-transform: uppercase;
+}
+
+.ohmic-panel-subtitle {
+  font-size: 10.5px;
+  color: var(--ohmic-muted);
+}
+
+.ohmic-panel-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ohmic-seg-group {
+  display: inline-flex;
+  border: 1px solid var(--ohmic-border);
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--ohmic-panel);
+}
+
+.ohmic-seg-btn {
+  border: none;
+  background: transparent;
+  color: var(--ohmic-muted);
+  font-family: var(--ohmic-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-right: 1px solid var(--ohmic-border);
+}
+
+.ohmic-seg-btn:last-child {
+  border-right: none;
+}
+
+.ohmic-seg-btn.active {
+  background: var(--ohmic-ink);
+  color: var(--ohmic-panel);
+}
+
+.ohmic-icon-btn {
+  border: 1px solid var(--ohmic-border);
+  background: var(--ohmic-panel);
+  color: var(--ohmic-ink);
+  font-family: var(--ohmic-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.ohmic-icon-btn:hover {
+  border-color: var(--ohmic-accent);
+  color: var(--ohmic-accent);
+}
+
+.ohmic-tree-legend,
+.ohmic-matrix-colorbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--ohmic-border);
+  font-size: 10.5px;
+  color: var(--ohmic-muted);
+  flex-wrap: wrap;
+}
+
+.ohmic-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+}
+
+.ohmic-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 1px;
+  display: inline-block;
+}
+
+.ohmic-swatch-blue {
+  background: #1E40AF;
+}
+
+.ohmic-swatch-orange {
+  background: #EB5E28;
+}
+
+.ohmic-swatch-teal {
+  background: #0D9488;
+}
+
+.ohmic-diamond-icon {
+  color: #EB5E28;
+  font-size: 11px;
+}
+
+.ohmic-cb-label {
+  font-family: var(--ohmic-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ohmic-ink);
+}
+
+.ohmic-cb-gradient {
+  width: 120px;
+  height: 8px;
+  border-radius: 1px;
+  border: 1px solid var(--ohmic-border);
+  background: linear-gradient(90deg, #F5F4EF 0%, #EB5E28 100%);
+}
+
+.ohmic-cb-note {
+  margin-left: auto;
+  font-family: var(--ohmic-mono);
+  font-size: 10px;
+}
+
+.ohmic-canvas-wrap {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+}
+
+.ohmic-canvas-wrap canvas {
+  display: block;
+}
+
+.ohmic-site-canvas-wrap {
+  height: 165px;
+}
+
+/* Tooltips */
+.ohmic-tooltip {
+  position: absolute;
+  pointer-events: none;
+  z-index: 40;
+  background: rgba(26, 26, 24, 0.95);
+  color: #F2F2EF;
+  padding: 8px 10px;
+  border-radius: 2px;
+  border: 1px solid #EB5E28;
+  font-size: 11px;
+  min-width: 210px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+}
+
+.ohmic-tt-title {
+  font-family: var(--ohmic-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #EB5E28;
+  margin-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  padding-bottom: 3px;
+}
+
+.ohmic-tt-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10.5px;
+  margin: 2px 0;
+}
+
+.ohmic-tt-row strong {
+  font-family: var(--ohmic-mono);
+}
+
+.ohmic-tt-hint {
+  margin-top: 5px;
+  font-size: 9.5px;
+  color: #B8B8B0;
+  font-style: italic;
+}
+
+/* Bridges Table */
+.ohmic-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.ohmic-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.ohmic-table th {
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+  color: var(--ohmic-muted);
+  border-bottom: 1px solid var(--ohmic-border);
+  background: var(--ohmic-panel-alt);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.ohmic-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--ohmic-border);
+  vertical-align: middle;
+}
+
+.ohmic-table tbody tr {
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.ohmic-table tbody tr:hover {
+  background: rgba(235, 94, 40, 0.06);
+}
+
+.ohmic-table tbody tr.selected {
+  background: rgba(235, 94, 40, 0.14);
+}
+
+.ohmic-mono {
+  font-family: var(--ohmic-mono);
+  font-size: 11px;
+}
+
+.ohmic-muted {
+  color: var(--ohmic-muted);
+}
+
+.ohmic-pill {
+  display: inline-block;
+  font-family: var(--ohmic-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 1.5px 5px;
+  border-radius: 2px;
+  margin-right: 4px;
+}
+
+.ohmic-pill-a {
+  background: rgba(30, 64, 175, 0.12);
+  color: #1E40AF;
+}
+
+.ohmic-pill-b {
+  background: rgba(13, 148, 136, 0.12);
+  color: #0D9488;
+}
+
+.ohmic-pill-c {
+  background: rgba(235, 94, 40, 0.14);
+  color: #EB5E28;
+}
+
+.ohmic-bar-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ohmic-mini-bar {
+  width: 64px;
+  height: 6px;
+  background: var(--ohmic-panel-alt);
+  border: 1px solid var(--ohmic-border);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.ohmic-mini-bar-fill {
+  height: 100%;
+  background: var(--ohmic-accent);
+}
+
+.ohmic-inspect-btn {
+  border: 1px solid var(--ohmic-border);
+  background: var(--ohmic-panel);
+  color: var(--ohmic-ink);
+  font-family: var(--ohmic-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 3px 7px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.ohmic-inspect-btn:hover {
+  background: var(--ohmic-accent);
+  color: #FFFFFF;
+  border-color: var(--ohmic-accent);
+}
+
+.ohmic-table-empty {
+  text-align: center;
+  padding: 18px;
+  color: var(--ohmic-muted);
+  font-family: var(--ohmic-mono);
+}
+
+/* Slide-Over Wheatstone Circuit & Quartet Simplex Drawer */
+.ohmic-drawer {
+  position: fixed;
+  top: 42px;
+  right: 0;
+  bottom: 0;
+  width: 410px;
+  max-width: 92vw;
+  background: var(--ohmic-panel);
+  border-left: 2px solid var(--ohmic-accent);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.16);
+  z-index: 95;
+  transform: translateX(104%);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+}
+
+.ohmic-drawer.open {
+  transform: translateX(0);
+}
+
+.ohmic-drawer-inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.ohmic-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: var(--ohmic-panel-alt);
+  border-bottom: 1px solid var(--ohmic-border);
+}
+
+.ohmic-drawer-badge {
+  font-family: var(--ohmic-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--ohmic-accent);
+  letter-spacing: 0.8px;
+}
+
+.ohmic-drawer-title {
+  font-family: var(--ohmic-mono);
+  font-size: 13px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+.ohmic-drawer-close {
+  border: 1px solid var(--ohmic-border);
+  background: var(--ohmic-panel);
+  color: var(--ohmic-ink);
+  width: 26px;
+  height: 26px;
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.ohmic-drawer-body {
+  padding: 12px 14px 24px 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ohmic-drawer-section {
+  border: 1px solid var(--ohmic-border);
+  border-radius: 2px;
+  padding: 10px;
+  background: var(--ohmic-panel);
+}
+
+.ohmic-drawer-sec-title {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: var(--ohmic-muted);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.ohmic-circuit-svg,
+.ohmic-simplex-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.ohmic-formula-box {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: var(--ohmic-panel-alt);
+  border: 1px solid var(--ohmic-border);
+  font-family: var(--ohmic-mono);
+  font-size: 9.5px;
+  text-align: center;
+  color: var(--ohmic-ink);
+}
+
+.ohmic-kv-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.ohmic-kv-item {
+  padding: 6px 8px;
+  background: var(--ohmic-panel-alt);
+  border: 1px solid var(--ohmic-border);
+  border-radius: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ohmic-kv-item span {
+  font-size: 9.5px;
+  color: var(--ohmic-muted);
+}
+
+.ohmic-kv-item strong {
+  font-family: var(--ohmic-mono);
+  font-size: 11px;
+}
+
+.ohmic-clade-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ohmic-clade-card {
+  border: 1px solid var(--ohmic-border);
+  border-radius: 2px;
+  padding: 6px 8px;
+  background: var(--ohmic-panel-alt);
+}
+
+.ohmic-clade-card-hdr {
+  display: flex;
+  justify-content: space-between;
+  padding-left: 6px;
+  font-size: 10.5px;
+  margin-bottom: 4px;
+}
+
+.ohmic-clade-taxa {
+  font-family: var(--ohmic-mono);
+  font-size: 10px;
+  color: var(--ohmic-muted);
+  line-height: 1.4;
+}

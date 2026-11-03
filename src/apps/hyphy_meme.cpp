@@ -1,13 +1,9 @@
 #include "hyphy/core/types.hpp"
-#include "hyphy/core/genetic_code.hpp"
-#include "hyphy/core/alignment.hpp"
-#include "hyphy/core/tree.hpp"
+#include "hyphy/core/cli_common.hpp"
 #include "hyphy/core/rate_matrix.hpp"
 #include "hyphy/core/likelihood.hpp"
-#include "hyphy/core/console.hpp"
 #include "hyphy/opt/optimizer.hpp"
 #include "hyphy/analyses/meme.hpp"
-#include "hyphy/report/html_report.hpp"
 
 #include <iostream>
 #include <string>
@@ -15,9 +11,6 @@
 #include <chrono>
 #include <iomanip>
 #include <numeric>
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 using namespace hyphy::core;
 using namespace hyphy::analyses;
@@ -38,8 +31,13 @@ static void print_usage(const char* prog) {
               << Console::bold("Required arguments:") << "\n"
               << "  " << Console::brand("--alignment") << " <file>   Path to codon alignment (FASTA or NEXUS)\n\n"
               << Console::bold("Optional arguments:") << "\n"
-              << "  " << Console::brand("--tree") << " <file>        Path to Newick tree file (optional if embedded in NEXUS)\n"
+              << "  " << Console::brand("--tree") << " <file>        Path to Newick tree file or 'auto' (optional; auto-infers ML tree via TreeEngine if omitted or 'auto')\n"
+              << "  " << Console::brand("--ohmic") << "              Build Ohmic Phylogenetic Network with Wheatstone bridges\n"
+              << "  " << Console::brand("--hyphaeon") << "           Opt-in: HyphAeon 384D transformer conductances (needs Python aeon-core)\n"
+              << "  " << Console::brand("--no-hyphaeon") << "        Use empirical codon conductances only (default)\n"
+              << "  " << Console::brand("--embeddings") << " <file>  Path to precomputed [N x 384] HyphAeon embeddings (.bin/.csv/.tsv)\n"
               << "  " << Console::brand("--code") << " <name>        Genetic code (default: Universal; e.g. Vertebrate-mtDNA)\n"
+              << "  " << Console::brand("--branches") << " <spec>    Branches to test: All (default), Internal, Leaves, Unlabeled, {TAG}, or names\n"
               << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
               << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.MEME.json)\n"
               << "  " << Console::brand("--html") << " <file>        Also write a self-contained interactive HTML report\n"
@@ -49,63 +47,71 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--modern-json") << "        Emit modern HyPhy 3.0 JSON schema with provenance and columnar data\n"
               << "  " << Console::brand("--full-model") << "         Perform branch length re-optimization under full codon model (default)\n"
               << "  " << Console::brand("--quick") << "              Disable full branch re-optimization (proportional branch scaling)\n"
+              << "  " << Console::brand("--rates") << " <N>          Number of site omega classes (supported: 2, default)\n"
+              << "  " << Console::brand("--multiple-hits") << " <m>  Multi-hit mode (supported: None; use hyphy_busted for multi-hit mixtures)\n"
+              << "  " << Console::brand("--resample") << " <N>       Parametric bootstrap replicates (supported: 0)\n"
+              << "  " << Console::brand("--impute-states") << " <b > Ancestral state imputation mode (supported: No)\n"
+              << "  " << Console::brand("--precision") << " <mode>   Optimization precision ('standard' or 'fast'/'reduced' [= --quick])\n"
               << "  " << Console::brand("--all-sites") << "          Display all codon sites in console table (default: significant only)\n"
               << "  " << Console::brand("--progress") << "           Force interactive progress bar\n"
               << "  " << Console::brand("--no-progress") << "        Disable progress bar\n"
               << "  " << Console::brand("--help, -h") << "           Show this help message\n\n"
               << Console::bold("Examples:") << "\n"
               << "  " << prog << " --alignment data/cd2.fna --tree data/cd2.nwk --output cd2.MEME.json\n"
+              << "  " << prog << " --alignment data/cd2.fna --tree auto --output cd2.MEME.json\n"
+              << "  " << prog << " --alignment data/cd2.fna --ohmic --output cd2.MEME.json\n"
               << "  " << prog << " --alignment tests/data/adh.nex --threads 8 --legacy-json\n\n";
 }
 
 int run_meme(int argc, char* argv[]) {
-    std::string alignment_file;
-    std::string tree_file;
-    std::string output_file;
-    std::string html_file;
-    std::string code_name = "Universal";
-    int num_threads = 0;
-    Scalar pvalue_threshold = 0.1;
-    bool show_progress = ProgressBar::is_terminal();
-    bool force_progress = false;
-    bool full_model = true;
-    bool all_sites = false;
-    JSONFormat json_format = JSONFormat::ModernV3;
+    CommonCLIOptions opts;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--alignment" && i + 1 < argc) {
-            alignment_file = argv[++i];
-        } else if (arg == "--tree" && i + 1 < argc) {
-            tree_file = argv[++i];
-        } else if (arg == "--code" && i + 1 < argc) {
-            code_name = argv[++i];
-        } else if (arg == "--threads" && i + 1 < argc) {
-            num_threads = std::stoi(argv[++i]);
-        } else if (arg == "--output" && i + 1 < argc) {
-            output_file = argv[++i];
-        } else if (arg == "--html" && i + 1 < argc) {
-            html_file = argv[++i];
-        } else if (arg == "--pvalue" && i + 1 < argc) {
-            pvalue_threshold = std::stod(argv[++i]);
-        } else if (arg == "--json-format" && i + 1 < argc) {
-            json_format = parse_json_format(argv[++i]);
-        } else if (arg == "--legacy-json") {
-            json_format = JSONFormat::Legacy;
-        } else if (arg == "--modern-json") {
-            json_format = JSONFormat::ModernV3;
-        } else if (arg == "--full-model") {
-            full_model = true;
-        } else if (arg == "--no-full-model" || arg == "--quick") {
-            full_model = false;
-        } else if (arg == "--all-sites") {
-            all_sites = true;
-        } else if (arg == "--progress") {
-            show_progress = true;
-            force_progress = true;
-        } else if (arg == "--no-progress") {
-            show_progress = false;
-            force_progress = false;
+        if (parse_common_cli_arg(i, argc, argv, opts)) {
+            if (opts.has_error) {
+                return 1;
+            }
+        } else if (arg == "--test" && i + 1 < argc) {
+            opts.branches = argv[++i];
+        } else if (arg == "--rates" && i + 1 < argc) {
+            int r = std::stoi(argv[++i]);
+            if (r != 2) {
+                std::cerr << Console::danger("Error: ") << "hyphy_meme implements the canonical 2-rate MEME mixture (--rates 2); got --rates " << r << ".\n";
+                return 1;
+            }
+        } else if ((arg == "--multiple-hits" || arg == "--site-multihit") && i + 1 < argc) {
+            std::string mh = argv[++i];
+            if (mh != "None" && mh != "none" && mh != "No" && mh != "no") {
+                std::cerr << Console::danger("Error: ") << "hyphy_meme supports single-hit MG94xREV only (--multiple-hits None); got '" << mh
+                          << "'. Use hyphy_busted --multiple-hits " << mh << " for multi-hit episodic selection testing.\n";
+                return 1;
+            }
+        } else if (arg == "--resample" && i + 1 < argc) {
+            int n_res = std::stoi(argv[++i]);
+            if (n_res > 0) {
+                std::cerr << Console::danger("Error: ") << "Parametric bootstrap (--resample > 0) is not supported in hyphy_meme.\n";
+                return 1;
+            }
+        } else if (arg == "--impute-states") {
+            std::string val = "Yes";
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                val = argv[++i];
+            }
+            if (val != "No" && val != "no" && val != "false" && val != "0") {
+                std::cerr << Console::danger("Error: ") << "--impute-states is not supported as a standalone output block in hyphy_meme.\n";
+                return 1;
+            }
+        } else if (arg == "--precision" && i + 1 < argc) {
+            std::string prec = argv[++i];
+            if (prec == "fast" || prec == "faster" || prec == "reduced") {
+                opts.full_model = false;
+            } else if (prec == "standard" || prec == "default") {
+                opts.full_model = true;
+            } else {
+                std::cerr << Console::danger("Error: ") << "--precision must be 'standard', 'fast', or 'reduced' (got '" << prec << "').\n";
+                return 1;
+            }
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
@@ -116,63 +122,39 @@ int run_meme(int argc, char* argv[]) {
         }
     }
 
-    if (alignment_file.empty()) {
+    if (opts.alignment_file.empty()) {
         std::cerr << Console::danger("Error: --alignment is required.\n\n");
         print_usage(argv[0]);
         return 1;
     }
 
-#ifdef _OPENMP
-    if (num_threads > 0) {
-        omp_set_num_threads(num_threads);
-    }
-#endif
-
-    if (output_file.empty()) {
-        output_file = alignment_file + ".MEME.json";
-    }
-
+    finalize_common_cli_options(opts, ".MEME.json");
     print_banner();
 
     auto start_time = std::chrono::high_resolution_clock::now();
     std::string start_iso = Provenance::current_iso8601();
-    std::string cli_cmd = argv[0];
-    for (int i = 1; i < argc; ++i) {
-        cli_cmd += " ";
-        cli_cmd += argv[i];
-    }
+    std::string cli_cmd = join_cli_command(argc, argv);
 
-    // 0. Genetic Code
-    std::shared_ptr<const GeneticCode> gcode;
-    try {
-        gcode = GeneticCode::from_name(code_name);
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error resolving genetic code: ") << e.what() << "\n";
+    LoadedCodonDataset data;
+    if (!load_codon_dataset(opts, data)) {
         return 1;
     }
+    auto& [gcode, aln, tree, ohmic_net, tree_source] = data;
+    const auto& alignment_file = opts.alignment_file;
+    const auto& output_file = opts.output_file;
+    const auto& branches_spec = opts.branches;
+    const Scalar pvalue_threshold = opts.pvalue_threshold;
+    const bool full_model = opts.full_model;
+    const bool all_sites = opts.all_sites;
+    const bool show_progress = opts.show_progress;
+    const bool force_progress = opts.force_progress;
+    const JSONFormat json_format = opts.json_format;
 
-    // 1. Load Alignment
-    Alignment aln;
+    Tree::BranchSelection branch_sel;
     try {
-        aln = Alignment::load(alignment_file, gcode);
+        branch_sel = tree.select_branches(branches_spec, "", {}, false);
     } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error loading alignment: ") << e.what() << "\n";
-        return 1;
-    }
-
-    // 2. Load Tree
-    Tree tree;
-    if (!tree_file.empty()) {
-        try {
-            tree = Tree::from_newick_file(tree_file);
-        } catch (const std::exception& e) {
-            std::cerr << Console::danger("Error loading tree: ") << e.what() << "\n";
-            return 1;
-        }
-    } else if (!aln.embedded_tree_newick.empty()) {
-        tree = Tree::from_newick(aln.embedded_tree_newick);
-    } else {
-        std::cerr << Console::danger("Error: No tree provided and no embedded tree found in alignment.\n");
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
         return 1;
     }
 
@@ -181,7 +163,8 @@ int run_meme(int argc, char* argv[]) {
         {"Sequences / Taxa", std::to_string(aln.num_taxa)},
         {"Codon Sites", std::to_string(aln.num_codons) + " (" + std::to_string(aln.num_codons * 3) + " nt)"},
         {"Unique Patterns", std::to_string(aln.patterns.size())},
-        {"Tree", std::to_string(tree.num_nodes()) + " nodes (" + std::to_string(tree.num_leaves()) + " leaves)"},
+        {"Tree Source", tree_source + " (" + std::to_string(tree.num_nodes()) + " nodes, " + std::to_string(tree.num_leaves()) + " leaves)"},
+        {"Tested Branches", branches_spec + " (" + std::to_string(branch_sel.num_selected) + " test, " + std::to_string(branch_sel.num_unselected) + " background)"},
         {"Genetic Code", gcode->name + " (" + std::to_string(gcode->num_sense_codons) + " sense codons)"}
     });
 
@@ -194,7 +177,7 @@ int run_meme(int argc, char* argv[]) {
     };
 
     auto fit_start = std::chrono::high_resolution_clock::now();
-    auto analyzer = MEMEAnalyzer::create_and_fit(tree, std::move(aln), pvalue_threshold, progress_cb, full_model);
+    auto analyzer = MEMEAnalyzer::create_and_fit(tree, std::move(aln), pvalue_threshold, progress_cb, full_model, branches_spec);
     auto fit_end = std::chrono::high_resolution_clock::now();
     double fit_duration = std::chrono::duration<double, std::milli>(fit_end - fit_start).count();
 
@@ -366,59 +349,13 @@ int run_meme(int argc, char* argv[]) {
 
     Panel::print_summary_card("MEME Episodic Selection Analysis Summary", sum_items, conclusion, !positive_sites.empty());
 
-    // Build Provenance
-    Provenance prov;
-    prov.invocation.cli_command = cli_cmd;
-    prov.invocation.working_directory = Provenance::get_cwd();
-    prov.invocation.arguments["alignment"] = alignment_file;
-    if (!tree_file.empty()) prov.invocation.arguments["tree"] = tree_file;
-    prov.invocation.arguments["code"] = code_name;
-    prov.invocation.arguments["pvalue_threshold"] = std::to_string(pvalue_threshold);
-    prov.invocation.arguments["full_model"] = full_model ? "true" : "false";
-    prov.invocation.arguments["json_format"] = (json_format == JSONFormat::Legacy) ? "legacy" : "modern_v3";
-
-    size_t aln_sz = 0;
-    std::string aln_hash = crypto::SHA256::hash_file(alignment_file, &aln_sz);
-    prov.inputs["alignment"] = {alignment_file, "FASTA/NEXUS", aln_hash, aln_sz};
-
-    if (!tree_file.empty()) {
-        size_t tree_sz = 0;
-        std::string tree_hash = crypto::SHA256::hash_file(tree_file, &tree_sz);
-        prov.inputs["tree"] = {tree_file, "Newick", tree_hash, tree_sz};
-    }
-
-    prov.execution.start_time = start_iso;
-    prov.execution.end_time = Provenance::current_iso8601();
-    prov.execution.wall_time_seconds = total_sec;
-#ifdef _OPENMP
-    prov.execution.cpu_threads = (num_threads > 0) ? num_threads : omp_get_max_threads();
-#else
-    prov.execution.cpu_threads = 1;
-#endif
-    prov.execution.hostname = Provenance::get_hostname();
-    prov.execution.os = Provenance::detect_os();
-    prov.execution.compiler = Provenance::detect_compiler();
-
-    // Save JSON
-    try {
-        analyzer.save_json(output_file, json_format, prov);
-        std::string fmt_desc = (json_format == JSONFormat::Legacy) ? "Legacy Datamonkey JSON" : "Modern HyPhy v3.0 JSON";
-        std::cout << Console::success("✔") << " " << Console::bold("Saved " + fmt_desc + " report to: ")
-                  << Console::brand(output_file) << "\n\n";
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error writing JSON: ") << e.what() << "\n";
+    analyzer.input_filepath = alignment_file;
+    Provenance prov = build_cli_provenance(opts, cli_cmd, start_iso, total_sec);
+    nlohmann::json out_j = (json_format == JSONFormat::Legacy)
+        ? analyzer.to_legacy_json()
+        : analyzer.to_modern_json(prov);
+    if (!write_cli_json_and_html(opts, out_j)) {
         return 1;
-    }
-
-    if (!html_file.empty()) {
-        try {
-            hyphy::report::write_html_report(output_file, html_file);
-            std::cout << Console::success("✔") << " " << Console::bold("Saved HTML report to: ")
-                      << Console::brand(html_file) << "\n\n";
-        } catch (const std::exception& e) {
-            std::cerr << Console::danger("Error writing HTML report: ") << e.what() << "\n";
-            return 1;
-        }
     }
 
     return 0;

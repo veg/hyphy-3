@@ -25,28 +25,39 @@
 ```
 include/hyphy/
 ├── core/
-│   ├── types.hpp           # Scalar (double), Matrix, Vector (Eigen3 column-major)
-│   ├── genetic_code.hpp    # Standard & non-standard codes, sense codon maps (61 sense)
-│   ├── alignment.hpp       # FASTA & NEXUS parsing, F3x4 codon frequencies, pattern compression
-│   ├── tree.hpp            # Newick parsing, node hierarchies, post-order caching
-│   ├── rate_matrix.hpp     # Analytical GTR (4x4) & MG94 (61x61) matrix exponentials & Q
-│   └── likelihood.hpp      # Vectorized Felsenstein pruning & Inside-Outside adjoint engine
+│   ├── types.hpp                 # Scalar (double), Matrix, Vector (Eigen3 column-major)
+│   ├── genetic_code.hpp          # Standard & non-standard codes, sense codon maps (61 sense)
+│   ├── alignment.hpp             # FASTA & NEXUS parsing, F3x4 codon frequencies, pattern compression
+│   ├── tree.hpp                  # Newick parsing, WheatstoneBridge hubs, eval_internal_node
+│   ├── neighbor_joining.hpp      # Saitou-Nei NJ from TN93 / Jukes-Cantor distances
+│   ├── ohmic_network.hpp         # Foster effective resistance, ScalableWoodbury, HyphAeon 384D bridge
+│   ├── wheatstone_likelihood.hpp # Linear-time 4-way Wheatstone pruning & Inside-Outside Fréchet adjoints
+│   ├── rate_matrix.hpp           # Analytical GTR (4x4) & MG94 (61x61) matrix exponentials & Q
+│   └── likelihood.hpp            # Vectorized Felsenstein pruning & Inside-Outside adjoint engine
 ├── opt/
-│   ├── brent.hpp           # 1D bounded golden-section / parabolic interpolation
-│   ├── nelder_mead.hpp     # Bounded simplex optimization (2D, 3D, and ND)
-│   ├── squarem.hpp         # Squared polynomial extrapolation for EM acceleration
-│   └── lbfgs.hpp           # Parallel multi-branch L-BFGS with Armijo line search
+│   ├── brent.hpp                 # 1D bounded golden-section / parabolic interpolation
+│   ├── nelder_mead.hpp           # Bounded simplex optimization (2D, 3D, and ND)
+│   ├── squarem.hpp               # Squared polynomial extrapolation for EM acceleration
+│   └── lbfgs.hpp                 # Parallel multi-branch L-BFGS with Armijo line search
 ├── autograd/
-│   ├── var.hpp             # Dynamic computational graph node with reverse backprop
-│   ├── tree_likelihood.hpp # Differentiable tree likelihood node with analytical adjoints
-│   └── optimizer.hpp       # Native C++ Adam optimizer
+│   ├── var.hpp                   # Dynamic computational graph node with reverse backprop
+│   ├── tree_likelihood.hpp       # Differentiable tree likelihood node with analytical adjoints
+│   └── optimizer.hpp             # Native C++ Adam optimizer
 └── analyses/
-    ├── gtr.hpp             # Baseline nucleotide GTR model fitter
-    ├── mg94.hpp            # Global MG94xREV baseline model fitter
-    ├── fel.hpp             # Fixed Effects Likelihood (pervasive selection)
-    ├── meme.hpp            # Mixed Effects Model of Evolution (episodic selection)
-    ├── busted.hpp          # BUSTED & BUSTED-S (gene-wide selection with SRV)
-    └── absrel.hpp          # aBSREL (adaptive branch-site random effects likelihood)
+    ├── gtr.hpp                   # Baseline nucleotide GTR model fitter
+    ├── mg94.hpp                  # Global MG94xREV baseline model fitter
+    ├── fel.hpp                   # Fixed Effects Likelihood (pervasive selection)
+    ├── contrast_fel.hpp          # Contrast-FEL (multi-group selection with Empirical Bayes Ridge)
+    ├── directional_fel.hpp       # Directional-FEL (non-stationary Softmax regimes & ML auto-rooting)
+    ├── fubar.hpp                 # FUBAR (bivariate rate grid with VB0 / Collapsed Gibbs / MH)
+    ├── prime.hpp                 # PRIME (biophysical property selection with L2 Ridge shrinkage)
+    ├── meme.hpp                  # Mixed Effects Model of Evolution (episodic selection)
+    ├── busted.hpp                # BUSTED, BUSTED-S, BUSTED-MH, BUSTED-E & 4-Gate BUSTED-Auto
+    ├── absrel.hpp                # aBSREL (adaptive branch-site random effects likelihood)
+    ├── relax.hpp                 # RELAX (selection relaxation / intensification test)
+    ├── slac.hpp                  # SLAC (Joint ML ancestral state reconstruction & binomial counting)
+    ├── gard.hpp                  # GARD (Genetic Algorithm for Recombination Detection)
+    └── ohmic.hpp                 # OHMIC (Ohmic resistor network & Wheatstone bridge ML refinement)
 ```
 
 ---
@@ -94,6 +105,13 @@ Furthermore, the asymptotic null distribution for aBSREL hypothesis testing ($\o
 $$\text{Null} \sim \frac{1}{2} \chi^2_0 + \frac{1}{2}\left(0.4 \chi^2_1 + 0.6 \chi^2_2\right)$$
 with closed-form $p$-value:
 $$p = \frac{1}{2}\left[ 0.4 \cdot \text{erfc}\left(\sqrt{\frac{\text{LRT}}{2}}\right) + 0.6 \cdot \exp\left(-\frac{\text{LRT}}{2}\right) \right]$$
+
+### 3.5 Ohmic Networks, Linear-Time Wheatstone Pruning & HyphAeon 384D
+To prevent homoplasy and incomplete lineage sorting (ILS) on short internal branches from inflating terminal branch lengths or generating false-positive selection calls:
+1. **Resistor Network & Foster's Theorem**: Taxa form an electrical conductance network $\mathbf{L} = \mathbf{D} - \mathbf{C}$ (augmented by the **HyphAeon 384D Multi-Scale Transformer** embeddings $\mathbf{E} \in \mathbb{R}^{N \times 384}$ split into $192\text{D}$ $dS$ and $192\text{D}$ $dN$ channels). Effective resistance $\Omega_{ij} = L^+_{ii} + L^+_{jj} - 2L^+_{ij}$ satisfies $\sum_{i<j} c_{ij}\Omega_{ij} = N - 1$ (`ExactDense`) or is evaluated in $\mathcal{O}(N \log N)$ time via equipotential busbars and the rank-$p$ **Woodbury Matrix Identity** (`ScalableWoodbury`).
+2. **Series-Parallel Wheatstone Bridges**: High-stress internal splits ($\tau_e^{\text{Ohm}} \ge \tau_{\min}$) are promoted into 3-child `WheatstoneBridge` hubs embedded directly on `hyphy::core::Tree`. During Felsenstein pruning (`Tree::eval_internal_node`), each hub evaluates the convex combination over the 3 quartet resolutions:
+   $$\mathbf{D}_k^{\text{Ohm}} = \sum_{r=1}^3 w_{k,r} \left[ \left(\mathbf{P}(t_{k,r})\,(\mathbf{M}_{a_r} \odot \mathbf{M}_{b_r})\right) \odot \mathbf{M}_{c_r} \right]$$
+   preserving $\mathcal{O}(N)$ complexity and enabling every standard HyPhy 3 analysis to run with `--ohmic` / `--omhic` or on tree-free FASTA alignments via `OhmicNetwork::resolve_tree`.
 
 ---
 
@@ -184,3 +202,24 @@ Before committing any model changes, you MUST verify:
   $$\frac{\left| g_{\text{analytical}} - g_{\text{finite\_diff}} \right|}{|g_{\text{analytical}}| + 10^{-8}} < 10^{-4}$$
 - [ ] **Thread-Safety Check**: Ensure OpenMP private variables are allocated per thread (e.g., node likelihood vectors `node_L` and `InsideOutsideResult`).
 - [ ] **Simplex Constraint Check**: Ensure mixture weights $\sum p_k = 1$ and $p_k \ge 0$ are preserved across all SQUAREM and Nelder-Mead updates.
+
+---
+
+## 6. Shared Infrastructure: CI, Tests & Commits
+
+Other people maintain parts of this repository (CI, test harness, report viewers). Changes to them land on `main` between your sessions.
+
+1. **Start from the current `main`, never from an older copy.** Before editing, `git fetch origin && git rebase origin/main` (or start a fresh branch from `origin/main`). Never copy files into the repo from another checkout, worktree or backup: that silently reverts everyone else's changes to those files.
+2. **Check the diff before every commit.** Run `git diff --stat origin/main` and make sure every file listed is one the task meant to change. If a file you did not intend to touch appears (especially `.github/`, `CMakeLists.txt`, `tests/`), restore it with `git checkout origin/main -- <file>` before committing.
+3. **Do not modify `.github/workflows/` or test labels unless the task is about CI.** CI has two tiers, and both are deliberate:
+   - **fast**: every push to `main` and every PR. Cached build, `ctest -LE deep`, no Python bindings. A few minutes.
+   - **deep**: the full suite, including tests labelled `deep`. Runs nightly, on manual dispatch, and on PRs labelled `full-ci`.
+4. **Label slow tests.** Any test that takes a minute or more goes in the `set_tests_properties(... PROPERTIES LABELS deep)` list in `CMakeLists.txt`. Before pushing, run the fast tier locally: `ctest --test-dir build -LE deep --output-on-failure`.
+5. **Test data lives in this repo.** Load test inputs from `HYPHY3_SOURCE_DIR "/tests/data/..."` (or `benchmarks/data/`). Never reference a sibling checkout such as `../hyphy/`: CI does not have one. Copy the file into `tests/data/` instead.
+6. **`assert()` is compiled out in Release builds** (CI builds Release). Checks a test relies on must throw or return a nonzero exit code, not only `assert()`.
+7. **Keep the CI build cache working.** CI uses ccache, keyed on compiler flags and preprocessed source, and a cached build takes about a minute instead of about 30.
+   - Never put a value that changes per commit or per run (commit hash, date, build number) into a compile definition or compiler flag. If it reaches every target, every commit becomes a full rebuild.
+   - The commit hash reported in JSON output (`HYPHY3_GIT_COMMIT`) is the one exception, handled by the `if(NOT DEFINED HYPHY3_GIT_COMMIT)` guard in `CMakeLists.txt`. CI passes `-DHYPHY3_GIT_COMMIT=ci` so the definition never changes. Keep that guard. Local builds still get the real hash.
+   - The `ci` pin never needs bumping: it is a fixed label, not a version. Leave it alone when you release or change versions.
+   - To start CI from an empty cache (suspected stale or corrupt objects, a compiler change that ccache misses), bump the cache key prefix in `.github/workflows/test.yml`. Change both `key:` and `restore-keys:` for the tier, e.g. `ccache-fast-` → `ccache-fast-v2-`. Expect one slow build after that.
+   - To check the cache, look for `Hits:` in the Build step's `ccache --show-stats` output. After the first build on a new key, a commit that only touches a few files should hit nearly every object. Hits near zero on every run mean something per-commit has reached the compile flags.

@@ -2,6 +2,7 @@
 #include "hyphy/autograd/tree_likelihood.hpp"
 #include "hyphy/autograd/optimizer.hpp"
 #include <iostream>
+#undef NDEBUG
 #include <cassert>
 #include <cmath>
 #include <filesystem>

@@ -13,8 +13,11 @@ export const FORMAT_LABELS = {
   'hyphy3-legacy': 'hyphy3 --legacy-json'
 };
 
-const LEGACY_INFO_METHODS = ['fel', 'meme', 'slac', 'fubar', 'busted', 'absrel',
-  'relax', 'prime', 'gard', 'contrast-fel', 'bgm', 'fade'];
+const LEGACY_INFO_METHODS = ['fel', 'meme', 'dfel', 'ohmic', 'slac', 'fubar', 'busted',
+  'absrel', 'relax', 'prime', 'gard', 'contrast-fel', 'bgm', 'fade'];
+
+// Other spellings of a v3 id
+const ID_ALIASES = { directional_fel: 'dfel', 'directional-fel': 'dfel' };
 
 // Returns { method, format }: method is a lowercase id ('fel', 'contrast-fel', ...)
 // or null when unknown; format is 'v3' (hyphy3 native output), 'hyphy3-legacy'
@@ -22,7 +25,8 @@ const LEGACY_INFO_METHODS = ['fel', 'meme', 'slac', 'fubar', 'busted', 'absrel',
 export function detectMethod(json) {
   const analysis = isPlainObject(json?.analysis) ? json.analysis : {};
   if (typeof analysis.id === 'string') {
-    return { method: analysis.id.toLowerCase(), format: 'v3' };
+    const id = analysis.id.toLowerCase();
+    return { method: ID_ALIASES[id] ?? id, format: 'v3' };
   }
   return {
     method: methodFromInfo(analysis.info) ?? methodFromLayout(json ?? {}),
@@ -42,6 +46,7 @@ function methodFromInfo(info) {
   if (LEGACY_INFO_METHODS.includes(lead)) return lead;
   if (text.includes('(fubar')) return 'fubar';
   if (text.startsWith('directional fel')) return 'dfel';
+  if (text.includes('ohmic')) return 'ohmic';
   return null;
 }
 

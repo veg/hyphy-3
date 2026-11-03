@@ -285,7 +285,11 @@ struct Provenance {
         
         nlohmann::json in_map = nlohmann::json::object();
         for (const auto& [name, file_prov] : inputs) {
-            in_map[name] = file_prov.to_json();
+            // Skip inputs whose hash could not be computed: an empty sha256
+            // would violate the output schema's ^[a-f0-9]{64}$ pattern.
+            if (!file_prov.sha256.empty()) {
+                in_map[name] = file_prov.to_json();
+            }
         }
         j["inputs"] = in_map;
         j["execution"] = execution.to_json();
@@ -293,16 +297,48 @@ struct Provenance {
     }
 };
 
+// Reconstruct the command line from argv for provenance.invocation.cli_command.
+inline std::string join_cli_command(int argc, char* argv[]) {
+    std::string cmd = (argc > 0) ? argv[0] : "";
+    for (int i = 1; i < argc; ++i) {
+        cmd += " ";
+        cmd += argv[i];
+    }
+    return cmd;
+}
+
+// Populate an ExecutionProvenance with real measured values.
+inline ExecutionProvenance execution_block(const std::string& start_iso,
+                                           double wall_time_seconds,
+                                           int num_threads) {
+    ExecutionProvenance e;
+    e.start_time = start_iso;
+    e.end_time = Provenance::current_iso8601();
+    e.wall_time_seconds = wall_time_seconds;
+    e.cpu_threads = num_threads;
+    e.hostname = Provenance::get_hostname();
+    e.os = Provenance::detect_os();
+    e.compiler = Provenance::detect_compiler();
+    return e;
+}
+
 enum class JSONFormat {
     ModernV3,
     Legacy
 };
 
-inline JSONFormat parse_json_format(const std::string& fmt) {
-    if (fmt == "legacy" || fmt == "v2" || fmt == "datamonkey") {
-        return JSONFormat::Legacy;
+/// Parse a --json-format argument. Returns false on an unrecognized value so
+/// callers reject it rather than silently defaulting to ModernV3.
+inline bool parse_json_format(const std::string& fmt, JSONFormat& out) {
+    if (fmt == "modern" || fmt == "v3") {
+        out = JSONFormat::ModernV3;
+        return true;
     }
-    return JSONFormat::ModernV3;
+    if (fmt == "legacy" || fmt == "v2" || fmt == "datamonkey") {
+        out = JSONFormat::Legacy;
+        return true;
+    }
+    return false;
 }
 
 } // namespace hyphy::core

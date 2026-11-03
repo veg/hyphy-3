@@ -7,6 +7,9 @@
 #include "hyphy/core/likelihood.hpp"
 #include "hyphy/core/progress_bar.hpp"
 #include "hyphy/core/provenance.hpp"
+#include "hyphy/core/json_output.hpp"
+#include "hyphy/core/stats.hpp"
+#include "hyphy/core/ancestral.hpp"
 #include "hyphy/analyses/site_visualizer.hpp"
 #include "hyphy/opt/nelder_mead.hpp"
 #include "hyphy/opt/optimizer.hpp"
@@ -165,12 +168,22 @@ public:
     ContrastBranchGroup background_group;
     bool has_background = false;
     std::vector<int> node_group_id;     // node.id -> 0..K-1 (testable) or -1 (background)
+    std::vector<Scalar> group_omegas;
+    Scalar background_omega = -1.0;
 
     MG94Matrix base_mg94_matrix;
     std::vector<Matrix> branch_transition_matrices;
 
-    ContrastFELAnalyzer(Tree t, Alignment a, MG94Parameters params = MG94Parameters{}, ContrastFELSettings s = ContrastFELSettings{})
-        : tree(std::move(t)), aln(std::move(a)), base_params(params), settings(std::move(s)) {
+    ContrastFELAnalyzer(
+        Tree t,
+        Alignment a,
+        MG94Parameters params = MG94Parameters{},
+        ContrastFELSettings s = ContrastFELSettings{},
+        std::vector<Scalar> grp_om = {},
+        Scalar bg_om = -1.0
+    )
+        : tree(std::move(t)), aln(std::move(a)), base_params(params), settings(std::move(s)),
+          group_omegas(std::move(grp_om)), background_omega(bg_om) {
         p_value_threshold = settings.p_value_threshold;
         q_value_threshold = settings.q_value_threshold;
         shrinkage_lambda = settings.shrinkage_lambda;
@@ -197,8 +210,17 @@ public:
             }
         }
 
-        std::string mode_lower = settings.branch_specs;
-        std::transform(mode_lower.begin(), mode_lower.end(), mode_lower.begin(), ::tolower);
+        auto to_lower = [](std::string s) {
+            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+            return s;
+        };
+        auto trim = [](std::string s) {
+            while (!s.empty() && (std::isspace(static_cast<unsigned char>(s.front())) || s.front() == '{')) s.erase(s.begin());
+            while (!s.empty() && (std::isspace(static_cast<unsigned char>(s.back())) || s.back() == '}')) s.pop_back();
+            return s;
+        };
+
+        std::string mode_lower = to_lower(trim(settings.branch_specs));
 
         if (mode_lower == "internal,leaves" || mode_lower == "internal,terminal" || mode_lower == "internal_leaves") {
             // Partition Internal vs Leaves
@@ -224,6 +246,114 @@ public:
             }
             testable_groups.push_back(g_int);
             testable_groups.push_back(g_leaf);
+        } else if (!mode_lower.empty() && mode_lower != "auto" && mode_lower != "all") {
+            // User explicitly specified branch groups via --branches / --branch-sets
+            std::vector<std::string> requested_specs;
+            std::stringstream ss(settings.branch_specs);
+            std::string item;
+            while (std::getline(ss, item, ',')) {
+                std::string cleaned = trim(item);
+                if (!cleaned.empty()) {
+                    requested_specs.push_back(cleaned);
+                }
+            }
+
+            std::vector<bool> assigned(n, false);
+            int grp_counter = 0;
+
+            for (const auto& req : requested_specs) {
+                std::string req_lower = to_lower(req);
+                std::string canonical_name = req;
+                std::vector<int32_t> matched_nodes;
+
+                // Check tag_to_nodes (exact or case-insensitive)
+                bool found_tag = false;
+                for (const auto& [tag, nodes] : tag_to_nodes) {
+                    if (to_lower(tag) == req_lower) {
+                        canonical_name = tag;
+                        matched_nodes = nodes;
+                        found_tag = true;
+                        break;
+                    }
+                }
+
+                if (!found_tag) {
+                    if (req_lower == "internal") {
+                        canonical_name = "Internal";
+                        for (const auto& node : tree.nodes) {
+                            if (node.id != tree.root_id && !node.is_leaf && !assigned[node.id]) {
+                                matched_nodes.push_back(node.id);
+                            }
+                        }
+                    } else if (req_lower == "leaves" || req_lower == "terminal" || req_lower == "tips") {
+                        canonical_name = "Leaves";
+                        for (const auto& node : tree.nodes) {
+                            if (node.id != tree.root_id && node.is_leaf && !assigned[node.id]) {
+                                matched_nodes.push_back(node.id);
+                            }
+                        }
+                    } else if (req_lower == "unlabeled" || req_lower == "untagged" || req_lower == "reference" || req_lower == "background") {
+                        canonical_name = req;
+                        for (int32_t nid : untagged_nodes) {
+                            if (!assigned[nid]) matched_nodes.push_back(nid);
+                        }
+                    } else {
+                        // Try matching branch name directly
+                        for (const auto& node : tree.nodes) {
+                            if (node.id != tree.root_id && to_lower(node.name) == req_lower && !assigned[node.id]) {
+                                matched_nodes.push_back(node.id);
+                            }
+                        }
+                    }
+                }
+
+                if (matched_nodes.empty()) {
+                    throw std::runtime_error("Contrast-FEL: Branch group '" + req + "' matched 0 branches in the tree.");
+                }
+
+                ContrastBranchGroup grp;
+                grp.id = grp_counter++;
+                grp.name = canonical_name;
+                grp.is_testable = true;
+                grp.branch_count = matched_nodes.size();
+                for (int32_t nid : matched_nodes) {
+                    node_group_id[nid] = grp.id;
+                    assigned[nid] = true;
+                }
+                testable_groups.push_back(grp);
+            }
+
+            // Collect all remaining unassigned non-root branches
+            std::vector<int32_t> remaining_nodes;
+            for (const auto& node : tree.nodes) {
+                if (node.id != tree.root_id && !assigned[node.id]) {
+                    remaining_nodes.push_back(node.id);
+                }
+            }
+
+            if (testable_groups.size() == 1) {
+                if (remaining_nodes.empty()) {
+                    throw std::runtime_error("Contrast-FEL requires at least 2 branch groups to compare (all branches were assigned to '" + testable_groups[0].name + "').");
+                }
+                ContrastBranchGroup ref_grp;
+                ref_grp.id = 1;
+                ref_grp.name = "Reference";
+                ref_grp.is_testable = true;
+                ref_grp.branch_count = remaining_nodes.size();
+                for (int32_t nid : remaining_nodes) {
+                    node_group_id[nid] = 1;
+                }
+                testable_groups.push_back(ref_grp);
+            } else if (!remaining_nodes.empty()) {
+                has_background = true;
+                background_group.id = -1;
+                background_group.name = "Background";
+                background_group.is_testable = false;
+                background_group.branch_count = remaining_nodes.size();
+                for (int32_t nid : remaining_nodes) {
+                    node_group_id[nid] = -1;
+                }
+            }
         } else if (!tag_to_nodes.empty()) {
             // If tree has tags, use them!
             int grp_counter = 0;
@@ -296,6 +426,31 @@ public:
         Scalar Q_scale = base_mg94_matrix.scale_factor;
         conversion_factor = (Q_scale > 1e-12) ? (3.0 / Q_scale) : 1.0;
 
+        std::vector<Scalar> group_conv(testable_groups.size(), conversion_factor);
+        for (size_t g = 0; g < testable_groups.size(); ++g) {
+            if (g < group_omegas.size() && group_omegas[g] > 0.0) {
+                MG94Parameters pg = base_params;
+                pg.alpha = 1.0;
+                pg.beta = group_omegas[g];
+                MG94Matrix mgg;
+                mgg.update(pg, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+                if (mgg.scale_factor > 1e-12) {
+                    group_conv[g] = 3.0 / mgg.scale_factor;
+                }
+            }
+        }
+        Scalar bg_conv = conversion_factor;
+        if (has_background && background_omega > 0.0) {
+            MG94Parameters pbg = base_params;
+            pbg.alpha = 1.0;
+            pbg.beta = background_omega;
+            MG94Matrix mgbg;
+            mgbg.update(pbg, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+            if (mgbg.scale_factor > 1e-12) {
+                bg_conv = 3.0 / mgbg.scale_factor;
+            }
+        }
+
         baseline_tree_length = 0.0;
         for (auto& grp : testable_groups) {
             grp.total_branch_length = 0.0;
@@ -306,14 +461,18 @@ public:
             if (node.id != tree.root_id) {
                 baseline_tree_length += node.branch_length;
                 int gid = node_group_id[node.id];
+                Scalar node_conv = conversion_factor;
                 if (gid >= 0 && gid < static_cast<int>(testable_groups.size())) {
                     testable_groups[gid].total_branch_length += node.branch_length;
+                    node_conv = group_conv[gid];
                 } else if (has_background) {
                     background_group.total_branch_length += node.branch_length;
+                    node_conv = bg_conv;
                 }
-                node.branch_length *= conversion_factor;
+                node.branch_length *= node_conv;
             }
         }
+        tree.scale_bridge_lengths(conversion_factor);
 
         branch_transition_matrices.resize(tree.num_nodes());
         for (const auto& node : tree.nodes) {
@@ -342,20 +501,47 @@ public:
         base_p.theta_CT = gtr_res.params.theta_CT;
         base_p.theta_GT = gtr_res.params.theta_GT;
 
+        // Partition branches beforehand so Phase 2 MG94 fits partitioned group omegas
+        ContrastFELAnalyzer part_probe(gtr_res.tree, aln, base_p, settings);
+        std::vector<bool> is_group0(gtr_res.tree.num_nodes(), false);
+        bool has_group0 = false, has_other = false;
+        for (const auto& node : gtr_res.tree.nodes) {
+            if (node.id != gtr_res.tree.root_id && node.parent_id != INVALID_INDEX) {
+                if (part_probe.node_group_id[node.id] == 0) {
+                    is_group0[node.id] = true;
+                    has_group0 = true;
+                } else {
+                    has_other = true;
+                }
+            }
+        }
+        const std::vector<bool>* p_part = (has_group0 && has_other) ? &is_group0 : nullptr;
+
         MG94Fitter mg_fitter(gtr_res.tree, aln);
         FitResult mg_res;
+        Scalar omega_other = -1.0;
         if (settings.full_model) {
-            mg_res = mg_fitter.fit_full_model(1.0, base_p, progress_cb);
+            mg_res = mg_fitter.fit_full_model(1.0, base_p, progress_cb, 250, 1e-5, p_part, p_part ? &omega_other : nullptr);
             base_p = mg_res.params;
         } else {
             mg_res = mg_fitter.fit_omega_and_scale(1.0, base_p);
             base_p.alpha = 1.0;
             base_p.beta = mg_res.x_opt(0);
+            omega_other = base_p.beta;
         }
 
-        ContrastFELAnalyzer analyzer(mg_res.tree, std::move(aln), base_p, settings);
+        std::vector<Scalar> grp_omegas(part_probe.testable_groups.size(), base_p.beta);
+        if (!grp_omegas.empty()) {
+            grp_omegas[0] = base_p.beta;
+            for (size_t g = 1; g < grp_omegas.size(); ++g) {
+                grp_omegas[g] = (omega_other > 0.0) ? omega_other : base_p.beta;
+            }
+        }
+        Scalar bg_om = (omega_other > 0.0) ? omega_other : base_p.beta;
+
+        ContrastFELAnalyzer analyzer(mg_res.tree, std::move(aln), base_p, settings, grp_omegas, bg_om);
         analyzer.global_log_l = mg_res.log_likelihood;
-        size_t K_mg = 5 + 1 + (mg_res.tree.num_nodes() - 1);
+        size_t K_mg = 5 + (p_part ? 2 : 1) + (mg_res.tree.num_nodes() - 1);
         size_t N_codons = analyzer.aln.num_codons;
         analyzer.global_aicc = -2.0 * mg_res.log_likelihood + 2.0 * K_mg * N_codons / (N_codons - K_mg - 1.0);
 
@@ -379,46 +565,22 @@ public:
         const MG94Matrix& mg94_model,
         const std::vector<Matrix>& P_branches,
         std::vector<Vector>& node_L,
-        std::vector<double>& node_log_scale
+        std::vector<double>& node_log_scale,
+        const std::vector<std::array<Matrix, 3>>* P_bridges = nullptr
     ) {
         int S = mg94_model.pi.size();
-        const double SCALER_THRESH = 1e-150;
-        const double SCALER_UP = 1e150;
-        const double LOG_SCALER = std::log(SCALER_UP);
 
         for (int32_t node_id : tree.post_order) {
             const auto& node = tree.nodes[node_id];
 
             if (node.is_leaf) {
                 size_t t_idx = leaf_to_taxon[node_id];
-                if (t_idx != static_cast<size_t>(-1)) {
-                    int8_t state = pattern.states[t_idx];
-                    if (state >= 0 && state < S) {
-                        node_L[node_id].setZero();
-                        node_L[node_id](state) = 1.0;
-                    } else {
-                        node_L[node_id].setOnes();
-                    }
-                } else {
-                    node_L[node_id].setOnes();
-                }
+                LikelihoodEngine::init_leaf_likelihood(pattern, t_idx, S, node_L[node_id]);
                 node_log_scale[node_id] = 0.0;
             } else {
-                node_L[node_id].setOnes();
                 double child_scale_sum = 0.0;
-                for (int32_t child_id : node.children) {
-                    node_L[node_id].array() *= (P_branches[child_id] * node_L[child_id]).array();
-                    child_scale_sum += node_log_scale[child_id];
-                }
-
-                double max_val = node_L[node_id].maxCoeff();
-                int boost_count = 0;
-                while (max_val < SCALER_THRESH && max_val > 0.0) {
-                    node_L[node_id] *= SCALER_UP;
-                    max_val *= SCALER_UP;
-                    boost_count++;
-                }
-                node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
+                tree.eval_internal_node_with_model(node_id, P_branches, mg94_model, node_L, node_log_scale, node_L[node_id], child_scale_sum, 1.0, nullptr, P_bridges);
+                node_log_scale[node_id] = child_scale_sum;
             }
         }
 
@@ -473,6 +635,7 @@ public:
         std::vector<Vector> thread_node_L(tree.num_nodes(), Vector::Zero(S));
         std::vector<double> thread_node_scale(tree.num_nodes(), 0.0);
         std::vector<Matrix> P_branches(tree.num_nodes());
+        std::vector<std::array<Matrix, 3>> P_bridges(tree.bridges.size());
 
         // Pre-allocate matrices per group
         std::vector<MG94Matrix> mg_groups(K);
@@ -493,20 +656,39 @@ public:
                 mg_bg.update(p_bg, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
             }
 
+            auto model_for_node = [&](int32_t nid) -> const MG94Matrix& {
+                int gid = (nid >= 0 && static_cast<size_t>(nid) < node_group_id.size()) ? node_group_id[nid] : -1;
+                if (gid >= 0 && gid < static_cast<int>(K)) {
+                    return mg_groups[gid];
+                } else if (has_background) {
+                    return mg_bg;
+                } else {
+                    return mg_groups[0];
+                }
+            };
+
             for (const auto& node : tree.nodes) {
                 if (node.id != tree.root_id) {
-                    int gid = node_group_id[node.id];
-                    if (gid >= 0 && gid < static_cast<int>(K)) {
-                        P_branches[node.id] = mg_groups[gid].transition_matrix(node.branch_length);
-                    } else if (has_background) {
-                        P_branches[node.id] = mg_bg.transition_matrix(node.branch_length);
-                    } else {
-                        P_branches[node.id] = mg_groups[0].transition_matrix(node.branch_length);
-                    }
+                    P_branches[node.id] = model_for_node(node.id).transition_matrix(node.branch_length);
                 }
             }
 
-            return compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg_groups[0], P_branches, thread_node_L, thread_node_scale);
+            const std::vector<std::array<Matrix, 3>>* p_bridges_ptr = nullptr;
+            if (!tree.bridges.empty()) {
+                for (size_t k = 0; k < tree.bridges.size(); ++k) {
+                    const auto& wb = tree.bridges[k];
+                    int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                    const MG94Matrix& mg_br = model_for_node(bid);
+                    for (int r = 0; r < 3; ++r) {
+                        if (wb.weights[r] > 0.0 || r == 0) {
+                            P_bridges[k][r] = mg_br.transition_matrix(wb.branch_lengths[r]);
+                        }
+                    }
+                }
+                p_bridges_ptr = &P_bridges;
+            }
+
+            return compute_pattern_log_likelihood(tree, pattern, leaf_to_taxon, mg_groups[0], P_branches, thread_node_L, thread_node_scale, p_bridges_ptr);
         };
 
         // Ridge Shrinkage Penalty Calculation
@@ -528,9 +710,10 @@ public:
         // 1. Fit Alternative Model (Nelder-Mead ND)
         // Parameter vector x: [alpha, beta_0, beta_1, ..., beta_{K-1}, (beta_bg)]
         size_t alt_dim = 1 + K + (has_background ? 1 : 0);
-        std::vector<Scalar> lb_alt(alt_dim, 1e-4);
-        std::vector<Scalar> ub_alt(alt_dim, 1000.0);
-        lb_alt[0] = 1e-4; ub_alt[0] = 100.0; // alpha bound
+        Scalar min_rate_bound = (shrinkage_lambda > 0.0) ? 1e-4 : 0.0;
+        std::vector<Scalar> lb_alt(alt_dim, min_rate_bound);
+        std::vector<Scalar> ub_alt(alt_dim, 10000.0);
+        lb_alt[0] = 0.0; ub_alt[0] = 10000.0; // alpha bound
 
         auto obj_alt = [&](const std::vector<Scalar>& x) -> Scalar {
             Scalar a = x[0];
@@ -545,7 +728,7 @@ public:
 
         // Grid search for initialization
         std::vector<std::vector<Scalar>> grid_pts;
-        for (Scalar cand_a : {0.1, 1.0, 5.0}) {
+        for (Scalar cand_a : {0.01, 0.1, 1.0, 5.0}) {
             for (Scalar cand_b : {0.1, 1.0, 3.0}) {
                 std::vector<Scalar> pt(alt_dim, cand_b);
                 pt[0] = cand_a;
@@ -556,8 +739,14 @@ public:
         if (K == 2) {
             grid_pts.push_back({1.0, 0.1, 3.0});
             grid_pts.push_back({1.0, 3.0, 0.1});
+            grid_pts.push_back({1.0, 0.05, 8.0});
+            grid_pts.push_back({1.0, 8.0, 0.05});
             grid_pts.push_back({0.1, 0.05, 5.0});
             grid_pts.push_back({0.1, 5.0, 0.05});
+            grid_pts.push_back({0.001, 0.001, 5.0});
+            grid_pts.push_back({0.001, 5.0, 0.001});
+            grid_pts.push_back({0.001, 0.001, 12.0});
+            grid_pts.push_back({0.001, 12.0, 0.001});
             if (has_background) {
                 for (auto& g : grid_pts) {
                     if (g.size() < alt_dim) g.push_back(1.0);
@@ -575,7 +764,7 @@ public:
             }
         }
 
-        auto pt_alt = NelderMeadDynamic::minimize(obj_alt, init_alt, lb_alt, ub_alt, 1e-4, 120, grid_pts);
+        auto pt_alt = NelderMeadDynamic::minimize(obj_alt, init_alt, lb_alt, ub_alt, 1e-5, 200, grid_pts);
         res.alpha = pt_alt.x[0];
         for (size_t k = 0; k < K; ++k) res.beta[k] = pt_alt.x[1 + k];
         if (has_background) res.beta_background = pt_alt.x[1 + K];
@@ -587,9 +776,9 @@ public:
         // 2. Fit Overall Null Model (All tested groups share beta_null)
         // Parameter vector x: [alpha, beta_shared, (beta_bg)]
         size_t null_dim = 2 + (has_background ? 1 : 0);
-        std::vector<Scalar> lb_null(null_dim, 1e-4);
-        std::vector<Scalar> ub_null(null_dim, 1000.0);
-        lb_null[0] = 1e-4; ub_null[0] = 100.0;
+        std::vector<Scalar> lb_null(null_dim, 0.0);
+        std::vector<Scalar> ub_null(null_dim, 10000.0);
+        lb_null[0] = 0.0; ub_null[0] = 10000.0;
 
         auto obj_null = [&](const std::vector<Scalar>& x) -> Scalar {
             Scalar a = x[0];
@@ -607,23 +796,44 @@ public:
         init_null[1] = avg_beta;
         if (has_background) init_null[2] = res.beta_background;
 
-        auto pt_null = NelderMeadDynamic::minimize(obj_null, init_null, lb_null, ub_null, 1e-4, 80);
+        Scalar best_null_score = obj_null(init_null);
+        for (Scalar cand_a : {res.alpha, 0.001, 0.1, 1.0}) {
+            for (Scalar cand_b : {avg_beta, 0.1, 1.0}) {
+                std::vector<Scalar> cand = init_null;
+                cand[0] = cand_a;
+                cand[1] = cand_b;
+                Scalar sc = obj_null(cand);
+                if (sc < best_null_score) {
+                    best_null_score = sc;
+                    init_null = cand;
+                }
+            }
+        }
+
+        auto pt_null = NelderMeadDynamic::minimize(obj_null, init_null, lb_null, ub_null, 1e-5, 120);
         res.alpha_null = pt_null.x[0];
         res.beta_null = pt_null.x[1];
         res.log_l_null = -pt_null.f;
 
         // Likelihood Ratio Test Calculations
-        Scalar raw_lrt = 2.0 * (res.log_l_alt - res.log_l_null);
-        if (raw_lrt < 0.0) raw_lrt = 0.0;
+        bool valid_fits = (res.log_l_alt > -1e10 && res.log_l_null > -1e10 && res.penalized_log_l_alt > -1e10 &&
+                           std::isfinite(res.log_l_alt) && std::isfinite(res.log_l_null) && std::isfinite(res.penalized_log_l_alt));
+        Scalar raw_lrt = 0.0;
+        Scalar penalized_lrt = 0.0;
+        if (valid_fits) {
+            raw_lrt = 2.0 * (res.log_l_alt - res.log_l_null);
+            if (raw_lrt < 0.0) raw_lrt = 0.0;
+            penalized_lrt = 2.0 * (res.penalized_log_l_alt - res.log_l_null);
+            if (penalized_lrt < 0.0) penalized_lrt = 0.0;
+        }
         res.raw_lrt = raw_lrt;
-
-        Scalar penalized_lrt = 2.0 * (res.penalized_log_l_alt - res.log_l_null);
-        if (penalized_lrt < 0.0) penalized_lrt = 0.0;
         res.penalized_lrt = penalized_lrt;
 
         // Asymptotic p-value from chi^2_{K-1}
         int df = static_cast<int>(K - 1);
-        if (df == 1) {
+        if (!valid_fits) {
+            res.p_value = 1.0;
+        } else if (df == 1) {
             res.p_value = std::erfc(std::sqrt(penalized_lrt / 2.0));
         } else {
             // Incomplete gamma chi^2 survival for df >= 2
@@ -643,8 +853,23 @@ public:
         }
         res.total_tested_branch_length = (conversion_factor > 0.0) ? (tbl / conversion_factor) : tbl;
 
-        // 3. Pairwise contrasts (if K > 2)
-        if (K > 2) {
+        // 3. Pairwise contrasts (for K == 2, reuse omnibus test; for K > 2, fit pairwise constrained models)
+        if (K == 2) {
+            PairwiseContrastResult pw;
+            pw.group_a = 0;
+            pw.group_b = 1;
+            pw.name_a = testable_groups[0].name;
+            pw.name_b = testable_groups[1].name;
+            pw.beta_a = res.beta[0];
+            pw.beta_b = res.beta[1];
+            pw.lrt = res.penalized_lrt;
+            pw.p_value = res.p_value;
+            pw.p_value_adjusted = res.p_value;
+            if (pw.beta_a < pw.beta_b) pw.direction = pw.name_a + " < " + pw.name_b;
+            else if (pw.beta_a > pw.beta_b) pw.direction = pw.name_a + " > " + pw.name_b;
+            else pw.direction = pw.name_a + " = " + pw.name_b;
+            res.pairwise.push_back(pw);
+        } else if (K > 2) {
             for (size_t i = 0; i < K; ++i) {
                 for (size_t j = i + 1; j < K; ++j) {
                     PairwiseContrastResult pw;
@@ -692,10 +917,17 @@ public:
                     if (has_background) init_pw.back() = res.beta_background;
 
                     auto pt_pw = NelderMeadDynamic::minimize(obj_pw, init_pw, lb_pw, ub_pw, 1e-4, 80);
-                    Scalar pw_lrt = 2.0 * (res.penalized_log_l_alt - (-pt_pw.f));
-                    if (pw_lrt < 0.0) pw_lrt = 0.0;
-                    pw.lrt = pw_lrt;
-                    pw.p_value = std::erfc(std::sqrt(pw_lrt / 2.0));
+                    Scalar pw_fit_ll = -pt_pw.f;
+                    Scalar pw_lrt = 0.0;
+                    if (valid_fits && pw_fit_ll > -1e10 && std::isfinite(pw_fit_ll)) {
+                        pw_lrt = 2.0 * (res.penalized_log_l_alt - pw_fit_ll);
+                        if (pw_lrt < 0.0) pw_lrt = 0.0;
+                        pw.lrt = pw_lrt;
+                        pw.p_value = std::erfc(std::sqrt(pw_lrt / 2.0));
+                    } else {
+                        pw.lrt = 0.0;
+                        pw.p_value = 1.0;
+                    }
 
                     if (pw.beta_a < pw.beta_b) {
                         pw.direction = pw.name_a + " < " + pw.name_b;
@@ -782,116 +1014,22 @@ public:
         const auto& pattern = aln.patterns[p];
         const auto& code = *(aln.code ? aln.code : GeneticCode::universal());
         int S = code.num_sense_codons;
-        size_t num_nodes = tree.num_nodes();
         size_t K = testable_groups.size();
 
         subs.syn_counts.assign(K + (has_background ? 1 : 0), 0);
         subs.nonsyn_counts.assign(K + (has_background ? 1 : 0), 0);
 
-        // 1. Check if constant across leaves
-        int8_t const_codon = -1;
-        bool is_constant = true;
-        for (size_t node_id = 0; node_id < num_nodes; ++node_id) {
-            if (tree.nodes[node_id].is_leaf) {
-                size_t t_idx = leaf_to_taxon[node_id];
-                if (t_idx != static_cast<size_t>(-1)) {
-                    int8_t st = pattern.states[t_idx];
-                    if (st >= 0 && st < S) {
-                        if (const_codon == -1) {
-                            const_codon = st;
-                        } else if (const_codon != st) {
-                            is_constant = false;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (is_constant && const_codon >= 0) {
-            subs.root_codon = code.sense_codons[const_codon];
-            subs.root_aa = code.sense_codon_aa[const_codon];
+        auto vit = hyphy::core::ancestral::reconstruct_viterbi_states(
+            tree, pattern, leaf_to_taxon, branch_transition_matrices, base_mg94_matrix.pi, S
+        );
+        subs.root_codon = code.sense_codons[vit.root_state];
+        subs.root_aa = code.sense_codon_aa[vit.root_state];
+        if (vit.is_constant) {
             subs.summary_string = "Conserved";
             subs.summary_string_partitioned = "Conserved";
             return subs;
         }
-
-        // 2. Max-product Viterbi pass
-        std::vector<std::vector<Scalar>> M_node(num_nodes, std::vector<Scalar>(S, 1.0));
-        std::vector<std::vector<int8_t>> backpointer(num_nodes, std::vector<int8_t>(S, 0));
-        std::vector<std::vector<Scalar>> val_node(num_nodes, std::vector<Scalar>(S, 1.0));
-
-        for (int32_t node_id : tree.post_order) {
-            const auto& node = tree.nodes[node_id];
-            if (node.is_leaf) {
-                size_t t_idx = leaf_to_taxon[node_id];
-                int8_t st = (t_idx != static_cast<size_t>(-1)) ? pattern.states[t_idx] : -1;
-                if (st >= 0 && st < S) {
-                    for (int c = 0; c < S; ++c) M_node[node_id][c] = (c == st) ? 1.0 : 0.0;
-                } else {
-                    for (int c = 0; c < S; ++c) M_node[node_id][c] = 1.0;
-                }
-            }
-
-            if (node_id != tree.root_id) {
-                const Matrix& P = branch_transition_matrices[node_id];
-                Scalar max_val = 0.0;
-                for (int p_state = 0; p_state < S; ++p_state) {
-                    Scalar best_score = -1.0;
-                    int8_t best_c = 0;
-                    for (int c = 0; c < S; ++c) {
-                        Scalar score = P(p_state, c) * M_node[node_id][c];
-                        if (score > best_score) {
-                            best_score = score;
-                            best_c = static_cast<int8_t>(c);
-                        }
-                    }
-                    backpointer[node_id][p_state] = best_c;
-                    val_node[node_id][p_state] = std::max(best_score, 0.0);
-                    if (val_node[node_id][p_state] > max_val) max_val = val_node[node_id][p_state];
-                }
-
-                if (max_val > 0.0) {
-                    Scalar scale = 1.0 / max_val;
-                    for (int p_state = 0; p_state < S; ++p_state) {
-                        val_node[node_id][p_state] *= scale;
-                    }
-                }
-
-                int32_t parent_id = node.parent_id;
-                for (int p_state = 0; p_state < S; ++p_state) {
-                    M_node[parent_id][p_state] *= val_node[node_id][p_state];
-                }
-            }
-        }
-
-        // 3. Optimal root state
-        int8_t root_state = 0;
-        Scalar best_root_score = -1.0;
-        for (int c = 0; c < S; ++c) {
-            Scalar score = base_mg94_matrix.pi(c) * M_node[tree.root_id][c];
-            if (score > best_root_score) {
-                best_root_score = score;
-                root_state = static_cast<int8_t>(c);
-            }
-        }
-
-        std::vector<int8_t> reconstructed_states(num_nodes, -1);
-        reconstructed_states[tree.root_id] = root_state;
-        subs.root_codon = code.sense_codons[root_state];
-        subs.root_aa = code.sense_codon_aa[root_state];
-
-        std::vector<int32_t> stack;
-        stack.push_back(tree.root_id);
-        while (!stack.empty()) {
-            int32_t curr = stack.back();
-            stack.pop_back();
-            for (int32_t child_id : tree.nodes[curr].children) {
-                int8_t parent_st = reconstructed_states[curr];
-                reconstructed_states[child_id] = backpointer[child_id][parent_st];
-                stack.push_back(child_id);
-            }
-        }
+        const auto& reconstructed_states = vit.node_states;
 
         // 4. Collect substitution events
         Scalar total_surprise = 0.0;
@@ -1053,20 +1191,13 @@ public:
 
         // Benjamini-Hochberg FDR correction on penalized p-values across all sites
         size_t M = site_results.size();
-        std::vector<size_t> pval_order(M);
-        std::iota(pval_order.begin(), pval_order.end(), 0);
-        std::sort(pval_order.begin(), pval_order.end(), [&](size_t a, size_t b) {
-            return site_results[a].p_value < site_results[b].p_value;
-        });
-
-        Scalar running_min_q = 1.0;
-        for (int rank = static_cast<int>(M) - 1; rank >= 0; --rank) {
-            size_t orig_idx = pval_order[rank];
-            Scalar unadj_p = site_results[orig_idx].p_value;
-            Scalar q = unadj_p * static_cast<Scalar>(M) / static_cast<Scalar>(rank + 1);
-            q = std::min(1.0, std::min(running_min_q, q));
-            running_min_q = q;
-            site_results[orig_idx].q_value = q;
+        std::vector<Scalar> raw_p(M);
+        for (size_t i = 0; i < M; ++i) {
+            raw_p[i] = site_results[i].p_value;
+        }
+        std::vector<Scalar> q_vals = hyphy::core::stats::benjamini_hochberg_fdr(raw_p);
+        for (size_t i = 0; i < M; ++i) {
+            site_results[i].q_value = q_vals[i];
         }
 
         return site_results;
@@ -1095,155 +1226,34 @@ public:
     }
 
     // Modern JSON Schema Serializer
-    nlohmann::json to_modern_json(
+nlohmann::json to_modern_json(
         const std::string& input_filepath = "",
         const std::string& tree_string = "",
         const Provenance& prov = {}
-    ) const {
-        nlohmann::json j;
+    ) const;
 
-        j["schema_version"] = "3.0.0";
-        j["analysis"] = {
-            {"id", "contrast-fel"},
-            {"name", "Contrast-FEL (Fixed Effects Likelihood)"},
-            {"version", "3.0.0"},
-            {"description", "Test for differential selective pressures between branch sets using Empirical Bayes Ridge Shrinkage"},
-            {"reference", "Mol Biol Evol (2021) 38(3):1184–1198"},
-            {"shrinkage_lambda", shrinkage_lambda}
-        };
+    // Legacy HyPhy 2.5 Contrast-FEL JSON Serializer
+nlohmann::json to_legacy_json(
+        const std::string& input_filepath = "",
+        const std::string& tree_string = ""
+    ) const;
 
-        j["provenance"] = prov.to_json();
-
-        // Dataset
-        j["dataset"]["file"] = input_filepath;
-        j["dataset"]["sequences"] = aln.num_taxa;
-        j["dataset"]["codon_sites"] = aln.num_codons;
-        j["dataset"]["nucleotide_sites"] = aln.num_nucleotides;
-        j["dataset"]["taxa"] = aln.taxon_names;
-
-        // Phylogeny
-        j["phylogeny"]["newick"] = tree_string.empty() ? tree.to_newick() : tree_string;
-        j["phylogeny"]["tree_length"] = baseline_tree_length;
-        nlohmann::json nodes_json = nlohmann::json::object();
-        for (const auto& node : tree.nodes) {
-            if (node.id != tree.root_id) {
-                int gid = node_group_id[node.id];
-                std::string grp_name = (gid >= 0 && gid < static_cast<int>(testable_groups.size()))
-                    ? testable_groups[gid].name
-                    : (has_background ? "Background" : "Reference");
-                nodes_json[node.name] = {
-                    {"type", node.is_leaf ? "leaf" : "internal"},
-                    {"branch_length", (conversion_factor > 0.0) ? (node.branch_length / conversion_factor) : node.branch_length},
-                    {"group", grp_name},
-                    {"is_testable", (gid >= 0)}
-                };
-            }
+    nlohmann::json to_json(const std::string& input_filepath = "",
+                           const std::string& tree_string = "",
+                           JSONFormat format = JSONFormat::ModernV3,
+                           const Provenance& prov = {}) const {
+        if (format == JSONFormat::Legacy) {
+            return to_legacy_json(input_filepath, tree_string);
         }
-        j["phylogeny"]["nodes"] = nodes_json;
-
-        // Model fits
-        if (has_gtr_fit) {
-            j["model_fits"]["nucleotide_gtr"]["log_likelihood"] = gtr_log_l;
-            j["model_fits"]["nucleotide_gtr"]["aicc"] = gtr_aicc;
-            j["model_fits"]["nucleotide_gtr"]["rates"] = {
-                {"AC", gtr_rates.theta_AC},
-                {"AT", gtr_rates.theta_AT},
-                {"CG", gtr_rates.theta_CG},
-                {"CT", gtr_rates.theta_CT},
-                {"GT", gtr_rates.theta_GT}
-            };
-        }
-
-        j["model_fits"]["codon_mg94"]["log_likelihood"] = global_log_l;
-        j["model_fits"]["codon_mg94"]["aicc"] = global_aicc;
-        j["model_fits"]["codon_mg94"]["omega"] = (base_params.alpha > 0.0) ? (base_params.beta / base_params.alpha) : 1.0;
-
-        // Summary
-        auto sum = get_summary();
-        j["statistical_tests"]["summary"] = {
-            {"total_sites", static_cast<int>(sum.total_sites)},
-            {"significant_p_threshold", p_value_threshold},
-            {"significant_p_sites", static_cast<int>(sum.significant_p_sites)},
-            {"significant_q_threshold", q_value_threshold},
-            {"significant_q_sites", static_cast<int>(sum.significant_q_sites)},
-            {"shrinkage_lambda", shrinkage_lambda}
-        };
-
-        // Columnar site results
-        nlohmann::json cols = {
-            {"site", {{"type", "integer"}, {"description", "1-based codon site index"}}},
-            {"alpha", {{"type", "float"}, {"description", "Site synonymous substitution rate"}}},
-            {"alpha_null", {{"type", "float"}, {"description", "Synonymous rate under H0"}}},
-            {"beta_null", {{"type", "float"}, {"description", "Shared non-synonymous rate under H0"}}},
-            {"raw_lrt", {{"type", "float"}, {"description", "Unpenalized likelihood ratio test statistic"}}},
-            {"penalized_lrt", {{"type", "float"}, {"description", "Penalized likelihood ratio test statistic"}}},
-            {"p_value", {{"type", "float"}, {"description", "Asymptotic p-value from chi^2_{K-1}"}}},
-            {"q_value", {{"type", "float"}, {"description", "Benjamini-Hochberg false discovery rate"}}},
-            {"contrast_tag", {{"type", "string"}, {"description", "Directional contrast classification"}}},
-            {"substitutions", {{"type", "string"}, {"description", "Partitioned ancestral substitutions"}}}
-        };
-
-        for (size_t k = 0; k < testable_groups.size(); ++k) {
-            std::string beta_col = "beta_" + testable_groups[k].name;
-            cols[beta_col] = {{"type", "float"}, {"description", "Non-synonymous rate for group " + testable_groups[k].name}};
-        }
-        if (has_background) {
-            cols["beta_background"] = {{"type", "float"}, {"description", "Nuisance non-synonymous rate on background branches"}};
-        }
-        j["site_results"]["columns"] = cols;
-
-        std::vector<int> col_site;
-        std::vector<double> col_a, col_a_null, col_b_null, col_raw_lrt, col_plrt, col_pval, col_qval;
-        std::vector<std::string> col_tag, col_subs;
-        std::vector<std::vector<double>> col_betas(testable_groups.size());
-        std::vector<double> col_beta_bg;
-
-        for (size_t c = 0; c < site_results.size(); ++c) {
-            const auto& r = site_results[c];
-            col_site.push_back(static_cast<int>(c + 1));
-            col_a.push_back(r.alpha);
-            col_a_null.push_back(r.alpha_null);
-            col_b_null.push_back(r.beta_null);
-            col_raw_lrt.push_back(r.raw_lrt);
-            col_plrt.push_back(r.penalized_lrt);
-            col_pval.push_back(r.p_value);
-            col_qval.push_back(r.q_value);
-            col_tag.push_back(r.contrast_tag);
-            col_subs.push_back(r.subs.summary_string_partitioned);
-
-            for (size_t k = 0; k < testable_groups.size(); ++k) {
-                col_betas[k].push_back(r.beta[k]);
-            }
-            if (has_background) col_beta_bg.push_back(r.beta_background);
-        }
-
-        j["site_results"]["data"]["site"] = col_site;
-        j["site_results"]["data"]["alpha"] = col_a;
-        j["site_results"]["data"]["alpha_null"] = col_a_null;
-        j["site_results"]["data"]["beta_null"] = col_b_null;
-        j["site_results"]["data"]["raw_lrt"] = col_raw_lrt;
-        j["site_results"]["data"]["penalized_lrt"] = col_plrt;
-        j["site_results"]["data"]["p_value"] = col_pval;
-        j["site_results"]["data"]["q_value"] = col_qval;
-        j["site_results"]["data"]["contrast_tag"] = col_tag;
-        j["site_results"]["data"]["substitutions"] = col_subs;
-
-        for (size_t k = 0; k < testable_groups.size(); ++k) {
-            std::string beta_col = "beta_" + testable_groups[k].name;
-            j["site_results"]["data"][beta_col] = col_betas[k];
-        }
-        if (has_background) {
-            j["site_results"]["data"]["beta_background"] = col_beta_bg;
-        }
-
-        return j;
+        return to_modern_json(input_filepath, tree_string, prov);
     }
 
     void save_json(const std::string& output_filepath,
                    const std::string& input_filepath = "",
                    const std::string& tree_string = "",
-                   const Provenance& prov = {}) const {
-        auto j = to_modern_json(input_filepath, tree_string, prov);
+                   const Provenance& prov = {},
+                   JSONFormat format = JSONFormat::ModernV3) const {
+        auto j = to_json(input_filepath, tree_string, format, prov);
         std::ofstream out(output_filepath);
         if (!out.is_open()) {
             throw std::runtime_error("Could not open output JSON file: " + output_filepath);

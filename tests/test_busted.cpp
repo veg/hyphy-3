@@ -14,14 +14,15 @@
 using namespace hyphy::core;
 using namespace hyphy::analyses;
 
-TEST_CASE("BUSTED: CD2 Dataset (10 taxa, 187 codons)") {
+TEST_CASE("BUSTED: CD2 Dataset (10 taxa, 187 codons) & Ground-Truth Parity") {
     auto aln = Alignment::load(HYPHY3_SOURCE_DIR "/benchmarks/data/cd2.fna");
     auto tree = Tree::from_newick_file(HYPHY3_SOURCE_DIR "/benchmarks/data/cd2.nwk");
 
     auto busted = BUSTEDAnalyzer::create_and_fit(tree, aln);
     auto res = busted.run();
 
-    std::cout << "\n[BUSTED CD2 Results]\n"
+    std::cout << "\n[BUSTED CD2 Results (SRV=off)]\n"
+              << "  Global MG94 ln L   : " << busted.mg94_log_l << " (omega = " << busted.mg94_omega << ")\n"
               << "  Unconstrained ln L : " << res.unconstrained.log_likelihood << "\n"
               << "  Constrained ln L   : " << res.constrained.log_likelihood << "\n"
               << "  LRT                : " << res.lrt << "\n"
@@ -43,6 +44,46 @@ TEST_CASE("BUSTED: CD2 Dataset (10 taxa, 187 codons)") {
     CHECK(res.unconstrained.test_distribution.omegas[2] >= 1.0);
     CHECK(res.constrained.test_distribution.omegas[2] == 1.0);
     CHECK(res.evidence_ratios.size() == 187);
+
+    // Load bundled HyPhy 2.5 ground-truth reference (cd2_busted.json has srv: "Yes")
+    std::ifstream gt_file(HYPHY3_SOURCE_DIR "/benchmarks/ground_truth/cd2_busted.json");
+    REQUIRE(gt_file.is_open());
+    nlohmann::json gt;
+    gt_file >> gt;
+
+    Scalar gt_gtr_ll = gt["fits"]["Nucleotide GTR"]["Log Likelihood"].get<Scalar>();
+    Scalar gt_mg94_ll = gt["fits"]["MG94xREV with separate rates for branch sets"]["Log Likelihood"].get<Scalar>();
+    Scalar gt_unc_ll = gt["fits"]["Unconstrained model"]["Log Likelihood"].get<Scalar>();
+    Scalar gt_con_ll = gt["fits"]["Constrained model"]["Log Likelihood"].get<Scalar>();
+    Scalar gt_lrt = gt["test results"]["LRT"].get<Scalar>();
+    Scalar gt_pval = gt["test results"]["p-value"].get<Scalar>();
+
+    // Verify GTR and full Codon MG94xREV baseline parity against ground truth
+    CHECK(std::abs(busted.gtr_log_l - gt_gtr_ll) < 1.0);
+    CHECK(std::abs(busted.mg94_log_l - gt_mg94_ll) < 0.05);
+
+    // Run with SRV=true to match cd2_busted.json settings ("srv": "Yes")
+    BUSTEDSettings srv_settings;
+    srv_settings.srv = true;
+    srv_settings.num_rate_classes = 3;
+    srv_settings.num_syn_rate_classes = 3;
+    srv_settings.refine_branch_lengths = true;
+    auto res_srv = busted.run(srv_settings);
+
+    std::cout << "\n[BUSTED-S CD2 Ground-Truth Parity (SRV=on)]\n"
+              << "  HyPhy 3 Unconstrained ln L : " << res_srv.unconstrained.log_likelihood
+              << " (2.5 GT: " << gt_unc_ll << ")\n"
+              << "  HyPhy 3 Constrained ln L   : " << res_srv.constrained.log_likelihood
+              << " (2.5 GT: " << gt_con_ll << ")\n"
+              << "  HyPhy 3 LRT                : " << res_srv.lrt
+              << " (2.5 GT: " << gt_lrt << ")\n"
+              << "  HyPhy 3 p-value            : " << res_srv.p_value
+              << " (2.5 GT: " << gt_pval << ")\n";
+
+    CHECK(std::abs(res_srv.unconstrained.log_likelihood - gt_unc_ll) < 2.5);
+    CHECK(std::abs(res_srv.constrained.log_likelihood - gt_con_ll) < 2.5);
+    CHECK(std::abs(res_srv.lrt - gt_lrt) < 1.5);
+    CHECK(res_srv.p_value < 0.01);
 
     // Test Legacy JSON export
     auto legacy_out = busted.to_legacy_json(res);
@@ -178,9 +219,13 @@ TEST_CASE("BUSTED-E: Saturation Error Sink (Option A) Quarantines Misalignment A
     std::string nwk = "((T1:0.002,T2:0.002)N1:0.05,(T3:0.04,T4:0.04)N2:0.05,(T5:0.04,T6:0.04)N3:0.05);";
     auto tree = Tree::from_newick(nwk);
 
-    // Base ancestral sequence of 100 4-fold degenerate codons (GCT=Ala, GTT=Val, CCT=Pro, GGT=Gly)
-    std::vector<std::string> base_codons(100);
-    for (size_t s = 0; s < 100; ++s) {
+    // Base ancestral sequence of 300 4-fold degenerate codons (GCT=Ala, GTT=Val, CCT=Pro, GGT=Gly).
+    // Note: 300 codons (298 invariant codons between sister tips T1 and T2) are required so that under
+    // converged Constrained Null branch-length optimization (F-001, F-005, F-007, F-067), the Null model
+    // cannot freely stretch terminal branch T1 to absorb the two 3-nt errors without paying a large
+    // synonymous survival penalty across the invariant sites, ensuring the true MLE LRT of Standard BUSTED has p < 0.05.
+    std::vector<std::string> base_codons(300);
+    for (size_t s = 0; s < 300; ++s) {
         if (s % 4 == 0) base_codons[s] = "GCT";
         else if (s % 4 == 1) base_codons[s] = "GTT";
         else if (s % 4 == 2) base_codons[s] = "CCT";
@@ -189,7 +234,7 @@ TEST_CASE("BUSTED-E: Saturation Error Sink (Option A) Quarantines Misalignment A
 
     auto make_seq = [&](int variant) {
         std::string seq;
-        for (size_t s = 0; s < 100; ++s) {
+        for (size_t s = 0; s < 300; ++s) {
             std::string c = base_codons[s];
             // Add realistic synonymous third-position variation across clades so omega < 1
             if (variant == 1 && (s % 5 == 0)) c[2] = 'C'; // T1, T2 share synonymous T->C
@@ -266,6 +311,18 @@ TEST_CASE("BUSTED-E: Saturation Error Sink (Option A) Quarantines Misalignment A
     auto j_modern = analyzer.to_modern_json(res_sink);
     CHECK(j_modern["analysis"]["settings"]["error_sink"] == true);
     CHECK(j_modern.contains("error_sink_diagnostics"));
+
+    // Verify error-filter alignment masking (HyPhy 2.5 error-filter.bf equivalent)
+    auto filtered_aln = analyzer.filter_alignment_by_error_sink(res_sink);
+    CHECK(filtered_aln.sequences.size() == 6);
+    CHECK(filtered_aln.sequences[0].raw_seq.substr(9 * 3, 3) == "---");
+    CHECK(filtered_aln.sequences[0].raw_seq.substr(49 * 3, 3) == "---");
+    CHECK(filtered_aln.sequences[1].raw_seq == s2);
+
+    // Running standard BUSTED (no error sink) on the filtered alignment should no longer produce a false positive
+    auto filtered_analyzer = BUSTEDAnalyzer::create_and_fit(tree, filtered_aln);
+    auto res_filtered = filtered_analyzer.run(std_settings);
+    CHECK(res_filtered.p_value > 0.10);
 }
 
 TEST_CASE("BUSTED-Auto: 4-Gate Surprisal & Score Model Selector") {
@@ -359,4 +416,198 @@ TEST_CASE("BUSTED-Auto: 4-Gate Surprisal & Score Model Selector") {
     }
 }
 
+TEST_CASE("BUSTED-PH: Phenotype-Associated Selection (4-Model Workflow)") {
+    auto aln = Alignment::load(HYPHY3_SOURCE_DIR "/benchmarks/data/cd2.fna");
+    auto tree = Tree::from_newick_file(HYPHY3_SOURCE_DIR "/benchmarks/data/cd2.nwk");
 
+    auto analyzer = BUSTEDAnalyzer::create_and_fit(tree, aln);
+    BUSTEDSettings ph_settings;
+    ph_settings.phenotype_mode = true;
+    ph_settings.test_branches = "Human,Chimp,Baboon,RhMonkey,Node3,Node2";
+    ph_settings.num_rate_classes = 3;
+
+    auto res = analyzer.run(ph_settings);
+
+    std::cout << "\n[BUSTED-PH on CD2 (Primates vs Non-Primates)]\n"
+              << "  Unconstrained Two-Set ln L : " << res.unconstrained.log_likelihood << "\n"
+              << "  Constrained Test ln L      : " << res.constrained.log_likelihood
+              << " (LRT_T = " << res.lrt << ", p_T = " << res.p_value << ")\n"
+              << "  Constrained BG ln L        : " << res.constrained_background.log_likelihood
+              << " (LRT_B = " << res.background_lrt << ", p_B = " << res.background_p_value
+              << ", delta_AICc = " << res.background_delta_aicc << ")\n"
+              << "  Shared Dist ln L           : " << res.shared_distributions.log_likelihood
+              << " (LRT_diff = " << res.shared_lrt << ", df = " << res.shared_df << ", p_diff = " << res.shared_p_value << ")\n"
+              << "  Coupled-k RELAX ln L       : " << res.relax_alternative.log_likelihood
+              << " (k = " << res.relax_k << ", LRT_RELAX = " << res.relax_lrt << ", p_RELAX = " << res.relax_p_value
+              << ", dir = " << res.relax_direction << ")\n"
+              << "  Union-Intersection p_UIT   : " << res.union_intersection_p_value << "\n"
+              << "  BG Neutral Supported (AICc): " << (res.background_neutral_supported ? "YES" : "NO") << "\n"
+              << "  Phenotype Associated       : " << (res.phenotype_associated ? "YES" : "NO")
+              << " (" << res.phenotype_verdict << ")\n";
+
+    CHECK(res.has_background_test == true);
+    CHECK(res.has_relax_test == true);
+    CHECK(res.shared_df == 5);
+    CHECK(res.lrt >= 0.0);
+    CHECK(res.background_lrt >= 0.0);
+    CHECK(res.shared_lrt >= 0.0);
+    CHECK(res.relax_lrt >= 0.0);
+    CHECK(res.relax_k >= 0.0);
+    CHECK(res.p_value >= 0.0);
+    CHECK(res.p_value <= 1.0);
+    CHECK(res.background_p_value >= 0.0);
+    CHECK(res.background_p_value <= 1.0);
+    CHECK(res.shared_p_value >= 0.0);
+    CHECK(res.shared_p_value <= 1.0);
+    CHECK(res.relax_p_value >= 0.0);
+    CHECK(res.relax_p_value <= 1.0);
+    CHECK(std::abs(res.union_intersection_p_value - std::max(res.p_value, res.shared_p_value)) < 1e-12);
+    CHECK(std::abs(res.background_delta_aicc - (res.constrained_background.aicc - res.unconstrained.aicc)) < 1e-9);
+    CHECK(res.unconstrained.has_background_distribution == true);
+    CHECK(res.unconstrained.background_distribution.omegas.size() == 3);
+    CHECK(res.constrained.test_distribution.omegas.back() == 1.0);
+    CHECK(res.constrained_background.background_distribution.omegas.back() == 1.0);
+    CHECK(!res.phenotype_verdict.empty());
+
+    // Verify Legacy JSON
+    auto j_leg = analyzer.to_legacy_json(res);
+    CHECK(j_leg.contains("test results background"));
+    CHECK(j_leg.contains("test results shared distributions"));
+    CHECK(j_leg.contains("test results relaxation"));
+    CHECK(j_leg.contains("BUSTED-PH"));
+    CHECK(j_leg["BUSTED-PH"].contains("union_intersection_p_value"));
+    CHECK(j_leg["BUSTED-PH"].contains("background_delta_aicc"));
+    CHECK(j_leg.contains("phenotype association"));
+    CHECK(j_leg["fits"].contains("Constrained model (background)"));
+    CHECK(j_leg["fits"].contains("Unconstrained model with shared distributions"));
+    CHECK(j_leg["fits"].contains("RELAX alternative (coupled-k)"));
+    CHECK(j_leg["fits"]["Unconstrained model"]["Rate Distributions"].contains("Background"));
+
+    // Verify Modern v3 JSON
+    auto j_mod = analyzer.to_modern_json(res);
+    CHECK(j_mod["analysis"]["id"] == "busted-ph");
+    CHECK(j_mod["model_fits"].contains("constrained_background"));
+    CHECK(j_mod["model_fits"].contains("shared_distributions"));
+    CHECK(j_mod["model_fits"].contains("relax_alternative"));
+    CHECK(j_mod["statistical_tests"].contains("background_selection"));
+    CHECK(j_mod["statistical_tests"].contains("shared_distributions"));
+    CHECK(j_mod["statistical_tests"].contains("relaxation"));
+    CHECK(j_mod["statistical_tests"].contains("union_intersection"));
+    CHECK(j_mod["statistical_tests"].contains("phenotype_association"));
+
+    // Verify 3-way branch partitioning (Test, Background, Unclassified) via both --comparison and auto-detected {FG}/{BG} tags (Issue #2036)
+    {
+        // 1. Explicit --branches and --comparison leaving remaining branches in Unclassified
+        BUSTEDSettings three_way_settings;
+        three_way_settings.phenotype_mode = true;
+        three_way_settings.test_branches = "Human,Chimp,Baboon,RhMonkey";
+        three_way_settings.comparison_branches = "Mouse,Rat,Horse,Cat";
+        three_way_settings.num_rate_classes = 3;
+
+        auto res_3way = analyzer.run(three_way_settings);
+        CHECK(analyzer.num_test_branches == 4);
+        CHECK(analyzer.num_background_branches == 4);
+        CHECK(analyzer.num_unclassified_branches > 0);
+        CHECK(res_3way.unconstrained.has_unclassified_distribution == true);
+        CHECK(res_3way.unconstrained.unclassified_distribution.omegas.size() == 3);
+        CHECK(res_3way.constrained.has_unclassified_distribution == true);
+        CHECK(res_3way.constrained_background.has_unclassified_distribution == true);
+        CHECK(res_3way.shared_distributions.has_unclassified_distribution == true);
+
+        auto j_leg_3 = analyzer.to_legacy_json(res_3way);
+        CHECK(j_leg_3["fits"]["Unconstrained model"]["Rate Distributions"].contains("Unclassified"));
+        CHECK(j_leg_3["tested"]["0"]["Cow"] == "unclassified");
+
+        auto j_mod_3 = analyzer.to_modern_json(res_3way);
+        CHECK(j_mod_3["model_fits"]["unconstrained"]["rate_distributions"].contains("unclassified"));
+
+        // 2. Auto-detect {FG} and {BG} Newick tags when --branches and --comparison are omitted
+        std::string tagged_nwk =
+            "((((Human{FG}:0.03,Chimp{FG}:0.02)Node3{FG}:0.03,Baboon{FG}:0.05)Node2:0.08,RhMonkey:0.06)Node1:0.12,"
+            "((Mouse{BG}:0.10,Rat{BG}:0.11)Node8{BG}:0.15,(Horse{BG}:0.09,Cat{BG}:0.08)Node11:0.06)Node7:0.05,"
+            "(Cow:0.12,Pig:0.11)Node14:0.07);";
+        auto tagged_tree = Tree::from_newick(tagged_nwk);
+        BUSTEDAnalyzer tagged_analyzer(tagged_tree, aln);
+        tagged_analyzer.select_branch_partitions("All", "", true);
+        CHECK(tagged_analyzer.num_test_branches == 4);
+        CHECK(tagged_analyzer.num_background_branches == 5);
+        CHECK(tagged_analyzer.num_unclassified_branches > 0);
+    }
+}
+
+TEST_CASE("BUSTED: High-Taxon (128 Taxa) Scaling and SRV Underflow Safety") {
+    // Build a balanced 128-taxon binary tree (depth 7)
+    auto build_balanced_newick = [](auto& self, int start_idx, int count, int depth) -> std::string {
+        if (count == 1) {
+            return "T" + std::to_string(start_idx) + ":0.03";
+        }
+        int half = count / 2;
+        std::string left = self(self, start_idx, half, depth + 1);
+        std::string right = self(self, start_idx + half, count - half, depth + 1);
+        if (depth == 0) {
+            return "(" + left + "," + right + ");";
+        }
+        return "(" + left + "," + right + "):0.02";
+    };
+    std::string nwk = build_balanced_newick(build_balanced_newick, 1, 128, 0);
+    auto tree = Tree::from_newick(nwk);
+
+    // Construct a 60-codon purifying/neutral alignment across 128 taxa with clade-correlated synonymous variation
+    const std::vector<std::string> base_codons = {"GCT", "GTT", "CCT", "GGT", "ACT", "CTT"};
+    const char syn_third[4] = {'T', 'C', 'A', 'G'};
+    Alignment aln;
+    for (int t = 1; t <= 128; ++t) {
+        std::string seq;
+        seq.reserve(60 * 3);
+        int clade = (t - 1) / 8; // 16 clades of 8 taxa
+        for (int s = 0; s < 60; ++s) {
+            std::string c = base_codons[s % base_codons.size()];
+            // Introduce synonymous variation across clades so sites are variable at 128 taxa
+            if ((s + clade) % 3 == 0) {
+                c[2] = syn_third[(clade + s) % 4];
+            }
+            // Occasional conservative nonsynonymous change at every 15th site in 2 clades
+            if (s % 15 == 0 && (clade == 2 || clade == 11) && (t % 2 == 0)) {
+                c = "GCC";
+            }
+            seq += c;
+        }
+        aln.add_sequence("T" + std::to_string(t), seq);
+    }
+    aln.finalize();
+
+    auto analyzer = BUSTEDAnalyzer::create_and_fit(tree, aln);
+    CHECK(std::isfinite(analyzer.gtr_log_l));
+    CHECK(std::isfinite(analyzer.mg94_log_l));
+    // Full MG94 optimization on 128 taxa should substantially improve over GTR baseline
+    CHECK(analyzer.mg94_log_l > analyzer.gtr_log_l);
+
+    // Run with SRV = true on 128 taxa to verify compute_expected_syn_weights and compute_expected_weights do not underflow
+    BUSTEDSettings srv_settings;
+    srv_settings.srv = true;
+    srv_settings.num_syn_rate_classes = 3;
+    auto res_srv = analyzer.run(srv_settings);
+
+    std::cout << "\n[BUSTED 128-Taxon Scaling & SRV Underflow Test]\n"
+              << "  GTR ln L           : " << analyzer.gtr_log_l << "\n"
+              << "  MG94xREV ln L      : " << analyzer.mg94_log_l << "\n"
+              << "  Constrained ln L   : " << res_srv.constrained.log_likelihood << "\n"
+              << "  Unconstrained ln L : " << res_srv.unconstrained.log_likelihood << "\n"
+              << "  LRT                : " << res_srv.lrt << " (p = " << res_srv.p_value << ")\n";
+
+    CHECK(std::isfinite(res_srv.constrained.log_likelihood));
+    CHECK(std::isfinite(res_srv.unconstrained.log_likelihood));
+    CHECK(res_srv.constrained.log_likelihood >= analyzer.mg94_log_l - 1.0);
+    CHECK(res_srv.unconstrained.log_likelihood >= res_srv.constrained.log_likelihood - 1e-6);
+    CHECK(res_srv.unconstrained.test_distribution.syn_rates.size() == 3);
+    double syn_weight_sum = 0.0;
+    for (size_t m = 0; m < 3; ++m) {
+        CHECK(std::isfinite(res_srv.unconstrained.test_distribution.syn_rates[m]));
+        CHECK(std::isfinite(res_srv.unconstrained.test_distribution.syn_weights[m]));
+        CHECK(res_srv.unconstrained.test_distribution.syn_weights[m] > 0.0);
+        syn_weight_sum += res_srv.unconstrained.test_distribution.syn_weights[m];
+    }
+    CHECK(std::abs(syn_weight_sum - 1.0) < 1e-5);
+    // Purifying/neutral alignment should not trigger false positive selection at 128 taxa
+    CHECK(res_srv.p_value > 0.05);
+}

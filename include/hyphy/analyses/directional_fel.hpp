@@ -7,6 +7,9 @@
 #include "hyphy/core/likelihood.hpp"
 #include "hyphy/core/progress_bar.hpp"
 #include "hyphy/core/provenance.hpp"
+#include "hyphy/core/json_output.hpp"
+#include "hyphy/core/stats.hpp"
+#include "hyphy/core/ancestral.hpp"
 #include "hyphy/analyses/site_visualizer.hpp"
 #include "hyphy/opt/nelder_mead.hpp"
 #include "hyphy/opt/optimizer.hpp"
@@ -37,75 +40,9 @@ using namespace hyphy::opt;
 // Mathematical Statistical Utilities (Regularized Incomplete Gamma & Chi2)
 // ============================================================================
 
-inline double regularized_gamma_p(double a, double z) {
-    if (z <= 0.0) return 0.0;
-    if (a <= 0.0) return 1.0;
-    if (z < a + 1.0) {
-        double sum = 1.0 / a;
-        double term = sum;
-        for (int n = 1; n < 200; ++n) {
-            term *= z / (a + n);
-            sum += term;
-            if (std::abs(term) < std::abs(sum) * 1e-15) break;
-        }
-        return sum * std::exp(-z + a * std::log(z) - std::lgamma(a));
-    }
-    double tiny = 1e-30;
-    double b = z + 1.0 - a;
-    double c = 1.0 / tiny;
-    double d = 1.0 / b;
-    double h = d;
-    for (int i = 1; i < 200; ++i) {
-        double an = -i * (i - a);
-        b += 2.0;
-        d = an * d + b;
-        if (std::abs(d) < tiny) d = tiny;
-        c = b + an / c;
-        if (std::abs(c) < tiny) c = tiny;
-        d = 1.0 / d;
-        double del = d * c;
-        h *= del;
-        if (std::abs(del - 1.0) < 1e-15) break;
-    }
-    double q = std::exp(-z + a * std::log(z) - std::lgamma(a)) * h;
-    return std::max(0.0, std::min(1.0, 1.0 - q));
-}
-
-inline double regularized_gamma_q(double a, double z) {
-    if (z <= 0.0) return 1.0;
-    if (a <= 0.0) return 0.0;
-    if (z < a + 1.0) {
-        return std::max(0.0, std::min(1.0, 1.0 - regularized_gamma_p(a, z)));
-    }
-    double tiny = 1e-30;
-    double b = z + 1.0 - a;
-    double c = 1.0 / tiny;
-    double d = 1.0 / b;
-    double h = d;
-    for (int i = 1; i < 200; ++i) {
-        double an = -i * (i - a);
-        b += 2.0;
-        d = an * d + b;
-        if (std::abs(d) < tiny) d = tiny;
-        c = b + an / c;
-        if (std::abs(c) < tiny) c = tiny;
-        d = 1.0 / d;
-        double del = d * c;
-        h *= del;
-        if (std::abs(del - 1.0) < 1e-15) break;
-    }
-    double q = std::exp(-z + a * std::log(z) - std::lgamma(a)) * h;
-    return std::max(0.0, std::min(1.0, q));
-}
-
-inline double chi2_p_value(double chi2, double df) {
-    if (chi2 <= 0.0) return 1.0;
-    if (df <= 0.0) return 1.0;
-    if (df == 1.0) {
-        return std::erfc(std::sqrt(chi2 / 2.0));
-    }
-    return regularized_gamma_q(df / 2.0, chi2 / 2.0);
-}
+using hyphy::core::stats::regularized_gamma_p;
+using hyphy::core::stats::regularized_gamma_q;
+using hyphy::core::stats::chi2_p_value;
 
 // ============================================================================
 // Data Structures for Directional FEL
@@ -308,46 +245,25 @@ public:
         const MG94Matrix& mg94_model,
         const std::vector<Matrix>& P_branches,
         std::vector<Vector>& node_L,
-        std::vector<double>& node_log_scale
+        std::vector<double>& node_log_scale,
+        const std::vector<std::array<Matrix, 3>>* P_bridges = nullptr
     ) {
         int S = mg94_model.pi.size();
-        const double SCALER_THRESH = 1e-150;
-        const double SCALER_UP = 1e150;
-        const double LOG_SCALER = std::log(SCALER_UP);
 
         for (int32_t node_id : tree.post_order) {
             const auto& node = tree.nodes[node_id];
 
             if (node.is_leaf) {
                 size_t t_idx = leaf_to_taxon[node_id];
-                if (t_idx != static_cast<size_t>(-1)) {
-                    int8_t state = pattern.states[t_idx];
-                    if (state >= 0 && state < S) {
-                        node_L[node_id].setZero();
-                        node_L[node_id](state) = 1.0;
-                    } else {
-                        node_L[node_id].setOnes();
-                    }
-                } else {
-                    node_L[node_id].setOnes();
-                }
+                LikelihoodEngine::init_leaf_likelihood(pattern, t_idx, S, node_L[node_id]);
                 node_log_scale[node_id] = 0.0;
             } else {
-                node_L[node_id].setOnes();
                 double child_scale_sum = 0.0;
-                for (int32_t child_id : node.children) {
-                    node_L[node_id].array() *= (P_branches[child_id] * node_L[child_id]).array();
-                    child_scale_sum += node_log_scale[child_id];
-                }
-
-                double max_val = node_L[node_id].maxCoeff();
-                int boost_count = 0;
-                while (max_val < SCALER_THRESH && max_val > 0.0) {
-                    node_L[node_id] *= SCALER_UP;
-                    max_val *= SCALER_UP;
-                    boost_count++;
-                }
-                node_log_scale[node_id] = child_scale_sum - boost_count * LOG_SCALER;
+                tree.eval_internal_node_with_model(
+                    node_id, P_branches, mg94_model, node_L, node_log_scale,
+                    node_L[node_id], child_scale_sum, 1.0, nullptr, P_bridges
+                );
+                node_log_scale[node_id] = child_scale_sum;
             }
         }
 
@@ -485,6 +401,7 @@ public:
         for (size_t i = 0; i < M; ++i) {
             if (static_cast<int32_t>(i) != orig_tree.root_id) {
                 int32_t p = orig_tree.nodes[i].parent_id;
+                if (p < 0) continue;
                 Scalar len = orig_tree.nodes[i].branch_length;
                 adj[p].push_back({static_cast<int32_t>(i), len});
                 adj[i].push_back({p, len});
@@ -625,10 +542,12 @@ public:
     ) {
         AutoRootResult result;
         result.strategy = settings.root_strategy;
-        if (settings.root_strategy == "keep") {
+        if (settings.root_strategy == "keep" || input_tree.has_wheatstone_bridges()) {
             result.best_tree = input_tree;
             result.chosen_candidate_idx = 0;
-            result.chosen_branch_name = "User Input Root (Preserved)";
+            result.chosen_branch_name = input_tree.has_wheatstone_bridges()
+                ? "Ohmic Network Root (Preserved)"
+                : "User Input Root (Preserved)";
             result.chosen_log_l = 0.0;
             result.chosen_weight = 1.0;
             return result;
@@ -640,6 +559,7 @@ public:
         for (size_t i = 0; i < M; ++i) {
             if (static_cast<int32_t>(i) != input_tree.root_id) {
                 int32_t p = input_tree.nodes[i].parent_id;
+                if (p < 0) continue;
                 Scalar len = input_tree.nodes[i].branch_length;
                 adj[p].push_back({static_cast<int32_t>(i), len});
                 adj[i].push_back({p, len});
@@ -751,6 +671,7 @@ public:
 
             // Directional transition matrices per branch
             std::vector<Matrix> P_branches(num_nodes);
+            std::vector<MG94Matrix> branch_mgs(num_nodes);
             for (const auto& node : cand_tree.nodes) {
                 if (node.id != cand_tree.root_id) {
                     int32_t p = node.parent_id;
@@ -779,9 +700,19 @@ public:
                     Scalar sum_cf = codon_f.sum();
                     if (sum_cf > 1e-9) codon_f /= sum_cf;
 
-                    MG94Matrix branch_mg;
-                    branch_mg.update(base_p, pos_freqs, codon_f, gcode);
-                    P_branches[node.id] = branch_mg.transition_matrix(node.branch_length);
+                    branch_mgs[node.id].update(base_p, pos_freqs, codon_f, gcode);
+                    P_branches[node.id] = branch_mgs[node.id].transition_matrix(node.branch_length);
+                }
+            }
+            std::vector<std::array<Matrix, 3>> P_bridges(cand_tree.bridges.size());
+            for (size_t b = 0; b < cand_tree.bridges.size(); ++b) {
+                const auto& wb = cand_tree.bridges[b];
+                int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                const MG94Matrix& m_br = (bid >= 0 && bid != cand_tree.root_id && static_cast<size_t>(bid) < branch_mgs.size())
+                    ? branch_mgs[bid]
+                    : base_matrix;
+                for (int r = 0; r < 3; ++r) {
+                    P_bridges[b][r] = m_br.transition_matrix(wb.branch_lengths[r]);
                 }
             }
 
@@ -794,7 +725,8 @@ public:
             for (size_t p = 0; p < aln.patterns.size(); ++p) {
                 const auto& pat = aln.patterns[p];
                 Scalar pat_l = compute_pattern_log_likelihood(
-                    cand_tree, pat, leaf_to_taxon, base_matrix, P_branches, node_L, node_log_scale
+                    cand_tree, pat, leaf_to_taxon, base_matrix, P_branches, node_L, node_log_scale,
+                    cand_tree.bridges.empty() ? nullptr : &P_bridges
                 );
                 tree_lnl += pat.weight * pat_l;
             }
@@ -1060,6 +992,7 @@ public:
                 node.branch_length *= conversion_factor;
             }
         }
+        tree.scale_bridge_lengths(conversion_factor);
 
         // Precompute branch transition matrices for reconstruction
         branch_transition_matrices.resize(num_nodes);
@@ -1085,7 +1018,6 @@ public:
             }
         }
     }
-
 
     // Factory: Phase 1 GTR + Composition Test + Auto-Root + Global MG94
     static DirectionalFELAnalyzer create_and_fit(
@@ -1198,31 +1130,43 @@ public:
                 regime_matrices[k].update(p_curr, regimes[k].pos_nuc_freqs, regimes[k].codon_freqs, gcode);
             }
 
+            auto eval_branch_P = [&](int32_t nid, Scalar bl) -> Matrix {
+                if (K == 3 && nid >= 0 && static_cast<size_t>(nid) < branch_regime_weights.size()) {
+                    const auto& w = branch_regime_weights[nid];
+                    if (w[1] > 0.99) {
+                        return regime_matrices[1].transition_matrix(bl);
+                    } else if (w[2] > 0.99) {
+                        return regime_matrices[2].transition_matrix(bl);
+                    } else if (w[0] > 0.99) {
+                        return regime_matrices[0].transition_matrix(bl);
+                    } else {
+                        Matrix P = w[1] * regime_matrices[1].transition_matrix(bl);
+                        if (w[2] > 1e-4) P += w[2] * regime_matrices[2].transition_matrix(bl);
+                        if (w[0] > 1e-4) P += w[0] * regime_matrices[0].transition_matrix(bl);
+                        return P;
+                    }
+                }
+                return regime_matrices[0].transition_matrix(bl);
+            };
+
             for (const auto& node : tree.nodes) {
                 if (node.id != tree.root_id) {
-                    if (K == 3) {
-                        const auto& w = branch_regime_weights[node.id];
-                        if (w[1] > 0.99) {
-                            P_branches[node.id] = regime_matrices[1].transition_matrix(node.branch_length);
-                        } else if (w[2] > 0.99) {
-                            P_branches[node.id] = regime_matrices[2].transition_matrix(node.branch_length);
-                        } else if (w[0] > 0.99) {
-                            P_branches[node.id] = regime_matrices[0].transition_matrix(node.branch_length);
-                        } else {
-                            Matrix P = w[1] * regime_matrices[1].transition_matrix(node.branch_length);
-                            if (w[2] > 1e-4) P += w[2] * regime_matrices[2].transition_matrix(node.branch_length);
-                            if (w[0] > 1e-4) P += w[0] * regime_matrices[0].transition_matrix(node.branch_length);
-                            P_branches[node.id] = std::move(P);
-                        }
-                    } else {
-                        P_branches[node.id] = regime_matrices[0].transition_matrix(node.branch_length);
-                    }
+                    P_branches[node.id] = eval_branch_P(node.id, node.branch_length);
+                }
+            }
+            std::vector<std::array<Matrix, 3>> P_bridges(tree.bridges.size());
+            for (size_t b_idx = 0; b_idx < tree.bridges.size(); ++b_idx) {
+                const auto& wb = tree.bridges[b_idx];
+                int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                for (int r = 0; r < 3; ++r) {
+                    P_bridges[b_idx][r] = eval_branch_P(bid, wb.branch_lengths[r]);
                 }
             }
 
             const auto& mg_root = (K == 3) ? regime_matrices[1] : regime_matrices[0];
             return compute_pattern_log_likelihood(
-                tree, pattern, leaf_to_taxon, mg_root, P_branches, thread_node_L, thread_node_scale
+                tree, pattern, leaf_to_taxon, mg_root, P_branches, thread_node_L, thread_node_scale,
+                tree.bridges.empty() ? nullptr : &P_bridges
             );
         };
 
@@ -1303,101 +1247,16 @@ public:
         int S = gcode.num_sense_codons;
         size_t num_nodes = tree.num_nodes();
 
-        // 1. Check if constant
-        int8_t const_codon = -1;
-        bool is_constant = true;
-        for (size_t nid = 0; nid < num_nodes; ++nid) {
-            if (tree.nodes[nid].is_leaf) {
-                size_t t_idx = leaf_to_taxon[nid];
-                if (t_idx != static_cast<size_t>(-1)) {
-                    int8_t st = pattern.states[t_idx];
-                    if (st >= 0 && st < S) {
-                        if (const_codon == -1) const_codon = st;
-                        else if (const_codon != st) { is_constant = false; break; }
-                    }
-                }
-            }
-        }
-
-        if (is_constant && const_codon >= 0) {
-            subs.root_codon = gcode.sense_codons[const_codon];
-            subs.root_aa = gcode.sense_codon_aa[const_codon];
+        auto vit = hyphy::core::ancestral::reconstruct_viterbi_states(
+            tree, pattern, leaf_to_taxon, branch_transition_matrices, root_frequencies, S
+        );
+        subs.root_codon = gcode.sense_codons[vit.root_state];
+        subs.root_aa = gcode.sense_codon_aa[vit.root_state];
+        if (vit.is_constant) {
             subs.summary_string = "Conserved";
             return subs;
         }
-
-        // 2. Upward max-product pass
-        std::vector<std::vector<Scalar>> M_node(num_nodes, std::vector<Scalar>(S, 1.0));
-        std::vector<std::vector<int8_t>> backpointer(num_nodes, std::vector<int8_t>(S, 0));
-        std::vector<std::vector<Scalar>> val_node(num_nodes, std::vector<Scalar>(S, 1.0));
-
-        for (int32_t nid : tree.post_order) {
-            const auto& node = tree.nodes[nid];
-            if (node.is_leaf) {
-                size_t t_idx = leaf_to_taxon[nid];
-                int8_t st = (t_idx != static_cast<size_t>(-1)) ? pattern.states[t_idx] : -1;
-                for (int c = 0; c < S; ++c) {
-                    M_node[nid][c] = (st < 0 || c == st) ? 1.0 : 0.0;
-                }
-            }
-
-            if (nid != tree.root_id) {
-                const Matrix& P = branch_transition_matrices[nid];
-                Scalar max_val = 0.0;
-                for (int p_st = 0; p_st < S; ++p_st) {
-                    Scalar best_score = -1.0;
-                    int8_t best_c = 0;
-                    for (int c = 0; c < S; ++c) {
-                        Scalar score = P(p_st, c) * M_node[nid][c];
-                        if (score > best_score) {
-                            best_score = score;
-                            best_c = static_cast<int8_t>(c);
-                        }
-                    }
-                    backpointer[nid][p_st] = best_c;
-                    val_node[nid][p_st] = std::max(best_score, 0.0);
-                    if (val_node[nid][p_st] > max_val) max_val = val_node[nid][p_st];
-                }
-
-                if (max_val > 0.0) {
-                    Scalar scale = 1.0 / max_val;
-                    for (int p_st = 0; p_st < S; ++p_st) val_node[nid][p_st] *= scale;
-                }
-
-                int32_t p_id = node.parent_id;
-                for (int p_st = 0; p_st < S; ++p_st) {
-                    M_node[p_id][p_st] *= val_node[nid][p_st];
-                }
-            }
-        }
-
-        // 3. Optimal root state
-        int8_t root_state = 0;
-        Scalar best_root_score = -1.0;
-        for (int c = 0; c < S; ++c) {
-            Scalar score = root_frequencies(c) * M_node[tree.root_id][c];
-            if (score > best_root_score) {
-                best_root_score = score;
-                root_state = static_cast<int8_t>(c);
-            }
-        }
-
-        // 4. Downward traceback
-        std::vector<int8_t> reconstructed(num_nodes, -1);
-        reconstructed[tree.root_id] = root_state;
-        subs.root_codon = gcode.sense_codons[root_state];
-        subs.root_aa = gcode.sense_codon_aa[root_state];
-
-        std::vector<int32_t> stack = {tree.root_id};
-        while (!stack.empty()) {
-            int32_t curr = stack.back();
-            stack.pop_back();
-            for (int32_t ch : tree.nodes[curr].children) {
-                int8_t p_st = reconstructed[curr];
-                reconstructed[ch] = backpointer[ch][p_st];
-                stack.push_back(ch);
-            }
-        }
+        const auto& reconstructed = vit.node_states;
 
         // 5. Collect substitution events
         auto count_gc = [](const std::string& codon) -> int {
@@ -1413,6 +1272,7 @@ public:
         for (size_t nid = 0; nid < num_nodes; ++nid) {
             if (static_cast<int32_t>(nid) == tree.root_id) continue;
             const auto& node = tree.nodes[nid];
+            if (node.parent_id < 0) continue;
             int8_t p_st = reconstructed[node.parent_id];
             int8_t ch_st = reconstructed[nid];
 
@@ -1552,188 +1412,9 @@ public:
     // 8. JSON Export (Modern v3.0 & Legacy)
     // ========================================================================
 
-    nlohmann::json to_modern_json(const std::string& input_filepath = "", const std::string& tree_string = "") const {
-        nlohmann::json j;
-        j["$schema"] = "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/dfel.v3.schema.json";
-        j["schema_version"] = "3.0.0";
+nlohmann::json to_modern_json(const std::string& input_filepath = "", const std::string& tree_string = "") const;
 
-        // Analysis
-        j["analysis"]["id"] = "dfel";
-        j["analysis"]["name"] = "Directional Fixed Effects Likelihood";
-        j["analysis"]["version"] = "3.0.0";
-        j["analysis"]["category"] = "selection";
-        j["analysis"]["description"] = "Directional FEL detects site-level selection while accounting for lineage-specific compositional heterogeneity and auto-rooting via non-reversible dynamics";
-        j["analysis"]["settings"]["p_value_threshold"] = p_value_threshold;
-        j["analysis"]["settings"]["heterogeneity_threshold"] = settings.heterogeneity_threshold;
-        j["analysis"]["settings"]["root_strategy"] = settings.root_strategy;
-        j["analysis"]["settings"]["num_regimes"] = regimes.size();
-
-        // Software
-        j["software"]["name"] = "hyphy";
-        j["software"]["version"] = "3.0.0";
-        j["software"]["citation"] = "Directional Evolution & Fixed Effects Likelihood under Non-Stationary Composition Dynamics (2026)";
-
-        // Provenance
-        j["provenance"]["created_at"] = Provenance::current_iso8601();
-
-        // Dataset
-        j["dataset"]["file"] = input_filepath;
-        j["dataset"]["taxa_count"] = aln.num_taxa;
-        j["dataset"]["codon_sites"] = aln.num_codons;
-        j["dataset"]["patterns_count"] = aln.patterns.size();
-        j["dataset"]["genetic_code"] = aln.code ? aln.code->name : "Universal";
-
-        // Phylogeny
-        j["phylogeny"]["rooted"] = true;
-        j["phylogeny"]["root_branch"] = root_result.chosen_branch_name;
-        j["phylogeny"]["root_log_likelihood"] = root_result.chosen_log_l;
-        j["phylogeny"]["root_weight"] = root_result.chosen_weight;
-        j["phylogeny"]["tree_length"] = baseline_tree_length;
-        if (!tree_string.empty()) {
-            j["phylogeny"]["newick"] = tree_string;
-        }
-
-        // Compositional Heterogeneity Test
-        nlohmann::json comp_j;
-        comp_j["is_heterogeneous"] = comp_test.is_heterogeneous;
-        comp_j["overall"] = { {"chi2", comp_test.chi2_overall}, {"df", comp_test.df_overall}, {"p_value", comp_test.p_value_overall} };
-        comp_j["codon_position_1"] = { {"chi2", comp_test.chi2_cp1}, {"df", comp_test.df_cp1}, {"p_value", comp_test.p_value_cp1} };
-        comp_j["codon_position_2"] = { {"chi2", comp_test.chi2_cp2}, {"df", comp_test.df_cp2}, {"p_value", comp_test.p_value_cp2} };
-        comp_j["codon_position_3"] = { {"chi2", comp_test.chi2_cp3}, {"df", comp_test.df_cp3}, {"p_value", comp_test.p_value_cp3} };
-
-        nlohmann::json taxa_arr = nlohmann::json::array();
-        for (const auto& tc : comp_test.taxa) {
-            taxa_arr.push_back({
-                {"taxon", tc.name},
-                {"gc_overall", tc.gc_overall},
-                {"gc_cp3", tc.gc_cp3}
-            });
-        }
-        comp_j["taxa"] = taxa_arr;
-        j["compositional_heterogeneity"] = comp_j;
-
-        // Auto-Rooting Candidates
-        nlohmann::json root_cands = nlohmann::json::array();
-        for (const auto& c : root_result.candidates) {
-            root_cands.push_back({
-                {"rank", c.rank},
-                {"branch", c.branch_name},
-                {"is_terminal", c.is_terminal},
-                {"log_likelihood", c.log_l},
-                {"delta_log_l", c.delta_log_l},
-                {"weight", c.weight}
-            });
-        }
-        j["root_selection"]["candidates"] = root_cands;
-
-        // Regimes
-        nlohmann::json reg_arr = nlohmann::json::array();
-        for (const auto& reg : regimes) {
-            reg_arr.push_back({
-                {"id", reg.id},
-                {"name", reg.name},
-                {"psi", reg.psi},
-                {"mean_gc", reg.mean_gc},
-                {"branch_count", reg.branch_count}
-            });
-        }
-        j["directional_model"]["regimes"] = reg_arr;
-
-        nlohmann::json branch_regimes_j = nlohmann::json::object();
-        for (const auto& node : tree.nodes) {
-            if (node.id != tree.root_id) {
-                const auto& w = branch_regime_weights[node.id];
-                branch_regimes_j[node.name] = {
-                    {"regime_id", branch_regime_ids[node.id]},
-                    {"weights", nlohmann::json::array({w[0], w[1], w[2]})}
-                };
-            }
-        }
-        j["directional_model"]["branch_regimes"] = branch_regimes_j;
-
-        // Model Fits
-        j["model_fits"]["gtr"]["log_likelihood"] = gtr_log_l;
-        j["model_fits"]["gtr"]["aicc"] = gtr_aicc;
-        j["model_fits"]["directional_mg94"]["log_likelihood"] = global_log_l;
-        j["model_fits"]["directional_mg94"]["aicc"] = global_aicc;
-
-        // Site Results
-        nlohmann::json site_data;
-        std::vector<size_t> sites_vec;
-        std::vector<Scalar> alpha_vec, beta_vec, alpha_null_vec, lrt_vec, pval_vec;
-        std::vector<std::string> class_vec, subs_vec;
-
-        for (const auto& r : site_results) {
-            sites_vec.push_back(r.site_index + 1);
-            alpha_vec.push_back(r.alpha);
-            beta_vec.push_back(r.beta);
-            alpha_null_vec.push_back(r.alpha_null);
-            lrt_vec.push_back(r.lrt);
-            pval_vec.push_back(r.p_value);
-
-            std::string c_type = "neutral";
-            if (r.p_value <= p_value_threshold) {
-                if (r.beta > r.alpha) c_type = "diversifying";
-                else if (r.alpha > r.beta) c_type = "purifying";
-            }
-            class_vec.push_back(c_type);
-            subs_vec.push_back(r.subs.summary_string);
-        }
-
-        site_data["site"] = sites_vec;
-        site_data["alpha"] = alpha_vec;
-        site_data["beta"] = beta_vec;
-        site_data["alpha_null"] = alpha_null_vec;
-        site_data["lrt"] = lrt_vec;
-        site_data["p_value"] = pval_vec;
-        site_data["classification"] = class_vec;
-        site_data["substitutions"] = subs_vec;
-        j["site_results"]["data"] = site_data;
-
-        return j;
-    }
-
-    nlohmann::json to_legacy_json(const std::string& input_filepath = "", const std::string& tree_string = "") const {
-        nlohmann::json j;
-        j["analysis"]["authors"] = "Sergei L Kosakovsky Pond and HyPhy Team";
-        j["analysis"]["citation"] = "Directional Fixed Effects Likelihood under Non-Stationary Composition Dynamics (2026)";
-        j["analysis"]["contact"] = "spond@temple.edu";
-        j["analysis"]["info"] = "Directional FEL detects site-level selection while accounting for lineage-specific compositional heterogeneity and auto-rooting via non-reversible dynamics";
-        j["analysis"]["requirements"] = "in-frame codon alignment and a phylogenetic tree";
-        j["analysis"]["version"] = "3.0.0";
-
-        j["MLE"]["headers"] = nlohmann::json::array({
-            nlohmann::json::array({"alpha", "Synonymous substitution rate at a site"}),
-            nlohmann::json::array({"beta", "Non-synonymous substitution rate at a site"}),
-            nlohmann::json::array({"alpha=beta", "The rate estimate under the neutral model"}),
-            nlohmann::json::array({"LRT", "Likelihood ratio test statistic"}),
-            nlohmann::json::array({"p-value", "Asymptotic p-value for evidence of selection"}),
-            nlohmann::json::array({"Total branch length", "The total length of branches"})
-        });
-
-        nlohmann::json content = nlohmann::json::array();
-        for (const auto& r : site_results) {
-            content.push_back({
-                r.alpha,
-                r.beta,
-                r.alpha_null,
-                r.lrt,
-                r.p_value,
-                r.total_branch_length
-            });
-        }
-        j["MLE"]["content"]["0"] = content;
-
-        j["input"]["file name"] = input_filepath;
-        j["input"]["genetic code"] = aln.code ? aln.code->name : "Universal";
-        j["input"]["number of sequences"] = aln.num_taxa;
-        j["input"]["number of sites"] = aln.num_codons;
-        if (!tree_string.empty()) {
-            j["input"]["trees"]["0"] = tree_string;
-        }
-
-        return j;
-    }
+nlohmann::json to_legacy_json(const std::string& input_filepath = "", const std::string& tree_string = "") const;
 
     void export_json(const std::string& filepath, JSONFormat format, const std::string& input_filepath = "", const std::string& tree_string = "") const {
         std::ofstream out(filepath);

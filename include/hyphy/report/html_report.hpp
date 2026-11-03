@@ -1,6 +1,6 @@
 #pragma once
-// Self-contained HTML reports: the results viewer (viz/fel-viewer, embedded at build time by
-// cmake/EmbedViewer.cmake), its stylesheet and the analysis JSON are inlined into one file that
+// Self-contained HTML reports: the results viewer (viz/fel-viewer, or viz/ohmic-viewer for Ohmic;
+// embedded at build time by cmake/EmbedViewer.cmake), its stylesheet and the analysis JSON are inlined into one file that
 // opens from file:// with no network access, server, Node or Python.
 
 #include <hyphy/report/viewer_assets.hpp>
@@ -16,11 +16,14 @@
 
 namespace hyphy::report {
 
-// How the report presents one analysis: the nav badge (HTML) and the viewer element it mounts.
+// How the report presents one analysis: the nav badge (HTML), the viewer element it mounts and
+// the embedded bundle that defines that element.
 struct ReportViewer {
     std::string method;
     std::string badge;
     std::string tag;
+    const std::string& (*js)() = assets::viewer_js;
+    const std::string& (*css)() = assets::viewer_css;
 };
 
 // Analyses whose results the embedded viewer renders correctly. Extend as viewers are added.
@@ -31,6 +34,8 @@ inline const std::vector<ReportViewer>& report_viewers() {
         {"fubar", "FUBAR &bull; Bayesian Pervasive Selection", "hyphy-viewer"},
         {"slac", "SLAC &bull; Ancestral Counting", "hyphy-viewer"},
         {"dfel", "dFEL &bull; Directional Selection", "hyphy-viewer"},
+        {"ohmic", "OHMIC &bull; Phylogenetic Network", "hyphy-ohmic-viewer", assets::ohmic_viewer_js,
+         assets::ohmic_viewer_css},
     };
     return viewers;
 }
@@ -164,13 +169,15 @@ inline std::string method_from_layout(const nlohmann::json& j) {
 }  // namespace detail
 
 // Identify the analysis that produced a result JSON (hyphy3 modern v3 or HyPhy 2.5 legacy).
-// Returns a lowercase method id ("fel", "meme", "contrast-fel", ...) or "" when unknown.
+// Returns a lowercase method id ("fel", "meme", "dfel", "ohmic", "contrast-fel", ...) or "" when unknown.
 inline std::string detect_analysis(const nlohmann::json& j) {
     const auto& analysis = j.contains("analysis") && j["analysis"].is_object() ? j["analysis"] : nlohmann::json::object();
 
     // Modern v3 output carries an explicit id
     if (analysis.contains("id") && analysis["id"].is_string()) {
-        return detail::lower(analysis["id"].get<std::string>());
+        std::string id = detail::lower(analysis["id"].get<std::string>());
+        if (id == "directional_fel" || id == "directional-fel") return "dfel";
+        return id;
     }
 
     // Legacy output: the info text begins with the method name ("FEL (Fixed Effects ...", "GARD : ...")
@@ -180,12 +187,14 @@ inline std::string detect_analysis(const nlohmann::json& j) {
         if (start != std::string::npos) {
             size_t end = info.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-", start);
             std::string lead = info.substr(start, end == std::string::npos ? std::string::npos : end - start);
-            static const std::vector<std::string> known = {"fel", "meme", "slac", "fubar", "busted", "absrel",
-                                                           "relax", "prime", "gard", "contrast-fel", "bgm", "fade"};
+            static const std::vector<std::string> known = {"fel", "meme", "dfel", "ohmic", "slac", "fubar", "busted",
+                                                           "absrel", "relax", "prime", "gard", "contrast-fel", "bgm",
+                                                           "fade"};
             if (std::find(known.begin(), known.end(), lead) != known.end()) return lead;
         }
         if (info.find("(fubar") != std::string::npos) return "fubar";
         if (start != std::string::npos && info.compare(start, 15, "directional fel") == 0) return "dfel";
+        if (info.find("ohmic") != std::string::npos) return "ohmic";
     }
 
     // Legacy output without a usable info: recognize the method from its layout
@@ -272,7 +281,7 @@ inline std::string render_html(const std::string& json_text, const std::string& 
     }
     )" << viewer_tags << R"( { width: 100%; height: 100%; display: block; }
     /* Viewer stylesheet */
-)" << detail::css_for_style(assets::viewer_css()) << R"(
+)" << detail::css_for_style(viewer->css()) << R"(
   </style>
 </head>
 <body>
@@ -292,7 +301,7 @@ inline std::string render_html(const std::string& json_text, const std::string& 
     </div>
   </div>
   <script>
-)" << detail::js_for_script(assets::viewer_js()) << R"(
+)" << detail::js_for_script(viewer->js()) << R"(
   </script>
   <script>
     const payload = )" << detail::json_for_script(json_text) << R"(;

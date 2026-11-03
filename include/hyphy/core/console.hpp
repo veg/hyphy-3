@@ -110,14 +110,20 @@ public:
         const std::string& citation = "",
         int width = 76
     ) {
+        std::string title_line = " " + Console::brand("⬢ " + tool_badge) + " " +
+                                 Console::bold(tool_title);
+        std::string sub_line = subtitle.empty() ? "" : (" " + Console::info(subtitle));
+        std::string cit_line = citation.empty() ? "" : (" " + Console::muted(citation));
+
+        size_t max_content = Console::printable_len(title_line);
+        if (!sub_line.empty()) max_content = std::max(max_content, Console::printable_len(sub_line));
+        if (!cit_line.empty()) max_content = std::max(max_content, Console::printable_len(cit_line));
+
         int w = std::min(width, Console::terminal_width(width));
         if (w < 40) w = 40;
+        w = std::max(w, static_cast<int>(max_content) + 4);
         int inner_w = w - 4;
 
-        std::string top_border = "╭" + std::string(w - 2, '-') + "╮";
-        std::string bot_border = "╰" + std::string(w - 2, '-') + "╯";
-
-        // Replace hyphens with smooth box line if UTF-8
         std::string top = Console::border("╭");
         for (int i = 0; i < w - 2; ++i) top += Console::border("─");
         top += Console::border("╮");
@@ -128,20 +134,11 @@ public:
 
         std::cout << "\n" << top << "\n";
 
-        // Line 1: Badge + Title
-        std::string title_line = " " + Console::brand("⬢ " + tool_badge) + " " +
-                                 Console::bold(tool_title);
         print_panel_line(title_line, inner_w);
-
-        // Line 2: Subtitle
-        if (!subtitle.empty()) {
-            std::string sub_line = " " + Console::info(subtitle);
+        if (!sub_line.empty()) {
             print_panel_line(sub_line, inner_w);
         }
-
-        // Line 3: Citation / Version info
-        if (!citation.empty()) {
-            std::string cit_line = " " + Console::muted(citation);
+        if (!cit_line.empty()) {
             print_panel_line(cit_line, inner_w);
         }
 
@@ -169,14 +166,55 @@ public:
         const std::vector<std::pair<std::string, std::string>>& items,
         int width = 76
     ) {
-        int w = std::min(width, Console::terminal_width(width));
+        int term_w = Console::terminal_width(100);
+        int max_w = std::max(width, std::min(term_w, 100));
+
+        // Find max printable key width
+        size_t max_key = 0;
+        for (const auto& item : items) {
+            max_key = std::max(max_key, Console::printable_len(item.first));
+        }
+
+        // First pass: check natural max width before wrapping
+        size_t natural_max = 0;
+        for (const auto& item : items) {
+            size_t line_len = 1 + max_key + 3 + Console::printable_len(item.second);
+            natural_max = std::max(natural_max, line_len);
+        }
+
+        std::string header_title = " " + title + " ";
+        int header_len = static_cast<int>(Console::printable_len(header_title));
+        int w = std::max({width, std::min(static_cast<int>(natural_max) + 4, max_w), header_len + 6});
         if (w < 40) w = 40;
         int inner_w = w - 4;
+        int val_col_start = 1 + static_cast<int>(max_key) + 3; // " " + key + " : "
+        int val_max_w = std::max(16, inner_w - val_col_start);
+
+        std::vector<std::string> formatted_lines;
+        size_t actual_max = 0;
+        for (const auto& item : items) {
+            size_t key_len = Console::printable_len(item.first);
+            size_t pad = (max_key > key_len) ? (max_key - key_len) : 0;
+            std::vector<std::string> wrapped_vals = wrap_text(item.second, val_max_w);
+            for (size_t i = 0; i < wrapped_vals.size(); ++i) {
+                std::string line;
+                if (i == 0) {
+                    line = " " + item.first + std::string(pad, ' ') +
+                           Console::border(" : ") + wrapped_vals[i];
+                } else {
+                    line = std::string(val_col_start, ' ') + wrapped_vals[i];
+                }
+                actual_max = std::max(actual_max, Console::printable_len(line));
+                formatted_lines.push_back(std::move(line));
+            }
+        }
+
+        w = std::max({w, static_cast<int>(actual_max) + 4, header_len + 6});
+        inner_w = w - 4;
 
         // Top line with title embedded
-        std::string header_title = " " + title + " ";
         int line_left = 2;
-        int line_right = w - 2 - line_left - static_cast<int>(header_title.length());
+        int line_right = w - 2 - line_left - header_len;
         if (line_right < 2) line_right = 2;
 
         std::string top = Console::border("┌");
@@ -191,17 +229,8 @@ public:
 
         std::cout << top << "\n";
 
-        // Find max key width
-        size_t max_key = 0;
-        for (const auto& item : items) {
-            max_key = std::max(max_key, Console::printable_len(item.first));
-        }
-
-        for (const auto& item : items) {
-            std::ostringstream ss;
-            ss << " " << std::left << std::setw(static_cast<int>(max_key)) << item.first
-               << Console::border(" : ") << item.second;
-            print_box_line(ss.str(), inner_w);
+        for (const auto& line : formatted_lines) {
+            print_box_line(line, inner_w);
         }
 
         std::cout << bot << "\n\n" << std::flush;
@@ -214,13 +243,67 @@ public:
         bool is_success = true,
         int width = 76
     ) {
-        int w = std::min(width, Console::terminal_width(width));
-        if (w < 40) w = 40;
-        int inner_w = w - 4;
+        int term_w = Console::terminal_width(100);
+        int max_w = std::max(width, std::min(term_w, 100));
+
+        size_t max_key = 0;
+        for (const auto& item : items) {
+            max_key = std::max(max_key, Console::printable_len(item.first));
+        }
+
+        size_t natural_max = 0;
+        for (const auto& item : items) {
+            size_t line_len = 1 + max_key + 3 + Console::printable_len(item.second);
+            natural_max = std::max(natural_max, line_len);
+        }
 
         std::string header_title = " " + title + " ";
+        int header_len = static_cast<int>(Console::printable_len(header_title));
+        int w = std::max({width, std::min(static_cast<int>(natural_max) + 4, max_w), header_len + 6});
+        if (w < 40) w = 40;
+        int inner_w = w - 4;
+        int val_col_start = 1 + static_cast<int>(max_key) + 3;
+        int val_max_w = std::max(16, inner_w - val_col_start);
+
+        std::vector<std::string> formatted_lines;
+        size_t actual_max = 0;
+        for (const auto& item : items) {
+            size_t key_len = Console::printable_len(item.first);
+            size_t pad = (max_key > key_len) ? (max_key - key_len) : 0;
+            std::vector<std::string> wrapped_vals = wrap_text(item.second, val_max_w);
+            for (size_t i = 0; i < wrapped_vals.size(); ++i) {
+                std::string line;
+                if (i == 0) {
+                    line = " " + item.first + std::string(pad, ' ') +
+                           Console::border(" : ") + wrapped_vals[i];
+                } else {
+                    line = std::string(val_col_start, ' ') + wrapped_vals[i];
+                }
+                actual_max = std::max(actual_max, Console::printable_len(line));
+                formatted_lines.push_back(std::move(line));
+            }
+        }
+
+        w = std::max({w, static_cast<int>(actual_max) + 4, header_len + 6});
+        inner_w = w - 4;
+
+        std::vector<std::string> conclusion_lines;
+        if (!conclusion.empty()) {
+            int conc_max_w = std::max(20, inner_w - 3); // " ✦ " is 3 printable chars
+            std::vector<std::string> wrapped_conc = wrap_text(conclusion, conc_max_w);
+            for (size_t i = 0; i < wrapped_conc.size(); ++i) {
+                std::string prefix = (i == 0) ? "✦ " : "  ";
+                std::string c_line = " " + (is_success ? Console::success(prefix + wrapped_conc[i])
+                                                       : Console::warning(prefix + wrapped_conc[i]));
+                actual_max = std::max(actual_max, Console::printable_len(c_line));
+                conclusion_lines.push_back(std::move(c_line));
+            }
+            w = std::max(w, static_cast<int>(actual_max) + 4);
+            inner_w = w - 4;
+        }
+
         int line_left = 2;
-        int line_right = w - 2 - line_left - static_cast<int>(header_title.length());
+        int line_right = w - 2 - line_left - header_len;
         if (line_right < 2) line_right = 2;
 
         std::string top = Console::border("╭");
@@ -235,28 +318,73 @@ public:
 
         std::cout << "\n" << top << "\n";
 
-        size_t max_key = 0;
-        for (const auto& item : items) {
-            max_key = std::max(max_key, Console::printable_len(item.first));
+        for (const auto& line : formatted_lines) {
+            print_panel_line(line, inner_w);
         }
 
-        for (const auto& item : items) {
-            std::ostringstream ss;
-            ss << " " << std::left << std::setw(static_cast<int>(max_key)) << item.first
-               << Console::border(" : ") << item.second;
-            print_panel_line(ss.str(), inner_w);
-        }
-
-        if (!conclusion.empty()) {
+        if (!conclusion_lines.empty()) {
             std::cout << Console::border("│") << std::string(w - 2, ' ') << Console::border("│") << "\n";
-            std::string c_line = " " + (is_success ? Console::success("✦ " + conclusion) : Console::warning("✦ " + conclusion));
-            print_panel_line(c_line, inner_w);
+            for (const auto& c_line : conclusion_lines) {
+                print_panel_line(c_line, inner_w);
+            }
         }
 
         std::cout << bot << "\n\n" << std::flush;
     }
 
 private:
+    static std::vector<std::string> wrap_text(const std::string& text, int max_width) {
+        if (max_width <= 0 || static_cast<int>(Console::printable_len(text)) <= max_width) {
+            return {text};
+        }
+        bool has_ansi = (text.find('\033') != std::string::npos);
+        std::vector<std::string> lines;
+        std::istringstream words(text);
+        std::string word;
+        std::string current;
+
+        auto push_long_token = [&](const std::string& token) {
+            if (has_ansi || static_cast<int>(Console::printable_len(token)) <= max_width) {
+                current = token;
+                return;
+            }
+            std::string rem = token;
+            while (static_cast<int>(Console::printable_len(rem)) > max_width) {
+                // Prefer splitting after '/' within [max_width/2, max_width]
+                size_t split_pos = std::string::npos;
+                size_t search_limit = std::min(rem.size(), static_cast<size_t>(max_width));
+                size_t slash = rem.rfind('/', search_limit - 1);
+                if (slash != std::string::npos && slash >= static_cast<size_t>(max_width / 3)) {
+                    split_pos = slash + 1;
+                } else {
+                    split_pos = search_limit;
+                }
+                lines.push_back(rem.substr(0, split_pos));
+                rem = rem.substr(split_pos);
+            }
+            current = rem;
+        };
+
+        while (words >> word) {
+            if (current.empty()) {
+                push_long_token(word);
+            } else if (static_cast<int>(Console::printable_len(current) + 1 + Console::printable_len(word)) <= max_width) {
+                current += " " + word;
+            } else {
+                lines.push_back(current);
+                current.clear();
+                push_long_token(word);
+            }
+        }
+        if (!current.empty()) {
+            lines.push_back(current);
+        }
+        if (lines.empty()) {
+            lines.push_back(text);
+        }
+        return lines;
+    }
+
     static void print_panel_line(const std::string& content, int inner_w) {
         size_t p_len = Console::printable_len(content);
         std::cout << Console::border("│ ") << content;

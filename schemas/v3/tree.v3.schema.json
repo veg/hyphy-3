@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/tree.v3.schema.json",
+  "title": "HyPhy 3 ML/Ohmic Tree Engine Schema v3.0",
+  "description": "Standardized output schema for HyPhy 3 ML/Ohmic phylogenetic tree search, divide-and-conquer island optimization, and native polytomy resolution.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema_version",
+    "analysis",
+    "software",
+    "provenance",
+    "likelihoods",
+    "topology",
+    "divide_and_conquer",
+    "parameters"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri"
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^3\\.[0-9]+\\.[0-9]+$"
+    },
+    "analysis": {
+      "type": "object",
+      "required": ["id", "name", "version", "model", "taxa", "patterns", "runtime_seconds"],
+      "properties": {
+        "id": { "type": "string", "enum": ["tree"] },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "version": { "type": "string" },
+        "authors": { "type": "string" },
+        "contact": { "type": "string" },
+        "model": { "type": "string", "enum": ["GTR", "MG94"] },
+        "taxa": { "type": "integer", "minimum": 1 },
+        "patterns": { "type": "integer", "minimum": 1 },
+        "runtime_seconds": { "type": "number", "minimum": 0 }
+      }
+    },
+    "software": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "git_commit": { "type": "string" },
+        "build_type": { "type": "string" },
+        "compiler": { "type": "string" }
+      }
+    },
+    "provenance": {
+      "type": "object"
+    },
+    "likelihoods": {
+      "type": "object",
+      "required": ["initial_gtr", "optimized_gtr", "final"],
+      "properties": {
+        "initial_gtr": { "type": ["number", "null"] },
+        "optimized_gtr": { "type": ["number", "null"] },
+        "final": { "type": ["number", "null"] }
+      }
+    },
+    "topology": {
+      "type": "object",
+      "required": [
+        "initial_nodes",
+        "final_nodes",
+        "polytomies_retained",
+        "branches_collapsed",
+        "polytomies_resolved",
+        "newick"
+      ],
+      "properties": {
+        "initial_nodes": { "type": "integer" },
+        "final_nodes": { "type": "integer" },
+        "polytomies_retained": { "type": "integer" },
+        "branches_collapsed": { "type": "integer" },
+        "polytomies_resolved": { "type": "integer" },
+        "spr_moves_accepted": { "type": "integer" },
+        "newick": { "type": "string" }
+      }
+    },
+    "divide_and_conquer": {
+      "type": "object",
+      "required": ["enabled", "num_islands", "island_sizes", "island_spr_moves"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "num_islands": { "type": "integer" },
+        "island_sizes": {
+          "type": "array",
+          "items": { "type": "integer" }
+        },
+        "island_spr_moves": { "type": "integer" }
+      }
+    },
+    "parameters": {
+      "type": "object",
+      "required": ["gtr_rates"],
+      "properties": {
+        "gtr_rates": {
+          "type": "object",
+          "required": ["AC", "AT", "CG", "CT", "GT"],
+          "properties": {
+            "AC": { "type": ["number", "null"] },
+            "AT": { "type": ["number", "null"] },
+            "CG": { "type": ["number", "null"] },
+            "CT": { "type": ["number", "null"] },
+            "GT": { "type": ["number", "null"] }
+          }
+        },
+        "mg94_omega": { "type": ["number", "null"] }
+      }
+    }
+  }
+}
