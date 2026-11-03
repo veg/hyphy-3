@@ -175,115 +175,119 @@ if(HYPHY3_BUILD_TESTS)
     add_compile_definitions(HYPHY3_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_executable(hyphy_test tests/test_core.cpp)
     target_link_libraries(hyphy_test PRIVATE hyphy3_core)
-    add_test(NAME CoreTests COMMAND hyphy_test)
+    add_test(NAME CoreTests COMMAND hyphy_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_fel_test tests/test_fel.cpp)
     target_link_libraries(hyphy_fel_test PRIVATE hyphy3_core)
-    add_test(NAME FELTests COMMAND hyphy_fel_test)
+    add_test(NAME FELTests COMMAND hyphy_fel_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_fel_cd2_parity_test tests/test_fel_cd2_parity.cpp)
     target_link_libraries(hyphy_fel_cd2_parity_test PRIVATE hyphy3_core)
-    add_test(NAME CD2ParityTest COMMAND hyphy_fel_cd2_parity_test)
+    add_test(NAME CD2ParityTest COMMAND hyphy_fel_cd2_parity_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_fel_multi_dataset_test tests/test_fel_multi_dataset.cpp)
     target_link_libraries(hyphy_fel_multi_dataset_test PRIVATE hyphy3_core)
-    add_test(NAME MultiDatasetParityTest COMMAND hyphy_fel_multi_dataset_test)
+    add_test(NAME MultiDatasetParityTest COMMAND hyphy_fel_multi_dataset_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_meme_test tests/test_meme.cpp)
     target_link_libraries(hyphy_meme_test PRIVATE hyphy3_core)
-    add_test(NAME MEMEParityTest COMMAND hyphy_meme_test)
+    add_test(NAME MEMEParityTest COMMAND hyphy_meme_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_busted_test tests/test_busted.cpp)
     target_link_libraries(hyphy_busted_test PRIVATE hyphy3_core)
-    add_test(NAME BUSTEDTest COMMAND hyphy_busted_test)
+    add_test(NAME BUSTEDTest COMMAND hyphy_busted_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_busted_mh_test tests/test_busted_mh.cpp)
     target_link_libraries(hyphy_busted_mh_test PRIVATE hyphy3_core)
-    add_test(NAME BUSTEDMHTest COMMAND hyphy_busted_mh_test)
+    add_test(NAME BUSTEDMHTest COMMAND hyphy_busted_mh_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_cpp_autograd_test tests/test_cpp_autograd.cpp)
     target_link_libraries(hyphy_cpp_autograd_test PRIVATE hyphy3_core)
-    add_test(NAME CppAutogradTest COMMAND hyphy_cpp_autograd_test)
+    add_test(NAME CppAutogradTest COMMAND hyphy_cpp_autograd_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_absrel_test tests/test_absrel.cpp)
     target_link_libraries(hyphy_absrel_test PRIVATE hyphy3_core)
-    add_test(NAME ABSRELTest COMMAND hyphy_absrel_test)
+    add_test(NAME ABSRELTest COMMAND hyphy_absrel_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_relax_test tests/test_relax.cpp)
     target_link_libraries(hyphy_relax_test PRIVATE hyphy3_core)
-    add_test(NAME RELAXTest COMMAND hyphy_relax_test)
+    add_test(NAME RELAXTest COMMAND hyphy_relax_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_contrast_fel_test tests/test_contrast_fel.cpp)
     target_link_libraries(hyphy_contrast_fel_test PRIVATE hyphy3_core)
-    add_test(NAME ContrastFELTest COMMAND hyphy_contrast_fel_test)
+    add_test(NAME ContrastFELTest COMMAND hyphy_contrast_fel_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_fubar_test tests/test_fubar.cpp)
     target_link_libraries(hyphy_fubar_test PRIVATE hyphy3_core)
-    add_test(NAME FUBARTest COMMAND hyphy_fubar_test)
+    add_test(NAME FUBARTest COMMAND hyphy_fubar_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_prime_test tests/test_prime.cpp)
     target_link_libraries(hyphy_prime_test PRIVATE hyphy3_core)
-    add_test(NAME PRIMETest COMMAND hyphy_prime_test)
+    add_test(NAME PRIMETest COMMAND hyphy_prime_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_gard_test tests/test_gard.cpp)
     target_link_libraries(hyphy_gard_test PRIVATE hyphy3_core)
-    add_test(NAME GARDTest COMMAND hyphy_gard_test)
+    add_test(NAME GARDTest COMMAND hyphy_gard_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_slac_test tests/test_slac.cpp)
     target_link_libraries(hyphy_slac_test PRIVATE hyphy3_core)
-    add_test(NAME SLACTest COMMAND hyphy_slac_test)
+    add_test(NAME SLACTest COMMAND hyphy_slac_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_dfel_test tests/test_dfel.cpp)
     target_link_libraries(hyphy_dfel_test PRIVATE hyphy3_core)
-    add_test(NAME DirectionalFELTest COMMAND hyphy_dfel_test)
+    add_test(NAME DirectionalFELTest COMMAND hyphy_dfel_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_mss_test tests/test_mss.cpp)
     target_link_libraries(hyphy_mss_test PRIVATE hyphy3_core)
-    add_test(NAME MSSTest COMMAND hyphy_mss_test)
+    add_test(NAME MSSTest COMMAND hyphy_mss_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_ohmic_test tests/test_ohmic.cpp)
     target_link_libraries(hyphy_ohmic_test PRIVATE hyphy3_core)
-    add_test(NAME OhmicTest COMMAND hyphy_ohmic_test)
+    add_test(NAME OhmicTest COMMAND hyphy_ohmic_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_report_test tests/test_report.cpp)
     target_link_libraries(hyphy_report_test PRIVATE hyphy3_report)
-    add_test(NAME ReportTest COMMAND hyphy_report_test)
+    add_test(NAME ReportTest COMMAND hyphy_report_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_tree_engine_test tests/test_tree_engine.cpp)
     target_link_libraries(hyphy_tree_engine_test PRIVATE hyphy3_core)
-    add_test(NAME TreeEngineTest COMMAND hyphy_tree_engine_test)
+    add_test(NAME TreeEngineTest COMMAND hyphy_tree_engine_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_joint_align_test tests/test_joint_align.cpp)
     target_link_libraries(hyphy_joint_align_test PRIVATE hyphy3_core)
-    add_test(NAME JointAlignTest COMMAND hyphy_joint_align_test)
+    add_test(NAME JointAlignTest COMMAND hyphy_joint_align_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+    add_executable(hyphy_characterize_test tests/test_characterize.cpp)
+    target_link_libraries(hyphy_characterize_test PRIVATE hyphy3_core)
+    add_test(NAME CharacterizeTest COMMAND hyphy_characterize_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_expcm_test tests/test_expcm.cpp)
     target_link_libraries(hyphy_expcm_test PRIVATE hyphy3_core)
-    add_test(NAME ExpcmTest COMMAND hyphy_expcm_test)
+    add_test(NAME ExpcmTest COMMAND hyphy_expcm_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_expcm_optimizer_test tests/test_expcm_optimizer.cpp src/analyses/expcm_optimizer.cpp)
     target_link_libraries(hyphy_expcm_optimizer_test PRIVATE hyphy3_core)
-    add_test(NAME ExpcmOptimizerTest COMMAND hyphy_expcm_optimizer_test)
+    add_test(NAME ExpcmOptimizerTest COMMAND hyphy_expcm_optimizer_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_gradient_validation_test tests/test_gradient_validation.cpp src/analyses/expcm_optimizer.cpp)
     target_link_libraries(hyphy_gradient_validation_test PRIVATE hyphy3_core)
-    add_test(NAME GradientValidationTest COMMAND hyphy_gradient_validation_test)
+    add_test(NAME GradientValidationTest COMMAND hyphy_gradient_validation_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_optimizer_quick_test tests/test_optimizer_quick.cpp src/analyses/expcm_optimizer.cpp)
     target_link_libraries(hyphy_optimizer_quick_test PRIVATE hyphy3_core)
-    add_test(NAME OptimizerQuickTest COMMAND hyphy_optimizer_quick_test)
+    add_test(NAME OptimizerQuickTest COMMAND hyphy_optimizer_quick_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_phase4_persite_test tests/test_phase4_persite.cpp)
     target_link_libraries(hyphy_phase4_persite_test PRIVATE hyphy3_core)
-    add_test(NAME Phase4PersiteTest COMMAND hyphy_phase4_persite_test)
+    add_test(NAME Phase4PersiteTest COMMAND hyphy_phase4_persite_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_phase4_optimizer_test tests/test_phase4_optimizer.cpp src/analyses/persite_optimizer.cpp)
     target_link_libraries(hyphy_phase4_optimizer_test PRIVATE hyphy3_core)
-    add_test(NAME Phase4OptimizerTest COMMAND hyphy_phase4_optimizer_test)
+    add_test(NAME Phase4OptimizerTest COMMAND hyphy_phase4_optimizer_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_phase4_validation_test tests/test_phase4_validation.cpp src/analyses/persite_optimizer.cpp)
     target_link_libraries(hyphy_phase4_validation_test PRIVATE hyphy3_core)
-    add_test(NAME Phase4ValidationTest COMMAND hyphy_phase4_validation_test)
+    add_test(NAME Phase4ValidationTest COMMAND hyphy_phase4_validation_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_test(NAME HTMLReportEndToEndTest
         COMMAND ${CMAKE_COMMAND}

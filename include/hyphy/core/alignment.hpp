@@ -126,6 +126,12 @@ public:
                 if (first_space != std::string::npos) {
                     current_name = current_name.substr(0, first_space);
                 }
+            } else if (line[0] == '(') {
+                aln.embedded_tree_newick = line;
+                if (aln.embedded_tree_newick.back() != ';') {
+                    aln.embedded_tree_newick += ";";
+                }
+                break;
             } else {
                 current_seq += line;
             }
@@ -336,6 +342,127 @@ public:
         return aln;
     }
 
+    static bool is_phylip_header_line(const std::string& line, size_t& out_ntax, size_t& out_nchar) {
+        std::istringstream iss(line);
+        long long ntax = 0, nchar = 0;
+        if (!(iss >> ntax >> nchar)) return false;
+        if (ntax <= 0 || nchar <= 0) return false;
+        std::string rem;
+        if (iss >> rem) {
+            if (rem.size() > 2) return false;
+        }
+        out_ntax = static_cast<size_t>(ntax);
+        out_nchar = static_cast<size_t>(nchar);
+        return true;
+    }
+
+    static Alignment from_phylip(const std::string& filepath, std::shared_ptr<const GeneticCode> gcode = nullptr, bool as_nucleotide = false) {
+        Alignment aln;
+        std::string raw = read_file_or_gzip(filepath);
+        std::istringstream file(raw);
+        std::string line;
+        size_t ntax = 0, nchar = 0;
+        while (std::getline(file, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            while (!line.empty() && std::isspace(static_cast<unsigned char>(line.front()))) line.erase(line.begin());
+            if (line.empty()) continue;
+            if (is_phylip_header_line(line, ntax, nchar)) break;
+        }
+        if (ntax == 0 || nchar == 0) {
+            throw std::runtime_error("Invalid PHYLIP header in: " + filepath);
+        }
+
+        bool paml_sequential = false;
+        size_t interleaved_idx = 0;
+        while (std::getline(file, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            while (!line.empty() && std::isspace(static_cast<unsigned char>(line.front()))) line.erase(line.begin());
+            while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) line.pop_back();
+            if (line.empty()) continue;
+
+            if (aln.sequences.size() == ntax) {
+                auto lparen = line.find('(');
+                if (lparen != std::string::npos) {
+                    aln.embedded_tree_newick = line.substr(lparen);
+                    break;
+                }
+                bool only_digits_or_space = true;
+                for (char c : line) {
+                    if (!std::isdigit(static_cast<unsigned char>(c)) && !std::isspace(static_cast<unsigned char>(c))) {
+                        only_digits_or_space = false;
+                        break;
+                    }
+                }
+                if (only_digits_or_space) continue;
+            }
+
+            // Check if all sequences are complete
+            bool all_complete = (aln.sequences.size() == ntax);
+            if (all_complete) {
+                for (const auto& s : aln.sequences) {
+                    if (s.raw_seq.size() < nchar) { all_complete = false; break; }
+                }
+            }
+            if (all_complete) {
+                continue;
+            }
+
+            // In PAML sequential PHYLIP format, taxon names appear on their own line followed by 1+ sequence lines
+            if (paml_sequential && !aln.sequences.empty() && aln.sequences.back().raw_seq.size() < nchar) {
+                std::string seq;
+                for (char c : line) {
+                    if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.') {
+                        seq += (c == '.' ? '-' : c);
+                    }
+                }
+                aln.sequences.back().raw_seq += seq;
+                continue;
+            }
+
+            if (aln.sequences.size() < ntax) {
+                // Parse "<name> <seq>" or PAML sequential "<name>" alone on a line
+                size_t sp = 0;
+                while (sp < line.size() && !std::isspace(static_cast<unsigned char>(line[sp]))) sp++;
+                std::string name = line.substr(0, sp);
+                std::string seq;
+                for (size_t i = sp; i < line.size(); ++i) {
+                    char c = line[i];
+                    if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.') {
+                        seq += (c == '.' ? '-' : c);
+                    }
+                }
+                if (!name.empty() && seq.empty()) {
+                    paml_sequential = true;
+                    aln.add_sequence(name, "");
+                } else if (!name.empty() && !seq.empty()) {
+                    aln.add_sequence(name, seq);
+                }
+            } else {
+                // Continuation line (interleaved or sequential)
+                std::string seq;
+                for (char c : line) {
+                    if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.') {
+                        seq += (c == '.' ? '-' : c);
+                    }
+                }
+                if (!seq.empty()) {
+                    while (interleaved_idx < ntax && aln.sequences[interleaved_idx].raw_seq.size() >= nchar) {
+                        interleaved_idx = (interleaved_idx + 1) % ntax;
+                    }
+                    aln.sequences[interleaved_idx].raw_seq += seq;
+                    interleaved_idx = (interleaved_idx + 1) % ntax;
+                }
+            }
+        }
+
+        if (as_nucleotide) {
+            aln.finalize_nucleotide();
+        } else {
+            aln.finalize(gcode);
+        }
+        return aln;
+    }
+
     static Alignment from_fasta_nucleotide(const std::string& filepath) {
         return from_fasta(filepath, nullptr, true);
     }
@@ -349,6 +476,7 @@ public:
         std::istringstream file(raw);
         std::string line;
         while (std::getline(file, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
             while (!line.empty() && std::isspace(static_cast<unsigned char>(line.front()))) line.erase(line.begin());
             if (line.empty()) continue;
             if (line[0] == '#') {
@@ -356,6 +484,10 @@ public:
             }
             if (line[0] == '>') {
                 return from_fasta(filepath, gcode);
+            }
+            size_t ntax = 0, nchar = 0;
+            if (is_phylip_header_line(line, ntax, nchar)) {
+                return from_phylip(filepath, gcode, false);
             }
             std::string upper = line;
             for (auto& c : upper) c = std::toupper(static_cast<unsigned char>(c));
@@ -371,6 +503,7 @@ public:
         std::istringstream file(raw);
         std::string line;
         while (std::getline(file, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
             while (!line.empty() && std::isspace(static_cast<unsigned char>(line.front()))) line.erase(line.begin());
             if (line.empty()) continue;
             if (line[0] == '#') {
@@ -378,6 +511,10 @@ public:
             }
             if (line[0] == '>') {
                 return from_fasta(filepath, nullptr, true);
+            }
+            size_t ntax = 0, nchar = 0;
+            if (is_phylip_header_line(line, ntax, nchar)) {
+                return from_phylip(filepath, nullptr, true);
             }
             std::string upper = line;
             for (auto& c : upper) c = std::toupper(static_cast<unsigned char>(c));

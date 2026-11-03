@@ -42,8 +42,8 @@ void print_hyphy3_usage(const char* prog) {
               << Console::accent("<analysis> | -u <unaligned.fa> | -a <alignment.nex>") << " "
               << Console::muted("[OPTIONS]") << "\n\n";
 
-    std::cout << Console::bold("One-Button End-to-End Characterization:") << "\n"
-              << "  " << Console::brand("characterize ") << "  Complete unaligned/aligned evolutionary & selection atlas (aliases: auto, omni, or pass -u/-a directly)\n\n";
+    std::cout << Console::bold("Unified Joint Alignment, Network & Selection (WALRUS):") << "\n"
+              << "  " << Console::brand("walrus       ") << "  Wheatstone Alignment and Likelihood Rate Unification for Selection (aliases: characterize, auto, or pass -u/-a directly)\n\n";
 
     std::cout << Console::bold("Available Analyses:") << "\n"
               << "  " << Console::brand("fel          ") << "  Fixed Effects Likelihood (site-by-site selection)\n"
@@ -122,7 +122,7 @@ int main(int argc, char* argv[]) {
     int sub_argc = static_cast<int>(sub_argv.size());
 
     try {
-        if (cmd == "characterize" || cmd == "auto" || cmd == "omni" || cmd == "one-button") {
+        if (cmd == "walrus" || cmd == "WALRUS" || cmd == "characterize" || cmd == "auto" || cmd == "omni" || cmd == "one-button") {
             return run_characterize(sub_argc, sub_argv.data());
         } else if (cmd == "fel") {
             return run_fel(sub_argc, sub_argv.data());

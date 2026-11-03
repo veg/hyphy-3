@@ -352,11 +352,6 @@ public:
                 return poly_node;
             }
 
-            Matrix L_unnorm = Matrix(deg.asDiagonal()) - W;
-            L_unnorm = 0.5 * (L_unnorm + L_unnorm.transpose());
-            Eigen::SelfAdjointEigenSolver<Matrix> es_un(L_unnorm);
-            Eigen::SelfAdjointEigenSolver<Matrix> es_G(G);
-
             std::vector<std::vector<size_t>> orders;
             auto add_vec_order = [&](const Vector& v) {
                 std::vector<size_t> ord(m);
@@ -368,87 +363,148 @@ public:
             };
             add_vec_order(deg);
             add_vec_order(G_anc.rowwise().sum());
-            if (es_G.info() == Eigen::Success) {
-                add_vec_order(es_G.eigenvectors().col(static_cast<Eigen::Index>(m - 1)));
-                add_vec_order(es_G.eigenvectors().col(static_cast<Eigen::Index>(m - 2)));
-            }
-            if (es_un.info() == Eigen::Success) {
-                add_vec_order(es_un.eigenvectors().col(1));
-                if (m >= 4) add_vec_order(es_un.eigenvectors().col(2));
+            if (m <= 64) {
+                Matrix L_unnorm = Matrix(deg.asDiagonal()) - W;
+                L_unnorm = 0.5 * (L_unnorm + L_unnorm.transpose());
+                Eigen::SelfAdjointEigenSolver<Matrix> es_un(L_unnorm);
+                Eigen::SelfAdjointEigenSolver<Matrix> es_G(G);
+                if (es_G.info() == Eigen::Success) {
+                    add_vec_order(es_G.eigenvectors().col(static_cast<Eigen::Index>(m - 1)));
+                    add_vec_order(es_G.eigenvectors().col(static_cast<Eigen::Index>(m - 2)));
+                }
+                if (es_un.info() == Eigen::Success) {
+                    add_vec_order(es_un.eigenvectors().col(1));
+                    if (m >= 4) add_vec_order(es_un.eigenvectors().col(2));
+                }
+            } else {
+                // Fast O(m^2) deflated power iteration for top-2 modes of G when m > 64
+                Vector v1 = G.rowwise().sum();
+                if (v1.norm() > 1e-12) v1.normalize();
+                for (int it = 0; it < 10; ++it) {
+                    v1 = G * v1;
+                    Scalar nrm = v1.norm();
+                    if (nrm > 1e-12) v1 /= nrm;
+                }
+                add_vec_order(v1);
+                Vector v2 = G_anc.rowwise().sum();
+                v2 -= v1.dot(v2) * v1;
+                if (v2.norm() > 1e-12) v2.normalize();
+                for (int it = 0; it < 10; ++it) {
+                    v2 = G * v2;
+                    v2 -= v1.dot(v2) * v1;
+                    Scalar nrm = v2.norm();
+                    if (nrm > 1e-12) v2 /= nrm;
+                }
+                add_vec_order(v2);
             }
             add_vec_order(inv_sqrt_deg.asDiagonal() * es_nm.eigenvectors().col(1));
             if (m >= 4) {
                 add_vec_order(inv_sqrt_deg.asDiagonal() * es_nm.eigenvectors().col(2));
             }
 
-            // Evaluate candidate bipartitions (L_idx, R_idx) along the spectral modes using
-            // Grounded Transfer-Impedance Monophyly Margin & Cross-Cut Stem Drop:
+            // Evaluate candidate bipartitions (L_idx, R_idx) along the spectral modes in O(m^2)
+            // using incremental prefix/suffix max and sum tables:
             Scalar best_score = -1e18;
             std::vector<size_t> grp1, grp2;
 
+            Scalar total_ga_sum = 0.0;
+            for (size_t i = 0; i < m; ++i) {
+                for (size_t j = i + 1; j < m; ++j) {
+                    total_ga_sum += G_anc(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j));
+                }
+            }
+
+            Matrix pref_max_G(m, m + 1);
+            Matrix suff_max_G(m, m + 1);
+            Matrix suff_max_GA(m, m + 1);
+            std::vector<Scalar> sum_in_L(m + 1, 0.0);
+            std::vector<Scalar> sum_in_R(m + 1, 0.0);
+
             for (const auto& ord : orders) {
+                for (size_t p = 0; p < m; ++p) {
+                    Eigen::Index up = static_cast<Eigen::Index>(ord[p]);
+                    Scalar cur_pg = -1e18;
+                    pref_max_G(static_cast<Eigen::Index>(p), 0) = -1e18;
+                    for (size_t q = 0; q < m; ++q) {
+                        if (q != p) {
+                            cur_pg = std::max(cur_pg, G(up, static_cast<Eigen::Index>(ord[q])));
+                        }
+                        pref_max_G(static_cast<Eigen::Index>(p), static_cast<Eigen::Index>(q + 1)) = cur_pg;
+                    }
+                    Scalar cur_sg = -1e18;
+                    Scalar cur_sga = -1e18;
+                    suff_max_G(static_cast<Eigen::Index>(p), static_cast<Eigen::Index>(m)) = -1e18;
+                    suff_max_GA(static_cast<Eigen::Index>(p), static_cast<Eigen::Index>(m)) = -1e18;
+                    for (size_t q = m; q > 0; --q) {
+                        size_t qq = q - 1;
+                        Eigen::Index uq = static_cast<Eigen::Index>(ord[qq]);
+                        if (qq != p) {
+                            cur_sg = std::max(cur_sg, G(up, uq));
+                        }
+                        cur_sga = std::max(cur_sga, G_anc(up, uq));
+                        suff_max_G(static_cast<Eigen::Index>(p), static_cast<Eigen::Index>(qq)) = cur_sg;
+                        suff_max_GA(static_cast<Eigen::Index>(p), static_cast<Eigen::Index>(qq)) = cur_sga;
+                    }
+                }
+
+                sum_in_L[0] = 0.0;
+                for (size_t k = 1; k <= m; ++k) {
+                    Scalar add_l = 0.0;
+                    Eigen::Index uk = static_cast<Eigen::Index>(ord[k - 1]);
+                    for (size_t q = 0; q + 1 < k; ++q) {
+                        add_l += G_anc(uk, static_cast<Eigen::Index>(ord[q]));
+                    }
+                    sum_in_L[k] = sum_in_L[k - 1] + add_l;
+                }
+                sum_in_R[m] = 0.0;
+                for (size_t k = m; k > 0; --k) {
+                    size_t kk = k - 1;
+                    Scalar add_r = 0.0;
+                    Eigen::Index uk = static_cast<Eigen::Index>(ord[kk]);
+                    for (size_t q = kk + 1; q < m; ++q) {
+                        add_r += G_anc(uk, static_cast<Eigen::Index>(ord[q]));
+                    }
+                    sum_in_R[kk] = sum_in_R[k] + add_r;
+                }
+
                 for (size_t k = 1; k < m; ++k) {
                     if (anchor_indices.empty() && (k == 1 || k == m - 1) && m >= 4) {
                         continue;
                     }
-                    std::vector<size_t> L_idx(ord.begin(), ord.begin() + k);
-                    std::vector<size_t> R_idx(ord.begin() + k, ord.end());
+                    size_t nL = k;
+                    size_t nR = m - k;
+                    Eigen::Index ek = static_cast<Eigen::Index>(k);
 
-                    Scalar sum_cross = 0.0, max_cross = -1e18;
-                    for (size_t l : L_idx) {
-                        for (size_t r : R_idx) {
-                            Scalar g = G_anc(static_cast<Eigen::Index>(l), static_cast<Eigen::Index>(r));
-                            sum_cross += g;
-                            if (g > max_cross) max_cross = g;
-                        }
+                    Scalar sum_in = sum_in_L[k] + sum_in_R[k];
+                    Scalar sum_cross = std::max<Scalar>(0.0, total_ga_sum - sum_in);
+                    Scalar mean_cross = sum_cross / static_cast<Scalar>(nL * nR);
+
+                    Scalar max_cross = -1e18;
+                    for (size_t p = 0; p < k; ++p) {
+                        max_cross = std::max(max_cross, suff_max_GA(static_cast<Eigen::Index>(p), ek));
                     }
-                    Scalar mean_cross = sum_cross / static_cast<Scalar>(L_idx.size() * R_idx.size());
 
                     Scalar min_node_margin = 1e18;
                     Scalar sum_node_margin = 0.0;
-                    if (L_idx.size() >= 2) {
-                        for (size_t l : L_idx) {
-                            Scalar max_in = -1e18, max_out = -1e18;
-                            for (size_t l2 : L_idx) {
-                                if (l2 != l) max_in = std::max(max_in, G(static_cast<Eigen::Index>(l), static_cast<Eigen::Index>(l2)));
-                            }
-                            for (size_t r : R_idx) {
-                                max_out = std::max(max_out, G(static_cast<Eigen::Index>(l), static_cast<Eigen::Index>(r)));
-                            }
-                            Scalar marg = max_in - max_out;
+                    if (nL >= 2) {
+                        for (size_t p = 0; p < k; ++p) {
+                            Eigen::Index ep = static_cast<Eigen::Index>(p);
+                            Scalar marg = pref_max_G(ep, ek) - suff_max_G(ep, ek);
                             min_node_margin = std::min(min_node_margin, marg);
                             sum_node_margin += marg;
                         }
                     }
-                    if (R_idx.size() >= 2) {
-                        for (size_t r : R_idx) {
-                            Scalar max_in = -1e18, max_out = -1e18;
-                            for (size_t r2 : R_idx) {
-                                if (r2 != r) max_in = std::max(max_in, G(static_cast<Eigen::Index>(r), static_cast<Eigen::Index>(r2)));
-                            }
-                            for (size_t l : L_idx) {
-                                max_out = std::max(max_out, G(static_cast<Eigen::Index>(l), static_cast<Eigen::Index>(r)));
-                            }
-                            Scalar marg = max_in - max_out;
+                    if (nR >= 2) {
+                        for (size_t p = k; p < m; ++p) {
+                            Eigen::Index ep = static_cast<Eigen::Index>(p);
+                            Scalar marg = suff_max_G(ep, ek) - pref_max_G(ep, ek);
                             min_node_margin = std::min(min_node_margin, marg);
                             sum_node_margin += marg;
                         }
                     }
                     Scalar mean_node_margin = sum_node_margin / static_cast<Scalar>(m);
 
-                    Scalar sum_in = 0.0, cnt_in = 0.0;
-                    for (size_t i = 0; i < L_idx.size(); ++i) {
-                        for (size_t j = i + 1; j < L_idx.size(); ++j) {
-                            sum_in += G_anc(static_cast<Eigen::Index>(L_idx[i]), static_cast<Eigen::Index>(L_idx[j]));
-                            cnt_in += 1.0;
-                        }
-                    }
-                    for (size_t i = 0; i < R_idx.size(); ++i) {
-                        for (size_t j = i + 1; j < R_idx.size(); ++j) {
-                            sum_in += G_anc(static_cast<Eigen::Index>(R_idx[i]), static_cast<Eigen::Index>(R_idx[j]));
-                            cnt_in += 1.0;
-                        }
-                    }
+                    Scalar cnt_in = static_cast<Scalar>(nL * (nL - 1) / 2 + nR * (nR - 1) / 2);
                     Scalar mean_in = (cnt_in > 0.0) ? (sum_in / cnt_in) : 0.0;
                     Scalar stem_gap = mean_in - mean_cross;
 
@@ -457,8 +513,8 @@ public:
                         best_score = score;
                         grp1.clear();
                         grp2.clear();
-                        for (size_t idx : L_idx) grp1.push_back(indices[idx]);
-                        for (size_t idx : R_idx) grp2.push_back(indices[idx]);
+                        for (size_t p = 0; p < k; ++p) grp1.push_back(indices[ord[p]]);
+                        for (size_t p = k; p < m; ++p) grp2.push_back(indices[ord[p]]);
                     }
                 }
             }
@@ -1280,7 +1336,8 @@ public:
     static std::optional<SPRMoveResult> apply_spr_move(
         const Tree& orig,
         int32_t u,
-        int32_t v
+        int32_t v,
+        bool reuse_collapsed_parent = true
     ) {
         if (u == orig.root_id || v == orig.root_id) return std::nullopt;
         if (is_in_subtree(orig, v, u)) return std::nullopt;
@@ -1327,7 +1384,7 @@ public:
         if (pv == INVALID_INDEX) return std::nullopt;
 
         int32_t w = -1;
-        if (tree.nodes[p].parent_id == INVALID_INDEX && tree.nodes[p].children.empty() && p != tree.root_id) {
+        if (reuse_collapsed_parent && tree.nodes[p].parent_id == INVALID_INDEX && tree.nodes[p].children.empty() && p != tree.root_id) {
             w = p; // Reuse detached node
         } else {
             w = static_cast<int32_t>(tree.nodes.size());

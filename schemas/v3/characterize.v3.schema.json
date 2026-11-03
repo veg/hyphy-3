@@ -1,0 +1,590 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hyphy.org/schemas/v3/characterize.v3.schema.json",
+  "title": "HyPhy 3 characterize (WALRUS) unified JSON output",
+  "description": "JSON Schema (2020-12) for the unified output of `hyphy3 characterize` (WALRUS: Workflow for Alignment, Lineage, Recombination, and Unified Selection). Site and codon indices are 1-based.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "alignment_and_network",
+    "analysis",
+    "branch_profiles",
+    "clade_macro_regime",
+    "coevolution_pairs",
+    "compositional_audit",
+    "gene_wide_selection",
+    "input_admission_audit",
+    "mutational_context_alert",
+    "recombination_bridges",
+    "site_atlas",
+    "spatial_domains",
+    "summary_counts",
+    "synonymous_constraint_islands"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "const": "characterize" },
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "schema_version": { "type": "string" },
+        "genetic_code": { "type": "string" },
+        "input_mode": { "type": "string", "enum": ["aligned", "unaligned"] },
+        "tree_source": { "type": "string" },
+        "p_value_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "fdr_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "runtime_seconds": { "type": "number", "minimum": 0 }
+      },
+      "required": [
+        "id",
+        "name",
+        "version",
+        "schema_version",
+        "genetic_code",
+        "input_mode",
+        "tree_source",
+        "p_value_threshold",
+        "fdr_threshold",
+        "runtime_seconds"
+      ]
+    },
+    "input_admission_audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "total_input_sequences": { "type": "integer", "minimum": 0 },
+        "admitted_sequences": { "type": "integer", "minimum": 0 },
+        "rescued_frame_or_strand": { "type": "integer", "minimum": 0 },
+        "quarantined_sequences": { "type": "integer", "minimum": 0 },
+        "median_pairwise_z": { "type": "number" },
+        "median_aa_identity": { "type": "number", "minimum": 0, "maximum": 1 },
+        "taxa": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "status": { "type": "string", "enum": ["Admitted", "Rescued", "Quarantined"] },
+              "reason": { "type": "string" },
+              "frame_offset": { "type": "integer", "minimum": 0, "maximum": 2 },
+              "reverse_complemented": { "type": "boolean" },
+              "raw_nt_length": { "type": "integer", "minimum": 0 },
+              "codon_length": { "type": "integer", "minimum": 0 },
+              "internal_stops_frame0": { "type": "integer", "minimum": 0 },
+              "max_homology_z": { "type": "number" },
+              "max_aa_identity": { "type": "number", "minimum": 0, "maximum": 1 }
+            },
+            "required": [
+              "name",
+              "status",
+              "reason",
+              "frame_offset",
+              "reverse_complemented",
+              "raw_nt_length",
+              "codon_length",
+              "internal_stops_frame0",
+              "max_homology_z",
+              "max_aa_identity"
+            ]
+          }
+        }
+      },
+      "required": [
+        "total_input_sequences",
+        "admitted_sequences",
+        "rescued_frame_or_strand",
+        "quarantined_sequences",
+        "median_pairwise_z",
+        "median_aa_identity",
+        "taxa"
+      ]
+    },
+    "alignment_and_network": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "num_taxa": { "type": "integer", "minimum": 3 },
+        "num_codons": { "type": "integer", "minimum": 1 },
+        "total_gap_codons": { "type": "integer", "minimum": 0 },
+        "mg94_sub_log_l": { "type": "number" },
+        "branch_indel_events": { "type": "integer", "minimum": 0 },
+        "branch_indel_codons": { "type": "integer", "minimum": 0 },
+        "branch_indel_log_l": { "type": "number" },
+        "option1_joint_log_l": { "type": "number" },
+        "option3_loto_cv_log_l": { "type": "number" },
+        "option5_mean_column_posterior": { "type": "number", "minimum": 0, "maximum": 1 },
+        "option5_min_column_posterior": { "type": "number", "minimum": 0, "maximum": 1 },
+        "coupled_spr_moves_accepted": { "type": "integer", "minimum": 0 },
+        "wheatstone_bridges": { "type": "integer", "minimum": 0 },
+        "polytomy_busbars": { "type": "integer", "minimum": 0 },
+        "tree_newick": { "type": "string" },
+        "extended_newick": { "type": "string" }
+      },
+      "required": [
+        "num_taxa",
+        "num_codons",
+        "total_gap_codons",
+        "mg94_sub_log_l",
+        "branch_indel_events",
+        "branch_indel_codons",
+        "branch_indel_log_l",
+        "option1_joint_log_l",
+        "option3_loto_cv_log_l",
+        "option5_mean_column_posterior",
+        "option5_min_column_posterior",
+        "coupled_spr_moves_accepted",
+        "wheatstone_bridges",
+        "polytomy_busbars",
+        "tree_newick",
+        "extended_newick"
+      ]
+    },
+    "recombination_bridges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "clade_u": { "type": "string" },
+          "target_v": { "type": "string" },
+          "conductance": { "type": "number" },
+          "peak_start_codon": { "type": "integer", "minimum": 1 },
+          "peak_end_codon": { "type": "integer", "minimum": 1 },
+          "segment_delta_log_l": { "type": "number" },
+          "p_value": { "type": "number", "minimum": 0, "maximum": 1 },
+          "routed_to_spr_tree": { "type": "boolean" }
+        },
+        "required": [
+          "clade_u",
+          "target_v",
+          "conductance",
+          "peak_start_codon",
+          "peak_end_codon",
+          "segment_delta_log_l",
+          "p_value",
+          "routed_to_spr_tree"
+        ]
+      }
+    },
+    "compositional_audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "is_heterogeneous": { "type": "boolean" },
+        "chi2_overall": { "type": "number", "minimum": 0 },
+        "p_value_overall": { "type": "number", "minimum": 0, "maximum": 1 },
+        "chi2_cp3": { "type": "number", "minimum": 0 },
+        "p_value_cp3": { "type": "number", "minimum": 0, "maximum": 1 },
+        "directional_drift_active": { "type": "boolean" },
+        "chosen_root_branch": { "type": "string" },
+        "chosen_root_weight": { "type": "number" }
+      },
+      "required": [
+        "is_heterogeneous",
+        "chi2_overall",
+        "p_value_overall",
+        "chi2_cp3",
+        "p_value_cp3",
+        "directional_drift_active",
+        "chosen_root_branch",
+        "chosen_root_weight"
+      ]
+    },
+    "gene_wide_selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "omega_classes": {
+          "type": "array",
+          "items": { "type": "number", "minimum": 0 },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "omega_weights": {
+          "type": "array",
+          "items": { "type": "number", "minimum": 0, "maximum": 1 },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "error_sink_omega": { "type": "number", "minimum": 0 },
+        "error_sink_weight": { "type": "number", "minimum": 0, "maximum": 1 },
+        "unconstrained_log_l": { "type": "number" },
+        "null_log_l": { "type": "number" },
+        "lrt": { "type": "number", "minimum": 0 },
+        "p_value": { "type": "number", "minimum": 0, "maximum": 1 },
+        "has_positive_selection": { "type": "boolean" }
+      },
+      "required": [
+        "omega_classes",
+        "omega_weights",
+        "error_sink_omega",
+        "error_sink_weight",
+        "unconstrained_log_l",
+        "null_log_l",
+        "lrt",
+        "p_value",
+        "has_positive_selection"
+      ]
+    },
+    "clade_macro_regime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "triggered": { "type": "boolean" },
+        "partition_source": { "type": "string" },
+        "test_regime_label": { "type": "string" },
+        "reference_regime_label": { "type": "string" },
+        "num_test_branches": { "type": "integer", "minimum": 0 },
+        "num_reference_branches": { "type": "integer", "minimum": 0 },
+        "clade_relax_k": { "type": "number", "minimum": 0 },
+        "clade_relax_lrt": { "type": "number", "minimum": 0 },
+        "clade_relax_delta_bic": { "type": "number" },
+        "clade_relax_p_value": { "type": "number", "minimum": 0, "maximum": 1 },
+        "clade_relax_call": { "type": "string" },
+        "contrast_fel_differing_sites": { "type": "integer", "minimum": 0 }
+      },
+      "required": [
+        "triggered",
+        "partition_source",
+        "test_regime_label",
+        "reference_regime_label",
+        "num_test_branches",
+        "num_reference_branches",
+        "clade_relax_k",
+        "clade_relax_lrt",
+        "clade_relax_delta_bic",
+        "clade_relax_p_value",
+        "clade_relax_call",
+        "contrast_fel_differing_sites"
+      ]
+    },
+    "spatial_domains": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "start_codon": { "type": "integer", "minimum": 1 },
+          "end_codon": { "type": "integer", "minimum": 1 },
+          "domain_type": { "type": "string" },
+          "mean_alpha": { "type": "number", "minimum": 0 },
+          "mean_beta": { "type": "number", "minimum": 0 },
+          "mean_omega": { "type": "number", "minimum": 0 },
+          "mean_gap_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
+          "mean_n_eff": { "type": "number", "minimum": 1 }
+        },
+        "required": [
+          "start_codon",
+          "end_codon",
+          "domain_type",
+          "mean_alpha",
+          "mean_beta",
+          "mean_omega",
+          "mean_gap_fraction",
+          "mean_n_eff"
+        ]
+      }
+    },
+    "synonymous_constraint_islands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "start_codon": { "type": "integer", "minimum": 1 },
+          "end_codon": { "type": "integer", "minimum": 1 },
+          "mean_alpha": { "type": "number", "minimum": 0 },
+          "gene_mean_alpha": { "type": "number", "minimum": 0 },
+          "suppression_ratio": { "type": "number", "minimum": 0 },
+          "z_score": { "type": "number" },
+          "p_value": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "required": [
+          "start_codon",
+          "end_codon",
+          "mean_alpha",
+          "gene_mean_alpha",
+          "suppression_ratio",
+          "z_score",
+          "p_value"
+        ]
+      }
+    },
+    "mutational_context_alert": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "triggered": { "type": "boolean" },
+        "num_selected_sites_evaluated": { "type": "integer", "minimum": 0 },
+        "cpg_driven_selected_sites": { "type": "integer", "minimum": 0 },
+        "apobec_driven_selected_sites": { "type": "integer", "minimum": 0 },
+        "cpg_enrichment_fold": { "type": "number", "minimum": 0 },
+        "cpg_fisher_p": { "type": "number", "minimum": 0, "maximum": 1 },
+        "flagged_cpg_sites": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+        "flagged_apobec_sites": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+        "alert_summary": { "type": "string" }
+      },
+      "required": [
+        "triggered",
+        "num_selected_sites_evaluated",
+        "cpg_driven_selected_sites",
+        "apobec_driven_selected_sites",
+        "cpg_enrichment_fold",
+        "cpg_fisher_p",
+        "flagged_cpg_sites",
+        "flagged_apobec_sites",
+        "alert_summary"
+      ]
+    },
+    "coevolution_pairs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "site_i": { "type": "integer", "minimum": 1 },
+          "site_j": { "type": "integer", "minimum": 1 },
+          "shared_branches": { "type": "number", "minimum": 0 },
+          "expected_shared": { "type": "number", "minimum": 0 },
+          "cosine_similarity": { "type": "number", "minimum": -1, "maximum": 1 },
+          "p_value": { "type": "number", "minimum": 0, "maximum": 1 },
+          "bh_q_value": { "type": "number", "minimum": 0, "maximum": 1 },
+          "top_co_mutating_branches": { "type": "string" }
+        },
+        "required": [
+          "site_i",
+          "site_j",
+          "shared_branches",
+          "expected_shared",
+          "cosine_similarity",
+          "p_value",
+          "bh_q_value",
+          "top_co_mutating_branches"
+        ]
+      }
+    },
+    "branch_profiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "branch_name": { "type": "string" },
+          "is_leaf": { "type": "boolean" },
+          "branch_length_subs": { "type": "number", "minimum": 0 },
+          "compositional_regime": { "type": "string" },
+          "directional_weights": {
+            "type": "array",
+            "items": { "type": "number", "minimum": 0, "maximum": 1 },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "gc_cp3": { "type": "number", "minimum": 0, "maximum": 1 },
+          "macro_regime": { "type": "string" },
+          "omega_bg": { "type": "number", "minimum": 0 },
+          "omega_plus": { "type": "number", "minimum": 0 },
+          "weight_plus": { "type": "number", "minimum": 0, "maximum": 1 },
+          "absrel_lrt": { "type": "number", "minimum": 0 },
+          "absrel_p_value": { "type": "number", "minimum": 0, "maximum": 1 },
+          "absrel_holm_p": { "type": "number", "minimum": 0, "maximum": 1 },
+          "absrel_bh_q": { "type": "number", "minimum": 0, "maximum": 1 },
+          "relax_k": { "type": "number", "minimum": 0 },
+          "relax_lrt": { "type": "number", "minimum": 0 },
+          "relax_p_value": { "type": "number", "minimum": 0, "maximum": 1 },
+          "relax_bh_q": { "type": "number", "minimum": 0, "maximum": 1 },
+          "relax_call": { "type": "string" },
+          "core_nonsyn_expected": { "type": "number", "minimum": 0 },
+          "core_nonsyn_observed": { "type": "number", "minimum": 0 },
+          "lof_bayes_factor": { "type": "number", "minimum": 0 },
+          "lof_p_value": { "type": "number", "minimum": 0, "maximum": 1 },
+          "lof_flagged": { "type": "boolean" },
+          "core_invaded_sites": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+          "episodic_site_count": { "type": "integer", "minimum": 0 }
+        },
+        "required": [
+          "branch_name",
+          "is_leaf",
+          "branch_length_subs",
+          "compositional_regime",
+          "directional_weights",
+          "gc_cp3",
+          "macro_regime",
+          "omega_bg",
+          "omega_plus",
+          "weight_plus",
+          "absrel_lrt",
+          "absrel_p_value",
+          "absrel_holm_p",
+          "absrel_bh_q",
+          "relax_k",
+          "relax_lrt",
+          "relax_p_value",
+          "relax_bh_q",
+          "relax_call",
+          "core_nonsyn_expected",
+          "core_nonsyn_observed",
+          "lof_bayes_factor",
+          "lof_p_value",
+          "lof_flagged",
+          "core_invaded_sites",
+          "episodic_site_count"
+        ]
+      }
+    },
+    "site_atlas": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "site": { "type": "integer", "minimum": 1 },
+          "column_homology_posterior": { "type": "number", "minimum": 0, "maximum": 1 },
+          "gap_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
+          "in_indel_window": { "type": "boolean" },
+          "ensemble_paths_evaluated": { "type": "integer", "minimum": 1 },
+          "active_topology_label": { "type": "string" },
+          "spatial_domain": { "type": "string" },
+          "in_synonymous_island": { "type": "boolean" },
+          "alpha": { "type": "number", "minimum": 0 },
+          "beta_pervasive": { "type": "number", "minimum": 0 },
+          "fel_lrt": { "type": "number", "minimum": 0 },
+          "fel_p_value": { "type": "number", "minimum": 0, "maximum": 1 },
+          "fel_bh_q": { "type": "number", "minimum": 0, "maximum": 1 },
+          "dfel_lrt": { "type": "number", "minimum": 0 },
+          "dfel_p_value": { "type": "number", "minimum": 0, "maximum": 1 },
+          "dfel_bh_q": { "type": "number", "minimum": 0, "maximum": 1 },
+          "beta_minus": { "type": "number", "minimum": 0 },
+          "beta_plus": { "type": "number", "minimum": 0 },
+          "weight_plus": { "type": "number", "minimum": 0, "maximum": 1 },
+          "meme_lrt": { "type": "number", "minimum": 0 },
+          "meme_p_value": { "type": "number", "minimum": 0, "maximum": 1 },
+          "meme_bh_q": { "type": "number", "minimum": 0, "maximum": 1 },
+          "meme_polished": { "type": "boolean" },
+          "num_episodic_branches": { "type": "integer", "minimum": 0 },
+          "top_episodic_branches": { "type": "array", "items": { "type": "string" } },
+          "max_branch_ebf": { "type": "number", "minimum": 0 },
+          "beta_reference": { "type": "number", "minimum": 0 },
+          "beta_test": { "type": "number", "minimum": 0 },
+          "contrast_fel_lrt": { "type": "number", "minimum": 0 },
+          "contrast_fel_p_value": { "type": "number", "minimum": 0, "maximum": 1 },
+          "contrast_fel_bh_q": { "type": "number", "minimum": 0, "maximum": 1 },
+          "expected_nonsyn_subs": { "type": "number", "minimum": 0 },
+          "effective_aa_alphabet": { "type": "number", "minimum": 1 },
+          "expected_neutral_n_eff": { "type": "number", "minimum": 1 },
+          "pair_concentration": { "type": "number", "minimum": 0, "maximum": 1 },
+          "max_convergent_transitions": { "type": "integer", "minimum": 0 },
+          "dominant_target_aa": { "type": "string" },
+          "exchangeability_stat": { "type": "number", "minimum": 0 },
+          "exchangeability_p_value": { "type": "number", "minimum": 0, "maximum": 1 },
+          "exchangeability_bh_q": { "type": "number", "minimum": 0, "maximum": 1 },
+          "exchangeability_mode": { "type": "string" },
+          "key_property_driver": { "type": "string" },
+          "cpg_hypermutable_context": { "type": "boolean" },
+          "apobec_motif_context": { "type": "boolean" },
+          "simes_omnibus_p": { "type": "number", "minimum": 0, "maximum": 1 },
+          "simes_omnibus_q": { "type": "number", "minimum": 0, "maximum": 1 },
+          "classification": { "type": "string" },
+          "artifact_eliminated": { "type": "boolean" }
+        },
+        "required": [
+          "site",
+          "column_homology_posterior",
+          "gap_fraction",
+          "in_indel_window",
+          "ensemble_paths_evaluated",
+          "active_topology_label",
+          "spatial_domain",
+          "in_synonymous_island",
+          "alpha",
+          "beta_pervasive",
+          "fel_lrt",
+          "fel_p_value",
+          "fel_bh_q",
+          "dfel_lrt",
+          "dfel_p_value",
+          "dfel_bh_q",
+          "beta_minus",
+          "beta_plus",
+          "weight_plus",
+          "meme_lrt",
+          "meme_p_value",
+          "meme_bh_q",
+          "meme_polished",
+          "num_episodic_branches",
+          "top_episodic_branches",
+          "max_branch_ebf",
+          "beta_reference",
+          "beta_test",
+          "contrast_fel_lrt",
+          "contrast_fel_p_value",
+          "contrast_fel_bh_q",
+          "expected_nonsyn_subs",
+          "effective_aa_alphabet",
+          "expected_neutral_n_eff",
+          "pair_concentration",
+          "max_convergent_transitions",
+          "dominant_target_aa",
+          "exchangeability_stat",
+          "exchangeability_p_value",
+          "exchangeability_bh_q",
+          "exchangeability_mode",
+          "key_property_driver",
+          "cpg_hypermutable_context",
+          "apobec_motif_context",
+          "simes_omnibus_p",
+          "simes_omnibus_q",
+          "classification",
+          "artifact_eliminated"
+        ]
+      }
+    },
+    "summary_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sites_pervasive_diversifying": { "type": "integer", "minimum": 0 },
+        "sites_pervasive_purifying": { "type": "integer", "minimum": 0 },
+        "sites_episodic_diversifying": { "type": "integer", "minimum": 0 },
+        "sites_regime_differential": { "type": "integer", "minimum": 0 },
+        "sites_exchangeability_or_convergent": { "type": "integer", "minimum": 0 },
+        "sites_simes_fdr_significant": { "type": "integer", "minimum": 0 },
+        "sites_simes_diversifying": { "type": "integer", "minimum": 0 },
+        "sites_simes_purifying": { "type": "integer", "minimum": 0 },
+        "spatial_domains_detected": { "type": "integer", "minimum": 0 },
+        "synonymous_constraint_islands": { "type": "integer", "minimum": 0 },
+        "branches_episodic_diversifying": { "type": "integer", "minimum": 0 },
+        "branches_intensified": { "type": "integer", "minimum": 0 },
+        "branches_relaxed": { "type": "integer", "minimum": 0 },
+        "branches_loss_of_constraint": { "type": "integer", "minimum": 0 },
+        "false_positive_sites_eliminated": { "type": "integer", "minimum": 0 },
+        "true_positive_sites_rescued": { "type": "integer", "minimum": 0 }
+      },
+      "required": [
+        "sites_pervasive_diversifying",
+        "sites_pervasive_purifying",
+        "sites_episodic_diversifying",
+        "sites_regime_differential",
+        "sites_exchangeability_or_convergent",
+        "sites_simes_fdr_significant",
+        "sites_simes_diversifying",
+        "sites_simes_purifying",
+        "spatial_domains_detected",
+        "synonymous_constraint_islands",
+        "branches_episodic_diversifying",
+        "branches_intensified",
+        "branches_relaxed",
+        "branches_loss_of_constraint",
+        "false_positive_sites_eliminated",
+        "true_positive_sites_rescued"
+      ]
+    }
+  }
+}

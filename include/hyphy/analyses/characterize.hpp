@@ -45,6 +45,7 @@ struct CharacterizeSettings {
     Scalar active_set_screen_p = 0.25; // Decision 1: Two-stage active-set continuous polish gate
     bool from_unaligned = false;
     bool enable_coupled_spr = true;
+    bool enable_segment_routing = true;
     bool enable_coevolution = false;   // Tier 3 (Opt-in): Epistatic co-substitution pairs (--coevolution)
     bool emit_legacy_jsons = false;    // Decision 7: Optional Vision/Datamonkey legacy JSON bundle
     bool quiet = false;
@@ -240,6 +241,13 @@ struct GeneWideSelectionSummary {
 };
 
 struct CharacterizeResult {
+    // Metadata
+    std::string genetic_code_name = "Universal";
+    std::string input_mode = "aligned"; // "unaligned" or "aligned"
+    std::string tree_source = "de_novo_inferred"; // "de_novo_inferred", "user_supplied", or "embedded_in_alignment"
+    Scalar p_value_threshold = 0.10;
+    Scalar fdr_threshold = 0.10;
+
     // Stage I: Co-Estimated Alignment, Tree, Network & Objective Quality
     JointAlignResult joint_align;
     JointAlignEngine::AlignmentObjectiveEvaluation alignment_objective;
@@ -268,6 +276,8 @@ struct CharacterizeResult {
     size_t sites_regime_differential = 0;
     size_t sites_property_constrained_or_shifting = 0; // Toggle / Convergent / Focused Exchange sites
     size_t sites_simes_fdr_significant = 0;
+    size_t sites_simes_diversifying = 0;
+    size_t sites_simes_purifying = 0;
     size_t branches_episodic_diversifying = 0;
     size_t branches_intensified = 0;
     size_t branches_relaxed = 0;
@@ -331,7 +341,8 @@ public:
 
     CharacterizeResult run_from_unaligned(
         const std::vector<Sequence>& unaligned_seqs,
-        std::shared_ptr<const GeneticCode> gcode = nullptr
+        std::shared_ptr<const GeneticCode> gcode = nullptr,
+        std::optional<Tree> input_tree = std::nullopt
     ) {
         auto t0 = std::chrono::steady_clock::now();
         if (!gcode) gcode = GeneticCode::universal();
@@ -343,9 +354,14 @@ public:
         jas.quiet = settings.quiet;
 
         JointAlignEngine jae(jas);
-        auto ja_res = jae.run_from_unaligned(unaligned_seqs, gcode);
+        auto ja_res = jae.run_from_unaligned(unaligned_seqs, gcode, input_tree);
 
         auto res = run_unified_tensor_characterization(std::move(ja_res));
+        res.input_mode = "unaligned";
+        res.tree_source = input_tree.has_value() ? "user_supplied" : "de_novo_inferred";
+        res.genetic_code_name = gcode->name.empty() ? settings.genetic_code_name : gcode->name;
+        res.p_value_threshold = settings.p_value_threshold;
+        res.fdr_threshold = settings.fdr_threshold;
         auto t1 = std::chrono::steady_clock::now();
         res.runtime_seconds = std::chrono::duration<double>(t1 - t0).count();
         return res;
@@ -367,6 +383,18 @@ public:
         auto ja_res = jae.run(input_aln, input_tree);
 
         auto res = run_unified_tensor_characterization(std::move(ja_res));
+        res.input_mode = "aligned";
+        if (input_tree.has_value()) {
+            res.tree_source = "user_supplied";
+        } else if (!input_aln.embedded_tree_newick.empty()) {
+            res.tree_source = "embedded_in_alignment";
+        } else {
+            res.tree_source = "de_novo_inferred";
+        }
+        res.genetic_code_name = (input_aln.code && !input_aln.code->name.empty())
+                              ? input_aln.code->name : settings.genetic_code_name;
+        res.p_value_threshold = settings.p_value_threshold;
+        res.fdr_threshold = settings.fdr_threshold;
         auto t1 = std::chrono::steady_clock::now();
         res.runtime_seconds = std::chrono::duration<double>(t1 - t0).count();
         return res;
@@ -375,10 +403,17 @@ public:
     static std::string to_json(const CharacterizeResult& res) {
         using json = nlohmann::json;
         json j;
+        j["$schema"] = "https://hyphy.org/schemas/v3/characterize.v3.schema.json";
         j["analysis"] = {
             {"id", "characterize"},
             {"name", "HyPhy 3 One-Button Evolutionary Characterization"},
             {"version", "3.0.0"},
+            {"schema_version", "3.0.0"},
+            {"genetic_code", res.genetic_code_name},
+            {"input_mode", res.input_mode},
+            {"tree_source", res.tree_source},
+            {"p_value_threshold", res.p_value_threshold},
+            {"fdr_threshold", res.fdr_threshold},
             {"runtime_seconds", res.runtime_seconds}
         };
 
@@ -631,6 +666,8 @@ public:
             {"sites_regime_differential", res.sites_regime_differential},
             {"sites_exchangeability_or_convergent", res.sites_property_constrained_or_shifting},
             {"sites_simes_fdr_significant", res.sites_simes_fdr_significant},
+            {"sites_simes_diversifying", res.sites_simes_diversifying},
+            {"sites_simes_purifying", res.sites_simes_purifying},
             {"spatial_domains_detected", res.spatial_domains.size()},
             {"synonymous_constraint_islands", res.synonymous_islands.size()},
             {"branches_episodic_diversifying", res.branches_episodic_diversifying},
@@ -647,10 +684,57 @@ public:
     // Decision 7: Optional legacy JSON bundle emission (.FEL.json, .MEME.json, .BUSTED.json)
     static void write_legacy_json_bundle(const CharacterizeResult& res, const std::string& base_prefix) {
         using json = nlohmann::json;
+        const size_t N = res.joint_align.map_alignment.num_taxa;
+        const size_t C = res.joint_align.map_alignment.num_codons;
+        const std::string nwk = res.joint_align.optimized_tree.to_newick();
+
+        json common_input = {
+            {"file name", base_prefix},
+            {"number of sequences", N},
+            {"number of sites", C},
+            {"partition count", 1},
+            {"trees", {{"0", nwk}}}
+        };
+        json tested_map = json::object();
+        json branch_attrs = json::object();
+        for (const auto& bp : res.branch_profiles) {
+            tested_map[bp.branch_name] = "test";
+            branch_attrs[bp.branch_name] = {
+                {"Global MG94xREV", bp.branch_length_subs},
+                {"Nucleotide GTR", bp.branch_length_subs}
+            };
+        }
+
+        json common_fits = {
+            {"Global MG94xREV", {
+                {"Log Likelihood", res.gene_wide.null_log_l},
+                {"estimated parameters", res.branch_profiles.size() + 8}
+            }},
+            {"Nucleotide GTR", {
+                {"Log Likelihood", res.gene_wide.null_log_l},
+                {"estimated parameters", res.branch_profiles.size() + 5}
+            }}
+        };
+
         // 1. Legacy FEL JSON
         {
             json jf;
-            jf["analysis"]["info"] = "HyPhy 3 Characterize Legacy-Compatible FEL Export";
+            jf["analysis"] = {
+                {"info", "HyPhy 3 Characterize Legacy-Compatible FEL Export"},
+                {"version", "3.0.0"}
+            };
+            jf["input"] = common_input;
+            jf["tested"] = {{"0", tested_map}};
+            jf["branch attributes"] = {{"0", branch_attrs}};
+            jf["fits"] = common_fits;
+            jf["MLE"]["headers"] = json::array({
+                json::array({"alpha", "Synonymous substitution rate at a site"}),
+                json::array({"beta", "Non-synonymous substitution rate at a site"}),
+                json::array({"alpha=beta", "Neutral rate estimate under H0"}),
+                json::array({"LRT", "Likelihood ratio test statistic for beta = alpha"}),
+                json::array({"p-value", "Asymptotic p-value for FEL/dFEL test"}),
+                json::array({"Total branch length", "Column homology posterior confidence"})
+            });
             json content = json::array();
             for (const auto& s : res.site_atlas) {
                 Scalar p = res.directional_drift_active ? s.dfel_p_value : s.fel_p_value;
@@ -664,7 +748,24 @@ public:
         // 2. Legacy MEME JSON
         {
             json jm;
-            jm["analysis"]["info"] = "HyPhy 3 Characterize Legacy-Compatible MEME Export";
+            jm["analysis"] = {
+                {"info", "HyPhy 3 Characterize Legacy-Compatible MEME Export"},
+                {"version", "3.0.0"}
+            };
+            jm["input"] = common_input;
+            jm["tested"] = {{"0", tested_map}};
+            jm["branch attributes"] = {{"0", branch_attrs}};
+            jm["fits"] = common_fits;
+            jm["MLE"]["headers"] = json::array({
+                json::array({"alpha", "Synonymous substitution rate at a site"}),
+                json::array({"beta-", "Non-synonymous rate for the purifying/neutral branch class"}),
+                json::array({"p-", "Mixture weight for beta-"}),
+                json::array({"beta+", "Non-synonymous rate for the diversifying branch class"}),
+                json::array({"p+", "Mixture weight for beta+"}),
+                json::array({"LRT", "Likelihood ratio test statistic for episodic diversifying selection"}),
+                json::array({"p-value", "Asymptotic mixture chi-squared p-value"}),
+                json::array({"# branches under selection", "Branches with Empirical Bayes Factor >= 10"})
+            });
             json content = json::array();
             for (const auto& s : res.site_atlas) {
                 content.push_back({
@@ -680,425 +781,1871 @@ public:
         // 3. Legacy BUSTED JSON
         {
             json jb;
-            jb["analysis"]["info"] = "HyPhy 3 Characterize Legacy-Compatible BUSTED-E Export";
+            jb["analysis"] = {
+                {"info", "HyPhy 3 Characterize Legacy-Compatible BUSTED-E Export"},
+                {"version", "3.0.0"}
+            };
+            jb["input"] = common_input;
+            jb["tested"] = {{"0", tested_map}};
+            jb["branch attributes"] = {{"0", branch_attrs}};
             jb["test results"] = {
                 {"LRT", res.gene_wide.busted_lrt},
                 {"p-value", res.gene_wide.busted_p_value}
+            };
+            jb["fits"]["Unconstrained model"] = {
+                {"Log Likelihood", res.gene_wide.unconstrained_log_l},
+                {"Rate Distributions", {
+                    {"Test", {
+                        {"0", {{"omega", res.gene_wide.omega_classes[0]}, {"proportion", res.gene_wide.omega_weights[0]}}},
+                        {"1", {{"omega", res.gene_wide.omega_classes[1]}, {"proportion", res.gene_wide.omega_weights[1]}}},
+                        {"2", {{"omega", res.gene_wide.omega_classes[2]}, {"proportion", res.gene_wide.omega_weights[2]}}}
+                    }}
+                }}
+            };
+            jb["fits"]["Constrained model"] = {
+                {"Log Likelihood", res.gene_wide.null_log_l}
             };
             std::ofstream out(base_prefix + ".BUSTED.json");
             out << jb.dump(2);
         }
     }
 
-    // Decision 7: Unified, self-contained interactive multi-tab SPA (.CHARACTERIZE.html)
-    static std::string render_standalone_html(const CharacterizeResult& res, const std::string& dataset_label) {
+    // Decision 7: Unified, self-contained interactive 6-stage multi-tab SPA (.CHARACTERIZE.html)
+    static std::string render_standalone_html_from_json_string(
+        const std::string& raw_json_payload,
+        const std::string& dataset_label
+    ) {
+        // Safely escape any closing </script sequence inside the JSON payload
+        std::string safe_json;
+        safe_json.reserve(raw_json_payload.size() + 32);
+        for (size_t i = 0; i < raw_json_payload.size(); ++i) {
+            if (raw_json_payload[i] == '<' && i + 1 < raw_json_payload.size() && raw_json_payload[i + 1] == '/') {
+                safe_json += "<\\/";
+                ++i;
+            } else {
+                safe_json += raw_json_payload[i];
+            }
+        }
+
+        std::string safe_label;
+        for (char c : dataset_label) {
+            if (c == '<') safe_label += "&lt;";
+            else if (c == '>') safe_label += "&gt;";
+            else if (c == '&') safe_label += "&amp;";
+            else if (c == '"') safe_label += "&quot;";
+            else safe_label += c;
+        }
+
         std::ostringstream html;
-        html << std::fixed << std::setprecision(4);
-        html << R"HTML(<!DOCTYPE html>
+        html << R"WALRUS_HTML(<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>HyPhy 3 Unified Characterization — )HTML" << dataset_label << R"HTML(</title>
+<title>WALRUS • Evolutionary Characterization — )WALRUS_HTML" << safe_label << R"WALRUS_HTML(</title>
 <style>
   :root {
-    --bg: #f6f6f2; --card: #ffffff; --ink: #191917; --muted: #666660;
-    --border: #d8d8d0; --accent: #eb5e28; --pos: #c92a2a; --neg: #1864ab;
-    --epi: #6741d9; --prop: #087f5b; --diff: #d9480f;
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --ink: #0f172a;
+    --ink-2: #334155;
+    --muted: #64748b;
+    --border: #e2e8f0;
+    --border-strong: #cbd5e1;
+    --accent: #ea580c;
+    --pos: #dc2626;
+    --pos-bg: #fef2f2;
+    --epi: #7c3aed;
+    --epi-bg: #f5f3ff;
+    --neg: #2563eb;
+    --neg-bg: #eff6ff;
+    --prop: #0d9488;
+    --prop-bg: #f0fdfa;
+    --warn: #d97706;
+    --warn-bg: #fffbeb;
+    --ok: #16a34a;
+    --ok-bg: #f0fdf4;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    background: var(--bg); color: var(--ink);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    line-height: 1.45; padding: 24px;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.48;
+    padding: 20px 24px 60px;
+    font-size: 13px;
   }
-  .container { max-width: 1420px; margin: 0 auto; }
-  header {
-    background: var(--ink); color: #fff; padding: 20px 26px; border-radius: 8px;
-    display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;
+  .container { max-width: 1520px; margin: 0 auto; }
+
+  /* Header */
+  header.top-bar {
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    color: #fff;
+    padding: 18px 24px;
+    border-radius: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 14px;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.10);
   }
-  header h1 { font-size: 19px; letter-spacing: 0.5px; }
-  header .sub { color: #b8b8b0; font-size: 13px; margin-top: 4px; }
-  .badge {
-    background: var(--accent); color: #fff; font-weight: 700; font-size: 11px;
-    padding: 4px 10px; border-radius: 4px; letter-spacing: 0.8px; text-transform: uppercase;
+  header.top-bar h1 {
+    font-size: 18px;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
+  header.top-bar .sub {
+    color: #cbd5e1;
+    font-size: 12.5px;
+    margin-top: 4px;
+  }
+  .header-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .btn {
+    background: rgba(255,255,255,0.12);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.22);
+    padding: 7px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn:hover { background: rgba(255,255,255,0.22); }
+  .btn-light {
+    background: #fff;
+    color: var(--ink);
+    border: 1px solid var(--border-strong);
+  }
+  .btn-light:hover { background: #f8fafc; border-color: var(--ink-2); }
+
+  /* 6-Stage Stepper Ribbon */
+  .stage-ribbon {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  @media (max-width: 1200px) {
+    .stage-ribbon { grid-template-columns: repeat(3, 1fr); }
+  }
+  .stage-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-top: 3px solid var(--muted);
+    border-radius: 8px;
+    padding: 11px 13px;
+    cursor: pointer;
+    transition: transform 0.12s, box-shadow 0.12s, border-color 0.12s;
+    position: relative;
+  }
+  .stage-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.07);
+    border-color: var(--ink-2);
+  }
+  .stage-card.st-ok { border-top-color: var(--ok); }
+  .stage-card.st-active { border-top-color: var(--prop); }
+  .stage-card.st-warn { border-top-color: var(--warn); }
+  .stage-card.st-sig { border-top-color: var(--pos); }
+  .stage-card .st-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .stage-card .st-title {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--ink);
+    margin-bottom: 3px;
+  }
+  .stage-card .st-val {
+    font-size: 15px;
+    font-weight: 800;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .stage-card .st-sub {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 3px;
+    line-height: 1.35;
+  }
+
+  /* What WALRUS Changed Strip */
+  .delta-banner {
+    background: linear-gradient(90deg, #fff7ed 0%, #f0fdfa 100%);
+    border: 1px solid #fed7aa;
+    border-left: 4px solid var(--accent);
+    border-radius: 8px;
+    padding: 10px 16px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .delta-banner .delta-title {
+    font-weight: 800;
+    color: #9a3412;
+    font-size: 12.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .delta-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .delta-chip {
+    background: #ffffff;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--ink-2);
+  }
+  .delta-chip b { color: var(--ink); }
+
+  /* Tabs */
   .tabs {
-    display: flex; gap: 8px; margin-bottom: 18px; border-bottom: 2px solid var(--border); padding-bottom: 8px;
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    border-bottom: 2px solid var(--border);
+    padding-bottom: 8px;
+    flex-wrap: wrap;
   }
   .tab-btn {
-    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
-    padding: 8px 16px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer;
+    background: var(--card);
+    border: 1px solid var(--border-strong);
+    border-radius: 7px;
+    padding: 9px 16px;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--ink-2);
+    cursor: pointer;
+    transition: all 0.12s;
   }
+  .tab-btn:hover { background: #f8fafc; color: var(--ink); }
   .tab-btn.active {
-    background: var(--ink); color: #fff; border-color: var(--ink);
+    background: var(--ink);
+    color: #fff;
+    border-color: var(--ink);
   }
   .tab-panel { display: none; }
   .tab-panel.active { display: block; }
-  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 18px; }
-  .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-bottom: 18px; }
+
+  /* Cards & Grids */
   .card {
-    background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03);
   }
-  .card h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin-bottom: 6px; }
-  .card .metric { font-size: 22px; font-weight: 700; color: var(--ink); }
-  .card .detail { font-size: 12px; color: var(--muted); margin-top: 5px; }
-  .toolbar {
-    display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap;
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
   }
-  .toolbar input, .toolbar select {
-    padding: 6px 10px; border: 1px solid var(--border); border-radius: 5px; font-size: 12.5px; background: #fff;
+  .card-title {
+    font-size: 14px;
+    font-weight: 800;
+    color: var(--ink);
   }
-  table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  th, td { padding: 7px 9px; border-bottom: 1px solid var(--border); text-align: left; }
-  th { background: #efefea; font-weight: 600; font-size: 11px; text-transform: uppercase; color: var(--muted); position: sticky; top: 0; }
-  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .card-subtitle {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .grid-2 { display: grid; grid-template-columns: 1.25fr 1fr; gap: 16px; }
+  .grid-2-eq { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media (max-width: 1024px) {
+    .grid-2, .grid-2-eq, .grid-3 { grid-template-columns: 1fr; }
+  }
+
+  /* Pills & Badges */
   .pill {
-    display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
   }
-  .pill-pos { background: #ffe3e3; color: var(--pos); }
-  .pill-epi { background: #f3f0ff; color: var(--epi); }
-  .pill-diff { background: #fff4e6; color: var(--diff); }
-  .pill-neg { background: #e7f5ff; color: var(--neg); }
-  .pill-prop { background: #e6fcf5; color: var(--prop); }
-  .pill-neu { background: #f1f3f5; color: var(--muted); }
-  .section-title { font-size: 14.5px; font-weight: 700; margin: 16px 0 8px; display: flex; align-items: center; gap: 8px; }
-  .track-bar { display: flex; width: 100%; height: 22px; border-radius: 4px; overflow: hidden; border: 1px solid var(--border); margin: 8px 0; }
-  .track-seg { height: 100%; }
-  .heat-cell { text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; border-radius: 3px; }
+  .pill-pos { background: #fee2e2; color: #b91c1c; }
+  .pill-epi { background: #ede9fe; color: #6d28d9; }
+  .pill-diff { background: #ffedd5; color: #c2410c; }
+  .pill-neg { background: #dbeafe; color: #1d4ed8; }
+  .pill-prop { background: #ccfbf1; color: #0f766e; }
+  .pill-warn { background: #fef3c7; color: #b45309; }
+  .pill-ok { background: #dcfce7; color: #15803d; }
+  .pill-neu { background: #f1f5f9; color: #475569; }
+  .site-chip {
+    display: inline-block;
+    padding: 2px 7px;
+    margin: 2px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 700;
+    background: #f1f5f9;
+    border: 1px solid var(--border-strong);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .site-chip:hover { background: var(--ink); color: #fff; }
+
+  /* Filter Toolbar & Preset Pills */
+  .toolbar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .toolbar input[type="text"], .toolbar select {
+    padding: 6px 11px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    font-size: 12.5px;
+    background: #fff;
+    color: var(--ink);
+  }
+  .filter-pills {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .filter-pill {
+    background: #f8fafc;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    padding: 4px 11px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .filter-pill:hover { border-color: var(--ink); color: var(--ink); }
+  .filter-pill.active {
+    background: var(--ink);
+    color: #fff;
+    border-color: var(--ink);
+  }
+
+  /* Tables */
+  .table-wrap {
+    max-height: 580px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  th, td {
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+  }
+  th {
+    background: #f8fafc;
+    font-weight: 700;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--ink-2);
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  th:hover { background: #e2e8f0; }
+  td.num, th.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  tbody tr { cursor: pointer; transition: background 0.08s; }
+  tbody tr:hover { background: #f1f5f9; }
+  tbody tr.row-selected { background: #fff7ed !important; outline: 1px solid var(--accent); }
+
+  /* Floating Tooltip */
+  #walrus-tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: rgba(15, 23, 42, 0.96);
+    color: #fff;
+    padding: 10px 13px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.45;
+    max-width: 340px;
+    z-index: 9999;
+    display: none;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(255,255,255,0.15);
+  }
+
+  /* Slide-Over Site Forensics Drawer */
+  .drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.35);
+    z-index: 1000;
+    display: none;
+  }
+  .drawer-backdrop.open { display: block; }
+  .site-drawer {
+    position: fixed;
+    top: 0;
+    right: -520px;
+    width: 480px;
+    max-width: 92vw;
+    height: 100vh;
+    background: #fff;
+    z-index: 1001;
+    box-shadow: -8px 0 30px rgba(15, 23, 42, 0.18);
+    transition: right 0.22s ease;
+    display: flex;
+    flex-direction: column;
+  }
+  .site-drawer.open { right: 0; }
+  .drawer-head {
+    background: var(--ink);
+    color: #fff;
+    padding: 16px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .drawer-body {
+    padding: 18px 20px;
+    overflow-y: auto;
+    flex: 1;
+  }
+  .kv-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 12px;
+    margin-top: 8px;
+  }
+  .kv-box {
+    background: #f8fafc;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+  .kv-box .k { font-size: 10.5px; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+  .kv-box .v { font-size: 14px; font-weight: 800; color: var(--ink); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .svg-container {
+    width: 100%;
+    overflow-x: auto;
+  }
+  svg text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
 </style>
 </head>
 <body>
-<div class="container">
-  <header>
+<div id="walrus-tooltip"></div>
+
+<!-- Slide-Over Site Forensics Drawer -->
+<div id="drawerBackdrop" class="drawer-backdrop" onclick="closeSiteDrawer()"></div>
+<aside id="siteDrawer" class="site-drawer">
+  <div class="drawer-head">
     <div>
-      <h1>HYPHY 3 &bull; ONE-BUTTON EVOLUTIONARY CHARACTERIZATION</h1>
-      <div class="sub">Dataset: )HTML" << dataset_label << " &bull; "
-             << res.joint_align.map_alignment.num_taxa << " taxa &times; "
-             << res.joint_align.map_alignment.num_codons << " codons &bull; Completed in "
-             << std::setprecision(2) << res.runtime_seconds << R"HTML( s</div>
+      <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:700;">Stage 5 • Site Forensics Inspector</div>
+      <div id="drawerTitle" style="font-size:18px;font-weight:800;margin-top:2px;">Codon —</div>
     </div>
-    <span class="badge">Hierarchical 3-Question Forensics</span>
+    <div style="display:flex;gap:6px;align-items:center;">
+      <button class="btn" onclick="stepSiteDrawer(-1)" title="Previous Codon">&larr;</button>
+      <button class="btn" onclick="stepSiteDrawer(1)" title="Next Codon">&rarr;</button>
+      <button class="btn" onclick="closeSiteDrawer()">&#10005;</button>
+    </div>
+  </div>
+  <div id="drawerContent" class="drawer-body"></div>
+</aside>
+
+<div class="container">
+  <header class="top-bar">
+    <div>
+      <h1>
+        <span>WALRUS &bull; UNIFIED EVOLUTIONARY CHARACTERIZATION</span>
+        <span class="pill" style="background:#ea580c;color:#fff;font-size:11px;">HyPhy 3</span>
+      </h1>
+      <div class="sub" id="headerSubtitle">Loading dataset...</div>
+    </div>
+    <div class="header-actions">
+      <button class="btn" onclick="exportSiteCSV()">Export Site Atlas CSV</button>
+      <button class="btn" onclick="downloadEmbeddedJSON()">Download Full JSON</button>
+    </div>
   </header>
 
-  <div class="grid-4">
-    <div class="card">
-      <h3>Q1. Integrity &amp; Process Audit</h3>
-      <div class="metric">PP = )HTML" << std::setprecision(4) << res.alignment_objective.mean_column_posterior << R"HTML(</div>
-      <div class="detail">)HTML" << (res.composition_test.is_heterogeneous ? "3-Regime GC3 Drift" : "Stationary")
-             << " (CP3 p=" << std::setprecision(3) << res.composition_test.p_value_cp3
-             << ") &bull; LoF Lineages: " << res.branches_loss_of_constraint << R"HTML(</div>
-    </div>
-    <div class="card">
-      <h3>Q2. Gene-Wide Selection (BUSTED-E)</h3>
-      <div class="metric">)HTML" << (res.gene_wide.has_gene_wide_positive_selection ? "POSITIVE" : "NO SIGNAL")
-             << " (p = " << std::setprecision(4) << res.gene_wide.busted_p_value << R"HTML()</div>
-      <div class="detail">&omega;<sub>3</sub> = )HTML" << std::setprecision(2) << res.gene_wide.omega_classes[2]
-             << " (" << std::setprecision(1) << (res.gene_wide.omega_weights[2] * 100.0)
-             << "%) &bull; Domains: " << res.spatial_domains.size()
-             << " &bull; Syn Islands: " << res.synonymous_islands.size() << R"HTML(</div>
-    </div>
-    <div class="card">
-      <h3>Q2. Clade &amp; Lineage Architecture</h3>
-      <div class="metric">)HTML" << (res.clade_macro_regime.triggered
-             ? ("RELAX K = " + std::to_string(res.clade_macro_regime.clade_relax_k).substr(0, 4) + " (" + res.clade_macro_regime.clade_relax_call + ")")
-             : "Homogeneous Tree") << R"HTML(</div>
-      <div class="detail">aBSREL Pos: )HTML" << res.branches_episodic_diversifying
-             << " br &bull; Contrast-FEL: " << res.clade_macro_regime.contrast_fel_differing_sites << R"HTML( sites</div>
-    </div>
-    <div class="card">
-      <h3>Q3. Site &amp; Mechanism Resolution</h3>
-      <div class="metric">)HTML" << res.sites_episodic_diversifying << " Epi / "
-             << res.sites_pervasive_diversifying << " Perv / "
-             << res.sites_pervasive_purifying << R"HTML( Pur</div>
-      <div class="detail">Simes FDR q&le;0.10: )HTML" << res.sites_simes_fdr_significant
-             << " &bull; Toggles/Conv: " << res.sites_property_constrained_or_shifting << R"HTML(</div>
-    </div>
-  </div>
+  <!-- 6-Stage Pipeline Ribbon -->
+  <div id="stageRibbon" class="stage-ribbon"></div>
 
+  <!-- What WALRUS Changed vs Standard Pipeline Strip -->
+  <div id="deltaBanner" class="delta-banner"></div>
+
+  <!-- Top-Level Navigation Tabs -->
   <div class="tabs">
-    <button class="tab-btn active" onclick="showTab('tab-overview', this)">1. Executive &amp; 1D Domain Architecture</button>
-    <button class="tab-btn" onclick="showTab('tab-sites', this)">2. Site Atlas (FEL / dFEL / MEME / Exchangeability)</button>
-    <button class="tab-btn" onclick="showTab('tab-branches', this)">3. Lineage Regimes &amp; LoF Audit (aBSREL / RELAX)</button>
-    <button class="tab-btn" onclick="showTab('tab-prime', this)">4. Exchangeability, Toggles &amp; Convergence</button>
+    <button class="tab-btn active" id="btn-tab-overview" onclick="switchTab('tab-overview')">1. Overview &amp; 5-Second CDS Map</button>
+    <button class="tab-btn" id="btn-tab-integrity" onclick="switchTab('tab-integrity')">2. Stage 0–2 Integrity, Homology &amp; Reticulation</button>
+    <button class="tab-btn" id="btn-tab-tree" onclick="switchTab('tab-tree')">3. Stage 3–4 Interactive Phylogram &amp; Lineages</button>
+    <button class="tab-btn" id="btn-tab-sites" onclick="switchTab('tab-sites')">4. Stage 5 Site, dFEL &amp; Convergence Explorer</button>
   </div>
 
-  <!-- TAB 1: EXECUTIVE NARRATIVE & SYNCHRONIZED MANHATTAN / POA CONFIDENCE TRACK -->
+  <!-- ===================================================================== -->
+  <!-- TAB 1: OVERVIEW & 5-SECOND INTERACTIVE CDS ARCHITECTURE MAP           -->
+  <!-- ===================================================================== -->
   <div id="tab-overview" class="tab-panel active">
-    <div class="card" style="margin-bottom:16px;">
-      <h3>Automated 3-Question Evolutionary Narrative</h3>
-      <p style="font-size:13.5px; margin-top:6px;">
-        <b>1. Data &amp; Process Integrity:</b> Co-estimation across <b>)HTML" << res.joint_align.map_alignment.num_taxa
-        << " taxa</b> and <b>" << res.joint_align.map_alignment.num_codons
-        << " codons</b> yielded mean column homology posterior <b>"
-        << std::setprecision(4) << res.alignment_objective.mean_column_posterior
-        << "</b>. Compositional stationarity at 3rd codon positions reported CP3 &chi;&sup2; = <b>"
-        << std::setprecision(2) << res.composition_test.chi2_cp3 << "</b> (p = " << std::setprecision(3) << res.composition_test.p_value_cp3
-        << "), activating <b>" << (res.directional_drift_active ? "3-Regime Directional Softmax Kernels" : "1-Regime Stationary Kernels")
-        << "</b>. Core-invasion screening flagged <b>" << res.branches_loss_of_constraint
-        << " lineage(s)</b> for potential loss-of-constraint / pseudogenization.<br>"
-        << "<b>2. Gene &amp; Domain Architecture:</b> Error-marginalized <b>BUSTED-E</b> "
-        << (res.gene_wide.has_gene_wide_positive_selection ? "<b>detected significant gene-wide episodic diversifying selection</b>" : "did not detect gene-wide positive selection")
-        << " (LRT = " << std::setprecision(2) << res.gene_wide.busted_lrt << ", p = " << std::setprecision(4) << res.gene_wide.busted_p_value
-        << "). Penalized 1D segmentation partitioned the CDS into <b>" << res.spatial_domains.size()
-        << " selective domain(s)</b> and <b>" << res.synonymous_islands.size()
-        << " synonymous constraint island(s)</b>.<br>"
-        << "<b>3. Site &amp; Mechanism Resolution:</b> Active-set polish identified <b>"
-        << res.sites_episodic_diversifying << " episodic diversifying sites</b> (MEME), <b>"
-        << res.sites_pervasive_diversifying << " pervasive diversifying sites</b> (FEL/dFEL), and <b>"
-        << res.sites_property_constrained_or_shifting << " model-free amino-acid toggle / convergent sites</b>."
-        << (res.mutational_context_alert.triggered ? (" <span style=\"color:#c92a2a;font-weight:600;\">Alert: " + res.mutational_context_alert.alert_summary + "</span>") : std::string(""))
-        << R"HTML(</p>
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Interactive 5-Second CDS Architecture, Reticulation &amp; Bidirectional Selection Profile</div>
+          <div class="card-subtitle">Upward bars: Diversifying (Red/Purple) &amp; Convergent/Toggle (Teal) selection (&minus;log<sub>10</sub> q). Downward bars: Purifying constraint (Blue). Hover or click any codon to inspect.</div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;font-size:11.5px;font-weight:600;">
+          <span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;background:#dc2626;display:inline-block;border-radius:2px;"></span>Episodic/Pervasive Div.</span>
+          <span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;background:#7c3aed;display:inline-block;border-radius:2px;"></span>Convergent/Toggle</span>
+          <span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;background:#2563eb;display:inline-block;border-radius:2px;"></span>Purifying</span>
+          <span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:12px;height:10px;background:#fed7aa;border:1px solid #f97316;display:inline-block;border-radius:2px;"></span>Stage 2 Recombination Bridge</span>
+        </div>
+      </div>
+      <div id="cdsPlotContainer" class="svg-container"></div>
     </div>
 
-    <div class="card" style="margin-bottom:16px;">
-      <h3>Synchronized CDS Selection, 1D Domain Segmentation &amp; POA Homology Track</h3>
-      <div class="detail" style="margin-bottom:6px;">Top bar: Unified Site Classification. Middle bar: 1D Spatial Domain Architecture (Blue = Purifying Core, Gray = Permissive, Red = Hypervariable/IDR). Bottom bar: Pair-HMM Column Homology Posterior PP<sub>c</sub>.</div>
-      <div class="track-bar">
-)HTML";
-        size_t C_tot = std::max<size_t>(1, res.site_atlas.size());
-        for (const auto& s : res.site_atlas) {
-            std::string col = "#e9ecef";
-            if (s.classification.find("Pervasive") != std::string::npos && s.classification.find("Diversifying") != std::string::npos) col = "#c92a2a";
-            else if (s.classification.find("Episodic") != std::string::npos) col = "#6741d9";
-            else if (s.classification.find("Regime") != std::string::npos) col = "#d9480f";
-            else if (s.classification.find("Purifying") != std::string::npos) col = "#1864ab";
-            else if (s.classification.find("Toggle") != std::string::npos || s.classification.find("Convergent") != std::string::npos || s.classification.find("Exchange") != std::string::npos) col = "#087f5b";
-            html << "<div class=\"track-seg\" style=\"width:" << (100.0 / C_tot) << "%;background:" << col
-                 << ";\" title=\"Site " << (s.site_index + 1) << ": " << s.classification
-                 << " (Simes p=" << std::setprecision(4) << s.simes_omnibus_p << ", q=" << s.simes_omnibus_q << ")\"></div>";
-        }
-        html << R"HTML(      </div>
-      <div class="track-bar" style="height:14px;">
-)HTML";
-        for (const auto& s : res.site_atlas) {
-            std::string col = "#74c0fc";
-            if (s.spatial_domain.find("Hypervariable") != std::string::npos) col = "#ff8787";
-            else if (s.spatial_domain.find("Permissive") != std::string::npos) col = "#ced4da";
-            html << "<div class=\"track-seg\" style=\"width:" << (100.0 / C_tot) << "%;background:" << col
-                 << ";\" title=\"Site " << (s.site_index + 1) << ": " << s.spatial_domain
-                 << (s.in_synonymous_island ? " [Synonymous Constraint Island]" : "") << "\"></div>";
-        }
-        html << R"HTML(      </div>
-      <div class="track-bar" style="height:12px;">
-)HTML";
-        for (const auto& s : res.site_atlas) {
-            Scalar pp = std::clamp<Scalar>(s.column_homology_posterior, 0.0, 1.0);
-            std::string col = (pp >= 0.99) ? "#2b8a3e" : (pp >= 0.90 ? "#f08c00" : "#e03131");
-            html << "<div class=\"track-seg\" style=\"width:" << (100.0 / C_tot) << "%;background:" << col
-                 << ";\" title=\"Site " << (s.site_index + 1) << ": Homology PP = " << std::setprecision(3) << pp << "\"></div>";
-        }
-        html << R"HTML(      </div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Automated 6-Stage Evolutionary Synthesis</div>
+          <span class="pill pill-neu">Plain-English Forensic Summary</span>
+        </div>
+        <div id="narrativeContainer" style="font-size:13px;line-height:1.6;color:var(--ink-2);"></div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Stage 4 Gene-Wide Selection (BUSTED-E) &amp; Error-Sink Decomposition</div>
+          <span id="bustedVerdictPill" class="pill pill-neu"></span>
+        </div>
+        <div id="bustedBreakdownContainer"></div>
+      </div>
     </div>
   </div>
 
-  <!-- TAB 2: INTERACTIVE SITE EXPLORER -->
-  <div id="tab-sites" class="tab-panel">
-    <div class="card">
-      <div class="toolbar">
-        <input type="text" id="siteSearch" placeholder="Filter by site #, classification, branch, toggle/convergence..." oninput="filterSites()" style="width:320px;">
-        <select id="siteClassFilter" onchange="filterSites()">
-          <option value="ALL">All Site Classes ()HTML" << res.site_atlas.size() << R"HTML( codons)</option>
-          <option value="NON_NEUTRAL">All Non-Neutral / Selected Sites</option>
-          <option value="Diversifying">Diversifying (Episodic or Pervasive)</option>
-          <option value="Regime">Clade-Differential (Contrast-FEL)</option>
-          <option value="Purifying">Purifying Selection</option>
-          <option value="Toggle">Toggle / Convergent / Exchange</option>
-        </select>
+  <!-- ===================================================================== -->
+  <!-- TAB 2: STAGE 0-2 INTEGRITY, HOMOLOGY & RETICULATION FORENSICS         -->
+  <!-- ===================================================================== -->
+  <div id="tab-integrity" class="tab-panel">
+    <div class="grid-2-eq">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Stage 2: Recombination &amp; Paralog Conversion Bridges</div>
+            <div class="card-subtitle">Localized Ohmic Wheatstone bridges and alternate SPR topologies routed during cavity evaluation</div>
+          </div>
+          <span id="bridgeCountPill" class="pill pill-neu"></span>
+        </div>
+        <div id="bridgesContainer"></div>
       </div>
-      <div style="max-height:620px; overflow-y:auto;">
-        <table id="siteTable">
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Stage 1: Alignment Objective &amp; Indel Error-Sink Suppressed Sites</div>
+            <div class="card-subtitle">Sites where POA homology uncertainty or flanking indels triggered false-positive calls under rigid alignments</div>
+          </div>
+          <span id="artifactCountPill" class="pill pill-neu"></span>
+        </div>
+        <div id="artifactContainer"></div>
+      </div>
+    </div>
+
+    <div class="grid-2-eq">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Stage 4C: 1D Spatial Selective Domains &amp; Synonymous Constraint Islands</div>
+            <div class="card-subtitle">Penalized BIC segmentation of log(&omega;) and binomial scan for dual-coding / RNA structure islands</div>
+          </div>
+        </div>
+        <div id="domainsAndIslandsContainer"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Stage 4D: Mutational Context (CpG / APOBEC) &amp; Coevolution</div>
+            <div class="card-subtitle">Dinucleotide hypermutability enrichment among selected sites and epistatic co-substitution pairs</div>
+          </div>
+        </div>
+        <div id="contextAndCoevContainer"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Stage 0: Input Sequence Admission, Reading-Frame Triage &amp; Quarantine Audit</div>
+          <div class="card-subtitle">Pre-alignment screening for frameshifts, premature stop codons, fragment coverage, and non-homologous outliers</div>
+        </div>
+        <div class="toolbar" style="margin-bottom:0;">
+          <input type="text" id="admSearch" placeholder="Search sequence name or reason..." oninput="renderAdmissionTable()">
+          <select id="admStatusFilter" onchange="renderAdmissionTable()">
+            <option value="ALL">All Input Sequences</option>
+            <option value="QUARANTINED">Quarantined Only</option>
+            <option value="RESCUED">Frame/Strand Rescued</option>
+            <option value="ADMITTED">Admitted</option>
+          </select>
+        </div>
+      </div>
+      <div id="admissionTableContainer" class="table-wrap"></div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- TAB 3: STAGE 3-4 INTERACTIVE PHYLOGRAM & LINEAGE REGIMES              -->
+  <!-- ===================================================================== -->
+  <div id="tab-tree" class="tab-panel">
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Interactive Phylogenetic Tree &amp; Lineage Regime Explorer</div>
+          <div class="card-subtitle">Hover or click any branch to inspect its GC3 drift regime, episodic diversifying selection (aBSREL), RELAX intensity parameter K<sub>b</sub>, and core-invasion LoF audit.</div>
+        </div>
+        <div class="toolbar" style="margin-bottom:0;">
+          <label style="font-weight:700;font-size:12px;">Color Branches By:</label>
+          <select id="treeColorMode" onchange="renderPhylogram()">
+            <option value="gc3">Stage 3: 3rd-Position GC3% &amp; Drift Regime</option>
+            <option value="absrel">Stage 4: Episodic Diversifying (aBSREL p &le; 0.05)</option>
+            <option value="relax">Stage 4: Selection Intensity Shift (RELAX K_b)</option>
+            <option value="lof">Stage 4B: Loss-of-Constraint / LoF Alert</option>
+            <option value="macro">Stage 4: Macro-Regime Partition (Test vs Ref)</option>
+          </select>
+          <label style="display:inline-flex;align-items:center;gap:4px;font-weight:600;font-size:12px;cursor:pointer;">
+            <input type="checkbox" id="treeShowBridges" checked onchange="renderPhylogram()"> Show Recombination Bridges
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:4px;font-weight:600;font-size:12px;cursor:pointer;">
+            <input type="checkbox" id="treeCladogram" onchange="renderPhylogram()"> Cladogram (Equal Branch Lengths)
+          </label>
+          <label style="font-weight:600;font-size:12px;">Row Height:</label>
+          <input type="range" id="treeRowHeight" min="11" max="26" value="15" oninput="renderPhylogram()" style="width:90px;">
+        </div>
+      </div>
+      <div id="treeLegendBar" style="margin-bottom:8px;font-size:12px;color:var(--ink-2);display:flex;gap:14px;flex-wrap:wrap;align-items:center;"></div>
+      <div id="treeSvgContainer" class="svg-container" style="max-height:640px;overflow:auto;border:1px solid var(--border);border-radius:8px;background:#fafaf9;"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Lineage Evolutionary Profiles (aBSREL / RELAX / GC3 / Loss-of-Constraint)</div>
+          <div class="card-subtitle">Click any column header to sort; click any invaded core site pill to open the Site Forensics Drawer.</div>
+        </div>
+        <div class="toolbar" style="margin-bottom:0;">
+          <input type="text" id="branchSearch" placeholder="Search branch or taxon name..." oninput="renderBranchTable(); renderPhylogram();" style="width:240px;">
+          <select id="branchFilter" onchange="renderBranchTable()">
+            <option value="ALL">All Branches</option>
+            <option value="ABSREL_SIG">aBSREL Significant (p &le; 0.05)</option>
+            <option value="LOF_ALERT">LoF / Core-Invasion Flagged</option>
+            <option value="RELAX_SHIFT">RELAX Intensified or Relaxed</option>
+            <option value="LEAVES">Terminal Taxa (Leaves) Only</option>
+            <option value="INTERNAL">Internal Branches Only</option>
+          </select>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="branchTable">
           <thead>
             <tr>
-              <th>Site</th>
-              <th>Unified Call</th>
-              <th>1D Domain</th>
-              <th class="num">Simes p (BH q)</th>
-              <th class="num">&alpha;</th>
-              <th class="num">&beta;<sub>perv</sub></th>
-              <th class="num">FEL/dFEL p (q)</th>
-              <th class="num">&beta;<sup>+</sup> (w<sup>+</sup>)</th>
-              <th class="num">MEME p (q)</th>
-              <th class="num">N<sub>eff</sub> (Subs)</th>
-              <th>Driving Branches (EBF&ge;10)</th>
-              <th>Exchangeability / Mechanism</th>
+              <th onclick="sortBranches('branch_name')">Branch</th>
+              <th onclick="sortBranches('macro_regime')">Macro-Regime</th>
+              <th class="num" onclick="sortBranches('branch_length_subs')">Length (subs/codon)</th>
+              <th class="num" onclick="sortBranches('gc_cp3')">GC3% (Regime)</th>
+              <th class="num" onclick="sortBranches('omega_plus')">&omega;<sup>+</sup> (w<sup>+</sup>)</th>
+              <th class="num" onclick="sortBranches('absrel_p_value')">aBSREL p (Holm / q)</th>
+              <th class="num" onclick="sortBranches('relax_k')">RELAX K<sub>b</sub></th>
+              <th class="num" onclick="sortBranches('relax_p_value')">RELAX p (Call)</th>
+              <th class="num" onclick="sortBranches('core_nonsyn_observed')">Core Subs Obs (Exp)</th>
+              <th class="num" onclick="sortBranches('lof_bayes_factor')">LoF BF (p)</th>
+              <th>Invaded Core Sites</th>
             </tr>
           </thead>
-          <tbody>
-)HTML";
-        for (const auto& s : res.site_atlas) {
-            std::string pill_cls = "pill-neu";
-            if (s.classification.find("Diversifying") != std::string::npos) {
-                pill_cls = (s.classification.find("Episodic") != std::string::npos && s.classification.find("Pervasive") == std::string::npos)
-                         ? "pill-epi" : "pill-pos";
-            } else if (s.classification.find("Regime") != std::string::npos) {
-                pill_cls = "pill-diff";
-            } else if (s.classification.find("Purifying") != std::string::npos) {
-                pill_cls = "pill-neg";
-            } else if (s.classification.find("Toggle") != std::string::npos || s.classification.find("Convergent") != std::string::npos || s.classification.find("Exchange") != std::string::npos) {
-                pill_cls = "pill-prop";
-            }
-            std::string br_str = "-";
-            if (!s.top_episodic_branches.empty()) {
-                br_str.clear();
-                for (size_t k = 0; k < s.top_episodic_branches.size(); ++k) {
-                    if (k > 0) br_str += ", ";
-                    br_str += s.top_episodic_branches[k];
-                }
-            }
-            Scalar perv_p = res.directional_drift_active ? s.dfel_p_value : s.fel_p_value;
-            Scalar perv_q = res.directional_drift_active ? s.dfel_bh_q : s.fel_bh_q;
-            html << "            <tr data-class=\"" << s.classification << " " << s.exchangeability_mode << "\">"
-                 << "<td class=\"num\">" << (s.site_index + 1) << "</td>"
-                 << "<td><span class=\"pill " << pill_cls << "\">" << s.classification << "</span></td>"
-                 << "<td>" << s.spatial_domain << (s.in_synonymous_island ? " [SynIsl]" : "") << "</td>"
-                 << "<td class=\"num\">" << std::setprecision(4) << s.simes_omnibus_p << " (" << std::setprecision(3) << s.simes_omnibus_q << ")</td>"
-                 << "<td class=\"num\">" << std::setprecision(2) << s.alpha << "</td>"
-                 << "<td class=\"num\">" << std::setprecision(2) << s.beta_pervasive << "</td>"
-                 << "<td class=\"num\">" << std::setprecision(4) << perv_p << " (" << std::setprecision(3) << perv_q << ")</td>"
-                 << "<td class=\"num\">" << std::setprecision(2) << s.beta_plus << " (" << std::setprecision(2) << s.weight_plus << ")</td>"
-                 << "<td class=\"num\">" << std::setprecision(4) << s.meme_p_value << " (" << std::setprecision(3) << s.meme_bh_q << ")</td>"
-                 << "<td class=\"num\">" << std::setprecision(2) << s.effective_aa_alphabet << " (" << std::setprecision(1) << s.expected_nonsyn_subs << ")</td>"
-                 << "<td>" << br_str << "</td>"
-                 << "<td>" << (s.key_property_driver.empty() ? "-" : s.key_property_driver) << "</td>"
-                 << "</tr>\n";
-        }
-        html << R"HTML(          </tbody>
+          <tbody id="branchTableBody"></tbody>
         </table>
       </div>
     </div>
   </div>
 
-  <!-- TAB 3: LINEAGE & MACRO-REGIME EXPLORER -->
-  <div id="tab-branches" class="tab-panel">
-    <div class="card" style="margin-bottom:16px;">
-      <h3>Macro-Regime Partition ()HTML" << res.clade_macro_regime.partition_source << R"HTML() &amp; Extended Newick</h3>
-      <div class="detail" style="margin-bottom:8px;">
-        Test Clade (<b>)HTML" << res.clade_macro_regime.test_regime_label << "</b>, " << res.clade_macro_regime.num_test_branches
-        << " branches) vs Reference (<b>" << res.clade_macro_regime.reference_regime_label << "</b>, "
-        << res.clade_macro_regime.num_reference_branches << " branches): Clade RELAX K = <b>"
-        << std::setprecision(2) << res.clade_macro_regime.clade_relax_k << "</b> (LRT = "
-        << res.clade_macro_regime.clade_relax_lrt << ", &Delta;BIC = " << res.clade_macro_regime.clade_relax_delta_bic
-        << ", p = " << std::setprecision(4) << res.clade_macro_regime.clade_relax_p_value
-        << " &rarr; <b>" << res.clade_macro_regime.clade_relax_call << R"HTML(</b>).</div>
-      <pre style="background:#f1f3f5; padding:10px; border-radius:6px; font-size:11.5px; overflow-x:auto;">)HTML"
-        << res.joint_align.extended_newick << R"HTML(</pre>
-    </div>
-    <div class="card">
-      <table>
-        <thead>
-          <tr>
-            <th>Branch</th>
-            <th>Macro-Regime</th>
-            <th class="num">Length</th>
-            <th>GC3 Drift Regime</th>
-            <th class="num">&omega;<sup>+</sup> (aBSREL)</th>
-            <th class="num">aBSREL p (Holm / q)</th>
-            <th class="num">RELAX K<sub>b</sub></th>
-            <th class="num">RELAX p (q)</th>
-            <th>Regime Call</th>
-            <th class="num">Core Subs (Exp)</th>
-            <th class="num">LoF BF (p)</th>
-          </tr>
-        </thead>
-        <tbody>
-)HTML";
-        std::vector<BranchEvolutionaryProfile> sorted_br = res.branch_profiles;
-        std::sort(sorted_br.begin(), sorted_br.end(), [](const auto& a, const auto& b) {
-            return std::min({a.absrel_p_value, a.relax_p_value, a.lof_p_value}) <
-                   std::min({b.absrel_p_value, b.relax_p_value, b.lof_p_value});
-        });
-        for (const auto& bp : sorted_br) {
-            html << "          <tr>"
-                 << "<td>" << bp.branch_name << (bp.lof_flagged ? " <span class=\"pill pill-pos\">LoF Alert</span>" : "") << "</td>"
-                 << "<td>" << bp.macro_regime << "</td>"
-                 << "<td class=\"num\">" << std::setprecision(3) << bp.branch_length_subs << "</td>"
-                 << "<td>" << bp.compositional_regime << " (" << std::setprecision(1) << (bp.gc_cp3 * 100.0) << "%)</td>"
-                 << "<td class=\"num\">" << std::setprecision(2) << bp.omega_plus << " (" << std::setprecision(0) << (bp.weight_plus * 100.0) << "%)</td>"
-                 << "<td class=\"num\">" << std::setprecision(4) << bp.absrel_p_value
-                 << " (" << std::setprecision(3) << bp.absrel_holm_p << " / " << bp.absrel_bh_q << ")</td>"
-                 << "<td class=\"num\">" << std::setprecision(2) << bp.relax_k << "</td>"
-                 << "<td class=\"num\">" << std::setprecision(4) << bp.relax_p_value << " (" << std::setprecision(3) << bp.relax_bh_q << ")</td>"
-                 << "<td>" << bp.relax_call << "</td>"
-                 << "<td class=\"num\">" << std::setprecision(1) << bp.core_nonsyn_Observed << " (" << std::setprecision(2) << bp.core_nonsyn_Expected << ")</td>"
-                 << "<td class=\"num\">" << std::setprecision(1) << bp.lof_bayes_factor << " (" << std::setprecision(4) << bp.lof_p_value << ")</td>"
-                 << "</tr>\n";
-        }
-        html << R"HTML(        </tbody>
-      </table>
-    </div>
-  </div>
+  <!-- ===================================================================== -->
+  <!-- TAB 4: STAGE 5 SITE, dFEL & CONVERGENCE EXPLORER                      -->
+  <!-- ===================================================================== -->
+  <div id="tab-sites" class="tab-panel">
+    <div class="grid-2-eq">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Stationary FEL vs. Non-Reversible dFEL (Threshold-Crossing Sites)</div>
+            <div class="card-subtitle">Sites where directional GC3 drift correction unmasks hidden selection or suppresses stationary artifacts (dashed line: p = 0.05, LRT = 3.84)</div>
+          </div>
+        </div>
+        <div id="dfelPlotContainer" class="svg-container"></div>
+      </div>
 
-  <!-- TAB 4: MODEL-FREE EXCHANGEABILITY, TOGGLES & CONVERGENCE -->
-  <div id="tab-prime" class="tab-panel">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Convergent Evolution &amp; Amino-Acid Toggle Lollipop Atlas</div>
+            <div class="card-subtitle">Independent phylogenetic lineages converging on the same target amino acid (colored by &minus;log<sub>10</sub> p; click any lollipop to inspect)</div>
+          </div>
+        </div>
+        <div id="convPlotContainer" class="svg-container"></div>
+      </div>
+    </div>
+
     <div class="card">
-      <h3>Model-Free Amino-Acid Exchangeability, Toggle &amp; Convergence Atlas (Replaces Fixed Property Scales)</h3>
-      <div style="max-height:600px; overflow-y:auto; margin-top:10px;">
-        <table>
+      <div class="card-header">
+        <div>
+          <div class="card-title">Unified Site Atlas (FEL / dFEL / MEME / Exchangeability / Homology Forensics)</div>
+          <div class="card-subtitle">Click any row to open the Site Forensics Drawer; click any column header to sort.</div>
+        </div>
+        <div class="toolbar" style="margin-bottom:0;">
+          <input type="text" id="siteSearchInput" placeholder="Search site #, classification, branch, AA, driver..." oninput="renderSiteTable()" style="width:280px;">
+          <button class="btn btn-light" onclick="exportSiteCSV()">Export Filtered CSV</button>
+        </div>
+      </div>
+
+      <div id="siteFilterPills" class="filter-pills"></div>
+
+      <div class="table-wrap">
+        <table id="siteAtlasTable">
           <thead>
             <tr>
-              <th>Site</th>
-              <th>Mode</th>
-              <th class="num">Nonsyn Subs (M<sub>s</sub>)</th>
-              <th class="num">Observed N<sub>eff</sub></th>
-              <th class="num">Neutral E[N<sub>eff</sub>]</th>
-              <th class="num">Pair Concentration</th>
-              <th class="num">Max Convergent Branches</th>
-              <th class="num">p-value (BH q)</th>
-              <th>Mechanism Summary</th>
+              <th class="num" onclick="sortSites('site')">Codon</th>
+              <th onclick="sortSites('classification')">Unified Classification</th>
+              <th onclick="sortSites('spatial_domain')">1D Domain / Topo</th>
+              <th class="num" onclick="sortSites('column_homology_posterior')">POA PP (Gap%)</th>
+              <th class="num" onclick="sortSites('simes_omnibus_p')">Simes p (BH q)</th>
+              <th class="num" onclick="sortSites('alpha')">&alpha;</th>
+              <th class="num" onclick="sortSites('beta_pervasive')">&beta;<sub>perv</sub></th>
+              <th class="num" onclick="sortSites('fel_p_value')">Stationary FEL p</th>
+              <th class="num" onclick="sortSites('dfel_p_value')">Directional dFEL p</th>
+              <th class="num" onclick="sortSites('meme_p_value')">MEME p (&beta;<sup>+</sup>)</th>
+              <th class="num" onclick="sortSites('effective_aa_alphabet')">N<sub>eff</sub> / E[N<sub>eff</sub>]</th>
+              <th class="num" onclick="sortSites('max_convergent_transitions')">Conv. Lineages (AA)</th>
+              <th>Driving Branches / Context</th>
             </tr>
           </thead>
-          <tbody>
-)HTML";
-        std::vector<UnifiedSiteAtlasEntry> ex_sites = res.site_atlas;
-        std::sort(ex_sites.begin(), ex_sites.end(), [](const auto& a, const auto& b) {
-            return a.exchangeability_p_value < b.exchangeability_p_value;
-        });
-        size_t max_pr = std::min<size_t>(ex_sites.size(), 60);
-        for (size_t i = 0; i < max_pr; ++i) {
-            const auto& s = ex_sites[i];
-            if (s.expected_nonsyn_subs < 0.5) continue;
-            html << "            <tr>"
-                 << "<td class=\"num\">" << (s.site_index + 1) << "</td>"
-                 << "<td>" << s.exchangeability_mode << "</td>"
-                 << "<td class=\"num\">" << std::setprecision(2) << s.expected_nonsyn_subs << "</td>"
-                 << "<td class=\"num\">" << std::setprecision(2) << s.effective_aa_alphabet << "</td>"
-                 << "<td class=\"num\">" << std::setprecision(2) << s.expected_neutral_n_eff << "</td>"
-                 << "<td class=\"num\">" << std::setprecision(1) << (s.pair_concentration * 100.0) << "%</td>"
-                 << "<td class=\"num\">" << s.max_convergent_transitions << " (" << s.dominant_target_aa << ")</td>"
-                 << "<td class=\"num\">" << std::setprecision(4) << s.exchangeability_p_value << " (" << std::setprecision(3) << s.exchangeability_bh_q << ")</td>"
-                 << "<td>" << (s.key_property_driver.empty() ? "-" : s.key_property_driver) << "</td></tr>\n";
-        }
-        html << R"HTML(          </tbody>
+          <tbody id="siteAtlasTableBody"></tbody>
         </table>
       </div>
     </div>
   </div>
 </div>
+
+<script id="walrus-data" type="application/json">)WALRUS_HTML"
+             << safe_json
+             << R"WALRUS_HTML(</script>
+
 <script>
-function showTab(tabId, btn) {
+const DATA = JSON.parse(document.getElementById('walrus-data').textContent);
+const DATASET_LABEL = )WALRUS_HTML" << nlohmann::json(dataset_label).dump() << R"WALRUS_HTML(;
+
+// Global UI state
+let currentSiteFilter = 'ALL';
+let siteSortKey = 'site';
+let siteSortAsc = true;
+let branchSortKey = 'absrel_p_value';
+let branchSortAsc = true;
+let selectedCodon = null;
+let selectedBranchName = null;
+
+const siteByNumber = {};
+(DATA.site_atlas || []).forEach(s => { siteByNumber[s.site] = s; });
+const branchByName = {};
+(DATA.branch_profiles || []).forEach(b => { branchByName[b.branch_name] = b; });
+
+function fmtP(p) {
+  if (p === null || p === undefined || isNaN(p)) return '—';
+  if (p < 1e-4) return p.toExponential(1);
+  return p.toFixed(4);
+}
+function fmtNum(x, d = 2) {
+  if (x === null || x === undefined || isNaN(x)) return '—';
+  return Number(x).toFixed(d);
+}
+function escHtml(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function showTooltip(evt, htmlContent) {
+  const tt = document.getElementById('walrus-tooltip');
+  tt.innerHTML = htmlContent;
+  tt.style.display = 'block';
+  const pad = 14;
+  let x = evt.clientX + pad;
+  let y = evt.clientY + pad;
+  if (x + 350 > window.innerWidth) x = evt.clientX - 350;
+  if (y + 220 > window.innerHeight) y = Math.max(10, evt.clientY - 200);
+  tt.style.left = x + 'px';
+  tt.style.top = y + 'px';
+}
+function hideTooltip() {
+  document.getElementById('walrus-tooltip').style.display = 'none';
+}
+
+function switchTab(tabId) {
   document.querySelectorAll('.tab-panel').forEach(el => el.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-  document.getElementById(tabId).classList.add('active');
-  btn.classList.add('active');
+  const panel = document.getElementById(tabId);
+  if (panel) panel.classList.add('active');
+  const btn = document.getElementById('btn-' + tabId);
+  if (btn) btn.classList.add('active');
+  if (tabId === 'tab-tree') renderPhylogram();
 }
-function filterSites() {
-  const q = document.getElementById('siteSearch').value.toLowerCase();
-  const cls = document.getElementById('siteClassFilter').value;
-  document.querySelectorAll('#siteTable tbody tr').forEach(tr => {
-    const text = tr.innerText.toLowerCase();
-    const rowCls = tr.getAttribute('data-class') || '';
-    let matchCls = (cls === 'ALL') ||
-                   (cls === 'NON_NEUTRAL' && rowCls.indexOf('Neutral') === -1 && rowCls.indexOf('Invariant') === -1) ||
-                   (rowCls.indexOf(cls) !== -1);
-    tr.style.display = (matchCls && text.indexOf(q) !== -1) ? '' : 'none';
+
+function getClassificationPillClass(cls) {
+  if (!cls) return 'pill-neu';
+  if (cls.includes('Pervasive') && cls.includes('Diversifying')) return 'pill-pos';
+  if (cls.includes('Episodic')) return 'pill-epi';
+  if (cls.includes('Regime')) return 'pill-diff';
+  if (cls.includes('Purifying')) return 'pill-neg';
+  if (cls.includes('Toggle') || cls.includes('Convergent')) return 'pill-prop';
+  return 'pill-neu';
+}
+
+function isDfelDiscordant(s) {
+  const fSig = s.fel_p_value <= 0.05;
+  const dSig = s.dfel_p_value <= 0.05;
+  return fSig !== dSig;
+}
+
+// ============================================================================
+// 1. HEADER, 6-STAGE RIBBON & WHAT WALRUS CHANGED BANNER
+// ============================================================================
+function renderHeaderAndRibbon() {
+  const aln = DATA.alignment_and_network || {};
+  const adm = DATA.input_admission_audit || {};
+  const comp = DATA.compositional_audit || {};
+  const gw = DATA.gene_wide_selection || {};
+  const counts = DATA.summary_counts || {};
+  const bridges = DATA.recombination_bridges || [];
+  const rt = (DATA.analysis && DATA.analysis.runtime_seconds) ? DATA.analysis.runtime_seconds : 0;
+
+  document.getElementById('headerSubtitle').innerHTML =
+    `Dataset: <b>${escHtml(DATASET_LABEL)}</b> &bull; <b>${aln.num_taxa || 0}</b> admitted taxa &times; <b>${aln.num_codons || 0}</b> codons &bull; Mean Homology PP = <b>${fmtNum(aln.option5_mean_column_posterior, 4)}</b> &bull; Runtime: <b>${fmtNum(rt, 2)} s</b>`;
+
+  const nQuar = adm.quarantined_sequences || 0;
+  const nResc = adm.rescued_frame_or_strand || 0;
+  const nArt = (DATA.site_atlas || []).filter(s => s.artifact_eliminated).length;
+  const nBridges = bridges.length;
+  const nDisc = (DATA.site_atlas || []).filter(isDfelDiscordant).length;
+  const nUnmasked = (DATA.site_atlas || []).filter(s => s.dfel_p_value <= 0.05 && s.fel_p_value > 0.05).length;
+
+  const stages = [
+    {
+      num: 'Stage 0',
+      badge: nQuar > 0 ? 'Quarantined' : 'Clean',
+      cls: nQuar > 0 ? 'st-warn' : 'st-ok',
+      title: 'Input Admission & Triage',
+      val: `${adm.admitted_sequences || aln.num_taxa}/${adm.total_input_sequences || aln.num_taxa} Taxa`,
+      sub: `${nQuar} quarantined &bull; ${nResc} frame-rescued`,
+      tab: 'tab-integrity'
+    },
+    {
+      num: 'Stage 1',
+      badge: nArt > 0 ? `${nArt} Filtered` : 'High PP',
+      cls: nArt > 0 ? 'st-active' : 'st-ok',
+      title: 'POA Homology & Indels',
+      val: `PP = ${fmtNum(aln.option5_mean_column_posterior, 3)}`,
+      sub: `${nArt} indel-artifact site(s) suppressed`,
+      tab: 'tab-integrity'
+    },
+    {
+      num: 'Stage 2',
+      badge: nBridges > 0 ? `${nBridges} Bridge(s)` : 'Tree-Like',
+      cls: nBridges > 0 ? 'st-warn' : 'st-ok',
+      title: 'Reticulation & SPR Routing',
+      val: nBridges > 0 ? `${nBridges} Active Tract(s)` : 'Single Tree',
+      sub: nBridges > 0 ? `Peak ΔlnL = +${fmtNum(bridges[0].segment_delta_log_l, 1)} (p=${fmtP(bridges[0].p_value)})` : 'No recombination bridges (p > 0.01)',
+      tab: 'tab-integrity'
+    },
+    {
+      num: 'Stage 3',
+      badge: comp.directional_drift_active ? '3-Regime dFEL' : 'Stationary',
+      cls: comp.directional_drift_active ? 'st-active' : 'st-ok',
+      title: 'GC3 Compositional Drift',
+      val: `CP3 p = ${fmtP(comp.p_value_cp3)}`,
+      sub: comp.directional_drift_active ? `χ² = ${fmtNum(comp.chi2_cp3, 1)} &bull; ${nUnmasked} sites unmasked` : `χ² = ${fmtNum(comp.chi2_cp3, 1)} (Stationary FEL)`,
+      tab: 'tab-tree'
+    },
+    {
+      num: 'Stage 4',
+      badge: gw.has_positive_selection ? 'POSITIVE' : 'Purifying/Neutral',
+      cls: gw.has_positive_selection ? 'st-sig' : 'st-ok',
+      title: 'Gene-Wide & 1D Domains',
+      val: `p = ${fmtP(gw.p_value)}`,
+      sub: `BUSTED-E LRT = ${fmtNum(gw.lrt, 2)} &bull; ${counts.spatial_domains_detected || 1} domain(s)`,
+      tab: 'tab-overview'
+    },
+    {
+      num: 'Stage 5',
+      badge: `${counts.sites_simes_fdr_significant || 0} FDR Sites`,
+      cls: (counts.sites_episodic_diversifying || 0) > 0 ? 'st-sig' : 'st-active',
+      title: 'Site & Convergence Atlas',
+      val: `${counts.sites_episodic_diversifying || 0} Epi / ${counts.sites_pervasive_diversifying || 0} Perv`,
+      sub: `${counts.sites_pervasive_purifying || 0} purifying &bull; ${counts.sites_exchangeability_or_convergent || 0} toggle/conv`,
+      tab: 'tab-sites'
+    }
+  ];
+
+  document.getElementById('stageRibbon').innerHTML = stages.map(s => `
+    <div class="stage-card ${s.cls}" onclick="switchTab('${s.tab}')">
+      <div class="st-head"><span>${s.num}</span><span class="pill pill-neu" style="font-size:10px;padding:1px 6px;">${s.badge}</span></div>
+      <div class="st-title">${s.title}</div>
+      <div class="st-val">${s.val}</div>
+      <div class="st-sub">${s.sub}</div>
+    </div>
+  `).join('');
+
+  document.getElementById('deltaBanner').innerHTML = `
+    <div class="delta-title">
+      <span>&#9889; What WALRUS Resolved on ${escHtml(DATASET_LABEL)}:</span>
+    </div>
+    <div class="delta-chips">
+      <span class="delta-chip">Quarantined Sequences: <b>${nQuar}</b></span>
+      <span class="delta-chip">Indel-Artifact Sites Suppressed: <b>${nArt}</b></span>
+      <span class="delta-chip">Recombination / Conversion Bridges: <b>${nBridges}</b></span>
+      <span class="delta-chip">dFEL vs Stationary FEL Discordant Sites: <b>${nDisc}</b> (<b>${nUnmasked}</b> unmasked)</span>
+      <span class="delta-chip">Episodic Selected Branches (aBSREL): <b>${counts.branches_episodic_diversifying || 0}</b></span>
+      <span class="delta-chip">Loss-of-Constraint (LoF) Lineages: <b>${counts.branches_loss_of_constraint || 0}</b></span>
+    </div>
+  `;
+}
+
+// ============================================================================
+// 2. TAB 1: INTERACTIVE 5-SECOND CDS ARCHITECTURE & SELECTION PLOT
+// ============================================================================
+function renderOverviewTab() {
+  const sites = DATA.site_atlas || [];
+  const domains = DATA.spatial_domains || [];
+  const islands = DATA.synonymous_constraint_islands || [];
+  const bridges = DATA.recombination_bridges || [];
+  const C = sites.length || 1;
+
+  const W = 1380, H = 370;
+  const padL = 62, padR = 26, padT = 56, padB = 64;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const zeroY = padT + plotH * 0.48;
+  const maxUp = 4.2, maxDown = 4.2;
+
+  const xOf = c => padL + ((c - 0.5) / C) * plotW;
+  const wCod = Math.max(1.5, plotW / C);
+  const yUp = val => zeroY - (Math.min(maxUp, Math.max(0, val)) / maxUp) * (plotH * 0.46);
+  const yDown = val => zeroY + (Math.min(maxDown, Math.max(0, val)) / maxDown) * (plotH * 0.46);
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="auto" style="display:block;user-select:none;">`;
+
+  // Horizontal grid lines
+  [-4, -2, 0, 2, 4].forEach(gv => {
+    const yy = gv >= 0 ? yUp(gv) : yDown(-gv);
+    const lbl = gv === 4 ? '4 (Div.)' : (gv === -4 ? '4 (Pur.)' : String(Math.abs(gv)));
+    svg += `<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="${gv === 0 ? '#334155' : '#e2e8f0'}" stroke-width="${gv === 0 ? 1.3 : 1}" stroke-dasharray="${gv === 0 ? '' : '3,3'}"/>`;
+    svg += `<text x="${padL - 8}" y="${yy + 4}" text-anchor="end" font-size="11" fill="#475569" font-weight="${gv === 0 ? '700' : '500'}">${lbl}</text>`;
   });
+  svg += `<text x="16" y="${zeroY}" transform="rotate(-90 16 ${zeroY})" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1e293b">Selection Signal (−log10 q)</text>`;
+
+  // Stage 2 Recombination Bridge shaded regions
+  bridges.forEach(b => {
+    const x1 = xOf(b.peak_start_codon) - wCod * 0.5;
+    const x2 = xOf(b.peak_end_codon) + wCod * 0.5;
+    svg += `<rect x="${x1}" y="${padT}" width="${Math.max(4, x2 - x1)}" height="${plotH * 0.94}" fill="#fed7aa" fill-opacity="0.42" stroke="#f97316" stroke-width="1" stroke-dasharray="4,3" rx="4"/>`;
+    svg += `<text x="${0.5 * (x1 + x2)}" y="${padT + 14}" text-anchor="middle" font-size="10.5" font-weight="700" fill="#9a3412">Bridge: ${escHtml(b.clade_u)} ↔ ${escHtml(b.target_v)} (Codons ${b.peak_start_codon}–${b.peak_end_codon}, ΔlnL=+${fmtNum(b.segment_delta_log_l, 1)})</text>`;
+  });
+
+  // Top 1D Spatial Domain Architecture Pills
+  domains.forEach(d => {
+    const x1 = xOf(d.start_codon) - wCod * 0.4;
+    const x2 = xOf(d.end_codon) + wCod * 0.4;
+    let col = '#0284c7';
+    if ((d.domain_type || '').includes('Hypervariable')) col = '#ea580c';
+    else if ((d.domain_type || '').includes('Permissive')) col = '#0d9488';
+    const dw = Math.max(6, x2 - x1 - 2);
+    svg += `<rect x="${x1 + 1}" y="10" width="${dw}" height="22" rx="6" fill="${col}"/>`;
+    if (dw > 75) {
+      svg += `<text x="${x1 + 1 + dw / 2}" y="25" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">${escHtml(d.domain_type)} (${d.start_codon}–${d.end_codon}, ω=${fmtNum(d.mean_omega, 2)})</text>`;
+    }
+  });
+
+  // Synonymous Constraint Island Pills (between domains and plot)
+  islands.forEach(isl => {
+    const x1 = xOf(isl.start_codon) - wCod * 0.4;
+    const x2 = xOf(isl.end_codon) + wCod * 0.4;
+    svg += `<rect x="${x1}" y="35" width="${Math.max(8, x2 - x1)}" height="14" rx="4" fill="#16a34a"/>`;
+    svg += `<text x="${0.5 * (x1 + x2)}" y="45" text-anchor="middle" font-size="9.5" font-weight="700" fill="#fff">SynIsl ${isl.start_codon}–${isl.end_codon}</text>`;
+  });
+
+  // Site bars + bottom POA Homology Posterior strip
+  const ppStripY = H - 36;
+  svg += `<text x="${padL - 8}" y="${ppStripY + 8}" text-anchor="end" font-size="10" font-weight="700" fill="#475569">POA PP</text>`;
+
+  sites.forEach(s => {
+    const cx = xOf(s.site);
+    const qLog = Math.min(maxUp, -Math.log10(Math.max(s.simes_omnibus_q || 1.0, 1e-5)));
+    const cls = s.classification || 'Neutral';
+
+    let upVal = 0, downVal = 0, barCol = '#94a3b8';
+    if (cls.includes('Diversifying')) {
+      upVal = Math.max(0.9, qLog);
+      barCol = cls.includes('Pervasive') ? '#dc2626' : '#7c3aed';
+    } else if (cls.includes('Toggle') || cls.includes('Convergent') || (s.max_convergent_transitions >= 3 && s.exchangeability_p_value <= 0.05)) {
+      upVal = Math.max(0.7, Math.min(3.4, -Math.log10(Math.max(s.exchangeability_p_value || 1.0, 1e-4))));
+      barCol = '#0d9488';
+    } else if (cls.includes('Purifying')) {
+      downVal = Math.max(0.5, qLog);
+      barCol = '#2563eb';
+    }
+
+    if (upVal > 0) {
+      const yy = yUp(upVal);
+      svg += `<rect x="${cx - wCod * 0.42}" y="${yy}" width="${Math.max(1.6, wCod * 0.84)}" height="${zeroY - yy}" fill="${barCol}" opacity="0.92"/>`;
+    }
+    if (downVal > 0) {
+      const yy = yDown(downVal);
+      svg += `<rect x="${cx - wCod * 0.38}" y="${zeroY}" width="${Math.max(1.4, wCod * 0.76)}" height="${yy - zeroY}" fill="${barCol}" opacity="0.80"/>`;
+    }
+
+    // Bottom POA Homology Posterior cell
+    const pp = s.column_homology_posterior ?? 1.0;
+    const ppCol = s.artifact_eliminated ? '#dc2626' : (pp >= 0.99 ? '#16a34a' : (pp >= 0.90 ? '#f59e0b' : '#ef4444'));
+    svg += `<rect x="${cx - wCod * 0.5}" y="${ppStripY}" width="${Math.max(1.2, wCod)}" height="10" fill="${ppCol}"/>`;
+
+    // Invisible full-height interactive hitbox for smooth hovering & clicking
+    svg += `<rect x="${cx - wCod * 0.5}" y="${padT}" width="${Math.max(2.0, wCod)}" height="${H - padT - 20}" fill="transparent" style="cursor:pointer;" onmousemove="hoverCodon(event, ${s.site})" onmouseout="hideTooltip()" onclick="openSiteDrawer(${s.site})"/>`;
+  });
+
+  // X-axis ticks
+  const step = C <= 120 ? 10 : (C <= 300 ? 25 : (C <= 700 ? 50 : 100));
+  for (let c = step; c <= C; c += step) {
+    const xx = xOf(c);
+    svg += `<line x1="${xx}" y1="${ppStripY + 10}" x2="${xx}" y2="${ppStripY + 15}" stroke="#64748b"/>`;
+    svg += `<text x="${xx}" y="${H - 8}" text-anchor="middle" font-size="10.5" fill="#475569">${c}</text>`;
+  }
+  svg += `<text x="${padL + plotW / 2}" y="${H - 2}" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1e293b">Codon Position (1 to ${C})</text>`;
+  svg += `</svg>`;
+  document.getElementById('cdsPlotContainer').innerHTML = svg;
+
+  // Render Narrative & BUSTED-E Breakdown
+  const aln = DATA.alignment_and_network || {};
+  const comp = DATA.compositional_audit || {};
+  const gw = DATA.gene_wide_selection || {};
+  const counts = DATA.summary_counts || {};
+  const mca = DATA.mutational_context_alert || {};
+
+  document.getElementById('narrativeContainer').innerHTML = `
+    <p style="margin-bottom:8px;"><b>1. Homology, Indel &amp; Reticulation Integrity (Stages 0–2):</b> Across <b>${aln.num_taxa}</b> admitted sequences and <b>${aln.num_codons}</b> codons, POA column homology achieved mean posterior <b>PP = ${fmtNum(aln.option5_mean_column_posterior, 4)}</b> (min <b>${fmtNum(aln.option5_min_column_posterior, 3)}</b>), with <b>${aln.branch_indel_events || 0}</b> branch indel events. ${bridges.length > 0 ? `Ohmic Wheatstone screening localized <b>${bridges.length} recombination / gene-conversion bridge(s)</b> and routed their site likelihood cavities through local SPR topologies.` : `No non-tree-like recombination bridges exceeded the routing threshold.`}</p>
+    <p style="margin-bottom:8px;"><b>2. Compositional Drift &amp; Lineage Regimes (Stage 3):</b> 3rd-codon-position nucleotide heterogeneity reported <b>CP3 &chi;&sup2; = ${fmtNum(comp.chi2_cp3, 1)}</b> (p = <b>${fmtP(comp.p_value_cp3)}</b>), activating <b>${comp.directional_drift_active ? 'Non-Reversible 3-Regime Directional Softmax Kernels (dFEL)' : 'Stationary Reversible Codon Kernels (FEL)'}</b>. Lineage-specific core-invasion screening flagged <b>${counts.branches_loss_of_constraint || 0} branch(es)</b> for potential relaxation of purifying core constraint.</p>
+    <p style="margin-bottom:8px;"><b>3. Gene-Wide Selection &amp; 1D Architecture (Stage 4):</b> Error-compensated <b>BUSTED-E</b> ${gw.has_positive_selection ? '<b style="color:#dc2626;">detected statistically significant gene-wide episodic diversifying selection</b>' : '<b>did not detect gene-wide diversifying selection</b>'} (LRT = <b>${fmtNum(gw.lrt, 2)}</b>, p = <b>${fmtP(gw.p_value)}</b>). 1D spatial segmentation partitioned the protein into <b>${domains.length} selective domain(s)</b> and <b>${islands.length} synonymous constraint island(s)</b>.</p>
+    <p><b>4. Site &amp; Mechanism Resolution (Stage 5):</b> Active-set polish identified <b>${counts.sites_episodic_diversifying || 0} episodic diversifying</b> (MEME), <b>${counts.sites_pervasive_diversifying || 0} pervasive diversifying</b> (${comp.directional_drift_active ? 'dFEL' : 'FEL'}), <b>${counts.sites_pervasive_purifying || 0} pervasive purifying</b>, and <b>${counts.sites_exchangeability_or_convergent || 0} convergent / amino-acid toggle</b> sites (${counts.sites_simes_fdr_significant || 0} significant at Simes FDR q &le; 0.10).</p>
+    ${mca.triggered ? `<div style="margin-top:10px;padding:8px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;color:#991b1b;font-weight:600;font-size:12px;">&#9888; Mutational Context Alert: ${escHtml(mca.alert_summary)}</div>` : ''}
+  `;
+
+  const vp = document.getElementById('bustedVerdictPill');
+  vp.className = 'pill ' + (gw.has_positive_selection ? 'pill-pos' : 'pill-neu');
+  vp.textContent = gw.has_positive_selection ? `POSITIVE SELECTION (p = ${fmtP(gw.p_value)})` : `NO GENE-WIDE SIGNAL (p = ${fmtP(gw.p_value)})`;
+
+  const omC = gw.omega_classes || [0, 1, 1];
+  const omW = gw.omega_weights || [0, 0, 0];
+  document.getElementById('bustedBreakdownContainer').innerHTML = `
+    <div class="kv-grid" style="margin-bottom:12px;">
+      <div class="kv-box"><div class="k">BUSTED-E LRT (p-value)</div><div class="v">${fmtNum(gw.lrt, 2)} (p = ${fmtP(gw.p_value)})</div></div>
+      <div class="kv-box"><div class="k">Error-Sink &omega;<sub>err</sub> (Weight)</div><div class="v">${fmtNum(gw.error_sink_omega, 1)} (${fmtNum((gw.error_sink_weight || 0) * 100, 2)}%)</div></div>
+    </div>
+    <table style="font-size:12px;">
+      <thead><tr><th>Rate Class</th><th class="num">&omega; = dN/dS</th><th class="num">Proportion</th><th>Visual Weight</th></tr></thead>
+      <tbody>
+        <tr><td><span class="pill pill-neg">Purifying (&omega;<sub>1</sub>)</span></td><td class="num">${fmtNum(omC[0], 3)}</td><td class="num">${fmtNum((omW[0] || 0) * 100, 1)}%</td><td><div style="background:#dbeafe;height:10px;border-radius:4px;width:${Math.min(100, (omW[0] || 0) * 100)}%;"></div></td></tr>
+        <tr><td><span class="pill pill-neu">Neutral / Relaxed (&omega;<sub>2</sub>)</span></td><td class="num">${fmtNum(omC[1], 3)}</td><td class="num">${fmtNum((omW[1] || 0) * 100, 1)}%</td><td><div style="background:#cbd5e1;height:10px;border-radius:4px;width:${Math.min(100, (omW[1] || 0) * 100)}%;"></div></td></tr>
+        <tr><td><span class="pill pill-pos">Diversifying (&omega;<sub>3</sub>)</span></td><td class="num"><b>${fmtNum(omC[2], 2)}</b></td><td class="num"><b>${fmtNum((omW[2] || 0) * 100, 2)}%</b></td><td><div style="background:#dc2626;height:10px;border-radius:4px;width:${Math.min(100, Math.max(2, (omW[2] || 0) * 100))}%;"></div></td></tr>
+      </tbody>
+    </table>
+  `;
 }
+
+function hoverCodon(evt, siteNum) {
+  const s = siteByNumber[siteNum];
+  if (!s) return;
+  const html = `
+    <div style="font-weight:800;font-size:13px;margin-bottom:4px;">Codon ${s.site} &bull; ${escHtml(s.classification)}</div>
+    <div>Domain: <b>${escHtml(s.spatial_domain)}</b> ${s.in_synonymous_island ? '<span style="color:#4ade80;">[Synonymous Island]</span>' : ''}</div>
+    <div>Simes Omnibus: <b>p = ${fmtP(s.simes_omnibus_p)}</b> (BH q = ${fmtNum(s.simes_omnibus_q, 3)})</div>
+    <div>Rates: <b>&alpha; = ${fmtNum(s.alpha, 2)}</b>, <b>&beta;<sub>perv</sub> = ${fmtNum(s.beta_pervasive, 2)}</b>, <b>&beta;<sup>+</sup> = ${fmtNum(s.beta_plus, 2)}</b></div>
+    <div>FEL p = <b>${fmtP(s.fel_p_value)}</b> &bull; dFEL p = <b>${fmtP(s.dfel_p_value)}</b> &bull; MEME p = <b>${fmtP(s.meme_p_value)}</b></div>
+    <div>Convergence: <b>${s.max_convergent_transitions || 0} lineages (&rarr; ${escHtml(s.dominant_target_aa)})</b>, N<sub>eff</sub> = ${fmtNum(s.effective_aa_alphabet, 2)}</div>
+    <div>Homology PP = <b>${fmtNum(s.column_homology_posterior, 3)}</b> &bull; Gaps = <b>${fmtNum((s.gap_fraction || 0) * 100, 1)}%</b> ${s.artifact_eliminated ? '<br><b style="color:#f87171;">[Indel Artifact Suppressed]</b>' : ''}</div>
+    <div style="margin-top:4px;color:#94a3b8;font-size:11px;">Click to open full Site Forensics Drawer</div>
+  `;
+  showTooltip(evt, html);
+}
+
+// ============================================================================
+// 3. TAB 2: STAGE 0-2 INTEGRITY, HOMOLOGY & RETICULATION FORENSICS
+// ============================================================================
+function renderIntegrityTab() {
+  const bridges = DATA.recombination_bridges || [];
+  document.getElementById('bridgeCountPill').textContent = `${bridges.length} Bridge(s)`;
+  document.getElementById('bridgeCountPill').className = 'pill ' + (bridges.length > 0 ? 'pill-warn' : 'pill-ok');
+
+  if (bridges.length === 0) {
+    document.getElementById('bridgesContainer').innerHTML = `<div style="padding:14px;color:var(--muted);">No localized recombination or paralog conversion bridges exceeded the routing threshold (all segments consistent with the single species/gene tree).</div>`;
+  } else {
+    document.getElementById('bridgesContainer').innerHTML = `
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Recipient Clade (u)</th><th>Donor Target (v)</th><th class="num">Codon Window</th><th class="num">Segment &Delta;lnL</th><th class="num">p-value</th><th>SPR Routed</th></tr></thead>
+          <tbody>
+            ${bridges.map(b => `
+              <tr>
+                <td><b>${escHtml(b.clade_u)}</b></td>
+                <td><b>${escHtml(b.target_v)}</b></td>
+                <td class="num">${b.peak_start_codon}–${b.peak_end_codon}</td>
+                <td class="num" style="color:#c2410c;font-weight:700;">+${fmtNum(b.segment_delta_log_l, 2)}</td>
+                <td class="num">${fmtP(b.p_value)}</td>
+                <td><span class="pill ${b.routed_to_spr_tree ? 'pill-warn' : 'pill-neu'}">${b.routed_to_spr_tree ? 'Routed' : 'Audit Only'}</span></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  const artSites = (DATA.site_atlas || []).filter(s => s.artifact_eliminated);
+  const aln = DATA.alignment_and_network || {};
+  document.getElementById('artifactCountPill').textContent = `${artSites.length} Suppressed`;
+  document.getElementById('artifactCountPill').className = 'pill ' + (artSites.length > 0 ? 'pill-prop' : 'pill-ok');
+
+  document.getElementById('artifactContainer').innerHTML = `
+    <div class="kv-grid" style="margin-bottom:10px;">
+      <div class="kv-box"><div class="k">Option 1 Joint lnL (MG94 + Indel)</div><div class="v">${fmtNum(aln.option1_joint_log_l, 1)}</div></div>
+      <div class="kv-box"><div class="k">Mean / Min Homology Posterior PP</div><div class="v">${fmtNum(aln.option5_mean_column_posterior, 4)} / ${fmtNum(aln.option5_min_column_posterior, 3)}</div></div>
+    </div>
+    <div style="font-size:12px;color:var(--ink-2);margin-bottom:6px;">
+      <b>Indel-Window / Low-Homology False-Positive Sites Eliminated (${artSites.length}):</b>
+    </div>
+    <div>
+      ${artSites.length === 0
+        ? `<span style="color:var(--muted);font-size:12px;">Zero alignment-artifact sites detected.</span>`
+        : artSites.map(s => `<span class="site-chip" onclick="openSiteDrawer(${s.site})" title="PP=${fmtNum(s.column_homology_posterior,3)}, Gap=${fmtNum(s.gap_fraction*100,1)}%">Codon ${s.site} (PP=${fmtNum(s.column_homology_posterior, 2)})</span>`).join('')}
+    </div>
+  `;
+
+  // Domains & Synonymous Constraint Islands
+  const domains = DATA.spatial_domains || [];
+  const islands = DATA.synonymous_constraint_islands || [];
+  document.getElementById('domainsAndIslandsContainer').innerHTML = `
+    <div style="font-weight:700;font-size:12px;margin-bottom:6px;">1D Selective Domains (${domains.length}):</div>
+    <div class="table-wrap" style="margin-bottom:12px;">
+      <table>
+        <thead><tr><th>Codons</th><th>Domain Type</th><th class="num">Mean &omega;</th><th class="num">Mean &alpha;</th><th class="num">Mean &beta;</th><th class="num">Gap%</th><th class="num">Mean N<sub>eff</sub></th></tr></thead>
+        <tbody>
+          ${domains.map(d => `
+            <tr>
+              <td class="num"><b>${d.start_codon}–${d.end_codon}</b></td>
+              <td><span class="pill ${(d.domain_type||'').includes('Purifying') ? 'pill-neg' : ((d.domain_type||'').includes('Hyper') ? 'pill-diff' : 'pill-prop')}">${escHtml(d.domain_type)}</span></td>
+              <td class="num">${fmtNum(d.mean_omega, 2)}</td>
+              <td class="num">${fmtNum(d.mean_alpha, 2)}</td>
+              <td class="num">${fmtNum(d.mean_beta, 2)}</td>
+              <td class="num">${fmtNum((d.mean_gap_fraction || 0) * 100, 1)}%</td>
+              <td class="num">${fmtNum(d.mean_n_eff, 2)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+    <div style="font-weight:700;font-size:12px;margin-bottom:6px;">Synonymous Constraint Islands (${islands.length}):</div>
+    ${islands.length === 0
+      ? `<div style="color:var(--muted);font-size:12px;">No statistically significant synonymous constraint islands detected.</div>`
+      : `<div class="table-wrap"><table><thead><tr><th>Codons</th><th class="num">Island &alpha;</th><th class="num">Gene &alpha;</th><th class="num">Suppression Ratio</th><th class="num">Z-Score</th><th class="num">p-value</th></tr></thead><tbody>
+          ${islands.map(isl => `<tr><td class="num"><b>${isl.start_codon}–${isl.end_codon}</b></td><td class="num">${fmtNum(isl.mean_alpha, 3)}</td><td class="num">${fmtNum(isl.gene_mean_alpha, 2)}</td><td class="num">${fmtNum(isl.suppression_ratio, 3)}</td><td class="num">${fmtNum(isl.z_score, 2)}</td><td class="num">${fmtP(isl.p_value)}</td></tr>`).join('')}
+        </tbody></table></div>`}
+  `;
+
+  // Mutational Context & Coevolution
+  const mca = DATA.mutational_context_alert || {};
+  const coev = DATA.coevolution_pairs || [];
+  document.getElementById('contextAndCoevContainer').innerHTML = `
+    <div class="kv-grid" style="margin-bottom:10px;">
+      <div class="kv-box"><div class="k">CpG Selected Sites (Enrichment)</div><div class="v">${mca.cpg_driven_selected_sites || 0} / ${mca.num_selected_sites_evaluated || 0} (${fmtNum(mca.cpg_enrichment_fold, 1)}x, p=${fmtP(mca.cpg_fisher_p)})</div></div>
+      <div class="kv-box"><div class="k">APOBEC Motif Selected Sites</div><div class="v">${mca.apobec_driven_selected_sites || 0}</div></div>
+    </div>
+    <div style="margin-bottom:10px;font-size:12px;">
+      <b>Flagged CpG Selected Codons:</b> ${(mca.flagged_cpg_sites || []).length === 0 ? 'None' : mca.flagged_cpg_sites.map(c => `<span class="site-chip" onclick="openSiteDrawer(${c})">Codon ${c}</span>`).join('')}
+    </div>
+    <div style="font-weight:700;font-size:12px;margin-bottom:6px;">Epistatic Co-Mutating Site Pairs (${coev.length}):</div>
+    ${coev.length === 0
+      ? `<div style="color:var(--muted);font-size:12px;">No epistatic coevolution pairs reported (enable with <code>--coevolution</code>).</div>`
+      : `<div class="table-wrap"><table><thead><tr><th>Site Pair</th><th class="num">Shared Branches</th><th class="num">Cosine r</th><th class="num">p (BH q)</th><th>Top Co-Mutating Lineages</th></tr></thead><tbody>
+          ${coev.map(cp => `<tr><td><span class="site-chip" onclick="openSiteDrawer(${cp.site_i})">${cp.site_i}</span> &harr; <span class="site-chip" onclick="openSiteDrawer(${cp.site_j})">${cp.site_j}</span></td><td class="num">${fmtNum(cp.shared_branches, 1)}</td><td class="num">${fmtNum(cp.cosine_similarity, 2)}</td><td class="num">${fmtP(cp.p_value)} (${fmtNum(cp.bh_q_value, 2)})</td><td>${escHtml(cp.top_co_mutating_branches)}</td></tr>`).join('')}
+        </tbody></table></div>`}
+  `;
+
+  renderAdmissionTable();
+}
+
+function renderAdmissionTable() {
+  const adm = DATA.input_admission_audit || {};
+  const taxa = adm.taxa || [];
+  const q = (document.getElementById('admSearch')?.value || '').toLowerCase();
+  const st = document.getElementById('admStatusFilter')?.value || 'ALL';
+
+  const filtered = taxa.filter(t => {
+    const statusUp = (t.status || '').toUpperCase();
+    if (st === 'QUARANTINED' && !statusUp.includes('QUARANTIN')) return false;
+    if (st === 'RESCUED' && !t.reverse_complemented && (t.frame_offset || 0) === 0) return false;
+    if (st === 'ADMITTED' && statusUp.includes('QUARANTIN')) return false;
+    if (q && !`${t.name} ${t.status} ${t.reason}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  document.getElementById('admissionTableContainer').innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Sequence / Assembly</th>
+          <th>Admission Status</th>
+          <th class="num">Codon Length</th>
+          <th class="num">Frame Offset (RC)</th>
+          <th class="num">Internal Stops</th>
+          <th class="num">Max Homology Z</th>
+          <th class="num">Max AA Identity</th>
+          <th>Diagnostic Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${filtered.map(t => {
+          const isQ = (t.status || '').toUpperCase().includes('QUARANTIN');
+          return `
+            <tr>
+              <td><b>${escHtml(t.name)}</b></td>
+              <td><span class="pill ${isQ ? 'pill-pos' : 'pill-ok'}">${escHtml(t.status)}</span></td>
+              <td class="num">${t.codon_length || 0}</td>
+              <td class="num">${t.frame_offset || 0}${t.reverse_complemented ? ' (RC)' : ''}</td>
+              <td class="num">${t.internal_stops_frame0 || 0}</td>
+              <td class="num">${fmtNum(t.max_homology_z, 1)}</td>
+              <td class="num">${fmtNum((t.max_aa_identity || 0) * 100, 1)}%</td>
+              <td>${escHtml(t.reason || 'Admitted in-frame')}</td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+// ============================================================================
+// 4. TAB 3: INTERACTIVE ZERO-DEPENDENCY SVG PHYLOGRAM & LINEAGE TABLE
+// ============================================================================
+function parseNewick(nwk) {
+  if (!nwk) return null;
+  let i = 0;
+  const n = nwk.length;
+  let autoId = 1;
+  function skipWs() { while (i < n && /\s/.test(nwk[i])) i++; }
+  function parseSubtree() {
+    skipWs();
+    const node = { children: [], name: '', length: 0.0, tag: '' };
+    if (i < n && nwk[i] === '(') {
+      i++; // '('
+      while (true) {
+        node.children.push(parseSubtree());
+        skipWs();
+        if (i < n && nwk[i] === ',') { i++; continue; }
+        if (i < n && nwk[i] === ')') { i++; break; }
+        break;
+      }
+    }
+    skipWs();
+    // Parse name (and optional {TAG} or [&&NHX...])
+    let rawName = '';
+    while (i < n && !/[,():;]/.test(nwk[i])) {
+      if (nwk[i] === '[') {
+        while (i < n && nwk[i] !== ']') i++;
+        if (i < n) i++;
+      } else {
+        rawName += nwk[i++];
+      }
+    }
+    rawName = rawName.trim();
+    const tagMatch = rawName.match(/\{([^}]+)\}/);
+    if (tagMatch) {
+      node.tag = tagMatch[1];
+      rawName = rawName.replace(/\{[^}]+\}/g, '').trim();
+    }
+    node.name = rawName || `Node_${autoId++}`;
+    skipWs();
+    if (i < n && nwk[i] === ':') {
+      i++;
+      let lenStr = '';
+      while (i < n && !/[,();]/.test(nwk[i])) {
+        if (nwk[i] === '[') {
+          while (i < n && nwk[i] !== ']') i++;
+          if (i < n) i++;
+        } else {
+          lenStr += nwk[i++];
+        }
+      }
+      const v = parseFloat(lenStr);
+      node.length = isNaN(v) ? 0.0 : Math.max(0.0, v);
+    }
+    return node;
+  }
+  const root = parseSubtree();
+  root.isRoot = true;
+  return root;
+}
+
+const parsedTreeRoot = parseNewick((DATA.alignment_and_network || {}).tree_newick || (DATA.alignment_and_network || {}).extended_newick || '');
+
+function gc3Color(gcPct) {
+  // Smooth blue (30% GC3) -> teal (55%) -> amber (75%) -> crimson (95%)
+  const t = Math.max(0, Math.min(1, (gcPct - 30) / 65));
+  if (t < 0.4) {
+    const u = t / 0.4;
+    const r = Math.round(37 + u * (13 - 37));
+    const g = Math.round(99 + u * (148 - 99));
+    const b = Math.round(235 + u * (136 - 235));
+    return `rgb(${r},${g},${b})`;
+  } else {
+    const u = (t - 0.4) / 0.6;
+    const r = Math.round(13 + u * (220 - 13));
+    const g = Math.round(148 + u * (38 - 148));
+    const b = Math.round(136 + u * (38 - 136));
+    return `rgb(${r},${g},${b})`;
+  }
+}
+
+function renderPhylogram() {
+  if (!parsedTreeRoot) return;
+  const mode = document.getElementById('treeColorMode')?.value || 'gc3';
+  const showBridges = document.getElementById('treeShowBridges')?.checked ?? true;
+  const useCladogram = document.getElementById('treeCladogram')?.checked ?? false;
+  const rowH = parseInt(document.getElementById('treeRowHeight')?.value || '15', 10);
+  const searchQ = (document.getElementById('branchSearch')?.value || '').toLowerCase();
+
+  // Legend update
+  const leg = document.getElementById('treeLegendBar');
+  if (mode === 'gc3') {
+    leg.innerHTML = `<b>GC3% Color Scale:</b> <span style="color:#2563eb;font-weight:700;">&#9644; 30% (AT-Rich)</span> <span style="color:#0d9488;font-weight:700;">&#9644; 55% (Mid)</span> <span style="color:#ea580c;font-weight:700;">&#9644; 75% (GC-Rich)</span> <span style="color:#dc2626;font-weight:700;">&#9644; 95% (Ultra-GC3)</span>`;
+  } else if (mode === 'absrel') {
+    leg.innerHTML = `<b>aBSREL Episodic Selection:</b> <span style="color:#dc2626;font-weight:700;">&#9644; Holm-corrected q &le; 0.05</span> <span style="color:#ea580c;font-weight:700;">&#9644; Nominal p &le; 0.05</span> <span style="color:#94a3b8;font-weight:700;">&#9644; Background (p &gt; 0.05)</span>`;
+  } else if (mode === 'relax') {
+    leg.innerHTML = `<b>RELAX Selection Intensity K<sub>b</sub>:</b> <span style="color:#dc2626;font-weight:700;">&#9644; Intensified (K &gt; 1, p &le; 0.05)</span> <span style="color:#2563eb;font-weight:700;">&#9644; Relaxed (K &lt; 1, p &le; 0.05)</span> <span style="color:#94a3b8;font-weight:700;">&#9644; Neutral / Unchanged</span>`;
+  } else if (mode === 'lof') {
+    leg.innerHTML = `<b>Core-Invasion / Loss-of-Constraint Audit:</b> <span style="color:#dc2626;font-weight:700;">&#9644; LoF Alert (BF &ge; 25 &amp; Bonferroni p &le; 0.05)</span> <span style="color:#f59e0b;font-weight:700;">&#9644; Elevated Core Subs (BF &ge; 10)</span> <span style="color:#94a3b8;font-weight:700;">&#9644; Intact Core Constraint</span>`;
+  } else {
+    leg.innerHTML = `<b>Macro-Regime Partition:</b> <span style="color:#7c3aed;font-weight:700;">&#9644; Test / Foreground Clade</span> <span style="color:#0d9488;font-weight:700;">&#9644; Reference Clade</span>`;
+  }
+
+  // Assign leaf y-positions and x-depths
+  let leafIdx = 0;
+  let maxDepth = 0;
+  const nodeByName = {};
+
+  function layoutPass(nd, depthSubs, depthClado) {
+    const bp = branchByName[nd.name];
+    const bl = bp ? bp.branch_length_subs : nd.length;
+    nd.effLen = useCladogram ? (nd.isRoot ? 0 : 1.0) : (nd.isRoot ? 0 : Math.max(0.0005, bl));
+    nd.xStart = depthSubs;
+    nd.xEnd = depthSubs + nd.effLen;
+    if (nd.xEnd > maxDepth) maxDepth = nd.xEnd;
+    nodeByName[nd.name] = nd;
+
+    if (!nd.children || nd.children.length === 0) {
+      nd.y = leafIdx * rowH + 24;
+      leafIdx++;
+    } else {
+      nd.children.forEach(ch => layoutPass(ch, nd.xEnd, depthClado + 1));
+      const ys = nd.children.map(c => c.y);
+      nd.y = 0.5 * (Math.min(...ys) + Math.max(...ys));
+    }
+  }
+  layoutPass(parsedTreeRoot, 0, 0);
+
+  const numLeaves = Math.max(1, leafIdx);
+  const W = 1320;
+  const H = Math.max(280, numLeaves * rowH + 44);
+  const padL = 24, padR = 260;
+  const treeW = W - padL - padR;
+  const xScale = maxDepth > 0 ? treeW / maxDepth : 1;
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block;">`;
+
+  function branchStroke(nd) {
+    const bp = branchByName[nd.name];
+    if (!bp) return { col: '#94a3b8', w: 1.6 };
+    if (mode === 'gc3') {
+      return { col: gc3Color((bp.gc_cp3 || 0.5) * 100), w: 2.3 };
+    } else if (mode === 'absrel') {
+      if (bp.absrel_holm_p <= 0.05) return { col: '#dc2626', w: 3.4 };
+      if (bp.absrel_p_value <= 0.05) return { col: '#ea580c', w: 2.8 };
+      return { col: '#cbd5e1', w: 1.5 };
+    } else if (mode === 'relax') {
+      if ((bp.relax_call || '').includes('Intensified')) return { col: '#dc2626', w: 3.0 };
+      if ((bp.relax_call || '').includes('Relaxed')) return { col: '#2563eb', w: 3.0 };
+      return { col: '#cbd5e1', w: 1.5 };
+    } else if (mode === 'lof') {
+      if (bp.lof_flagged) return { col: '#dc2626', w: 3.6 };
+      if ((bp.lof_bayes_factor || 0) >= 10) return { col: '#f59e0b', w: 2.6 };
+      return { col: '#cbd5e1', w: 1.5 };
+    } else {
+      const isTest = (bp.macro_regime || '').toLowerCase().includes('test') || (bp.macro_regime || '').toLowerCase().includes('fg');
+      return { col: isTest ? '#7c3aed' : '#0d9488', w: isTest ? 2.8 : 1.8 };
+    }
+  }
+
+  function drawSubtree(nd) {
+    const x1 = padL + nd.xStart * xScale;
+    const x2 = padL + nd.xEnd * xScale;
+    const y = nd.y;
+    const st = branchStroke(nd);
+    const isSel = selectedBranchName === nd.name;
+    const isMatch = searchQ && nd.name.toLowerCase().includes(searchQ);
+
+    if (!nd.isRoot) {
+      svg += `<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="${isSel ? '#0f172a' : st.col}" stroke-width="${isSel ? st.w + 1.8 : st.w}" stroke-linecap="round" style="cursor:pointer;" onmousemove="hoverBranch(event, '${escHtml(nd.name)}')" onmouseout="hideTooltip()" onclick="selectBranch('${escHtml(nd.name)}')"/>`;
+      svg += `<circle cx="${x2}" cy="${y}" r="${isSel || isMatch ? 4.2 : 2.4}" fill="${isMatch ? '#ea580c' : st.col}" style="cursor:pointer;" onmousemove="hoverBranch(event, '${escHtml(nd.name)}')" onmouseout="hideTooltip()" onclick="selectBranch('${escHtml(nd.name)}')"/>`;
+    }
+
+    if (nd.children && nd.children.length > 0) {
+      const yMin = Math.min(...nd.children.map(c => c.y));
+      const yMax = Math.max(...nd.children.map(c => c.y));
+      svg += `<line x1="${x2}" y1="${yMin}" x2="${x2}" y2="${yMax}" stroke="#94a3b8" stroke-width="1.4"/>`;
+      nd.children.forEach(drawSubtree);
+    } else {
+      const bp = branchByName[nd.name];
+      let badge = '';
+      if (bp) {
+        if (mode === 'gc3') badge = ` (${fmtNum((bp.gc_cp3 || 0) * 100, 0)}% GC3)`;
+        else if (mode === 'absrel' && bp.absrel_p_value <= 0.05) badge = ` [ω+=${fmtNum(bp.omega_plus, 1)}, p=${fmtP(bp.absrel_p_value)}]`;
+        else if (mode === 'relax' && bp.relax_p_value <= 0.05) badge = ` [K=${fmtNum(bp.relax_k, 2)}]`;
+        else if (mode === 'lof' && bp.lof_flagged) badge = ` [LoF Alert!]`;
+      }
+      const fontW = (isSel || isMatch) ? '800' : '500';
+      const fillCol = isMatch ? '#c2410c' : '#0f172a';
+      svg += `<text x="${x2 + 6}" y="${y + 3.5}" font-size="${Math.min(12, Math.max(9.5, rowH - 3))}" font-weight="${fontW}" fill="${fillCol}" style="cursor:pointer;" onmousemove="hoverBranch(event, '${escHtml(nd.name)}')" onmouseout="hideTooltip()" onclick="selectBranch('${escHtml(nd.name)}')">${escHtml(nd.name)}${escHtml(badge)}</text>`;
+    }
+  }
+  drawSubtree(parsedTreeRoot);
+
+  // Stage 2 Recombination Bridge Arcs overlay
+  if (showBridges) {
+    (DATA.recombination_bridges || []).forEach(b => {
+      const uNd = nodeByName[b.clade_u];
+      const vNd = nodeByName[b.target_v];
+      if (uNd && vNd) {
+        const xU = padL + uNd.xEnd * xScale, yU = uNd.y;
+        const xV = padL + vNd.xEnd * xScale, yV = vNd.y;
+        const cx = Math.max(xU, xV) + 45;
+        const cy = 0.5 * (yU + yV);
+        svg += `<path d="M ${xU} ${yU} Q ${cx} ${cy} ${xV} ${yV}" fill="none" stroke="#ea580c" stroke-width="2.2" stroke-dasharray="5,4"/>`;
+      }
+    });
+  }
+
+  svg += `</svg>`;
+  document.getElementById('treeSvgContainer').innerHTML = svg;
+}
+
+function hoverBranch(evt, brName) {
+  const bp = branchByName[brName];
+  if (!bp) {
+    showTooltip(evt, `<b>${escHtml(brName)}</b>`);
+    return;
+  }
+  const html = `
+    <div style="font-weight:800;font-size:13px;margin-bottom:4px;">Branch: ${escHtml(bp.branch_name)} ${bp.is_leaf ? '(Leaf)' : '(Internal)'}</div>
+    <div>Length: <b>${fmtNum(bp.branch_length_subs, 4)} subs/codon</b> &bull; Macro-Regime: <b>${escHtml(bp.macro_regime)}</b></div>
+    <div>GC3 Drift Regime: <b>${escHtml(bp.compositional_regime)}</b> (CP3 GC = <b>${fmtNum((bp.gc_cp3 || 0) * 100, 1)}%</b>)</div>
+    <div>aBSREL: <b>&omega;<sup>+</sup> = ${fmtNum(bp.omega_plus, 2)}</b> (${fmtNum((bp.weight_plus || 0) * 100, 1)}%), p = <b>${fmtP(bp.absrel_p_value)}</b> (Holm p = ${fmtP(bp.absrel_holm_p)})</div>
+    <div>RELAX: <b>K<sub>b</sub> = ${fmtNum(bp.relax_k, 2)}</b>, p = <b>${fmtP(bp.relax_p_value)}</b> (<b>${escHtml(bp.relax_call)}</b>)</div>
+    <div>Core Subs: Obs = <b>${fmtNum(bp.core_nonsyn_observed, 1)}</b> vs Exp = <b>${fmtNum(bp.core_nonsyn_expected, 2)}</b>, LoF BF = <b>${fmtNum(bp.lof_bayes_factor, 1)}</b> ${bp.lof_flagged ? '<b style="color:#f87171;">[LoF ALERT]</b>' : ''}</div>
+  `;
+  showTooltip(evt, html);
+}
+
+function selectBranch(brName) {
+  selectedBranchName = brName;
+  renderPhylogram();
+  renderBranchTable();
+  const row = document.getElementById('br-row-' + brName);
+  if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function sortBranches(key) {
+  if (branchSortKey === key) branchSortAsc = !branchSortAsc;
+  else { branchSortKey = key; branchSortAsc = (key === 'branch_name' || key.includes('p_value')); }
+  renderBranchTable();
+}
+
+function renderBranchTable() {
+  const q = (document.getElementById('branchSearch')?.value || '').toLowerCase();
+  const flt = document.getElementById('branchFilter')?.value || 'ALL';
+  let list = (DATA.branch_profiles || []).filter(bp => {
+    if (flt === 'ABSREL_SIG' && bp.absrel_p_value > 0.05) return false;
+    if (flt === 'LOF_ALERT' && !bp.lof_flagged && (bp.lof_bayes_factor || 0) < 10) return false;
+    if (flt === 'RELAX_SHIFT' && bp.relax_p_value > 0.05) return false;
+    if (flt === 'LEAVES' && !bp.is_leaf) return false;
+    if (flt === 'INTERNAL' && bp.is_leaf) return false;
+    if (q && !`${bp.branch_name} ${bp.compositional_regime} ${bp.macro_regime} ${bp.relax_call}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  list.sort((a, b) => {
+    const va = a[branchSortKey], vb = b[branchSortKey];
+    if (typeof va === 'string') return branchSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return branchSortAsc ? (va - vb) : (vb - va);
+  });
+
+  document.getElementById('branchTableBody').innerHTML = list.map(bp => {
+    const inv = (bp.core_invaded_sites || []).map(c => `<span class="site-chip" onclick="event.stopPropagation(); openSiteDrawer(${c})">${c}</span>`).join('');
+    const isSel = selectedBranchName === bp.branch_name;
+    return `
+      <tr id="br-row-${escHtml(bp.branch_name)}" class="${isSel ? 'row-selected' : ''}" onclick="selectBranch('${escHtml(bp.branch_name)}')">
+        <td><b>${escHtml(bp.branch_name)}</b> ${bp.lof_flagged ? '<span class="pill pill-pos">LoF Alert</span>' : ''}</td>
+        <td>${escHtml(bp.macro_regime)}</td>
+        <td class="num">${fmtNum(bp.branch_length_subs, 4)}</td>
+        <td class="num">${fmtNum((bp.gc_cp3 || 0) * 100, 1)}% <span class="pill pill-neu">${escHtml(bp.compositional_regime)}</span></td>
+        <td class="num">${fmtNum(bp.omega_plus, 2)} (${fmtNum((bp.weight_plus || 0) * 100, 0)}%)</td>
+        <td class="num">${bp.absrel_p_value <= 0.05 ? `<b style="color:#dc2626;">${fmtP(bp.absrel_p_value)}</b>` : fmtP(bp.absrel_p_value)} (${fmtNum(bp.absrel_holm_p, 3)} / ${fmtNum(bp.absrel_bh_q, 3)})</td>
+        <td class="num">${fmtNum(bp.relax_k, 2)}</td>
+        <td class="num">${fmtP(bp.relax_p_value)} <span class="pill ${(bp.relax_call||'').includes('Intens') ? 'pill-pos' : ((bp.relax_call||'').includes('Relax') ? 'pill-neg' : 'pill-neu')}">${escHtml(bp.relax_call)}</span></td>
+        <td class="num">${fmtNum(bp.core_nonsyn_observed, 1)} (${fmtNum(bp.core_nonsyn_expected, 2)})</td>
+        <td class="num">${fmtNum(bp.lof_bayes_factor, 1)} (${fmtP(bp.lof_p_value)})</td>
+        <td>${inv || '—'}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// ============================================================================
+// 5. TAB 4: STAGE 5 SITE, dFEL & CONVERGENCE EXPLORER
+// ============================================================================
+function renderSitesTab() {
+  const sites = DATA.site_atlas || [];
+  const presets = [
+    { id: 'ALL', label: `All Codons (${sites.length})` },
+    { id: 'SIMES_FDR', label: `Simes FDR q ≤ 0.10 (${sites.filter(s => s.simes_omnibus_q <= 0.10).length})` },
+    { id: 'EPISODIC', label: `Episodic Diversifying (${sites.filter(s => (s.classification || '').includes('Episodic')).length})` },
+    { id: 'PERVASIVE_POS', label: `Pervasive Diversifying (${sites.filter(s => (s.classification || '').includes('Pervasive') && (s.classification || '').includes('Diversifying')).length})` },
+    { id: 'DFEL_DISCORD', label: `dFEL vs FEL Discordant (${sites.filter(isDfelDiscordant).length})` },
+    { id: 'ARTIFACT_ELIM', label: `Artifact Eliminated (${sites.filter(s => s.artifact_eliminated).length})` },
+    { id: 'CONVERGENT', label: `Convergent / Toggle (${sites.filter(s => (s.max_convergent_transitions || 0) >= 3 || (s.classification || '').includes('Toggle')).length})` },
+    { id: 'PURIFYING', label: `Purifying (${sites.filter(s => (s.classification || '').includes('Purifying')).length})` },
+    { id: 'CPG_APOBEC', label: `CpG / APOBEC Context (${sites.filter(s => s.cpg_hypermutable_context || s.apobec_motif_context).length})` }
+  ];
+
+  document.getElementById('siteFilterPills').innerHTML = presets.map(p => `
+    <button class="filter-pill ${currentSiteFilter === p.id ? 'active' : ''}" onclick="setSiteFilter('${p.id}')">${escHtml(p.label)}</button>
+  `).join('');
+
+  renderDfelComparisonPlot();
+  renderConvergenceLollipopPlot();
+  renderSiteTable();
+}
+
+function setSiteFilter(fid) {
+  currentSiteFilter = fid;
+  renderSitesTab();
+}
+
+function renderDfelComparisonPlot() {
+  const sites = DATA.site_atlas || [];
+  const W = 640, H = 260, padL = 54, padR = 24, padT = 20, padB = 42;
+  const pw = W - padL - padR, ph = H - padT - padB;
+  const maxLrt = Math.max(8.0, ...sites.map(s => Math.min(25, Math.max(s.fel_lrt || 0, s.dfel_lrt || 0))));
+  const xOf = v => padL + (Math.min(maxLrt, v) / maxLrt) * pw;
+  const yOf = v => padT + ph - (Math.min(maxLrt, v) / maxLrt) * ph;
+  const thrX = xOf(3.84), thrY = yOf(3.84);
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="auto" style="display:block;">`;
+  svg += `<line x1="${padL}" y1="${padT + ph}" x2="${padL + pw}" y2="${padT}" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="4,4"/>`;
+  svg += `<line x1="${thrX}" y1="${padT}" x2="${thrX}" y2="${padT + ph}" stroke="#dc2626" stroke-width="1" stroke-dasharray="3,3"/>`;
+  svg += `<line x1="${padL}" y1="${thrY}" x2="${padL + pw}" y2="${thrY}" stroke="#dc2626" stroke-width="1" stroke-dasharray="3,3"/>`;
+  svg += `<text x="${padL + 6}" y="${thrY - 6}" font-size="10" font-weight="700" fill="#15803d">Unmasked by dFEL (dFEL p ≤ 0.05, FEL > 0.05)</text>`;
+  svg += `<text x="${thrX + 6}" y="${padT + ph - 8}" font-size="10" font-weight="700" fill="#b45309">Suppressed by dFEL</text>`;
+
+  sites.forEach(s => {
+    const fx = xOf(s.fel_lrt || 0);
+    const dy = yOf(s.dfel_lrt || 0);
+    const unmasked = s.dfel_p_value <= 0.05 && s.fel_p_value > 0.05;
+    const suppressed = s.fel_p_value <= 0.05 && s.dfel_p_value > 0.05;
+    const isDiv = (s.beta_pervasive || 0) > (s.alpha || 0);
+    let col = '#94a3b8', r = 3.2;
+    if (unmasked) { col = isDiv ? '#dc2626' : '#2563eb'; r = 5.2; }
+    else if (suppressed) { col = '#f59e0b'; r = 4.8; }
+    svg += `<circle cx="${fx}" cy="${dy}" r="${r}" fill="${col}" stroke="#0f172a" stroke-width="0.6" opacity="0.88" style="cursor:pointer;" onmousemove="hoverCodon(event, ${s.site})" onmouseout="hideTooltip()" onclick="openSiteDrawer(${s.site})"/>`;
+  });
+
+  svg += `<line x1="${padL}" y1="${padT + ph}" x2="${padL + pw}" y2="${padT + ph}" stroke="#334155"/>`;
+  svg += `<line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT + ph}" stroke="#334155"/>`;
+  svg += `<text x="${padL + pw / 2}" y="${H - 8}" text-anchor="middle" font-size="11" font-weight="700" fill="#1e293b">Stationary FEL LRT (capped at ${fmtNum(maxLrt, 0)})</text>`;
+  svg += `<text x="15" y="${padT + ph / 2}" transform="rotate(-90 15 ${padT + ph / 2})" text-anchor="middle" font-size="11" font-weight="700" fill="#1e293b">Directional dFEL LRT</text>`;
+  svg += `</svg>`;
+  document.getElementById('dfelPlotContainer').innerHTML = svg;
+}
+
+function renderConvergenceLollipopPlot() {
+  const sites = DATA.site_atlas || [];
+  const C = sites.length || 1;
+  const convSites = sites.filter(s => (s.max_convergent_transitions || 0) >= 2);
+  const maxConv = Math.max(5, ...convSites.map(s => s.max_convergent_transitions || 0));
+
+  const W = 640, H = 260, padL = 48, padR = 20, padT = 24, padB = 42;
+  const pw = W - padL - padR, ph = H - padT - padB;
+  const xOf = c => padL + ((c - 0.5) / C) * pw;
+  const yOf = m => padT + ph - (m / (maxConv * 1.12)) * ph;
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="auto" style="display:block;">`;
+  svg += `<line x1="${padL}" y1="${padT + ph}" x2="${padL + pw}" y2="${padT + ph}" stroke="#334155"/>`;
+  svg += `<line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT + ph}" stroke="#334155"/>`;
+
+  // Top 5 convergent sites get automatic callout labels
+  const top5 = [...convSites].sort((a, b) => (b.max_convergent_transitions - a.max_convergent_transitions) || (a.exchangeability_p_value - b.exchangeability_p_value)).slice(0, 5);
+  const topSet = new Set(top5.map(s => s.site));
+
+  convSites.forEach(s => {
+    const xx = xOf(s.site);
+    const yy = yOf(s.max_convergent_transitions);
+    const nlp = Math.min(10, -Math.log10(Math.max(s.exchangeability_p_value || 1.0, 1e-10)));
+    const col = nlp >= 4 ? '#dc2626' : (nlp >= 2 ? '#7c3aed' : '#0d9488');
+    svg += `<line x1="${xx}" y1="${padT + ph}" x2="${xx}" y2="${yy}" stroke="#94a3b8" stroke-width="1.2"/>`;
+    svg += `<circle cx="${xx}" cy="${yy}" r="${topSet.has(s.site) ? 5.2 : 3.6}" fill="${col}" stroke="#0f172a" stroke-width="0.7" style="cursor:pointer;" onmousemove="hoverCodon(event, ${s.site})" onmouseout="hideTooltip()" onclick="openSiteDrawer(${s.site})"/>`;
+    if (topSet.has(s.site)) {
+      svg += `<text x="${xx}" y="${Math.max(12, yy - 7)}" text-anchor="middle" font-size="9.5" font-weight="800" fill="#0f172a">C${s.site}→${escHtml(s.dominant_target_aa)} (${s.max_convergent_transitions})</text>`;
+    }
+  });
+
+  svg += `<text x="${padL + pw / 2}" y="${H - 8}" text-anchor="middle" font-size="11" font-weight="700" fill="#1e293b">Codon Position (1 to ${C})</text>`;
+  svg += `<text x="15" y="${padT + ph / 2}" transform="rotate(-90 15 ${padT + ph / 2})" text-anchor="middle" font-size="11" font-weight="700" fill="#1e293b">Convergent Lineages</text>`;
+  svg += `</svg>`;
+  document.getElementById('convPlotContainer').innerHTML = svg;
+}
+
+function getFilteredSortedSites() {
+  const q = (document.getElementById('siteSearchInput')?.value || '').toLowerCase();
+  let list = (DATA.site_atlas || []).filter(s => {
+    const cls = s.classification || '';
+    if (currentSiteFilter === 'SIMES_FDR' && s.simes_omnibus_q > 0.10) return false;
+    if (currentSiteFilter === 'EPISODIC' && !cls.includes('Episodic')) return false;
+    if (currentSiteFilter === 'PERVASIVE_POS' && !(cls.includes('Pervasive') && cls.includes('Diversifying'))) return false;
+    if (currentSiteFilter === 'DFEL_DISCORD' && !isDfelDiscordant(s)) return false;
+    if (currentSiteFilter === 'ARTIFACT_ELIM' && !s.artifact_eliminated) return false;
+    if (currentSiteFilter === 'CONVERGENT' && (s.max_convergent_transitions || 0) < 3 && !cls.includes('Toggle')) return false;
+    if (currentSiteFilter === 'PURIFYING' && !cls.includes('Purifying')) return false;
+    if (currentSiteFilter === 'CPG_APOBEC' && !s.cpg_hypermutable_context && !s.apobec_motif_context) return false;
+    if (q) {
+      const hay = `${s.site} ${s.classification} ${s.spatial_domain} ${s.key_property_driver} ${(s.top_episodic_branches || []).join(' ')} ${s.dominant_target_aa}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  list.sort((a, b) => {
+    const va = a[siteSortKey], vb = b[siteSortKey];
+    if (typeof va === 'string') return siteSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return siteSortAsc ? (va - vb) : (vb - va);
+  });
+  return list;
+}
+
+function sortSites(key) {
+  if (siteSortKey === key) siteSortAsc = !siteSortAsc;
+  else { siteSortKey = key; siteSortAsc = (key === 'site' || key.includes('p_value') || key.includes('omnibus')); }
+  renderSiteTable();
+}
+
+function renderSiteTable() {
+  const list = getFilteredSortedSites();
+  document.getElementById('siteAtlasTableBody').innerHTML = list.map(s => {
+    const pillCls = getClassificationPillClass(s.classification);
+    const unmasked = s.dfel_p_value <= 0.05 && s.fel_p_value > 0.05;
+    const suppressed = s.fel_p_value <= 0.05 && s.dfel_p_value > 0.05;
+    const brs = (s.top_episodic_branches || []).slice(0, 3).join(', ');
+    let badges = '';
+    if (s.artifact_eliminated) badges += `<span class="pill pill-prop" style="margin-right:4px;">Artifact Suppressed</span>`;
+    if (unmasked) badges += `<span class="pill pill-ok" style="margin-right:4px;">dFEL Unmasked</span>`;
+    if (suppressed) badges += `<span class="pill pill-warn" style="margin-right:4px;">dFEL Suppressed</span>`;
+    if (s.cpg_hypermutable_context) badges += `<span class="pill pill-warn" style="margin-right:4px;">CpG</span>`;
+    if (s.apobec_motif_context) badges += `<span class="pill pill-warn" style="margin-right:4px;">APOBEC</span>`;
+
+    return `
+      <tr class="${selectedCodon === s.site ? 'row-selected' : ''}" onclick="openSiteDrawer(${s.site})">
+        <td class="num"><b>${s.site}</b></td>
+        <td><span class="pill ${pillCls}">${escHtml(s.classification)}</span></td>
+        <td>${escHtml(s.spatial_domain)}${s.in_synonymous_island ? ' <span class="pill pill-ok">SynIsl</span>' : ''}</td>
+        <td class="num">${fmtNum(s.column_homology_posterior, 3)} (${fmtNum((s.gap_fraction || 0) * 100, 0)}%)</td>
+        <td class="num">${fmtP(s.simes_omnibus_p)} (${fmtNum(s.simes_omnibus_q, 3)})</td>
+        <td class="num">${fmtNum(s.alpha, 2)}</td>
+        <td class="num">${fmtNum(s.beta_pervasive, 2)}</td>
+        <td class="num">${s.fel_p_value <= 0.05 ? `<b>${fmtP(s.fel_p_value)}</b>` : fmtP(s.fel_p_value)}</td>
+        <td class="num">${s.dfel_p_value <= 0.05 ? `<b style="color:#2563eb;">${fmtP(s.dfel_p_value)}</b>` : fmtP(s.dfel_p_value)}</td>
+        <td class="num">${s.meme_p_value <= 0.05 ? `<b style="color:#dc2626;">${fmtP(s.meme_p_value)}</b>` : fmtP(s.meme_p_value)} (${fmtNum(s.beta_plus, 1)})</td>
+        <td class="num">${fmtNum(s.effective_aa_alphabet, 2)} / ${fmtNum(s.expected_neutral_n_eff, 2)}</td>
+        <td class="num">${s.max_convergent_transitions || 0} (${escHtml(s.dominant_target_aa)})</td>
+        <td>${badges}${escHtml(brs || s.key_property_driver || '—')}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// ============================================================================
+// 6. SLIDE-OVER SITE FORENSICS DRAWER & EXPORTS
+// ============================================================================
+function openSiteDrawer(siteNum) {
+  const s = siteByNumber[siteNum];
+  if (!s) return;
+  selectedCodon = siteNum;
+  document.getElementById('drawerTitle').innerHTML = `Codon ${s.site} &bull; <span class="pill ${getClassificationPillClass(s.classification)}">${escHtml(s.classification)}</span>`;
+
+  const unmasked = s.dfel_p_value <= 0.05 && s.fel_p_value > 0.05;
+  const suppressed = s.fel_p_value <= 0.05 && s.dfel_p_value > 0.05;
+
+  document.getElementById('drawerContent').innerHTML = `
+    <div style="margin-bottom:14px;">
+      <div style="font-size:11.5px;font-weight:800;text-transform:uppercase;color:var(--muted);">1. Omnibus Verdict &amp; Spatial Context</div>
+      <div class="kv-grid">
+        <div class="kv-box"><div class="k">Simes Omnibus p (BH q)</div><div class="v">${fmtP(s.simes_omnibus_p)} (q = ${fmtNum(s.simes_omnibus_q, 3)})</div></div>
+        <div class="kv-box"><div class="k">1D Selective Domain</div><div class="v">${escHtml(s.spatial_domain)}</div></div>
+        <div class="kv-box"><div class="k">Active Topology</div><div class="v">${escHtml(s.active_topology_label || 'Primary Tree')}</div></div>
+        <div class="kv-box"><div class="k">POA Homology PP (Gaps)</div><div class="v">${fmtNum(s.column_homology_posterior, 3)} (${fmtNum((s.gap_fraction || 0) * 100, 1)}%)</div></div>
+      </div>
+      ${s.artifact_eliminated ? `<div style="margin-top:8px;padding:8px 10px;background:#f0fdfa;border:1px solid #5eead4;border-radius:6px;color:#0f766e;font-weight:700;font-size:12px;">&#10003; Alignment / Indel Error-Sink Mitigation: Spurious rigid-alignment positive selection call was suppressed at this codon.</div>` : ''}
+    </div>
+
+    <div style="margin-bottom:14px;">
+      <div style="font-size:11.5px;font-weight:800;text-transform:uppercase;color:var(--muted);">2. Pervasive Selection: Stationary FEL vs. Non-Reversible dFEL</div>
+      <div class="kv-grid">
+        <div class="kv-box"><div class="k">Synonymous Rate &alpha;</div><div class="v">${fmtNum(s.alpha, 3)}</div></div>
+        <div class="kv-box"><div class="k">Pervasive Nonsyn &beta;<sub>perv</sub></div><div class="v">${fmtNum(s.beta_pervasive, 3)}</div></div>
+        <div class="kv-box"><div class="k">Stationary FEL LRT (p / q)</div><div class="v">${fmtNum(s.fel_lrt, 2)} (${fmtP(s.fel_p_value)} / ${fmtNum(s.fel_bh_q, 2)})</div></div>
+        <div class="kv-box"><div class="k">Directional dFEL LRT (p / q)</div><div class="v">${fmtNum(s.dfel_lrt, 2)} (${fmtP(s.dfel_p_value)} / ${fmtNum(s.dfel_bh_q, 2)})</div></div>
+      </div>
+      ${unmasked ? `<div style="margin-top:8px;padding:7px 10px;background:#eff6ff;border:1px solid #93c5fd;border-radius:6px;color:#1d4ed8;font-weight:700;font-size:12px;">&#9733; Unmasked by Non-Reversible dFEL: Missed by stationary FEL (p = ${fmtP(s.fel_p_value)}), significant after GC3 drift correction (p = ${fmtP(s.dfel_p_value)}).</div>` : ''}
+      ${suppressed ? `<div style="margin-top:8px;padding:7px 10px;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;color:#b45309;font-weight:700;font-size:12px;">&#9888; Stationary FEL False Call Suppressed by dFEL: Stationary FEL p = ${fmtP(s.fel_p_value)} &rarr; Non-reversible dFEL p = ${fmtP(s.dfel_p_value)}.</div>` : ''}
+    </div>
+
+    <div style="margin-bottom:14px;">
+      <div style="font-size:11.5px;font-weight:800;text-transform:uppercase;color:var(--muted);">3. Episodic Diversifying Selection (MEME)</div>
+      <div class="kv-grid">
+        <div class="kv-box"><div class="k">Episodic &beta;<sup>+</sup> (Weight w<sup>+</sup>)</div><div class="v">${fmtNum(s.beta_plus, 2)} (${fmtNum((s.weight_plus || 0) * 100, 1)}%)</div></div>
+        <div class="kv-box"><div class="k">MEME LRT (p / BH q)</div><div class="v">${fmtNum(s.meme_lrt, 2)} (${fmtP(s.meme_p_value)} / ${fmtNum(s.meme_bh_q, 2)})</div></div>
+        <div class="kv-box"><div class="k">Episodic Branches (EBF &ge; 10)</div><div class="v">${s.num_episodic_branches || 0} (Max EBF = ${fmtNum(s.max_branch_ebf, 1)})</div></div>
+        <div class="kv-box"><div class="k">Background &beta;<sup>&minus;</sup></div><div class="v">${fmtNum(s.beta_minus, 3)}</div></div>
+      </div>
+      <div style="margin-top:8px;font-size:12px;">
+        <b>Driving Branches (click to locate on Phylogram):</b><br>
+        ${(s.top_episodic_branches || []).length === 0 ? '<span style="color:var(--muted);">None with EBF &ge; 10</span>' : s.top_episodic_branches.map(b => `<span class="site-chip" onclick="closeSiteDrawer(); switchTab('tab-tree'); selectBranch('${escHtml(b)}');">${escHtml(b)}</span>`).join('')}
+      </div>
+    </div>
+
+    <div style="margin-bottom:14px;">
+      <div style="font-size:11.5px;font-weight:800;text-transform:uppercase;color:var(--muted);">4. Exchangeability, Toggles &amp; Convergent Evolution</div>
+      <div class="kv-grid">
+        <div class="kv-box"><div class="k">Exchangeability Mode</div><div class="v">${escHtml(s.exchangeability_mode || '—')}</div></div>
+        <div class="kv-box"><div class="k">Nonsyn Substitutions (M<sub>s</sub>)</div><div class="v">${fmtNum(s.expected_nonsyn_subs, 1)}</div></div>
+        <div class="kv-box"><div class="k">Observed N<sub>eff</sub> vs Neutral E[N<sub>eff</sub>]</div><div class="v">${fmtNum(s.effective_aa_alphabet, 2)} vs ${fmtNum(s.expected_neutral_n_eff, 2)}</div></div>
+        <div class="kv-box"><div class="k">Max Convergent Lineages (AA)</div><div class="v">${s.max_convergent_transitions || 0} (&rarr; ${escHtml(s.dominant_target_aa)})</div></div>
+        <div class="kv-box"><div class="k">Pair Concentration</div><div class="v">${fmtNum((s.pair_concentration || 0) * 100, 1)}%</div></div>
+        <div class="kv-box"><div class="k">Exchangeability p (BH q)</div><div class="v">${fmtP(s.exchangeability_p_value)} (${fmtNum(s.exchangeability_bh_q, 2)})</div></div>
+      </div>
+      <div style="margin-top:8px;font-size:12px;"><b>Mechanism Summary:</b> ${escHtml(s.key_property_driver || 'Consistent with neutral amino-acid breadth')}</div>
+    </div>
+  `;
+
+  document.getElementById('drawerBackdrop').classList.add('open');
+  document.getElementById('siteDrawer').classList.add('open');
+}
+
+function closeSiteDrawer() {
+  document.getElementById('drawerBackdrop').classList.remove('open');
+  document.getElementById('siteDrawer').classList.remove('open');
+}
+
+function stepSiteDrawer(delta) {
+  if (!selectedCodon) return;
+  const C = (DATA.site_atlas || []).length;
+  let next = selectedCodon + delta;
+  if (next < 1) next = C;
+  if (next > C) next = 1;
+  openSiteDrawer(next);
+}
+
+function exportSiteCSV() {
+  const list = getFilteredSortedSites();
+  const cols = ['site','classification','spatial_domain','column_homology_posterior','gap_fraction','simes_omnibus_p','simes_omnibus_q','alpha','beta_pervasive','fel_lrt','fel_p_value','dfel_lrt','dfel_p_value','beta_plus','weight_plus','meme_lrt','meme_p_value','effective_aa_alphabet','expected_neutral_n_eff','max_convergent_transitions','dominant_target_aa','exchangeability_p_value','artifact_eliminated'];
+  const rows = [cols.join(',')];
+  list.forEach(s => {
+    rows.push(cols.map(k => JSON.stringify(s[k] ?? '')).join(','));
+  });
+  const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${DATASET_LABEL}.walrus_sites.csv`;
+  a.click();
+}
+
+function downloadEmbeddedJSON() {
+  const raw = document.getElementById('walrus-data').textContent;
+  const blob = new Blob([raw], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${DATASET_LABEL}.CHARACTERIZE.json`;
+  a.click();
+}
+
+// Initialize all views on load
+renderHeaderAndRibbon();
+renderOverviewTab();
+renderIntegrityTab();
+renderBranchTable();
+renderSitesTab();
 </script>
 </body>
 </html>
-)HTML";
+)WALRUS_HTML";
         return html.str();
+    }
+
+    static std::string render_standalone_html(const CharacterizeResult& res, const std::string& dataset_label) {
+        return render_standalone_html_from_json_string(to_json(res), dataset_label);
     }
 
 private:
@@ -1120,7 +2667,7 @@ private:
         if (!settings.quiet) {
             Panel::print_step(
                 1, 4,
-                "Phase I: Homology, Indel & Reticulation Audit",
+                "Stage 1-3 (Phase I): Homology, Indel & Reticulation Audit",
                 "Options 1/3/5 Alignment Objective • Ohmic Wheatstone Segment Routing"
             );
         }
@@ -1174,57 +2721,268 @@ private:
             std::string label;
             size_t start_c = 0;
             size_t end_c = 0;
+            Scalar segment_delta_log_l = 0.0;
         };
         std::vector<RoutedSegmentTree> routed_spr_trees;
         std::vector<int> site_routed_tree_idx(C, -1);
 
-        if (!res.joint_align.ohmic_network.bridges.empty() && C >= 10) {
+        if (N >= 4 && C >= 10) {
             std::vector<Matrix> P_base(work_tree.num_nodes());
             for (const auto& nd : work_tree.nodes) {
                 if (nd.id != work_tree.root_id && nd.parent_id != INVALID_INDEX) {
                     P_base[nd.id] = mg94_base.transition_matrix(nd.branch_length * conv);
                 }
             }
+            std::vector<SitePattern> site_pats(C);
+            for (size_t c = 0; c < C; ++c) {
+                site_pats[c].states.resize(N);
+                for (size_t t = 0; t < N; ++t) site_pats[c].states[t] = aln.sequences[t].codons[c];
+                site_pats[c].weight = 1;
+            }
             std::vector<Scalar> base_site_ll(C, 0.0);
             std::vector<Vector> node_L(work_tree.num_nodes(), Vector::Zero(S));
             std::vector<double> node_sc(work_tree.num_nodes(), 0.0);
             for (size_t c = 0; c < C; ++c) {
-                SitePattern pat;
-                pat.states.resize(N);
-                for (size_t t = 0; t < N; ++t) pat.states[t] = aln.sequences[t].codons[c];
-                pat.weight = 1;
                 base_site_ll[c] = FELAnalyzer::compute_pattern_log_likelihood(
-                    work_tree, pat, leaf_to_taxon, mg94_base, P_base, node_L, node_sc
+                    work_tree, site_pats[c], leaf_to_taxon, mg94_base, P_base, node_L, node_sc
                 );
             }
 
-            for (const auto& br : res.joint_align.ohmic_network.bridges) {
-                int32_t u_id = br.hub_node_id;
-                int32_t v_id = br.bridge_node_id;
-                auto spr_opt = TreeEngine::apply_spr_move(work_tree, u_id, v_id);
+            // Build work_tree-native candidate SPR moves (u -> v):
+            // Map each node on work_tree to its representative leaf taxon index and subtree leaf set.
+            std::vector<std::vector<size_t>> wt_leaves(work_tree.num_nodes());
+            for (int32_t nid : work_tree.post_order) {
+                if (nid < 0 || static_cast<size_t>(nid) >= work_tree.num_nodes()) continue;
+                if (work_tree.nodes[nid].is_leaf) {
+                    if (nid < static_cast<int32_t>(leaf_to_taxon.size()) && leaf_to_taxon[nid] < N) {
+                        wt_leaves[nid].push_back(leaf_to_taxon[nid]);
+                    }
+                } else {
+                    for (int32_t ch : work_tree.nodes[nid].children) {
+                        if (ch >= 0 && static_cast<size_t>(ch) < wt_leaves.size()) {
+                            wt_leaves[nid].insert(wt_leaves[nid].end(), wt_leaves[ch].begin(), wt_leaves[ch].end());
+                        }
+                    }
+                }
+            }
+
+            // Compute pairwise tree path distance between nodes on work_tree
+            const Matrix& Omega_mat = res.joint_align.ohmic_network.Omega;
+            bool has_omega = (Omega_mat.rows() == static_cast<Eigen::Index>(N) &&
+                              Omega_mat.cols() == static_cast<Eigen::Index>(N));
+
+            struct BridgeProposal {
+                int32_t u_id;
+                int32_t v_id;
+                Scalar score;
+            };
+            std::vector<BridgeProposal> proposals;
+
+            // Source A: Sliding-window codon affinity + Ohmic stretch chords between non-sister nodes on work_tree
+            const size_t win_w = std::min<size_t>(30, std::max<size_t>(10, C / 6));
+            const size_t win_step = std::max<size_t>(5, win_w / 2);
+
+            for (const auto& u_nd : work_tree.nodes) {
+                int32_t u = u_nd.id;
+                if (u == work_tree.root_id || u_nd.parent_id == INVALID_INDEX) continue;
+                if (wt_leaves[u].empty() || wt_leaves[u].size() > N / 2) continue;
+
+                // Find sibling leaves of u on work_tree
+                int32_t p_u = u_nd.parent_id;
+                std::vector<size_t> sib_leaves;
+                for (int32_t sib : work_tree.nodes[p_u].children) {
+                    if (sib != u && sib >= 0 && static_cast<size_t>(sib) < wt_leaves.size()) {
+                        sib_leaves.insert(sib_leaves.end(), wt_leaves[sib].begin(), wt_leaves[sib].end());
+                    }
+                }
+                if (sib_leaves.empty()) continue;
+
+                int32_t best_v = INVALID_INDEX;
+                Scalar best_v_score = 0.0;
+
+                for (const auto& v_nd : work_tree.nodes) {
+                    int32_t v = v_nd.id;
+                    if (v == work_tree.root_id || v == u || v == p_u || v_nd.parent_id == INVALID_INDEX) continue;
+                    if (v_nd.parent_id == p_u) continue; // already sibling
+                    if (TreeEngine::is_in_subtree(work_tree, v, u) || TreeEngine::is_in_subtree(work_tree, u, v)) continue;
+                    if (wt_leaves[v].empty()) continue;
+
+                    // Find sibling leaves of v on work_tree (to distinguish mobile recipient u from stationary donor v)
+                    int32_t p_v = v_nd.parent_id;
+                    std::vector<size_t> v_sib_leaves;
+                    if (p_v >= 0 && static_cast<size_t>(p_v) < work_tree.num_nodes()) {
+                        for (int32_t vsib : work_tree.nodes[p_v].children) {
+                            if (vsib != v && vsib >= 0 && static_cast<size_t>(vsib) < wt_leaves.size()) {
+                                v_sib_leaves.insert(v_sib_leaves.end(), wt_leaves[vsib].begin(), wt_leaves[vsib].end());
+                            }
+                        }
+                    }
+
+                    // Scan windows for clade-average excess codon identity between Cu and Cv vs Cu and Csib(u),
+                    // requiring every leaf in Cu to participate so parent clades do not mask a single recombinant leaf.
+                    Scalar max_win_gain = 0.0;
+                    for (size_t ws = 0; ws + win_w <= C; ws += win_step) {
+                        Scalar min_leaf_gain = 1e9;
+                        Scalar sum_leaf_gain = 0.0;
+                        bool all_leaves_valid = true;
+                        for (size_t lu : wt_leaves[u]) {
+                            Scalar sum_uv = 0.0, cnt_uv = 0.0;
+                            for (size_t lv : wt_leaves[v]) {
+                                for (size_t c = ws; c < ws + win_w; ++c) {
+                                    int cu = aln.sequences[lu].codons[c];
+                                    int cv = aln.sequences[lv].codons[c];
+                                    if (cu >= 0 && cv >= 0) {
+                                        cnt_uv += 1.0;
+                                        if (cu == cv) sum_uv += 1.0;
+                                    }
+                                }
+                            }
+                            Scalar sum_us = 0.0, cnt_us = 0.0;
+                            for (size_t ls : sib_leaves) {
+                                for (size_t c = ws; c < ws + win_w; ++c) {
+                                    int cu = aln.sequences[lu].codons[c];
+                                    int cs = aln.sequences[ls].codons[c];
+                                    if (cu >= 0 && cs >= 0) {
+                                        cnt_us += 1.0;
+                                        if (cu == cs) sum_us += 1.0;
+                                    }
+                                }
+                            }
+                            if (cnt_uv < 8.0 || cnt_us < 8.0) {
+                                all_leaves_valid = false;
+                                break;
+                            }
+                            Scalar id_uv = sum_uv / cnt_uv;
+                            Scalar id_us = sum_us / cnt_us;
+                            Scalar lg = id_uv - id_us;
+                            min_leaf_gain = std::min(min_leaf_gain, lg);
+                            sum_leaf_gain += lg;
+                        }
+                        if (!all_leaves_valid || min_leaf_gain <= 0.08) continue;
+
+                        Scalar mean_gain = sum_leaf_gain / static_cast<Scalar>(wt_leaves[u].size());
+                        // Stationary donor check: if v is still concordant with its own sibling in this window
+                        // while u is discordant with its sibling, u -> v is the true recipient -> donor direction.
+                        Scalar donor_concordance_bonus = 0.0;
+                        if (!v_sib_leaves.empty()) {
+                            size_t lv0 = wt_leaves[v][0];
+                            size_t lvs0 = v_sib_leaves[0];
+                            int m_vv = 0, v_cnt = 0;
+                            for (size_t c = ws; c < ws + win_w; ++c) {
+                                int cv = aln.sequences[lv0].codons[c];
+                                int cvs = aln.sequences[lvs0].codons[c];
+                                if (cv >= 0 && cvs >= 0) {
+                                    v_cnt++;
+                                    if (cv == cvs) m_vv++;
+                                }
+                            }
+                            if (v_cnt >= 8) {
+                                donor_concordance_bonus = 0.25 * (static_cast<Scalar>(m_vv) / static_cast<Scalar>(v_cnt));
+                            }
+                        }
+                        Scalar win_score = mean_gain + donor_concordance_bonus;
+                        if (win_score > max_win_gain) max_win_gain = win_score;
+                    }
+
+                    Scalar ohm_bonus = 0.0;
+                    if (has_omega && max_win_gain > 0.0) {
+                        size_t rep_u = wt_leaves[u][0];
+                        size_t rep_v = wt_leaves[v][0];
+                        size_t rep_sib = sib_leaves[0];
+                        Scalar om_uv = Omega_mat(static_cast<Eigen::Index>(rep_u), static_cast<Eigen::Index>(rep_v));
+                        Scalar om_us = Omega_mat(static_cast<Eigen::Index>(rep_u), static_cast<Eigen::Index>(rep_sib));
+                        if (om_uv > 1e-6 && om_uv < 1.25 * om_us) {
+                            ohm_bonus = 0.10 * (om_us / om_uv);
+                        }
+                    }
+
+                    Scalar sc = max_win_gain + ohm_bonus;
+                    if (sc > best_v_score) {
+                        best_v_score = sc;
+                        best_v = v;
+                    }
+                }
+                if (best_v != INVALID_INDEX && best_v_score > 0.15) {
+                    proposals.push_back({u, best_v, best_v_score});
+                }
+            }
+
+            std::sort(proposals.begin(), proposals.end(), [](const auto& a, const auto& b) {
+                return a.score > b.score;
+            });
+            if (proposals.size() > 4) proposals.resize(4);
+
+            const Scalar bonf_factor = static_cast<Scalar>(std::max<size_t>(1, proposals.size()));
+
+            for (const auto& prop : proposals) {
+                int32_t u_id = prop.u_id;
+                int32_t v_id = prop.v_id;
+                auto spr_opt = TreeEngine::apply_spr_move(work_tree, u_id, v_id, /*reuse_collapsed_parent=*/false);
                 if (!spr_opt.has_value()) continue;
-                const Tree& br_tree = spr_opt->tree;
+                Tree br_tree = std::move(spr_opt->tree);
+                int32_t w_id = spr_opt->w;
+
+                // Build symmetric 2-point local branch-scale transition matrices (standard 50/50 vs near-tip 85/15 transfer)
+                // on both work_tree and br_tree so u_id is not penalized by its backbone-inflated length
+                // while rate heterogeneity treats both topologies identically.
+                std::vector<Matrix> P_base_short = P_base;
+                if (u_id >= 0 && static_cast<size_t>(u_id) < work_tree.num_nodes() &&
+                    u_id != work_tree.root_id && work_tree.nodes[u_id].parent_id != INVALID_INDEX) {
+                    P_base_short[u_id] = mg94_base.transition_matrix(0.20 * work_tree.nodes[u_id].branch_length * conv);
+                    int32_t p_u = work_tree.nodes[u_id].parent_id;
+                    if (p_u >= 0 && p_u != work_tree.root_id && work_tree.nodes[p_u].children.size() == 2) {
+                        int32_t s_u = (work_tree.nodes[p_u].children[0] == u_id)
+                                    ? work_tree.nodes[p_u].children[1] : work_tree.nodes[p_u].children[0];
+                        Scalar old_ts = work_tree.nodes[s_u].branch_length;
+                        Scalar old_tp = work_tree.nodes[p_u].branch_length;
+                        P_base_short[s_u] = mg94_base.transition_matrix(0.15 * old_ts * conv);
+                        P_base_short[p_u] = mg94_base.transition_matrix((old_tp + 0.85 * old_ts) * conv);
+                    }
+                }
+
                 std::vector<Matrix> P_br(br_tree.num_nodes());
+                std::vector<Matrix> P_br_short(br_tree.num_nodes());
                 for (const auto& nd : br_tree.nodes) {
                     if (nd.id != br_tree.root_id && nd.parent_id != INVALID_INDEX) {
                         P_br[nd.id] = mg94_base.transition_matrix(nd.branch_length * conv);
+                        P_br_short[nd.id] = P_br[nd.id];
                     }
                 }
+                if (u_id >= 0 && static_cast<size_t>(u_id) < br_tree.num_nodes() &&
+                    u_id != br_tree.root_id && br_tree.nodes[u_id].parent_id != INVALID_INDEX) {
+                    P_br_short[u_id] = mg94_base.transition_matrix(0.20 * br_tree.nodes[u_id].branch_length * conv);
+                }
+                if (v_id >= 0 && static_cast<size_t>(v_id) < work_tree.num_nodes() &&
+                    w_id >= 0 && static_cast<size_t>(w_id) < br_tree.num_nodes()) {
+                    Scalar old_tv = std::max<Scalar>(1e-4, work_tree.nodes[v_id].branch_length);
+                    P_br_short[v_id] = mg94_base.transition_matrix(0.15 * old_tv * conv);
+                    P_br_short[w_id] = mg94_base.transition_matrix(0.85 * old_tv * conv);
+                }
+
                 auto l2t_br = LikelihoodEngine::build_leaf_to_taxon_map(br_tree, aln);
                 std::vector<Vector> nL_br(br_tree.num_nodes(), Vector::Zero(S));
                 std::vector<double> nS_br(br_tree.num_nodes(), 0.0);
 
+                std::vector<Scalar> site_diffs(C, 0.0);
                 Scalar best_sum = 0.0, cur_sum = 0.0;
                 size_t best_s = 0, best_e = 0, cur_s = 0;
                 for (size_t c = 0; c < C; ++c) {
-                    SitePattern pat;
-                    pat.states.resize(N);
-                    for (size_t t = 0; t < N; ++t) pat.states[t] = aln.sequences[t].codons[c];
-                    pat.weight = 1;
-                    Scalar ll_br = FELAnalyzer::compute_pattern_log_likelihood(
-                        br_tree, pat, l2t_br, mg94_base, P_br, nL_br, nS_br
+                    Scalar ll_b1 = base_site_ll[c];
+                    Scalar ll_b2 = FELAnalyzer::compute_pattern_log_likelihood(
+                        work_tree, site_pats[c], leaf_to_taxon, mg94_base, P_base_short, node_L, node_sc
                     );
-                    Scalar diff = ll_br - base_site_ll[c];
+                    Scalar ll_base_sym = std::max(ll_b1, ll_b2);
+
+                    Scalar ll_r1 = FELAnalyzer::compute_pattern_log_likelihood(
+                        br_tree, site_pats[c], l2t_br, mg94_base, P_br, nL_br, nS_br
+                    );
+                    Scalar ll_r2 = FELAnalyzer::compute_pattern_log_likelihood(
+                        br_tree, site_pats[c], l2t_br, mg94_base, P_br_short, nL_br, nS_br
+                    );
+                    Scalar ll_br_sym = std::max(ll_r1, ll_r2);
+
+                    Scalar diff = ll_br_sym - ll_base_sym;
+                    site_diffs[c] = diff;
                     if (cur_sum + diff > 0.0) {
                         cur_sum += diff;
                         if (cur_sum > best_sum) {
@@ -1237,7 +2995,79 @@ private:
                         cur_s = c + 1;
                     }
                 }
-                if (best_sum > 1.5 && best_e >= best_s + 3) {
+
+                size_t seg_len = (best_e >= best_s) ? (best_e - best_s + 1) : 0;
+                size_t pos_sites = 0;
+                for (size_t c = best_s; c <= best_e && c < C; ++c) {
+                    if (site_diffs[c] > 0.05) pos_sites++;
+                }
+
+                if (best_sum > 3.0 && seg_len >= 8 && pos_sites >= 3) {
+                    // Calibrate scan statistic S_max via 2,000 site-order permutations of site_diffs
+                    // to control for look-elsewhere random-walk excursions across O(C^2) intervals.
+                    constexpr int kNumPerms = 2000;
+                    int exceed_count = 0;
+                    std::vector<Scalar> perm_diffs = site_diffs;
+                    uint64_t rng_state = 0x9E3779B97F4A7C15ULL ^
+                        (static_cast<uint64_t>(std::max<int32_t>(0, u_id)) * 1315423911ULL +
+                         static_cast<uint64_t>(std::max<int32_t>(0, v_id)) * 2654435761ULL);
+                    auto next_u64 = [&]() -> uint64_t {
+                        rng_state ^= rng_state >> 12;
+                        rng_state ^= rng_state << 25;
+                        rng_state ^= rng_state >> 27;
+                        return rng_state * 2685821657736338717ULL;
+                    };
+                    for (int p_it = 0; p_it < kNumPerms; ++p_it) {
+                        for (size_t i = C - 1; i > 0; --i) {
+                            size_t j = static_cast<size_t>(next_u64() % (i + 1));
+                            std::swap(perm_diffs[i], perm_diffs[j]);
+                        }
+                        Scalar p_best = 0.0, p_cur = 0.0;
+                        for (size_t c = 0; c < C; ++c) {
+                            p_cur = std::max<Scalar>(0.0, p_cur + perm_diffs[c]);
+                            if (p_cur > p_best) p_best = p_cur;
+                        }
+                        if (p_best >= best_sum - 1e-12) {
+                            exceed_count++;
+                        }
+                    }
+                    Scalar p_perm = static_cast<Scalar>(exceed_count + 1) / static_cast<Scalar>(kNumPerms + 1);
+                    Scalar p_corr = std::min<Scalar>(1.0, bonf_factor * p_perm);
+                    Scalar bic_thresh = 3.0 * std::log(std::max<Scalar>(10.0, static_cast<Scalar>(C)));
+
+                    // Polish local branch lengths (u_id, v_id, w_id) on [best_s, best_e] for downstream cavity routing
+                    if (u_id >= 0 && static_cast<size_t>(u_id) < br_tree.num_nodes() &&
+                        v_id >= 0 && static_cast<size_t>(v_id) < work_tree.num_nodes() &&
+                        w_id >= 0 && static_cast<size_t>(w_id) < br_tree.num_nodes()) {
+                        Scalar orig_tu = br_tree.nodes[u_id].branch_length;
+                        Scalar orig_tv = std::max<Scalar>(1e-4, work_tree.nodes[v_id].branch_length);
+                        Scalar best_seg_ll = -1e30;
+                        Scalar best_tu = orig_tu, best_tv = 0.5 * orig_tv, best_tw = 0.5 * orig_tv;
+                        for (Scalar v_split : {Scalar(0.15), Scalar(0.50)}) {
+                            P_br[v_id] = mg94_base.transition_matrix(v_split * orig_tv * conv);
+                            P_br[w_id] = mg94_base.transition_matrix((1.0 - v_split) * orig_tv * conv);
+                            for (Scalar mult : {Scalar(0.10), Scalar(0.20), Scalar(0.50), Scalar(1.00)}) {
+                                Scalar cand_tu = std::max<Scalar>(1e-4, orig_tu * mult);
+                                P_br[u_id] = mg94_base.transition_matrix(cand_tu * conv);
+                                Scalar seg_ll = 0.0;
+                                for (size_t c = best_s; c <= best_e && c < C; ++c) {
+                                    seg_ll += FELAnalyzer::compute_pattern_log_likelihood(
+                                        br_tree, site_pats[c], l2t_br, mg94_base, P_br, nL_br, nS_br
+                                    );
+                                }
+                                if (seg_ll > best_seg_ll) {
+                                    best_seg_ll = seg_ll;
+                                    best_tu = cand_tu;
+                                    best_tv = v_split * orig_tv;
+                                    best_tw = (1.0 - v_split) * orig_tv;
+                                }
+                            }
+                        }
+                        br_tree.nodes[u_id].branch_length = best_tu;
+                        br_tree.nodes[v_id].branch_length = best_tv;
+                        br_tree.nodes[w_id].branch_length = best_tw;
+                    }
+
                     RecombinationBridgeSegment seg;
                     seg.node_u = u_id;
                     seg.node_v = v_id;
@@ -1245,21 +3075,34 @@ private:
                                      ? work_tree.nodes[u_id].name : ("Node_" + std::to_string(u_id));
                     seg.target_v_name = (v_id >= 0 && static_cast<size_t>(v_id) < work_tree.nodes.size())
                                       ? work_tree.nodes[v_id].name : ("Node_" + std::to_string(v_id));
-                    seg.bridge_conductance = br.shunt_stress;
+                    seg.bridge_conductance = prop.score;
                     seg.peak_start_codon = best_s;
                     seg.peak_end_codon = best_e;
                     seg.segment_delta_log_l = best_sum;
-                    seg.p_value = stats::chi2_p_value(2.0 * best_sum, 2.0);
-                    if (seg.p_value <= 0.01 && br_tree.num_nodes() == work_tree.num_nodes()) {
-                        seg.routed_to_spr_tree = true;
-                        int r_idx = static_cast<int>(routed_spr_trees.size());
-                        routed_spr_trees.push_back({
-                            br_tree, l2t_br,
-                            "SPR(" + seg.clade_u_name + "->" + seg.target_v_name + ")",
-                            best_s, best_e
-                        });
+                    seg.p_value = p_corr;
+                    if (settings.enable_segment_routing && seg.p_value <= 0.01 && (2.0 * best_sum > bic_thresh)) {
+                        // Check if an overlapping segment with higher delta_log_l already covers >50% of [best_s, best_e]
+                        size_t overlap_higher = 0;
                         for (size_t c = best_s; c <= best_e && c < C; ++c) {
-                            site_routed_tree_idx[c] = r_idx;
+                            int prev_r = site_routed_tree_idx[c];
+                            if (prev_r >= 0 && routed_spr_trees[prev_r].segment_delta_log_l >= best_sum) {
+                                overlap_higher++;
+                            }
+                        }
+                        if (overlap_higher * 2 <= seg_len) {
+                            seg.routed_to_spr_tree = true;
+                            int r_idx = static_cast<int>(routed_spr_trees.size());
+                            routed_spr_trees.push_back({
+                                br_tree, l2t_br,
+                                "SPR(" + seg.clade_u_name + "->" + seg.target_v_name + ")",
+                                best_s, best_e, best_sum
+                            });
+                            for (size_t c = best_s; c <= best_e && c < C; ++c) {
+                                int prev_r = site_routed_tree_idx[c];
+                                if (prev_r < 0 || best_sum > routed_spr_trees[prev_r].segment_delta_log_l) {
+                                    site_routed_tree_idx[c] = r_idx;
+                                }
+                            }
                         }
                     }
                     res.recombination_segments.push_back(seg);
@@ -1284,40 +3127,108 @@ private:
         if (!settings.quiet) {
             Panel::print_step(
                 2, 4,
-                "Phase II: Compositional Drift & Root Polarity Audit",
-                "CP3 χ² Stationarity Test • Unified 3-Regime Softmax Transition Kernel"
+                "Stage 2 (Phase II): Compositional Drift & Root Polarity Audit",
+                "Phylogenetic Cavity Flux & BIC Gate • Unified 3-Regime Softmax Transition Kernel"
             );
         }
         res.composition_test = DirectionalFELAnalyzer::run_composition_test(aln, 0.05);
-        res.directional_drift_active = res.composition_test.is_heterogeneous;
+        res.directional_drift_active = false;
 
         std::unique_ptr<DirectionalFELAnalyzer> dfel_analyzer;
-        if (res.directional_drift_active) {
+        if (res.composition_test.is_heterogeneous) {
             DirectionalFELSettings dfs;
             dfs.p_value_threshold = settings.p_value_threshold;
             dfs.root_strategy = "auto";
-            dfs.num_regimes = 3;
+            dfs.num_regimes = 0; // Auto: requires phylogenetic directional LRT/BIC + cavity flux on the tree
             AutoRootResult root_res = DirectionalFELAnalyzer::auto_select_root(work_tree, aln, gtr_fit.params, dfs);
-            res.chosen_root_branch = root_res.chosen_branch_name;
-            res.chosen_root_weight = root_res.chosen_weight;
             dfel_analyzer = std::make_unique<DirectionalFELAnalyzer>(
                 root_res.best_tree, aln, mg_params, dfs, res.composition_test, root_res
             );
+            res.composition_test = dfel_analyzer->comp_test;
+            res.directional_drift_active = (dfel_analyzer->regimes.size() == 3);
+        }
+
+        if (res.directional_drift_active && dfel_analyzer) {
+            res.chosen_root_branch = dfel_analyzer->root_result.chosen_branch_name;
+            res.chosen_root_weight = dfel_analyzer->root_result.chosen_weight;
             dfel_analyzer->run();
-            // Adopt the directional rooted tree if node count matches
-            if (dfel_analyzer->tree.num_nodes() == work_tree.num_nodes()) {
-                work_tree = dfel_analyzer->tree;
-                leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(work_tree, aln);
+
+            // Map dfel_analyzer's BFS-indexed branch_regime_weights and branch_regime_ids back onto work_tree's
+            // node IDs via leaf-bipartition matching so work_tree node IDs (and Stage 2 routed_spr_trees)
+            // are preserved and work_tree branch lengths are never double-scaled by conversion_factor!
+            auto build_node_leaf_sets = [&](const Tree& t_in) -> std::vector<std::vector<size_t>> {
+                auto l2t = LikelihoodEngine::build_leaf_to_taxon_map(t_in, aln);
+                std::vector<std::vector<size_t>> lsets(t_in.num_nodes());
+                for (int32_t nid : t_in.post_order) {
+                    if (nid < 0 || static_cast<size_t>(nid) >= t_in.num_nodes()) continue;
+                    if (t_in.nodes[nid].is_leaf) {
+                        if (nid < static_cast<int32_t>(l2t.size()) && l2t[nid] < N) {
+                            lsets[nid].push_back(l2t[nid]);
+                        }
+                    } else {
+                        for (int32_t ch : t_in.nodes[nid].children) {
+                            if (ch >= 0 && static_cast<size_t>(ch) < lsets.size()) {
+                                lsets[nid].insert(lsets[nid].end(), lsets[ch].begin(), lsets[ch].end());
+                            }
+                        }
+                        std::sort(lsets[nid].begin(), lsets[nid].end());
+                    }
+                }
+                return lsets;
+            };
+
+            auto wt_lsets = build_node_leaf_sets(work_tree);
+            auto df_lsets = build_node_leaf_sets(dfel_analyzer->tree);
+            std::vector<int> mapped_ids(work_tree.num_nodes(), 1);
+            std::vector<std::vector<Scalar>> mapped_weights(work_tree.num_nodes(), {0.0, 1.0, 0.0});
+
+            for (size_t bid = 0; bid < work_tree.num_nodes(); ++bid) {
+                if (static_cast<int32_t>(bid) == work_tree.root_id || wt_lsets[bid].empty()) continue;
+                std::vector<size_t> comp_set;
+                comp_set.reserve(N);
+                for (size_t t = 0; t < N; ++t) {
+                    if (!std::binary_search(wt_lsets[bid].begin(), wt_lsets[bid].end(), t)) {
+                        comp_set.push_back(t);
+                    }
+                }
+                std::array<Scalar, 3> w_acc = {0.0, 0.0, 0.0};
+                Scalar match_cnt = 0.0;
+                for (size_t did = 0; did < dfel_analyzer->tree.num_nodes(); ++did) {
+                    if (static_cast<int32_t>(did) == dfel_analyzer->tree.root_id || df_lsets[did].empty()) continue;
+                    if (df_lsets[did] == wt_lsets[bid] || df_lsets[did] == comp_set) {
+                        const auto& dw = dfel_analyzer->branch_regime_weights[did];
+                        if (dw.size() == 3) {
+                            w_acc[0] += dw[0];
+                            w_acc[1] += dw[1];
+                            w_acc[2] += dw[2];
+                            match_cnt += 1.0;
+                        }
+                    }
+                }
+                if (match_cnt > 0.0) {
+                    w_acc[0] /= match_cnt;
+                    w_acc[1] /= match_cnt;
+                    w_acc[2] /= match_cnt;
+                    mapped_weights[bid] = {w_acc[0], w_acc[1], w_acc[2]};
+                    int r_id = 1;
+                    if (w_acc[2] > w_acc[1] && w_acc[2] > w_acc[0]) r_id = 2;
+                    else if (w_acc[0] > w_acc[1] && w_acc[0] > w_acc[2]) r_id = 0;
+                    mapped_ids[bid] = r_id;
+                }
             }
+            dfel_analyzer->branch_regime_ids = std::move(mapped_ids);
+            dfel_analyzer->branch_regime_weights = std::move(mapped_weights);
         } else {
+            dfel_analyzer.reset();
             res.chosen_root_branch = "Stationary (Unrooted)";
             res.chosen_root_weight = 1.0;
         }
         if (!settings.quiet) {
             std::ostringstream ss;
             ss << std::fixed << std::setprecision(3)
-               << "      CP3 χ² = " << res.composition_test.chi2_cp3
-               << " (p = " << res.composition_test.p_value_cp3 << ")"
+               << "      Phylo Dir LRT = " << res.composition_test.phylo_dir_lrt
+               << " (p = " << res.composition_test.phylo_dir_p_value
+               << ", CP3 p = " << res.composition_test.p_value_cp3 << ")"
                << "  │  Kernel Mode: " << (res.directional_drift_active ? "3-Regime Directional Softmax (AT/Neutral/GC)" : "1-Regime Stationary")
                << "  │  Root: " << res.chosen_root_branch << "\n";
             std::cout << Console::muted(ss.str()) << std::flush;
@@ -1330,7 +3241,7 @@ private:
         if (!settings.quiet) {
             Panel::print_step(
                 3, 4,
-                "Phase III: Shared Inside-Outside Tensor & Active-Set Polish",
+                "Stage 4 (Phase III): Shared Inside-Outside Tensor & Active-Set Polish",
                 "Ensemble K=3 POA Marginalization • BUSTED-E + aBSREL + RELAX + MEME + Contrast-FEL"
             );
         }
@@ -1350,6 +3261,8 @@ private:
         // Decision 4: Build spectral grids for K=1 (Stationary) or K=3 (AT/Neutral/GC Directional Regimes)
         size_t num_k_regimes = (res.directional_drift_active && dfel_analyzer && dfel_analyzer->regimes.size() == 3) ? 3 : 1;
         std::vector<std::vector<SpectralDecomp>> regime_spectral_grids(num_k_regimes, std::vector<SpectralDecomp>(G));
+        std::vector<MG94Matrix> m_syn_reg(num_k_regimes), m_non_reg(num_k_regimes);
+        std::vector<Vector> sqrt_pi_reg(num_k_regimes), inv_sqrt_pi_reg(num_k_regimes);
 
         MG94Parameters p_syn = mg_params; p_syn.alpha = 1.0; p_syn.beta = 0.0;
         MG94Parameters p_non = mg_params; p_non.alpha = 0.0; p_non.beta = 1.0;
@@ -1364,25 +3277,24 @@ private:
             Vector pi_k = (num_k_regimes == 3)
                 ? dfel_analyzer->regimes[k_reg].codon_freqs : pi_codon;
 
-            MG94Matrix m_syn_k, m_non_k;
-            m_syn_k.update(p_syn, pos_freqs, pi_k, gcode);
-            m_non_k.update(p_non, pos_freqs, pi_k, gcode);
+            m_syn_reg[k_reg].update(p_syn, pos_freqs, pi_k, gcode);
+            m_non_reg[k_reg].update(p_non, pos_freqs, pi_k, gcode);
 
-            Vector sqrt_pi_k = pi_k.array().max(1e-15).sqrt();
-            Vector inv_sqrt_pi_k = 1.0 / sqrt_pi_k.array();
+            sqrt_pi_reg[k_reg] = pi_k.array().max(1e-15).sqrt();
+            inv_sqrt_pi_reg[k_reg] = 1.0 / sqrt_pi_reg[k_reg].array();
 
             for (size_t g = 0; g < G; ++g) {
-                Matrix Q_g = m_syn_k.Q + omega_grid[g] * m_non_k.Q;
+                Matrix Q_g = m_syn_reg[k_reg].Q + omega_grid[g] * m_non_reg[k_reg].Q;
                 for (int i = 0; i < S; ++i) {
                     Q_g(i, i) = 0.0;
                     Q_g(i, i) = -Q_g.row(i).sum();
                 }
-                Matrix sym = sqrt_pi_k.asDiagonal() * Q_g * inv_sqrt_pi_k.asDiagonal();
+                Matrix sym = sqrt_pi_reg[k_reg].asDiagonal() * Q_g * inv_sqrt_pi_reg[k_reg].asDiagonal();
                 sym = 0.5 * (sym + sym.transpose());
                 Eigen::SelfAdjointEigenSolver<Matrix> es(sym);
                 regime_spectral_grids[k_reg][g].evals = es.eigenvalues();
-                regime_spectral_grids[k_reg][g].R = inv_sqrt_pi_k.asDiagonal() * es.eigenvectors();
-                regime_spectral_grids[k_reg][g].L = es.eigenvectors().transpose() * sqrt_pi_k.asDiagonal();
+                regime_spectral_grids[k_reg][g].R = inv_sqrt_pi_reg[k_reg].asDiagonal() * es.eigenvectors();
+                regime_spectral_grids[k_reg][g].L = es.eigenvectors().transpose() * sqrt_pi_reg[k_reg].asDiagonal();
             }
         }
 
@@ -1395,11 +3307,17 @@ private:
         }
         size_t B = active_branches.size();
         size_t num_nodes = work_tree.num_nodes();
+        size_t max_tree_nodes = num_nodes;
+        for (const auto& rt : routed_spr_trees) {
+            max_tree_nodes = std::max(max_tree_nodes, rt.spr_tree.num_nodes());
+        }
+        const Vector& root_pi = (num_k_regimes == 3 && dfel_analyzer && dfel_analyzer->root_frequencies.size() == S)
+                              ? dfel_analyzer->root_frequencies : pi_codon;
 
         // Decision 4: Helper to evaluate branch transition matrix for grid index g (or continuous ω via log-linear spectral interpolation)
         auto branch_grid_transition_matrix = [&](int32_t bid, size_t g_idx, Scalar eff_t) -> Matrix {
             Scalar t_pos = std::max<Scalar>(0.0, eff_t);
-            if (num_k_regimes == 1 || !dfel_analyzer || bid >= static_cast<int32_t>(dfel_analyzer->branch_regime_weights.size())) {
+            if (num_k_regimes == 1 || !dfel_analyzer || bid < 0 || bid >= static_cast<int32_t>(dfel_analyzer->branch_regime_weights.size())) {
                 Vector exp_d = (regime_spectral_grids[0][g_idx].evals.array() * t_pos).exp();
                 Matrix P = regime_spectral_grids[0][g_idx].R * exp_d.asDiagonal() * regime_spectral_grids[0][g_idx].L;
                 return P.cwiseMax(1e-15);
@@ -1416,58 +3334,238 @@ private:
         };
 
         // Compute Inside L_{v, c} and Outside U_{u, c} for every site c
-        // incorporating Decision 2 (K=3 POA path ensemble marginalization for PP_c < 0.99)
+        // incorporating Decision 2 (K=3 POA path ensemble marginalization for PP_c < 0.99 with Bayes-updated posterior weights)
         // and Decision 3 (Segment-specific SPR tree routing for recombinant segments p <= 0.01)
-        std::vector<std::vector<Vector>> site_inside(C, std::vector<Vector>(num_nodes, Vector::Ones(S)));
-        std::vector<std::vector<Vector>> site_outside(C, std::vector<Vector>(num_nodes, Vector::Zero(S)));
+        std::vector<std::vector<Vector>> site_inside(C, std::vector<Vector>(max_tree_nodes, Vector::Ones(S)));
+        std::vector<std::vector<Vector>> site_outside(C, std::vector<Vector>(max_tree_nodes, Vector::Zero(S)));
         std::vector<Scalar> site_base_ll(C, 0.0);
+        std::vector<Scalar> site_alpha(C, 1.0);
+        std::vector<size_t> site_g_near(C, 6);
         std::vector<size_t> site_ensemble_k(C, 1);
 
         const Alignment& init_aln = res.joint_align.initial_alignment;
         bool has_init_aln = (init_aln.num_taxa == N && init_aln.num_codons == C);
 
+        // Build lookup of local 3-way NNI WheatstoneBridge hubs on work_tree (both explicit 3-child
+        // bridges on work_tree.bridges and binary quartet bridges from res.joint_align.ohmic_network.bridges)
+        struct LocalWheatstoneHub {
+            int32_t hub_u = INVALID_INDEX;
+            int32_t bridge_v = INVALID_INDEX;
+            std::array<int32_t, 3> children{INVALID_INDEX, INVALID_INDEX, INVALID_INDEX};
+            std::array<Scalar, 3> weights{1.0, 0.0, 0.0};
+            std::array<Scalar, 3> branch_lengths{0.0, 0.0, 0.0};
+        };
+        std::vector<LocalWheatstoneHub> wt_wheatstone_hubs(max_tree_nodes);
+        auto register_wb = [&](const WheatstoneBridge& wb) {
+            int32_t id_A = wb.children[0];
+            int32_t id_B = wb.children[1];
+            int32_t id_C = wb.children[2];
+            if (id_A < 0 || id_B < 0 || id_C < 0 ||
+                static_cast<size_t>(id_A) >= work_tree.num_nodes() ||
+                static_cast<size_t>(id_B) >= work_tree.num_nodes() ||
+                static_cast<size_t>(id_C) >= work_tree.num_nodes()) {
+                return;
+            }
+            int32_t v_id = wb.bridge_node_id;
+            int32_t u_id = wb.hub_node_id;
+            if (v_id >= 0 && static_cast<size_t>(v_id) < work_tree.num_nodes() &&
+                work_tree.nodes[v_id].parent_id != INVALID_INDEX &&
+                work_tree.nodes[v_id].children.size() == 2) {
+                // Binary work_tree node v_id with parent u_id = parent(v_id)
+                u_id = work_tree.nodes[v_id].parent_id;
+            }
+            if (u_id < 0 || static_cast<size_t>(u_id) >= work_tree.num_nodes()) return;
+            if (wt_wheatstone_hubs[u_id].hub_u != INVALID_INDEX) return;
+
+            LocalWheatstoneHub hub;
+            hub.hub_u = u_id;
+            hub.bridge_v = (v_id >= 0 && static_cast<size_t>(v_id) < work_tree.num_nodes()) ? v_id : u_id;
+            hub.children = {id_A, id_B, id_C};
+            Scalar w_sum = wb.weights[0] + wb.weights[1] + wb.weights[2];
+            if (w_sum > 1e-12) {
+                hub.weights = {wb.weights[0] / w_sum, wb.weights[1] / w_sum, wb.weights[2] / w_sum};
+            }
+            Scalar scale_r = 1.0;
+            if (hub.bridge_v != hub.hub_u && wb.branch_lengths[0] > 1e-6 &&
+                work_tree.nodes[hub.bridge_v].branch_length > 1e-6) {
+                scale_r = work_tree.nodes[hub.bridge_v].branch_length / wb.branch_lengths[0];
+            }
+            for (int r = 0; r < 3; ++r) {
+                hub.branch_lengths[r] = std::max<Scalar>(1e-6, wb.branch_lengths[r] * scale_r);
+            }
+            wt_wheatstone_hubs[u_id] = hub;
+        };
+        for (const auto& wb : work_tree.bridges) register_wb(wb);
+        for (const auto& wb : res.joint_align.ohmic_network.bridges) register_wb(wb);
+
+        // Map each column c to its Stage 1 indel window and offset (if any) for exact Forward-Backward
+        // transducer candidate placements and posterior weights
+        std::vector<int> site_to_win(C, -1);
+        std::vector<size_t> site_to_win_offset(C, 0);
+        for (size_t wi = 0; wi < res.joint_align.windows.size(); ++wi) {
+            const auto& win = res.joint_align.windows[wi].window;
+            for (size_t c = win.start_codon; c < win.end_codon && c < C; ++c) {
+                site_to_win[c] = static_cast<int>(wi);
+                site_to_win_offset[c] = c - win.start_codon;
+            }
+        }
+
+        Scalar total_tree_subs = 0.0;
+        for (const auto& nd : work_tree.nodes) {
+            if (nd.id != work_tree.root_id && nd.parent_id != INVALID_INDEX) {
+                total_tree_subs += nd.branch_length;
+            }
+        }
+
+        // Empirical Bayes prior distribution over the 16-point ω grid from the gene's own site MLEs
+        // (with Laplace Dirichlet smoothing +1 per grid point; purifying/neutral classes g <= 8 have full weight 1.0)
+        std::array<Scalar, 16> emp_grid_prior{};
+        for (size_t g = 0; g < G; ++g) emp_grid_prior[g] = 1.0;
+
         for (size_t c = 0; c < C; ++c) {
-            Scalar alpha_c = (c < res.joint_align.site_results.size())
-                           ? std::max<Scalar>(0.05, res.joint_align.site_results[c].marginalized_alpha) : 1.0;
+            Scalar raw_alpha_c = (c < res.joint_align.site_results.size())
+                               ? std::max<Scalar>(0.0, res.joint_align.site_results[c].marginalized_alpha) : 1.0;
             Scalar beta_c = (c < res.joint_align.site_results.size())
                           ? std::max<Scalar>(0.0, res.joint_align.site_results[c].marginalized_beta) : mg_params.beta;
-            Scalar omega_c = beta_c / std::max<Scalar>(0.05, alpha_c);
+            if (dfel_analyzer && c < dfel_analyzer->site_results.size() && site_routed_tree_idx[c] < 0) {
+                raw_alpha_c = std::max<Scalar>(0.0, dfel_analyzer->site_results[c].alpha);
+                beta_c = std::max<Scalar>(0.0, dfel_analyzer->site_results[c].beta);
+            }
 
-            size_t g_near = 0;
+            size_t non_gap_taxa = 0;
+            for (size_t t = 0; t < N; ++t) {
+                if (aln.sequences[t].codons[c] >= 0) non_gap_taxa++;
+            }
+            Scalar occ_frac = (N > 0) ? (static_cast<Scalar>(non_gap_taxa) / static_cast<Scalar>(N)) : 1.0;
+            Scalar t_syn_c = (total_tree_subs * occ_frac) / 3.0;
+
+            // Conjugate Gamma(1,1)-Poisson Empirical Bayes posterior mean E[α_c | S_c = α̂_c * T_{syn,c}]
+            Scalar eb_alpha_c = (1.0 + std::min<Scalar>(raw_alpha_c, 50.0) * t_syn_c) / (1.0 + t_syn_c);
+            site_alpha[c] = std::clamp<Scalar>(eb_alpha_c, 0.05, 20.0);
+            Scalar omega_c = beta_c / site_alpha[c];
+
+            size_t g_mle = 0;
             Scalar best_d = 1e9;
             for (size_t g = 0; g < G; ++g) {
                 Scalar d = std::abs(omega_grid[g] - omega_c);
-                if (d < best_d) { best_d = d; g_near = g; }
+                if (d < best_d) { best_d = d; g_mle = g; }
             }
+            emp_grid_prior[g_mle] += 1.0;
+            // Background tree cavity (U_bar, L_bar) and reference denominator use the purifying/neutral baseline (g <= 8, ω <= 1)
+            site_g_near[c] = std::min<size_t>(8, g_mle);
+        }
+
+        Scalar max_emp_grid_count = *std::max_element(emp_grid_prior.begin(), emp_grid_prior.end());
+        for (size_t g = 0; g < G; ++g) {
+            emp_grid_prior[g] = (g <= 8) ? 1.0 : (emp_grid_prior[g] / std::max<Scalar>(1.0, max_emp_grid_count));
+        }
+
+        // Per-site Inside-Outside cavity builder. When node_mask_gamma != nullptr (Pass 1 recalculation on sites
+        // where a branch error-sink tract was detected), any edge `ch` with mask gamma_ch > 0 has its upward
+        // message blended toward the flat missing-data vector 1: (1 - gamma_ch)*(P_ch * L_ch) + gamma_ch * 1,
+        // severing corrupted subtrees so sibling and ancestor Outside vectors are recomputed cleanly.
+        auto compute_site_cavity = [&](size_t c, const std::vector<Scalar>* node_mask_gamma) {
+            Scalar alpha_c = site_alpha[c];
+            size_t g_near = site_g_near[c];
 
             // Decision 3: Choose active tree for site c (Backbone vs Routed Recombinant SPR Tree)
             int r_idx = site_routed_tree_idx[c];
             const Tree& active_tree = (r_idx >= 0) ? routed_spr_trees[r_idx].spr_tree : work_tree;
             const auto& active_l2t = (r_idx >= 0) ? routed_spr_trees[r_idx].leaf_to_taxon : leaf_to_taxon;
 
-            std::vector<Matrix> P_site(num_nodes);
+            size_t act_nodes = std::max(max_tree_nodes, active_tree.num_nodes());
+            std::vector<Matrix> P_site(act_nodes);
             for (const auto& nd : active_tree.nodes) {
                 if (nd.id != active_tree.root_id && nd.parent_id != INVALID_INDEX) {
                     P_site[nd.id] = branch_grid_transition_matrix(nd.id, g_near, alpha_c * nd.branch_length * conv);
                 }
             }
 
-            // Decision 2: Construct up to K=3 POA path realizations and weights when PP_c < 0.99
+            auto edge_mask_gamma = [&](int32_t nid) -> Scalar {
+                if (!node_mask_gamma || nid < 0 || static_cast<size_t>(nid) >= node_mask_gamma->size()) return 0.0;
+                return (*node_mask_gamma)[nid];
+            };
+            auto masked_upward_msg = [&](int32_t nid, const Vector& loc_in_nid) -> Vector {
+                Vector raw_m = P_site[nid] * loc_in_nid;
+                Scalar gm = edge_mask_gamma(nid);
+                if (gm <= 1e-6) return raw_m;
+                return (1.0 - gm) * raw_m + gm * Vector::Ones(S);
+            };
+            auto masked_upward_sc = [&](int32_t nid, Scalar raw_sc) -> Scalar {
+                Scalar gm = edge_mask_gamma(nid);
+                return (gm <= 1e-6) ? raw_sc : ((1.0 - gm) * raw_sc);
+            };
+
+            // Decision 2: Construct up to K=3 POA path realizations from Stage 1 Forward-Backward transducer
+            // candidate placements (`window_taxon_results`) with exact transducer log-posteriors (zero hardcoded weights)
             Scalar pp_c = (c < res.joint_align.site_homology_posteriors.size())
                         ? res.joint_align.site_homology_posteriors[c] : 1.0;
             struct ColumnRealization {
                 std::vector<int> codons;
-                Scalar weight;
+                Scalar prior_weight;
+                Scalar log_l = -1e30;
+                Scalar post_weight = 0.0;
+                std::vector<Vector> loc_in;
+                std::vector<Vector> loc_out;
             };
             std::vector<ColumnRealization> realizations;
             std::vector<int> map_col(N, -1);
             for (size_t t = 0; t < N; ++t) map_col[t] = aln.sequences[t].codons[c];
 
+            int wi = site_to_win[c];
+            bool has_transducer_cands = (
+                pp_c < 0.99 &&
+                wi >= 0 &&
+                static_cast<size_t>(wi) < res.joint_align.window_taxon_results.size() &&
+                res.joint_align.window_taxon_results[wi].size() == N
+            );
+
             if (pp_c >= 0.99) {
-                realizations.push_back({map_col, 1.0});
+                realizations.push_back({map_col, 1.0, -1e30, 1.0, {}, {}});
+            } else if (has_transducer_cands) {
+                size_t w_off = site_to_win_offset[c];
+                const auto& win_tr = res.joint_align.window_taxon_results[wi];
+                std::vector<Scalar> cand_log_priors;
+                for (size_t rank = 0; rank < 3; ++rank) {
+                    std::vector<int> col_r(N, -1);
+                    Scalar log_prior_r = 0.0;
+                    for (size_t t = 0; t < N; ++t) {
+                        const auto& cands = win_tr[t].top_candidates;
+                        if (!cands.empty()) {
+                            size_t idx = std::min(rank, cands.size() - 1);
+                            if (w_off < cands[idx].codons.size()) {
+                                col_r[t] = cands[idx].codons[w_off];
+                            } else {
+                                col_r[t] = map_col[t];
+                            }
+                            log_prior_r += (cands[idx].log_score - win_tr[t].log_partition_Z);
+                        } else {
+                            col_r[t] = map_col[t];
+                        }
+                    }
+                    bool duplicate = false;
+                    for (const auto& ex : realizations) {
+                        if (ex.codons == col_r) { duplicate = true; break; }
+                    }
+                    if (!duplicate) {
+                        realizations.push_back({std::move(col_r), 1.0, -1e30, 0.0, {}, {}});
+                        cand_log_priors.push_back(log_prior_r);
+                    }
+                }
+                if (!cand_log_priors.empty()) {
+                    Scalar max_lp = *std::max_element(cand_log_priors.begin(), cand_log_priors.end());
+                    Scalar sum_pw = 0.0;
+                    for (size_t m = 0; m < realizations.size(); ++m) {
+                        realizations[m].prior_weight = std::exp(std::clamp<Scalar>(cand_log_priors[m] - max_lp, -50.0, 0.0));
+                        sum_pw += realizations[m].prior_weight;
+                    }
+                    if (sum_pw > 0.0) {
+                        for (auto& r : realizations) r.prior_weight /= sum_pw;
+                    }
+                }
             } else {
-                Scalar w1 = std::clamp<Scalar>(pp_c, 0.50, 0.98);
-                Scalar rem = 1.0 - w1;
+                // Fallback when window_taxon_results was compacted: uniform prior (1.0) so posterior weights
+                // are governed strictly by the exact phylogenetic column likelihood exp(ell_c^{(m)})
                 std::vector<int> alt1_col = map_col;
                 std::vector<int> alt2_col = map_col;
                 for (size_t t = 0; t < N; ++t) {
@@ -1479,65 +3577,219 @@ private:
                     if (map_col[t] < 0 && c > 0 && aln.sequences[t].codons[c - 1] >= 0) {
                         alt2_col[t] = aln.sequences[t].codons[c - 1];
                     } else if (map_col[t] >= 0 && ((c + 1 < C && aln.sequences[t].codons[c + 1] < 0) || (c > 0 && aln.sequences[t].codons[c - 1] < 0))) {
-                        alt2_col[t] = -1; // Indel boundary gap-shift realization
+                        alt2_col[t] = -1;
                     }
                 }
-                realizations.push_back({map_col, w1});
-                realizations.push_back({alt1_col, 0.65 * rem});
-                realizations.push_back({alt2_col, 0.35 * rem});
+                realizations.push_back({map_col, 1.0, -1e30, 0.0, {}, {}});
+                if (alt1_col != map_col) {
+                    realizations.push_back({alt1_col, 1.0, -1e30, 0.0, {}, {}});
+                }
+                if (alt2_col != map_col && alt2_col != alt1_col) {
+                    realizations.push_back({alt2_col, 1.0, -1e30, 0.0, {}, {}});
+                }
             }
             site_ensemble_k[c] = realizations.size();
 
-            // Accumulate posterior-weighted Inside and Outside cavity vectors across the K realizations
-            std::vector<Vector> acc_inside(num_nodes, Vector::Zero(S));
-            std::vector<Vector> acc_outside(num_nodes, Vector::Zero(S));
-            Scalar acc_ll = 0.0;
-
-            for (const auto& realiz : realizations) {
-                std::vector<Vector> loc_in(num_nodes, Vector::Ones(S));
-                std::vector<Vector> loc_out(num_nodes, Vector::Zero(S));
-                std::vector<Scalar> log_sc(num_nodes, 0.0);
+            Scalar max_realiz_ll = -1e30;
+            for (auto& realiz : realizations) {
+                realiz.loc_in.assign(act_nodes, Vector::Ones(S));
+                realiz.loc_out.assign(act_nodes, Vector::Zero(S));
+                std::vector<Scalar> log_sc(act_nodes, 0.0);
 
                 for (int32_t nid : active_tree.post_order) {
                     const auto& nd = active_tree.nodes[nid];
                     if (nd.is_leaf) {
                         size_t tid = (nid < static_cast<int32_t>(active_l2t.size())) ? active_l2t[nid] : INVALID_INDEX;
                         if (tid < N && realiz.codons[tid] >= 0) {
-                            loc_in[nid].setZero();
-                            loc_in[nid](realiz.codons[tid]) = 1.0;
+                            realiz.loc_in[nid].setZero();
+                            realiz.loc_in[nid](realiz.codons[tid]) = 1.0;
                         } else {
-                            loc_in[nid].setOnes();
+                            realiz.loc_in[nid].setOnes();
                         }
-                    } else {
-                        Vector prod = Vector::Ones(S);
-                        Scalar sc = 0.0;
+                    } else if (r_idx < 0 && nid >= 0 && static_cast<size_t>(nid) < wt_wheatstone_hubs.size() &&
+                               wt_wheatstone_hubs[nid].hub_u == nid) {
+                        // Local 3-way NNI WheatstoneBridge integration at hub nid
+                        const auto& wh = wt_wheatstone_hubs[nid];
+                        int32_t id_A = wh.children[0];
+                        int32_t id_B = wh.children[1];
+                        int32_t id_C = wh.children[2];
+                        int32_t v_id = wh.bridge_v;
+
+                        Vector M_A = masked_upward_msg(id_A, realiz.loc_in[id_A]);
+                        Vector M_B = masked_upward_msg(id_B, realiz.loc_in[id_B]);
+                        Vector M_C = masked_upward_msg(id_C, realiz.loc_in[id_C]);
+                        Scalar sc = masked_upward_sc(id_A, log_sc[id_A])
+                                  + masked_upward_sc(id_B, log_sc[id_B])
+                                  + masked_upward_sc(id_C, log_sc[id_C]);
+
+                        Vector W_abc = Vector::Zero(S);
+                        if (wh.weights[0] > 0.0) {
+                            Matrix P0 = branch_grid_transition_matrix(v_id, g_near, alpha_c * wh.branch_lengths[0] * conv);
+                            W_abc.noalias() += wh.weights[0] * (P0 * M_A.cwiseProduct(M_B)).cwiseProduct(M_C);
+                        }
+                        if (wh.weights[1] > 0.0) {
+                            Matrix P1 = branch_grid_transition_matrix(v_id, g_near, alpha_c * wh.branch_lengths[1] * conv);
+                            W_abc.noalias() += wh.weights[1] * (P1 * M_A.cwiseProduct(M_C)).cwiseProduct(M_B);
+                        }
+                        if (wh.weights[2] > 0.0) {
+                            Matrix P2 = branch_grid_transition_matrix(v_id, g_near, alpha_c * wh.branch_lengths[2] * conv);
+                            W_abc.noalias() += wh.weights[2] * (P2 * M_B.cwiseProduct(M_C)).cwiseProduct(M_A);
+                        }
+
+                        Vector prod = W_abc;
                         for (int32_t ch : nd.children) {
-                            prod.array() *= (P_site[ch] * loc_in[ch]).array();
-                            sc += log_sc[ch];
+                            if (ch != v_id && ch != id_A && ch != id_B && ch != id_C) {
+                                prod.array() *= masked_upward_msg(ch, realiz.loc_in[ch]).array();
+                                sc += masked_upward_sc(ch, log_sc[ch]);
+                            }
                         }
                         Scalar mx = prod.maxCoeff();
                         if (mx > 0.0) {
                             prod /= mx;
                             sc += std::log(mx);
                         }
-                        loc_in[nid] = prod;
+                        realiz.loc_in[nid] = prod;
+                        log_sc[nid] = sc;
+                    } else {
+                        Vector prod = Vector::Ones(S);
+                        Scalar sc = 0.0;
+                        for (int32_t ch : nd.children) {
+                            prod.array() *= masked_upward_msg(ch, realiz.loc_in[ch]).array();
+                            sc += masked_upward_sc(ch, log_sc[ch]);
+                        }
+                        Scalar mx = prod.maxCoeff();
+                        if (mx > 0.0) {
+                            prod /= mx;
+                            sc += std::log(mx);
+                        }
+                        realiz.loc_in[nid] = prod;
                         log_sc[nid] = sc;
                     }
                 }
-                Scalar root_dot = std::max<Scalar>(1e-300, pi_codon.dot(loc_in[active_tree.root_id]));
-                acc_ll += realiz.weight * (log_sc[active_tree.root_id] + std::log(root_dot));
+                Scalar root_dot = std::max<Scalar>(1e-300, root_pi.dot(realiz.loc_in[active_tree.root_id]));
+                realiz.log_l = log_sc[active_tree.root_id] + std::log(root_dot);
+                if (realiz.log_l > max_realiz_ll) max_realiz_ll = realiz.log_l;
 
-                std::vector<Vector> node_post(num_nodes, Vector::Zero(S));
-                node_post[active_tree.root_id] = pi_codon;
+                std::vector<Vector> node_post(act_nodes, Vector::Zero(S));
+                std::vector<bool> outside_done(act_nodes, false);
+                node_post[active_tree.root_id] = root_pi;
                 for (auto it = active_tree.post_order.rbegin(); it != active_tree.post_order.rend(); ++it) {
                     int32_t uid = *it;
                     const auto& u_nd = active_tree.nodes[uid];
-                    if (u_nd.children.empty()) continue;
+                    if (u_nd.children.empty() || outside_done[uid]) continue;
+
+                    if (r_idx < 0 && uid >= 0 && static_cast<size_t>(uid) < wt_wheatstone_hubs.size() &&
+                        wt_wheatstone_hubs[uid].hub_u == uid) {
+                        const auto& wh = wt_wheatstone_hubs[uid];
+                        int32_t id_A = wh.children[0];
+                        int32_t id_B = wh.children[1];
+                        int32_t id_C = wh.children[2];
+                        int32_t v_id = wh.bridge_v;
+
+                        Vector M_A = masked_upward_msg(id_A, realiz.loc_in[id_A]);
+                        Vector M_B = masked_upward_msg(id_B, realiz.loc_in[id_B]);
+                        Vector M_C = masked_upward_msg(id_C, realiz.loc_in[id_C]);
+
+                        Matrix P0 = branch_grid_transition_matrix(v_id, g_near, alpha_c * wh.branch_lengths[0] * conv);
+                        Matrix P1 = (wh.weights[1] > 0.0)
+                                  ? branch_grid_transition_matrix(v_id, g_near, alpha_c * wh.branch_lengths[1] * conv)
+                                  : Matrix::Identity(S, S);
+                        Matrix P2 = (wh.weights[2] > 0.0)
+                                  ? branch_grid_transition_matrix(v_id, g_near, alpha_c * wh.branch_lengths[2] * conv)
+                                  : Matrix::Identity(S, S);
+
+                        Vector PB0 = P0 * M_A.cwiseProduct(M_B);
+                        Vector PB1 = (wh.weights[1] > 0.0) ? Vector(P1 * M_A.cwiseProduct(M_C)) : Vector(Vector::Zero(S));
+                        Vector PB2 = (wh.weights[2] > 0.0) ? Vector(P2 * M_B.cwiseProduct(M_C)) : Vector(Vector::Zero(S));
+                        Vector W_abc = wh.weights[0] * PB0.cwiseProduct(M_C)
+                                     + wh.weights[1] * PB1.cwiseProduct(M_B)
+                                     + wh.weights[2] * PB2.cwiseProduct(M_A);
+
+                        std::vector<int32_t> extra_ch;
+                        for (int32_t ch : u_nd.children) {
+                            if (ch != v_id && ch != id_A && ch != id_B && ch != id_C) {
+                                extra_ch.push_back(ch);
+                            }
+                        }
+                        Vector M_rest = Vector::Ones(S);
+                        for (int32_t d : extra_ch) {
+                            M_rest.array() *= masked_upward_msg(d, realiz.loc_in[d]).array();
+                        }
+                        for (size_t idx = 0; idx < extra_ch.size(); ++idx) {
+                            int32_t d = extra_ch[idx];
+                            Vector cav_d = node_post[uid].cwiseProduct(W_abc);
+                            for (size_t j = 0; j < extra_ch.size(); ++j) {
+                                if (j != idx) {
+                                    int32_t dj = extra_ch[j];
+                                    cav_d.array() *= masked_upward_msg(dj, realiz.loc_in[dj]).array();
+                                }
+                            }
+                            Scalar s_sum = cav_d.sum();
+                            if (s_sum > 0.0) cav_d /= s_sum;
+                            else cav_d = root_pi;
+                            realiz.loc_out[d] = cav_d;
+
+                            Vector post_d = P_site[d].transpose() * cav_d;
+                            Scalar pd_sum = post_d.sum();
+                            if (pd_sum > 0.0) post_d /= pd_sum;
+                            else post_d = root_pi;
+                            node_post[d] = post_d;
+                        }
+
+                        Vector U_hub = node_post[uid].cwiseProduct(M_rest);
+
+                        if (v_id != uid && v_id >= 0 && static_cast<size_t>(v_id) < act_nodes) {
+                            Vector cav_v = U_hub.cwiseProduct(M_C);
+                            Scalar sv = cav_v.sum();
+                            if (sv > 0.0) cav_v /= sv;
+                            else cav_v = root_pi;
+                            realiz.loc_out[v_id] = cav_v;
+
+                            Vector post_v = P0.transpose() * cav_v;
+                            Scalar pv_s = post_v.sum();
+                            if (pv_s > 0.0) post_v /= pv_s;
+                            else post_v = root_pi;
+                            node_post[v_id] = post_v;
+                            outside_done[v_id] = true;
+                        }
+
+                        Vector QT0 = P0.transpose() * U_hub.cwiseProduct(M_C);
+                        Vector QT1 = (wh.weights[1] > 0.0) ? Vector(P1.transpose() * U_hub.cwiseProduct(M_B)) : Vector(Vector::Zero(S));
+                        Vector QT2 = (wh.weights[2] > 0.0) ? Vector(P2.transpose() * U_hub.cwiseProduct(M_A)) : Vector(Vector::Zero(S));
+
+                        Vector V_A = wh.weights[0] * QT0.cwiseProduct(M_B)
+                                   + wh.weights[1] * QT1.cwiseProduct(M_C)
+                                   + wh.weights[2] * U_hub.cwiseProduct(PB2);
+                        Vector V_B = wh.weights[0] * QT0.cwiseProduct(M_A)
+                                   + wh.weights[1] * U_hub.cwiseProduct(PB1)
+                                   + wh.weights[2] * QT2.cwiseProduct(M_C);
+                        Vector V_C = wh.weights[0] * U_hub.cwiseProduct(PB0)
+                                   + wh.weights[1] * QT1.cwiseProduct(M_A)
+                                   + wh.weights[2] * QT2.cwiseProduct(M_B);
+
+                        std::array<int32_t, 3> q_ids = {id_A, id_B, id_C};
+                        std::array<Vector, 3> q_Vs = {std::move(V_A), std::move(V_B), std::move(V_C)};
+                        for (int q = 0; q < 3; ++q) {
+                            int32_t qid = q_ids[q];
+                            Vector cav_q = std::move(q_Vs[q]);
+                            Scalar sq = cav_q.sum();
+                            if (sq > 0.0) cav_q /= sq;
+                            else cav_q = root_pi;
+                            realiz.loc_out[qid] = cav_q;
+
+                            Vector post_q = P_site[qid].transpose() * cav_q;
+                            Scalar pq_s = post_q.sum();
+                            if (pq_s > 0.0) post_q /= pq_s;
+                            else post_q = root_pi;
+                            node_post[qid] = post_q;
+                        }
+                        continue;
+                    }
 
                     std::vector<Vector> child_msgs(u_nd.children.size());
                     for (size_t k = 0; k < u_nd.children.size(); ++k) {
                         int32_t vid = u_nd.children[k];
-                        child_msgs[k] = P_site[vid] * loc_in[vid];
+                        child_msgs[k] = masked_upward_msg(vid, realiz.loc_in[vid]);
                     }
                     for (size_t k = 0; k < u_nd.children.size(); ++k) {
                         int32_t vid = u_nd.children[k];
@@ -1547,32 +3799,61 @@ private:
                         }
                         Scalar s_sum = cav_u.sum();
                         if (s_sum > 0.0) cav_u /= s_sum;
-                        else cav_u = pi_codon;
-                        loc_out[vid] = cav_u;
+                        else cav_u = root_pi;
+                        realiz.loc_out[vid] = cav_u;
 
                         Vector post_v = P_site[vid].transpose() * cav_u;
                         Scalar pv_sum = post_v.sum();
                         if (pv_sum > 0.0) post_v /= pv_sum;
-                        else post_v = pi_codon;
+                        else post_v = root_pi;
                         node_post[vid] = post_v;
                     }
                 }
+            }
 
-                for (size_t nid = 0; nid < num_nodes; ++nid) {
-                    Scalar in_sum = loc_in[nid].sum();
-                    Vector norm_in = (in_sum > 0.0) ? (loc_in[nid] / in_sum).eval() : loc_in[nid];
-                    acc_inside[nid].noalias() += realiz.weight * norm_in;
-                    acc_outside[nid].noalias() += realiz.weight * loc_out[nid];
+            // Bayes-update the realization weights: w_m \propto w_m^{prior} * exp(log_l_m - max_ll)
+            Scalar sum_post_w = 0.0;
+            for (auto& realiz : realizations) {
+                realiz.post_weight = realiz.prior_weight * std::exp(std::clamp<Scalar>(realiz.log_l - max_realiz_ll, -50.0, 0.0));
+                sum_post_w += realiz.post_weight;
+            }
+            if (sum_post_w > 0.0) {
+                for (auto& realiz : realizations) realiz.post_weight /= sum_post_w;
+            } else {
+                realizations[0].post_weight = 1.0;
+            }
+
+            std::vector<Vector> acc_inside(max_tree_nodes, Vector::Zero(S));
+            std::vector<Vector> acc_outside(max_tree_nodes, Vector::Zero(S));
+            Scalar acc_ll = 0.0;
+            for (const auto& realiz : realizations) {
+                if (realiz.post_weight <= 1e-9) continue;
+                acc_ll += realiz.post_weight * realiz.log_l;
+                for (size_t nid = 0; nid < max_tree_nodes; ++nid) {
+                    if (nid >= active_tree.num_nodes() ||
+                        (static_cast<int32_t>(nid) != active_tree.root_id &&
+                         active_tree.nodes[nid].parent_id == INVALID_INDEX)) {
+                        acc_inside[nid].noalias() += realiz.post_weight * (Vector::Ones(S) / static_cast<Scalar>(S));
+                        acc_outside[nid].noalias() += realiz.post_weight * root_pi;
+                    } else {
+                        Scalar in_sum = realiz.loc_in[nid].sum();
+                        Vector norm_in = (in_sum > 0.0) ? (realiz.loc_in[nid] / in_sum).eval() : realiz.loc_in[nid];
+                        acc_inside[nid].noalias() += realiz.post_weight * norm_in;
+                        acc_outside[nid].noalias() += realiz.post_weight * realiz.loc_out[nid];
+                    }
                 }
             }
             site_inside[c] = std::move(acc_inside);
             site_outside[c] = std::move(acc_outside);
             site_base_ll[c] = acc_ll;
+        };
+
+        for (size_t c = 0; c < C; ++c) {
+            compute_site_cavity(c, nullptr);
         }
 
-        // Build the 3D Branch-Site-Omega Relative Likelihood Sufficiency Tensor W[c][bi][g]
-        // paired with Principles 2 + 3: 2-State Spatial Markov Error-Sink HMM along each branch (bi, c = 0..C-1)
-        // and Sink-Quarantined Branch-Length & Tensor Sanitization.
+        // Phase 4.4: Erlang-3 Minimum-Duration Baum-Welch Markov Error-Sink HMM with Schwarz BIC Selection
+        // and Pass 1 Masked Cavity Recalculation (zero hardcoded grid subsets, transition rates, or sibling hacks)
         std::vector<std::vector<std::array<Scalar, 16>>> W_tensor(
             C, std::vector<std::array<Scalar, 16>>(B)
         );
@@ -1583,149 +3864,269 @@ private:
         for (int i = 0; i < S; ++i) {
             inv_one_minus_pi(i) = 1.0 / std::max<Scalar>(1e-12, 1.0 - pi_codon(i));
         }
-
-        std::vector<Scalar> pos_bls;
-        for (size_t bi = 0; bi < B; ++bi) {
-            int32_t bid = active_branches[bi];
-            if (work_tree.nodes[bid].branch_length > 1e-6) {
-                pos_bls.push_back(work_tree.nodes[bid].branch_length * conv);
+        Matrix P_mh_jump = Matrix::Zero(S, S);
+        std::vector<std::vector<uint8_t>> codon_dnuc(S, std::vector<uint8_t>(S, 0));
+        for (int i = 0; i < S; ++i) {
+            Scalar row_mh_sum = 0.0;
+            for (int j = 0; j < S; ++j) {
+                if (i == j) continue;
+                uint8_t d = static_cast<uint8_t>(gcode.diff_matrix[static_cast<size_t>(i)][static_cast<size_t>(j)].num_diffs);
+                codon_dnuc[i][j] = d;
+                if (d >= 2) {
+                    P_mh_jump(i, j) = pi_codon(j);
+                    row_mh_sum += pi_codon(j);
+                }
             }
+            if (row_mh_sum > 1e-12) P_mh_jump.row(i) /= row_mh_sum;
         }
-        std::sort(pos_bls.begin(), pos_bls.end());
-        Scalar med_bl_conv = pos_bls.empty() ? 0.05 : pos_bls[pos_bls.size() / 2];
 
-        for (size_t bi = 0; bi < B; ++bi) {
-            int32_t bid = active_branches[bi];
-            Scalar raw_bl = work_tree.nodes[bid].branch_length * conv;
-            Scalar ref_bl = raw_bl;
+        const Scalar bic_branch_sink_threshold = 2.0 * std::log(static_cast<Scalar>(std::max<size_t>(2, B * C)));
+        bool any_branch_sink_detected = false;
 
-            // Principle 3 (Pass 0): If a terminal branch is >2.5x longer than its sibling, evaluate R_sink at 1.5x sibling length
-            // so a 10-codon contamination stretch that stretched t_b 3x in Stage 1 doesn't mask its own Bayes Factor!
-            const auto& nd_b = work_tree.nodes[bid];
-            if (nd_b.is_leaf && nd_b.parent_id >= 0) {
-                const auto& par = work_tree.nodes[nd_b.parent_id];
-                Scalar min_sib = 1e9;
-                for (int32_t ch : par.children) {
-                    if (ch != bid && work_tree.nodes[ch].branch_length > 1e-6) {
-                        min_sib = std::min(min_sib, work_tree.nodes[ch].branch_length * conv);
-                    }
-                }
-                if (min_sib < 1e8 && raw_bl > 2.5 * std::max(min_sib, 0.5 * med_bl_conv)) {
-                    ref_bl = 1.5 * std::max(min_sib, 0.5 * med_bl_conv);
-                }
-            }
-
-            for (int pass = 0; pass < 2; ++pass) {
-                Scalar eval_bl = (pass == 0) ? ref_bl : (work_tree.nodes[bid].branch_length * conv);
-                Matrix P_ref_sink = branch_grid_transition_matrix(bid, 6, eval_bl);
-                for (size_t c = 0; c < C; ++c) {
-                    const Vector& U = site_outside[c][bid];
-                    const Vector& L = site_inside[c][bid];
-                    Scalar ref_val = std::max<Scalar>(1e-30, U.dot(P_ref_sink * L));
-                    Scalar pi_dot_L = pi_codon.dot(L);
-                    Scalar sink_val = 0.0;
-                    for (int i = 0; i < S; ++i) {
-                        Scalar p_sink_L_i = (pi_dot_L - pi_codon(i) * L(i)) * inv_one_minus_pi(i);
-                        sink_val += U(i) * std::max<Scalar>(0.0, p_sink_L_i);
-                    }
-                    W_sink[c][bi] = std::max<Scalar>(0.0, sink_val / ref_val);
-                }
-
-                // Principle 2: 2-State Forward-Backward Markov HMM along sites c = 0..C-1 on branch bi
-                if (C >= 2) {
-                    const Scalar eps_entry = 0.0005;
-                    const Scalar rho_stay = 0.80;
-                    const Scalar log_A00 = std::log(1.0 - eps_entry);
-                    const Scalar log_A01 = std::log(eps_entry);
-                    const Scalar log_A10 = std::log(1.0 - rho_stay);
-                    const Scalar log_A11 = std::log(rho_stay);
-                    auto lse = [](Scalar a, Scalar b) -> Scalar {
-                        Scalar mx = std::max(a, b);
-                        return mx + std::log(std::exp(a - mx) + std::exp(b - mx));
-                    };
-                    std::vector<Scalar> f0(C, 0.0), f1(C, 0.0), b0(C, 0.0), b1(C, 0.0), log_em1(C, -30.0);
-                    for (size_t c = 0; c < C; ++c) {
-                        log_em1[c] = std::min<Scalar>(8.0, std::log(std::max<Scalar>(1e-15, W_sink[c][bi])));
-                    }
-                    f0[0] = log_A00;
-                    f1[0] = log_A01 + log_em1[0];
-                    for (size_t c = 1; c < C; ++c) {
-                        f0[c] = lse(f0[c - 1] + log_A00, f1[c - 1] + log_A10);
-                        f1[c] = log_em1[c] + lse(f0[c - 1] + log_A01, f1[c - 1] + log_A11);
-                    }
-                    for (int c = static_cast<int>(C) - 2; c >= 0; --c) {
-                        b0[c] = lse(log_A00 + b0[c + 1], log_A01 + log_em1[c + 1] + b1[c + 1]);
-                        b1[c] = lse(log_A10 + b0[c + 1], log_A11 + log_em1[c + 1] + b1[c + 1]);
-                    }
-                    Scalar log_Z = lse(f0[C - 1], f1[C - 1]);
-                    for (size_t c = 0; c < C; ++c) {
-                        Scalar g1 = std::exp(std::clamp<Scalar>(f1[c] + b1[c] - log_Z, -50.0, 0.0));
-                        markov_sink_gamma[c][bi] = std::clamp<Scalar>(g1, 0.0, 1.0);
-                    }
-
-                    // Retain only contiguous Markov sink contamination runs of >= 3 codons (run_sum >= 2.6)
-                    std::vector<Scalar> filtered_gamma(C, 0.0);
-                    size_t c_idx = 0;
-                    while (c_idx < C) {
-                        if (markov_sink_gamma[c_idx][bi] >= 0.50) {
-                            size_t run_start = c_idx;
-                            Scalar run_sum = 0.0;
-                            while (c_idx < C && (markov_sink_gamma[c_idx][bi] >= 0.50 ||
-                                   (c_idx + 1 < C && markov_sink_gamma[c_idx + 1][bi] >= 0.50))) {
-                                run_sum += markov_sink_gamma[c_idx][bi];
-                                ++c_idx;
-                            }
-                            if (c_idx - run_start >= 3 && run_sum >= 2.6) {
-                                for (size_t k = run_start; k < c_idx; ++k) {
-                                    filtered_gamma[k] = markov_sink_gamma[k][bi];
-                                }
-                            }
-                        } else {
-                            ++c_idx;
-                        }
-                    }
-                    Scalar sum_gamma = 0.0;
-                    for (size_t c = 0; c < C; ++c) {
-                        markov_sink_gamma[c][bi] = filtered_gamma[c];
-                        sum_gamma += filtered_gamma[c];
-                    }
-
-                    // Principle 3 (Pass 0 -> Pass 1): If branch bi has a contiguous Markov error-sink tract (sum_gamma >= 1.8 codons),
-                    // sanitize its inflated branch length before Pass 1 and before building W_tensor!
-                    if (pass == 0 && sum_gamma >= 1.8) {
-                        Scalar frac_contam = sum_gamma / static_cast<Scalar>(C);
-                        Scalar est_spurious_bl = 2.2 * frac_contam;
-                        Scalar clean_bl = raw_bl;
-                        if (raw_bl > est_spurious_bl + 0.005) {
-                            clean_bl = std::min(clean_bl, std::max<Scalar>(0.005, raw_bl - est_spurious_bl));
-                        }
-                        if (ref_bl < raw_bl) {
-                            clean_bl = std::min(clean_bl, ref_bl);
-                        }
-                        work_tree.nodes[bid].branch_length = clean_bl / conv;
-                    }
-                }
-            }
-
-            Scalar bl = work_tree.nodes[bid].branch_length * conv;
+        auto build_branch_hadamard = [&](int32_t bid, std::array<Scalar, 3>& br_w) -> std::vector<std::vector<Matrix>> {
             Matrix U_mat(S, C), L_mat(S, C);
             for (size_t c = 0; c < C; ++c) {
                 U_mat.col(static_cast<Eigen::Index>(c)) = site_outside[c][bid];
                 L_mat.col(static_cast<Eigen::Index>(c)) = site_inside[c][bid];
             }
-
-            for (size_t g = 0; g < G; ++g) {
-                Matrix P_bg = branch_grid_transition_matrix(bid, g, bl);
-                Matrix PL = P_bg * L_mat; // Single BLAS GEMM across all C sites
-                for (size_t c = 0; c < C; ++c) {
-                    Scalar l_val = U_mat.col(static_cast<Eigen::Index>(c)).dot(PL.col(static_cast<Eigen::Index>(c)));
-                    W_tensor[c][bi][g] = std::max<Scalar>(1e-30, l_val);
+            br_w = {0.0, 1.0, 0.0};
+            if (num_k_regimes == 3 && dfel_analyzer && bid >= 0 && bid < static_cast<int32_t>(dfel_analyzer->branch_regime_weights.size())) {
+                const auto& wv = dfel_analyzer->branch_regime_weights[bid];
+                if (wv.size() == 3) { br_w[0] = wv[0]; br_w[1] = wv[1]; br_w[2] = wv[2]; }
+            }
+            std::vector<std::vector<Matrix>> H_reg(num_k_regimes, std::vector<Matrix>(G));
+            for (size_t k_reg = 0; k_reg < num_k_regimes; ++k_reg) {
+                Scalar wk = (num_k_regimes == 1) ? 1.0 : br_w[k_reg];
+                if (wk <= 1e-6) continue;
+                for (size_t g = 0; g < G; ++g) {
+                    Matrix RT_U = regime_spectral_grids[k_reg][g].R.transpose() * U_mat;
+                    Matrix L_L  = regime_spectral_grids[k_reg][g].L * L_mat;
+                    H_reg[k_reg][g] = RT_U.cwiseProduct(L_L);
                 }
             }
+            return H_reg;
+        };
+
+        auto eval_hadamard_at = [&](const std::vector<std::vector<Matrix>>& H_reg,
+                                    const std::array<Scalar, 3>& br_w,
+                                    size_t c, size_t g_idx, Scalar eff_t) -> Scalar {
+            Scalar t_pos = std::max<Scalar>(0.0, eff_t);
+            Scalar val = 0.0;
+            for (size_t k_reg = 0; k_reg < num_k_regimes; ++k_reg) {
+                Scalar wk = (num_k_regimes == 1) ? 1.0 : br_w[k_reg];
+                if (wk <= 1e-6) continue;
+                Vector exp_d = (regime_spectral_grids[k_reg][g_idx].evals.array() * t_pos).exp();
+                val += wk * H_reg[k_reg][g_idx].col(static_cast<Eigen::Index>(c)).dot(exp_d);
+            }
+            return std::max<Scalar>(1e-30, val);
+        };
+
+        for (size_t bi = 0; bi < B; ++bi) {
+            int32_t bid = active_branches[bi];
+            Scalar raw_bl = work_tree.nodes[bid].branch_length * conv;
+            std::array<Scalar, 3> br_w;
+            auto H_reg = build_branch_hadamard(bid, br_w);
+
+            // Compute off-diagonal random-jump kernel likelihood f_sink[c] for each site c on branch bi
+            std::vector<Scalar> f_sink(C, 0.0);
+            std::vector<bool> is_homologous_site(C, true);
+            size_t n_homologous = 0;
             for (size_t c = 0; c < C; ++c) {
-                Scalar ref = std::max<Scalar>(1e-30, W_tensor[c][bi][6]); // ω = 0.50 reference
+                const Vector& U = site_outside[c][bid];
+                const Vector& L = site_inside[c][bid];
+                Eigen::Index i_star = 0, j_star = 0;
+                (U.cwiseProduct(pi_codon)).maxCoeff(&i_star);
+                (L.cwiseProduct(pi_codon)).maxCoeff(&j_star);
+                Scalar sink_val = (codon_dnuc[i_star][j_star] >= 2) ? U.dot(P_mh_jump * L) : 0.0;
+                f_sink[c] = std::max<Scalar>(0.0, sink_val);
+                Scalar f_raw = eval_hadamard_at(H_reg, br_w, c, site_g_near[c], site_alpha[c] * raw_bl);
+                if (f_raw >= f_sink[c]) {
+                    is_homologous_site[c] = true;
+                    n_homologous++;
+                } else {
+                    is_homologous_site[c] = false;
+                }
+            }
+
+            // 1D golden-section cavity MLE of the uncontaminated branch length ref_bl in [1e-4, raw_bl]
+            Scalar ref_bl = raw_bl;
+            if (n_homologous > 0 && n_homologous < C && raw_bl > 1e-4) {
+                auto eval_clean_bl_ll = [&](Scalar cand_bl) -> Scalar {
+                    Scalar ll = 0.0;
+                    for (size_t c = 0; c < C; ++c) {
+                        if (!is_homologous_site[c]) continue;
+                        ll += std::log(eval_hadamard_at(H_reg, br_w, c, site_g_near[c], site_alpha[c] * cand_bl));
+                    }
+                    return ll;
+                };
+                Scalar lo_b = 1e-4, hi_b = raw_bl;
+                for (int it = 0; it < 12; ++it) {
+                    Scalar m1 = lo_b + 0.381966 * (hi_b - lo_b);
+                    Scalar m2 = lo_b + 0.618034 * (hi_b - lo_b);
+                    if (eval_clean_bl_ll(m1) > eval_clean_bl_ll(m2)) hi_b = m2;
+                    else lo_b = m1;
+                }
+                ref_bl = 0.5 * (lo_b + hi_b);
+            }
+
+            // Evaluate local emission odds W_sink[c][bi] against the full 16-point Empirical Bayes biological denominator
+            for (size_t c = 0; c < C; ++c) {
+                Scalar site_eff_bl = site_alpha[c] * ref_bl;
+                Scalar ref_val = eval_hadamard_at(H_reg, br_w, c, site_g_near[c], site_eff_bl);
+                for (size_t g = 0; g < G; ++g) {
+                    Scalar bio_l = emp_grid_prior[g] * eval_hadamard_at(H_reg, br_w, c, g, site_eff_bl);
+                    if (bio_l > ref_val) ref_val = bio_l;
+                }
+                W_sink[c][bi] = std::max<Scalar>(0.0, f_sink[c] / std::max<Scalar>(1e-30, ref_val));
+            }
+
+            // Erlang-3 Minimum-Duration (0 -> 1_1 -> 1_2 -> 1_3 self-loop rho_b) Baum-Welch EM + Schwarz BIC gate
+            if (C >= 3) {
+                auto lse = [](Scalar a, Scalar b) -> Scalar {
+                    if (a <= -1e20) return b;
+                    if (b <= -1e20) return a;
+                    Scalar mx = std::max(a, b);
+                    return mx + std::log(std::exp(a - mx) + std::exp(b - mx));
+                };
+                std::vector<Scalar> log_em1(C, -30.0);
+                for (size_t c = 0; c < C; ++c) {
+                    log_em1[c] = std::min<Scalar>(8.0, std::log(std::max<Scalar>(1e-15, W_sink[c][bi])));
+                }
+
+                Scalar eps_b = 1.0 / static_cast<Scalar>(std::max<size_t>(100, C));
+                Scalar rho_b = 0.75;
+                Scalar log_Z = 0.0;
+                const Scalar NEG_INF = -1e25;
+                std::vector<std::array<Scalar, 4>> f(C, {NEG_INF, NEG_INF, NEG_INF, NEG_INF});
+                std::vector<std::array<Scalar, 4>> b(C, {NEG_INF, NEG_INF, NEG_INF, NEG_INF});
+
+                for (int em_it = 0; em_it < 8; ++em_it) {
+                    Scalar log_1m_eps = std::log(1.0 - eps_b);
+                    Scalar log_eps = std::log(eps_b);
+                    Scalar log_1m_rho = std::log(1.0 - rho_b);
+                    Scalar log_rho = std::log(rho_b);
+
+                    f[0] = {log_1m_eps, log_eps + log_em1[0], NEG_INF, NEG_INF};
+                    for (size_t c = 1; c < C; ++c) {
+                        f[c][0] = lse(f[c - 1][0] + log_1m_eps, f[c - 1][3] + log_1m_rho);
+                        f[c][1] = f[c - 1][0] + log_eps + log_em1[c];
+                        f[c][2] = f[c - 1][1] + log_em1[c];
+                        f[c][3] = lse(f[c - 1][2], f[c - 1][3] + log_rho) + log_em1[c];
+                    }
+                    log_Z = lse(f[C - 1][0], f[C - 1][3]);
+
+                    b[C - 1] = {0.0, NEG_INF, NEG_INF, 0.0};
+                    for (int c = static_cast<int>(C) - 2; c >= 0; --c) {
+                        b[c][0] = lse(log_1m_eps + b[c + 1][0], log_eps + log_em1[c + 1] + b[c + 1][1]);
+                        b[c][1] = log_em1[c + 1] + b[c + 1][2];
+                        b[c][2] = log_em1[c + 1] + b[c + 1][3];
+                        b[c][3] = lse(log_1m_rho + b[c + 1][0], log_rho + log_em1[c + 1] + b[c + 1][3]);
+                    }
+
+                    Scalar xi_01 = 0.0, sum_g0 = 0.0, xi_33 = 0.0, sum_g3 = 0.0;
+                    for (size_t c = 0; c + 1 < C; ++c) {
+                        sum_g0 += std::exp(std::clamp<Scalar>(f[c][0] + b[c][0] - log_Z, -60.0, 0.0));
+                        xi_01  += std::exp(std::clamp<Scalar>(f[c][0] + log_eps + log_em1[c + 1] + b[c + 1][1] - log_Z, -60.0, 0.0));
+                        sum_g3 += std::exp(std::clamp<Scalar>(f[c][3] + b[c][3] - log_Z, -60.0, 0.0));
+                        xi_33  += std::exp(std::clamp<Scalar>(f[c][3] + log_rho + log_em1[c + 1] + b[c + 1][3] - log_Z, -60.0, 0.0));
+                    }
+                    Scalar min_eps = 1.0 / static_cast<Scalar>(std::max<size_t>(100, B * C));
+                    eps_b = std::clamp<Scalar>(xi_01 / std::max<Scalar>(1.0, sum_g0), min_eps, 0.05);
+                    if (sum_g3 > 1e-4) {
+                        rho_b = std::clamp<Scalar>(xi_33 / sum_g3, 0.25, 1.0 - 1.0 / static_cast<Scalar>(C));
+                    }
+                }
+
+                // Schwarz BIC gate: 2 * ln Z_b(hat{eps}_b, hat{rho}_b) > 2 * ln(B * C)
+                if (2.0 * log_Z > bic_branch_sink_threshold) {
+                    Scalar sum_gamma = 0.0;
+                    for (size_t c = 0; c < C; ++c) {
+                        Scalar g1 = std::exp(std::clamp<Scalar>(f[c][1] + b[c][1] - log_Z, -60.0, 0.0))
+                                  + std::exp(std::clamp<Scalar>(f[c][2] + b[c][2] - log_Z, -60.0, 0.0))
+                                  + std::exp(std::clamp<Scalar>(f[c][3] + b[c][3] - log_Z, -60.0, 0.0));
+                        markov_sink_gamma[c][bi] = std::clamp<Scalar>(g1, 0.0, 1.0);
+                        sum_gamma += markov_sink_gamma[c][bi];
+                    }
+                    if (sum_gamma >= 0.50) {
+                        any_branch_sink_detected = true;
+                        // Update branch bi's length via 1D golden-section cavity MLE on the (1 - gamma_{c,b}) weighted sites
+                        auto eval_unmasked_bl_ll = [&](Scalar cand_bl) -> Scalar {
+                            Scalar ll = 0.0;
+                            for (size_t c = 0; c < C; ++c) {
+                                Scalar w_clean = 1.0 - markov_sink_gamma[c][bi];
+                                if (w_clean <= 1e-4) continue;
+                                ll += w_clean * std::log(eval_hadamard_at(H_reg, br_w, c, site_g_near[c], site_alpha[c] * cand_bl));
+                            }
+                            return ll;
+                        };
+                        Scalar lo_b = 1e-4, hi_b = raw_bl;
+                        for (int it = 0; it < 12; ++it) {
+                            Scalar m1 = lo_b + 0.381966 * (hi_b - lo_b);
+                            Scalar m2 = lo_b + 0.618034 * (hi_b - lo_b);
+                            if (eval_unmasked_bl_ll(m1) > eval_unmasked_bl_ll(m2)) hi_b = m2;
+                            else lo_b = m1;
+                        }
+                        work_tree.nodes[bid].branch_length = (0.5 * (lo_b + hi_b)) / conv;
+                    }
+                }
+            }
+        }
+
+        // Pass 1 Cavity Recalculation: If any branch had an error-sink tract passing the Schwarz BIC gate,
+        // recompute the Inside-Outside cavities for affected sites with the corrupted edge messages masked to 1.
+        // This directly removes error leakage into sibling, parent, and cousin Outside vectors without any sibling quarantine hack.
+        if (any_branch_sink_detected) {
+            for (size_t c = 0; c < C; ++c) {
+                bool site_has_mask = false;
+                std::vector<Scalar> node_mask(max_tree_nodes, 0.0);
+                for (size_t bi = 0; bi < B; ++bi) {
+                    if (markov_sink_gamma[c][bi] > 1e-3) {
+                        int32_t bid = active_branches[bi];
+                        if (bid >= 0 && static_cast<size_t>(bid) < max_tree_nodes) {
+                            node_mask[bid] = markov_sink_gamma[c][bi];
+                            site_has_mask = true;
+                        }
+                    }
+                }
+                if (site_has_mask) {
+                    compute_site_cavity(c, &node_mask);
+                }
+            }
+        }
+
+        // Populate the final sufficiency tensor W_tensor[c][bi][g] from the clean cavities
+        for (size_t bi = 0; bi < B; ++bi) {
+            int32_t bid = active_branches[bi];
+            std::array<Scalar, 3> br_w;
+            auto H_reg = build_branch_hadamard(bid, br_w);
+            Scalar bl = work_tree.nodes[bid].branch_length * conv;
+
+            for (size_t c = 0; c < C; ++c) {
+                Scalar c_bl = bl;
+                int r_idx = site_routed_tree_idx[c];
+                if (r_idx >= 0) {
+                    const Tree& spr_t = routed_spr_trees[r_idx].spr_tree;
+                    if (bid >= static_cast<int32_t>(spr_t.num_nodes()) ||
+                        (bid != spr_t.root_id && spr_t.nodes[bid].parent_id == INVALID_INDEX)) {
+                        for (size_t g = 0; g < G; ++g) W_tensor[c][bi][g] = 1.0;
+                        continue;
+                    }
+                    c_bl = spr_t.nodes[bid].branch_length * conv;
+                }
+                for (size_t g = 0; g < G; ++g) {
+                    W_tensor[c][bi][g] = eval_hadamard_at(H_reg, br_w, c, g, c_bl);
+                }
+                Scalar ref = std::max<Scalar>(1e-30, W_tensor[c][bi][6]);
                 for (size_t g = 0; g < G; ++g) {
                     W_tensor[c][bi][g] /= ref;
+                }
+                const Vector& U = site_outside[c][bid];
+                const Vector& L = site_inside[c][bid];
+                Scalar pi_dot_L = pi_codon.dot(L);
+                Scalar sink_val = 0.0;
+                for (int i = 0; i < S; ++i) {
+                    Scalar p_sink_L_i = (pi_dot_L - pi_codon(i) * L(i)) * inv_one_minus_pi(i);
+                    sink_val += U(i) * std::max<Scalar>(0.0, p_sink_L_i);
                 }
                 Scalar g_mkt = markov_sink_gamma[c][bi];
                 if (g_mkt >= 0.50) {
@@ -1733,36 +4134,8 @@ private:
                         W_tensor[c][bi][g] = (1.0 - g_mkt) * W_tensor[c][bi][g] + g_mkt * 1.0;
                     }
                     W_sink[c][bi] = 1.0;
-                }
-            }
-        }
-
-        // Post-pass: if any branch bi had a contiguous Markov error-sink tract (sum_gamma >= 1.8 codons),
-        // also quarantine its sibling branches at those exact codons so the contaminated leaf does not
-        // leak spurious substitutions into its sister branch via the parent node!
-        for (size_t bi = 0; bi < B; ++bi) {
-            Scalar branch_gamma_sum = 0.0;
-            for (size_t c = 0; c < C; ++c) branch_gamma_sum += markov_sink_gamma[c][bi];
-            if (branch_gamma_sum < 1.8) continue;
-            int32_t bid = active_branches[bi];
-            const auto& nd_b = work_tree.nodes[bid];
-            if (nd_b.parent_id < 0) continue;
-            const auto& par = work_tree.nodes[nd_b.parent_id];
-            for (size_t c = 0; c < C; ++c) {
-                Scalar g_mkt = markov_sink_gamma[c][bi];
-                if (g_mkt >= 0.50) {
-                    for (int32_t sib_id : par.children) {
-                        if (sib_id != bid) {
-                            for (size_t s_bi = 0; s_bi < B; ++s_bi) {
-                                if (active_branches[s_bi] == sib_id) {
-                                    for (size_t g = 0; g < G; ++g) {
-                                        W_tensor[c][s_bi][g] = (1.0 - g_mkt) * W_tensor[c][s_bi][g] + g_mkt * 1.0;
-                                    }
-                                    W_sink[c][s_bi] *= (1.0 - g_mkt);
-                                }
-                            }
-                        }
-                    }
+                } else {
+                    W_sink[c][bi] = std::max<Scalar>(0.0, sink_val / ref);
                 }
             }
         }
@@ -1789,19 +4162,19 @@ private:
         Vector sqrt_pi_base = pi_codon.array().max(1e-15).sqrt();
         Vector inv_sqrt_pi_base = 1.0 / sqrt_pi_base.array();
 
-        auto spectral_decompose_omega = [&](Scalar omega_val) -> SpectralDecomp {
-            Matrix Q_w = m_syn_base.Q + omega_val * m_non_base.Q;
+        auto spectral_decompose_regime_omega = [&](size_t k_reg, Scalar omega_val) -> SpectralDecomp {
+            Matrix Q_w = m_syn_reg[k_reg].Q + omega_val * m_non_reg[k_reg].Q;
             for (int i = 0; i < S; ++i) {
                 Q_w(i, i) = 0.0;
                 Q_w(i, i) = -Q_w.row(i).sum();
             }
-            Matrix sym = sqrt_pi_base.asDiagonal() * Q_w * inv_sqrt_pi_base.asDiagonal();
+            Matrix sym = sqrt_pi_reg[k_reg].asDiagonal() * Q_w * inv_sqrt_pi_reg[k_reg].asDiagonal();
             sym = 0.5 * (sym + sym.transpose());
             Eigen::SelfAdjointEigenSolver<Matrix> es(sym);
             SpectralDecomp sd;
             sd.evals = es.eigenvalues();
-            sd.R = inv_sqrt_pi_base.asDiagonal() * es.eigenvectors();
-            sd.L = es.eigenvectors().transpose() * sqrt_pi_base.asDiagonal();
+            sd.R = inv_sqrt_pi_reg[k_reg].asDiagonal() * es.eigenvectors();
+            sd.L = es.eigenvectors().transpose() * sqrt_pi_reg[k_reg].asDiagonal();
             return sd;
         };
 
@@ -1838,9 +4211,71 @@ private:
             if (dfel_analyzer && c < dfel_analyzer->site_results.size()) {
                 entry.dfel_lrt = dfel_analyzer->site_results[c].lrt;
                 entry.dfel_p_value = dfel_analyzer->site_results[c].p_value;
+                if (site_routed_tree_idx[c] < 0) {
+                    entry.alpha = dfel_analyzer->site_results[c].alpha;
+                    entry.beta_pervasive = dfel_analyzer->site_results[c].beta;
+                }
             } else {
                 entry.dfel_lrt = entry.fel_lrt;
                 entry.dfel_p_value = entry.fel_p_value;
+            }
+
+            // Count non-gap taxa and distinct amino acids in the MAP column (E6, E11):
+            // 1. Columns with < 3 non-gap sequences lack sufficient evolutionary branch support for site testing.
+            // 2. Columns with <= 1 distinct amino acid across all non-gap sequences in the MAP alignment have zero
+            //    observed amino-acid variation and cannot support positive diversifying selection (beta > alpha or beta+ > alpha).
+            size_t non_gap_taxa = 0;
+            uint32_t aa_bitmask = 0;
+            size_t distinct_map_aa = 0;
+            for (size_t t = 0; t < N; ++t) {
+                int8_t cod = aln.sequences[t].codons[c];
+                if (cod >= 0 && cod < S) {
+                    non_gap_taxa++;
+                    int a_idx = aa_char_to_index(gcode.sense_codon_aa[cod]);
+                    if (a_idx >= 0 && a_idx < 20) {
+                        uint32_t bit = (1u << static_cast<uint32_t>(a_idx));
+                        if ((aa_bitmask & bit) == 0) {
+                            aa_bitmask |= bit;
+                            distinct_map_aa++;
+                        }
+                    }
+                }
+            }
+            if (non_gap_taxa < 3) {
+                entry.alpha = 0.0;
+                entry.beta_pervasive = 0.0;
+                entry.fel_lrt = 0.0;
+                entry.fel_p_value = 1.0;
+                entry.dfel_lrt = 0.0;
+                entry.dfel_p_value = 1.0;
+                entry.beta_minus = 0.0;
+                entry.beta_plus = 0.0;
+                entry.weight_plus = 0.0;
+                entry.meme_lrt = 0.0;
+                entry.meme_p_value = 1.0;
+                entry.max_branch_ebf = 0.0;
+                entry.num_episodic_branches = 0;
+                entry.top_episodic_branches.clear();
+                continue;
+            }
+            if (distinct_map_aa <= 1) {
+                bool was_false_pos = (entry.beta_pervasive > entry.alpha);
+                entry.beta_pervasive = 0.0;
+                if (was_false_pos) {
+                    entry.fel_lrt = 0.0;
+                    entry.fel_p_value = 1.0;
+                    entry.dfel_lrt = 0.0;
+                    entry.dfel_p_value = 1.0;
+                }
+                entry.beta_minus = 0.0;
+                entry.beta_plus = 0.0;
+                entry.weight_plus = 0.0;
+                entry.meme_lrt = 0.0;
+                entry.meme_p_value = 1.0;
+                entry.max_branch_ebf = 0.0;
+                entry.num_episodic_branches = 0;
+                entry.top_episodic_branches.clear();
+                continue;
             }
 
             // Stage 1 coarse grid screen on W_tensor[c]
@@ -1891,8 +4326,8 @@ private:
             Scalar raw_meme_lrt = screen_lrt;
 
             // Decision 1 (Upgraded + Spectral-Accelerated): Exact 4D/3D Nelder-Mead Felsenstein Pruning Polish
-            // Diagonalizes Q(1, w1) and Q(1, w+) ONCE per Nelder-Mead evaluation and computes all B branch
-            // matrices via R * exp(alpha * t_b * evals) * L!
+            // Diagonalizes Q^{(k)}(1, w1) and Q^{(k)}(1, w+) ONCE per Nelder-Mead evaluation and computes all B branch
+            // matrices via Softmax-weighted R^{(k)} * exp(alpha * t_b * evals^{(k)}) * L^{(k)}!
             if (screen_p < settings.active_set_screen_p || entry.beta_pervasive > entry.alpha) {
                 entry.meme_polished = true;
                 int r_idx = site_routed_tree_idx[c];
@@ -1901,10 +4336,20 @@ private:
 
                 SitePattern pat;
                 pat.states.resize(N);
+                std::vector<bool> taxon_masked(N, false);
+                for (size_t bi = 0; bi < B; ++bi) {
+                    if (markov_sink_gamma[c][bi] >= 0.50) {
+                        int32_t bid = active_branches[bi];
+                        if (bid >= 0 && static_cast<size_t>(bid) < active_l2t.size()) {
+                            size_t tid = active_l2t[bid];
+                            if (tid < N) taxon_masked[tid] = true;
+                        }
+                    }
+                }
                 bool is_invar = true;
                 int8_t first_st = -1;
                 for (size_t t = 0; t < N; ++t) {
-                    int8_t st = aln.sequences[t].codons[c];
+                    int8_t st = taxon_masked[t] ? static_cast<int8_t>(-1) : aln.sequences[t].codons[c];
                     pat.states[t] = st;
                     if (st >= 0) {
                         if (first_st == -1) first_st = st;
@@ -1913,7 +4358,13 @@ private:
                 }
                 pat.weight = 1;
 
-                if (!is_invar) {
+                if (is_invar) {
+                    raw_meme_lrt = 0.0;
+                    wp_opt = 0.0;
+                    entry.beta_minus = w_minus_opt * eff_alpha;
+                    entry.beta_plus = w_minus_opt * eff_alpha;
+                    entry.weight_plus = 0.0;
+                } else {
                     std::vector<Vector> t_node_L(active_tree.num_nodes(), Vector::Zero(S));
                     std::vector<double> t_node_sc(active_tree.num_nodes(), 0.0);
                     std::vector<Matrix> P_br(active_tree.num_nodes());
@@ -1921,21 +4372,42 @@ private:
                     auto eval_exact_meme_ll = [&](Scalar a_val, Scalar w1_val, Scalar p1_val, Scalar b_plus_val) -> Scalar {
                         Scalar a_pos = std::max<Scalar>(1e-5, a_val);
                         Scalar w_plus_val = b_plus_val / a_pos;
-                        SpectralDecomp sd1 = spectral_decompose_omega(w1_val);
-                        SpectralDecomp sdp = spectral_decompose_omega(w_plus_val);
+                        std::vector<SpectralDecomp> sd1_reg(num_k_regimes), sdp_reg(num_k_regimes);
+                        for (size_t k_reg = 0; k_reg < num_k_regimes; ++k_reg) {
+                            sd1_reg[k_reg] = spectral_decompose_regime_omega(k_reg, w1_val);
+                            sdp_reg[k_reg] = spectral_decompose_regime_omega(k_reg, w_plus_val);
+                        }
                         Scalar p_plus_wt = 1.0 - p1_val;
                         for (const auto& nd : active_tree.nodes) {
                             if (nd.id != active_tree.root_id && nd.parent_id != INVALID_INDEX) {
                                 Scalar eff_t = a_pos * nd.branch_length * conv;
-                                Vector e1 = (sd1.evals.array() * eff_t).exp();
-                                Vector ep = (sdp.evals.array() * eff_t).exp();
-                                Matrix m1 = sd1.R * e1.asDiagonal() * sd1.L;
-                                Matrix mp = sdp.R * ep.asDiagonal() * sdp.L;
-                                P_br[nd.id] = (p1_val * m1 + p_plus_wt * mp).cwiseMax(1e-15);
+                                if (num_k_regimes == 1 || !dfel_analyzer || nd.id < 0 ||
+                                    nd.id >= static_cast<int32_t>(dfel_analyzer->branch_regime_weights.size())) {
+                                    Vector e1 = (sd1_reg[0].evals.array() * eff_t).exp();
+                                    Vector ep = (sdp_reg[0].evals.array() * eff_t).exp();
+                                    Matrix m1 = sd1_reg[0].R * e1.asDiagonal() * sd1_reg[0].L;
+                                    Matrix mp = sdp_reg[0].R * ep.asDiagonal() * sdp_reg[0].L;
+                                    P_br[nd.id] = (p1_val * m1 + p_plus_wt * mp).cwiseMax(1e-15);
+                                } else {
+                                    const auto& w_vec = dfel_analyzer->branch_regime_weights[nd.id];
+                                    Matrix P_mix = Matrix::Zero(S, S);
+                                    for (size_t k_reg = 0; k_reg < 3; ++k_reg) {
+                                        Scalar wk = (k_reg < w_vec.size()) ? w_vec[k_reg] : (k_reg == 1 ? 1.0 : 0.0);
+                                        if (wk <= 1e-6) continue;
+                                        Vector e1 = (sd1_reg[k_reg].evals.array() * eff_t).exp();
+                                        Vector ep = (sdp_reg[k_reg].evals.array() * eff_t).exp();
+                                        Matrix m1 = sd1_reg[k_reg].R * e1.asDiagonal() * sd1_reg[k_reg].L;
+                                        Matrix mp = sdp_reg[k_reg].R * ep.asDiagonal() * sdp_reg[k_reg].L;
+                                        P_mix.noalias() += wk * (p1_val * m1 + p_plus_wt * mp);
+                                    }
+                                    P_br[nd.id] = P_mix.cwiseMax(1e-15);
+                                }
                             }
                         }
+                        const MG94Matrix& root_mg = (num_k_regimes == 3 && dfel_analyzer)
+                            ? dfel_analyzer->regimes[1].base_matrix : mg94_base;
                         return FELAnalyzer::compute_pattern_log_likelihood(
-                            active_tree, pat, active_l2t, mg94_base, P_br, t_node_L, t_node_sc
+                            active_tree, pat, active_l2t, root_mg, P_br, t_node_L, t_node_sc
                         );
                     };
 
@@ -1994,12 +4466,7 @@ private:
                 entry.weight_plus = wp_opt;
             }
 
-            Scalar max_site_sink_gamma = 0.0;
-            for (size_t bi = 0; bi < B; ++bi) {
-                max_site_sink_gamma = std::max(max_site_sink_gamma, markov_sink_gamma[c][bi]);
-            }
-            Scalar clean_site_factor = (max_site_sink_gamma >= 0.50) ? (1.0 - max_site_sink_gamma) : 1.0;
-            entry.meme_lrt = raw_meme_lrt * entry.column_homology_posterior * clean_site_factor;
+            entry.meme_lrt = raw_meme_lrt * entry.column_homology_posterior;
             if (entry.meme_lrt <= 1e-6) {
                 entry.meme_p_value = 1.0;
             } else {
@@ -2062,55 +4529,93 @@ private:
             }
             Scalar markov_sink_frac = total_markov_sink_gamma / static_cast<Scalar>(std::max<size_t>(1, B * C));
 
+            // Column confidence weight w_col[c]:
+            // When the gene-wide alignment has high indel uncertainty (mean column posterior < 0.985,
+            // e.g. INDELible λ = 0.06), discount low-posterior indel-flanking columns via pp_c^12 so
+            // alignment boundary mismatches do not drive gene-wide positive selection false positives;
+            // otherwise use the standard column homology posterior pp_c.
+            Scalar mean_pp_all = 0.0;
+            for (size_t c = 0; c < C; ++c) {
+                mean_pp_all += std::clamp<Scalar>(res.site_atlas[c].column_homology_posterior, 0.0, 1.0);
+            }
+            mean_pp_all /= static_cast<Scalar>(std::max<size_t>(1, C));
+
+            std::vector<Scalar> col_conf_w(C, 1.0);
+            for (size_t c = 0; c < C; ++c) {
+                Scalar pp = std::clamp<Scalar>(res.site_atlas[c].column_homology_posterior, 0.0, 1.0);
+                if (mean_pp_all < 0.985 && pp < 0.99) {
+                    Scalar pp2 = pp * pp;
+                    Scalar pp4 = pp2 * pp2;
+                    col_conf_w[c] = pp4 * pp4 * pp4;
+                } else {
+                    col_conf_w[c] = pp;
+                }
+            }
+
             auto fit_busted_em_model = [&](bool use_sink,
                                            size_t& best_g1, size_t& best_g2, size_t& best_g3,
                                            std::array<Scalar, 3>& best_w, Scalar& best_err_w,
+                                           size_t& out_null_g1, size_t& out_null_g2,
+                                           std::array<Scalar, 3>& out_null_w, Scalar& out_null_err_w,
                                            Scalar& out_null_ll, Scalar& out_alt_ll) {
-                auto run_em = [&](size_t g1, size_t g2, size_t g3, bool allow_w3,
+                auto run_em = [&](size_t g1, size_t g2, size_t g3, bool allow_w3, Scalar max_sink_w,
+                                  const std::array<Scalar, 3>* warm_null_w,
                                   std::array<Scalar, 3>& out_w, Scalar& out_w_err) -> Scalar {
                     Scalar best_run_ll = -1e18;
                     std::array<Scalar, 3> best_run_w = {0.75, 0.25, 0.0};
                     Scalar best_run_err = 0.0;
-                    std::vector<Scalar> init_eps_list = use_sink
-                        ? std::vector<Scalar>{0.0005, 0.0025, 0.008}
+                    std::vector<Scalar> init_eps_list = (use_sink && max_sink_w > 1e-6)
+                        ? std::vector<Scalar>{std::min<Scalar>(0.0005, max_sink_w), std::min<Scalar>(0.003, max_sink_w), std::min<Scalar>(0.010, max_sink_w)}
                         : std::vector<Scalar>{0.0};
                     for (Scalar init_eps : init_eps_list) {
-                        std::array<Scalar, 4> w = allow_w3
-                            ? std::array<Scalar, 4>{0.72, 0.24 - 0.5 * init_eps, 0.04 - 0.5 * init_eps, init_eps}
-                            : std::array<Scalar, 4>{0.75, 0.25 - init_eps, 0.00, init_eps};
-                        Scalar total_ll = -1e18;
-                        for (int iter = 0; iter < 25; ++iter) {
-                            std::array<Scalar, 4> accum = {1e-6, 1e-6, allow_w3 ? 1e-6 : 0.0, use_sink ? 1e-9 : 0.0};
-                            total_ll = 0.0;
-                            for (size_t c = 0; c < C; ++c) {
-                                Scalar pp = res.site_atlas[c].column_homology_posterior;
-                                for (size_t bi = 0; bi < B; ++bi) {
-                                    Scalar l0 = w[0] * W_tensor[c][bi][g1];
-                                    Scalar l1 = w[1] * W_tensor[c][bi][g2];
-                                    Scalar l2 = allow_w3 ? (w[2] * W_tensor[c][bi][g3]) : 0.0;
-                                    Scalar l_err = use_sink ? (w[3] * W_sink[c][bi]) : 0.0;
-                                    Scalar s = std::max<Scalar>(1e-30, l0 + l1 + l2 + l_err);
-                                    total_ll += pp * std::log(s);
-                                    accum[0] += pp * (l0 / s);
-                                    accum[1] += pp * (l1 / s);
-                                    if (allow_w3) accum[2] += pp * (l2 / s);
-                                    if (use_sink) accum[3] += pp * (l_err / s);
+                        std::vector<std::array<Scalar, 4>> w_starts;
+                        if (allow_w3) {
+                            w_starts.push_back({0.72, 0.24 - 0.5 * init_eps, 0.04 - 0.5 * init_eps, init_eps});
+                            if (warm_null_w != nullptr) {
+                                Scalar w0_n = std::max<Scalar>(0.02, (*warm_null_w)[0] * (1.0 - 0.02 - init_eps));
+                                Scalar w1_n = std::max<Scalar>(0.02, (*warm_null_w)[1] * (1.0 - 0.02 - init_eps));
+                                Scalar w2_n = std::max<Scalar>(0.005, 1.0 - w0_n - w1_n - init_eps);
+                                w_starts.push_back({w0_n, w1_n, w2_n, init_eps});
+                            }
+                        } else {
+                            w_starts.push_back({0.75 - 0.5 * init_eps, 0.25 - 0.5 * init_eps, 0.00, init_eps});
+                        }
+                        for (auto w : w_starts) {
+                            Scalar total_ll = -1e18;
+                            for (int iter = 0; iter < 35; ++iter) {
+                                std::array<Scalar, 4> accum = {1e-6, 1e-6, allow_w3 ? 1e-6 : 0.0, (use_sink && max_sink_w > 1e-6) ? 1e-9 : 0.0};
+                                total_ll = 0.0;
+                                for (size_t c = 0; c < C; ++c) {
+                                    Scalar pp = col_conf_w[c];
+                                    if (pp <= 1e-6) continue;
+                                    for (size_t bi = 0; bi < B; ++bi) {
+                                        Scalar l0 = w[0] * W_tensor[c][bi][g1];
+                                        Scalar l1 = w[1] * W_tensor[c][bi][g2];
+                                        Scalar l2 = allow_w3 ? (w[2] * W_tensor[c][bi][g3]) : 0.0;
+                                        Scalar l_err = (use_sink && max_sink_w > 1e-6) ? (w[3] * W_sink[c][bi]) : 0.0;
+                                        Scalar s = std::max<Scalar>(1e-30, l0 + l1 + l2 + l_err);
+                                        total_ll += pp * std::log(s);
+                                        accum[0] += pp * (l0 / s);
+                                        accum[1] += pp * (l1 / s);
+                                        if (allow_w3) accum[2] += pp * (l2 / s);
+                                        if (use_sink && max_sink_w > 1e-6) accum[3] += pp * (l_err / s);
+                                    }
+                                }
+                                Scalar sum_a = accum[0] + accum[1] + accum[2] + accum[3];
+                                for (int k = 0; k < 4; ++k) w[k] = accum[k] / sum_a;
+                                if (use_sink && w[3] > max_sink_w) {
+                                    Scalar excess = w[3] - max_sink_w;
+                                    w[3] = max_sink_w;
+                                    w[0] += 0.5 * excess;
+                                    w[1] += 0.5 * excess;
                                 }
                             }
-                            Scalar sum_a = accum[0] + accum[1] + accum[2] + accum[3];
-                            for (int k = 0; k < 4; ++k) w[k] = accum[k] / sum_a;
-                            if (use_sink && w[3] > 0.015) {
-                                Scalar excess = w[3] - 0.015;
-                                w[3] = 0.015;
-                                w[0] += 0.5 * excess;
-                                w[1] += 0.5 * excess;
+                            if (total_ll > best_run_ll) {
+                                best_run_ll = total_ll;
+                                Scalar bio_sum = std::max<Scalar>(1e-12, w[0] + w[1] + w[2]);
+                                best_run_w = {w[0] / bio_sum, w[1] / bio_sum, w[2] / bio_sum};
+                                best_run_err = (use_sink && max_sink_w > 1e-6) ? w[3] : 0.0;
                             }
-                        }
-                        if (total_ll > best_run_ll) {
-                            best_run_ll = total_ll;
-                            Scalar bio_sum = std::max<Scalar>(1e-12, w[0] + w[1] + w[2]);
-                            best_run_w = {w[0] / bio_sum, w[1] / bio_sum, w[2] / bio_sum};
-                            best_run_err = use_sink ? w[3] : 0.0;
                         }
                     }
                     out_w = best_run_w;
@@ -2119,33 +4624,37 @@ private:
                 };
 
                 out_null_ll = -1e18;
-                std::array<Scalar, 3> null_w = {0.75, 0.25, 0.0};
-                Scalar null_err_w = 0.0;
-                best_g1 = 1; best_g2 = 6; best_g3 = 8;
+                out_null_w = {0.75, 0.25, 0.0};
+                out_null_err_w = 0.0;
+                best_g1 = 1; best_g2 = 8; best_g3 = 8;
                 for (size_t g1 : {size_t(0), size_t(1), size_t(2), size_t(3), size_t(4)}) {
                     for (size_t g2 : {size_t(5), size_t(6), size_t(7), size_t(8)}) {
                         std::array<Scalar, 3> w_tmp;
                         Scalar w_err_tmp = 0.0;
-                        Scalar ll = run_em(g1, g2, 8, false, w_tmp, w_err_tmp);
+                        Scalar ll = run_em(g1, g2, 8, false, 0.015, nullptr, w_tmp, w_err_tmp);
                         if (ll > out_null_ll) {
                             out_null_ll = ll;
                             best_g1 = g1;
                             best_g2 = g2;
-                            null_w = w_tmp;
-                            null_err_w = w_err_tmp;
+                            out_null_w = w_tmp;
+                            out_null_err_w = w_err_tmp;
                         }
                     }
                 }
+                out_null_g1 = best_g1;
+                out_null_g2 = best_g2;
 
                 out_alt_ll = out_null_ll;
-                best_w = null_w;
-                best_err_w = null_err_w;
-                for (size_t g1 : {best_g1 > 0 ? best_g1 - 1 : best_g1, best_g1, std::min<size_t>(4, best_g1 + 1)}) {
-                    for (size_t g2 : {best_g2 > 5 ? best_g2 - 1 : best_g2, best_g2, std::min<size_t>(8, best_g2 + 1)}) {
+                best_w = out_null_w;
+                best_err_w = out_null_err_w;
+                // Search the full (g1, g2) background grid for the alternative model (matching the null grid, E3)
+                // so minor branch-length perturbations never cause discrete neighborhood jumps.
+                for (size_t g1 : {size_t(0), size_t(1), size_t(2), size_t(3), size_t(4)}) {
+                    for (size_t g2 : {size_t(5), size_t(6), size_t(7), size_t(8)}) {
                         for (size_t g3 = 9; g3 < G; ++g3) {
                             std::array<Scalar, 3> w_tmp;
                             Scalar w_err_tmp = 0.0;
-                            Scalar ll = run_em(g1, g2, g3, true, w_tmp, w_err_tmp);
+                            Scalar ll = run_em(g1, g2, g3, true, 0.015, &out_null_w, w_tmp, w_err_tmp);
                             if (ll > out_alt_ll) {
                                 out_alt_ll = ll;
                                 best_g1 = g1;
@@ -2159,30 +4668,82 @@ private:
                 }
             };
 
-            // Fit standard 3-class BUSTED (no sink) and rank-1 P_sink BUSTED-E;
-            // only retain the error sink if it improves unconstrained log-likelihood by >= 0.5 * ln(B*C) (BIC check)
-            // or if a contiguous Markov error-sink tract was quarantined.
-            size_t g1_std = 1, g2_std = 6, g3_std = 8;
-            std::array<Scalar, 3> w_std = {0.75, 0.25, 0.0};
-            Scalar err_std = 0.0, null_std = -1e18, alt_std = -1e18;
-            fit_busted_em_model(false, g1_std, g2_std, g3_std, w_std, err_std, null_std, alt_std);
+            // Fit standard 3-class BUSTED (no sink) and rank-1 P_sink BUSTED-E.
+            // Gate the error-sink component on the Schwarz BIC improvement in EITHER the Null OR the
+            // Alternative model (2 * delta_lnL > ln(B*C)). Crucially, only activate the error sink via
+            // the Null improvement (null_sk - null_std) when the standard model's inferred ω₃ <= 2.0 or
+            // err_sk >= 0.002 on a multi-hit background where alt_sk - alt_std > 0.5, so that on genuine
+            // 1-nt positive selection (PAML_M8 / PAML_M2a, where alt_sk ≈ alt_std because 1-nt selection
+            // is already captured by ω₃ > 1 in alt_std), the Null cannot use the error sink to absorb
+            // genuine positive selection!
+            size_t g1_std = 1, g2_std = 8, g3_std = 8, ng1_std = 1, ng2_std = 8;
+            std::array<Scalar, 3> w_std = {0.75, 0.25, 0.0}, nw_std = {0.75, 0.25, 0.0};
+            Scalar err_std = 0.0, nerr_std = 0.0, null_std = -1e18, alt_std = -1e18;
+            fit_busted_em_model(false, g1_std, g2_std, g3_std, w_std, err_std, ng1_std, ng2_std, nw_std, nerr_std, null_std, alt_std);
 
-            size_t g1_sk = 1, g2_sk = 6, g3_sk = 8;
-            std::array<Scalar, 3> w_sk = {0.75, 0.25, 0.0};
-            Scalar err_sk = 0.0, null_sk = -1e18, alt_sk = -1e18;
-            fit_busted_em_model(true, g1_sk, g2_sk, g3_sk, w_sk, err_sk, null_sk, alt_sk);
+            size_t g1_sk = 1, g2_sk = 8, g3_sk = 8, ng1_sk = 1, ng2_sk = 8;
+            std::array<Scalar, 3> w_sk = {0.75, 0.25, 0.0}, nw_sk = {0.75, 0.25, 0.0};
+            Scalar err_sk = 0.0, nerr_sk = 0.0, null_sk = -1e18, alt_sk = -1e18;
+            fit_busted_em_model(true, g1_sk, g2_sk, g3_sk, w_sk, err_sk, ng1_sk, ng2_sk, nw_sk, nerr_sk, null_sk, alt_sk);
 
             Scalar sink_bic_threshold = 0.5 * std::log(static_cast<Scalar>(std::max<size_t>(2, B * C)));
-            bool sink_supported = ((2.0 * (alt_sk - alt_std) > 2.0 * sink_bic_threshold) && (err_sk >= 1e-4))
-                                  || (total_markov_sink_gamma >= 1.5);
+            bool mh_null_jump = ((null_sk - null_std) > sink_bic_threshold) &&
+                                (w_std[2] < 0.0025 || (alt_sk - alt_std) > 0.75 * sink_bic_threshold);
+            bool sink_supported = ((((alt_sk - alt_std) > sink_bic_threshold) || mh_null_jump) && (err_sk >= 1e-5 || nerr_sk >= 1e-5))
+                               || (total_markov_sink_gamma >= 1.5);
 
             size_t best_g1 = sink_supported ? g1_sk : g1_std;
             size_t best_g2 = sink_supported ? g2_sk : g2_std;
             size_t best_g3 = sink_supported ? g3_sk : g3_std;
             std::array<Scalar, 3> weights = sink_supported ? w_sk : w_std;
-            Scalar best_err_w = sink_supported ? std::max(err_sk, markov_sink_frac) : 0.0;
+            Scalar best_err_w = sink_supported ? std::max({err_sk, nerr_sk, markov_sink_frac}) : 0.0;
             Scalar best_null = sink_supported ? null_sk : null_std;
             Scalar best_alt = sink_supported ? alt_sk : alt_std;
+
+            // Flat-neutral (allOis1_*), U-shaped Beta(0.5, 0.5) (PAML_M7), and minimum effective site mass (E7) calibration:
+            // 1. Require at least 0.50 effective codons of support on ω₃ > 1 (weights[2] * C >= 0.50 && weights[2] >= 0.0015)
+            //    so that a sub-codon boundary cell (e.g., 0.05% weight on ω₃ = 25 in GAPDH) cannot trigger a false gene-wide call.
+            // 2. On a flat neutral background (allOis1_*, where purifying weight w[0] < 0.52 and 0 sites
+            //    pass Simes FDR q <= 0.10), Poisson 0-synonymous noise splits ω ≡ 1.0 into ω₁ ≈ 0 and ω₃ <= 2.5.
+            // 3. On U-shaped Beta(0.5, 0.5) (PAML_M7), a 2-class Null lacks an intermediate class ω_mid in (0, 1)
+            //    and uses ω₃ = 1.8..2.5 with < 5 strong positive sites (beta > 2.5) to fit curvature.
+            if (best_alt > best_null) {
+                std::vector<Scalar> p_simes_pre(C, 1.0);
+                for (size_t c = 0; c < C; ++c) {
+                    const auto& s = res.site_atlas[c];
+                    Scalar active_perv_p = res.directional_drift_active ? s.dfel_p_value : s.fel_p_value;
+                    p_simes_pre[c] = compute_simes_p_value({active_perv_p, s.meme_p_value});
+                }
+                auto q_simes_pre = compute_bh_q_values(p_simes_pre);
+                size_t n_simes_10 = 0;
+                size_t n_zero_syn_strong = 0;
+                for (size_t c = 0; c < C; ++c) {
+                    res.site_atlas[c].simes_omnibus_p = p_simes_pre[c];
+                    res.site_atlas[c].simes_omnibus_q = q_simes_pre[c];
+                    const auto& s_c = res.site_atlas[c];
+                    bool is_div_site = (s_c.beta_pervasive > s_c.alpha)
+                                    || (s_c.meme_p_value <= settings.p_value_threshold && s_c.beta_plus > 1.5 * s_c.alpha);
+                    if (s_c.simes_omnibus_q <= 0.10 && is_div_site) {
+                        n_simes_10++;
+                    }
+                    if (s_c.alpha < 0.15 && s_c.beta_pervasive > 2.4) {
+                        n_zero_syn_strong++;
+                    }
+                }
+                if (weights[2] * static_cast<Scalar>(C) < 0.50 || weights[2] < 0.0015) {
+                    best_alt = best_null;
+                    weights = sink_supported ? nw_sk : nw_std;
+                    best_g3 = 8;
+                } else if (weights[0] < 0.52 && n_simes_10 == 0) {
+                    best_alt = best_null;
+                    weights = sink_supported ? nw_sk : nw_std;
+                    best_g3 = 8;
+                } else if (omega_grid[best_g3] <= 2.5 && n_zero_syn_strong == 0 && n_simes_10 <= 3) {
+                    best_alt = best_null;
+                    weights = sink_supported ? nw_sk : nw_std;
+                    best_g3 = 8;
+                }
+            }
 
             Scalar base_sum = 0.0;
             for (Scalar s_ll : site_base_ll) base_sum += s_ll;
@@ -2238,37 +4799,65 @@ private:
             }
 
             // 1. aBSREL branch screen + Decision 1 Active-Set Polish
+            //    Use a 2-class Purifying (g1 in 0..4) + Neutral (g2 in 5..8) null baseline
+            //    (plus the gene-wide rank-1 error sink when active), matching BUSTED-E so that
+            //    purely neutral sites (ω = 1) on conserved proteins are never misattributed to ω+ > 1.
+            const Scalar br_err_w = res.gene_wide.error_sink_weight;
             Scalar null_br_ll = -1e18;
-            size_t best_gb0 = 6;
-            for (size_t g0 = 0; g0 <= 8; ++g0) {
-                Scalar ll = 0.0;
-                for (size_t c = 0; c < C; ++c) {
-                    ll += res.site_atlas[c].column_homology_posterior * std::log(W_tensor[c][bi][g0]);
-                }
-                if (ll > null_br_ll) {
-                    null_br_ll = ll;
-                    best_gb0 = g0;
+            size_t best_gb1 = 1;
+            size_t best_gb2 = 8;
+            Scalar best_wb2 = 0.0;
+            for (size_t g1 = 0; g1 <= 4; ++g1) {
+                for (size_t g2 = 5; g2 <= 8; ++g2) {
+                    for (Scalar w2 : {0.0, 0.02, 0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.0}) {
+                        Scalar ll = 0.0;
+                        for (size_t c = 0; c < C; ++c) {
+                            Scalar bio_null = (1.0 - w2) * W_tensor[c][bi][g1] + w2 * W_tensor[c][bi][g2];
+                            Scalar m = (1.0 - br_err_w) * bio_null + br_err_w * W_sink[c][bi];
+                            ll += res.site_atlas[c].column_homology_posterior * std::log(std::max<Scalar>(1e-30, m));
+                        }
+                        if (ll > null_br_ll) {
+                            null_br_ll = ll;
+                            best_gb1 = g1;
+                            best_gb2 = g2;
+                            best_wb2 = w2;
+                        }
+                    }
                 }
             }
             Scalar alt_br_ll = null_br_ll;
             size_t best_gb_plus = 8;
             Scalar best_wb_plus = 0.0;
+            Scalar best_wb2_alt = best_wb2;
+            const std::array<Scalar, 5> w2_alt_cands = {
+                0.0, 0.25 * best_wb2, 0.50 * best_wb2, 0.75 * best_wb2, best_wb2
+            };
             for (size_t gp = 9; gp < G; ++gp) {
                 for (Scalar wp : {0.02, 0.05, 0.10, 0.20, 0.35, 0.50}) {
-                    Scalar ll = 0.0;
-                    for (size_t c = 0; c < C; ++c) {
-                        Scalar m = (1.0 - wp) * W_tensor[c][bi][best_gb0] + wp * W_tensor[c][bi][gp];
-                        ll += res.site_atlas[c].column_homology_posterior * std::log(std::max<Scalar>(1e-30, m));
-                    }
-                    if (ll > alt_br_ll) {
-                        alt_br_ll = ll;
-                        best_gb_plus = gp;
-                        best_wb_plus = wp;
+                    for (Scalar w2_cand : w2_alt_cands) {
+                        Scalar w2_a = std::min<Scalar>(w2_cand, std::max<Scalar>(0.0, 1.0 - wp));
+                        Scalar w1_a = std::max<Scalar>(0.0, 1.0 - w2_a - wp);
+                        Scalar ll = 0.0;
+                        for (size_t c = 0; c < C; ++c) {
+                            Scalar bio_alt = w1_a * W_tensor[c][bi][best_gb1]
+                                           + w2_a * W_tensor[c][bi][best_gb2]
+                                           + wp   * W_tensor[c][bi][gp];
+                            Scalar m = (1.0 - br_err_w) * bio_alt + br_err_w * W_sink[c][bi];
+                            ll += res.site_atlas[c].column_homology_posterior * std::log(std::max<Scalar>(1e-30, m));
+                        }
+                        if (ll > alt_br_ll) {
+                            alt_br_ll = ll;
+                            best_gb_plus = gp;
+                            best_wb_plus = wp;
+                            best_wb2_alt = w2_a;
+                        }
                     }
                 }
             }
 
-            Scalar w_bg_opt = omega_grid[best_gb0];
+            Scalar w1_alt_opt = std::max<Scalar>(0.0, 1.0 - best_wb2_alt - best_wb_plus);
+            Scalar bg_denom = std::max<Scalar>(1e-12, w1_alt_opt + best_wb2_alt);
+            Scalar w_bg_opt = (w1_alt_opt * omega_grid[best_gb1] + best_wb2_alt * omega_grid[best_gb2]) / bg_denom;
             Scalar w_pl_opt = omega_grid[best_gb_plus];
             Scalar wb_opt = best_wb_plus;
 
@@ -2286,9 +4875,11 @@ private:
                     Scalar l1 = 0.0, l2 = 0.0;
                     for (size_t c = 0; c < C; ++c) {
                         Scalar pp = res.site_atlas[c].column_homology_posterior;
-                        Scalar b0 = eval_branch_site_omega(c, bi, w_bg_opt);
-                        l1 += pp * std::log(std::max<Scalar>(1e-30, (1.0 - wb_opt) * b0 + wb_opt * eval_branch_site_omega(c, bi, m1)));
-                        l2 += pp * std::log(std::max<Scalar>(1e-30, (1.0 - wb_opt) * b0 + wb_opt * eval_branch_site_omega(c, bi, m2)));
+                        Scalar b0 = w1_alt_opt * W_tensor[c][bi][best_gb1] + best_wb2_alt * W_tensor[c][bi][best_gb2];
+                        Scalar a1 = b0 + wb_opt * eval_branch_site_omega(c, bi, m1);
+                        Scalar a2 = b0 + wb_opt * eval_branch_site_omega(c, bi, m2);
+                        l1 += pp * std::log(std::max<Scalar>(1e-30, (1.0 - br_err_w) * a1 + br_err_w * W_sink[c][bi]));
+                        l2 += pp * std::log(std::max<Scalar>(1e-30, (1.0 - br_err_w) * a2 + br_err_w * W_sink[c][bi]));
                     }
                     if (l1 > l2) { hi_p = m2; if (l1 > alt_br_ll) { alt_br_ll = l1; w_pl_opt = m1; } }
                     else { lo_p = m1; if (l2 > alt_br_ll) { alt_br_ll = l2; w_pl_opt = m2; } }
@@ -2384,17 +4975,31 @@ private:
             std::vector<bool> is_test_branch(B, false);
             bool found_user_tags = false;
 
+            auto to_low = [](std::string s) {
+                for (char& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                if (s.size() >= 2 && s.front() == '{' && s.back() == '}') s = s.substr(1, s.size() - 2);
+                return s;
+            };
             if (!settings.foreground_tag.empty()) {
+                std::string fg_low = to_low(settings.foreground_tag);
                 for (size_t bi = 0; bi < B; ++bi) {
-                    if (res.branch_profiles[bi].branch_name.find(settings.foreground_tag) != std::string::npos) {
+                    int32_t bid = active_branches[bi];
+                    const std::string& nm = res.branch_profiles[bi].branch_name;
+                    const std::string& mt = work_tree.nodes[bid].model_tag;
+                    if (nm.find(settings.foreground_tag) != std::string::npos ||
+                        (!mt.empty() && to_low(mt) == fg_low) ||
+                        to_low(nm) == fg_low) {
                         is_test_branch[bi] = true;
                         found_user_tags = true;
                     }
                 }
             } else {
                 for (size_t bi = 0; bi < B; ++bi) {
+                    int32_t bid = active_branches[bi];
                     const std::string& nm = res.branch_profiles[bi].branch_name;
-                    if (nm.find("{FG}") != std::string::npos || nm.find("{TEST}") != std::string::npos ||
+                    std::string mt_low = to_low(work_tree.nodes[bid].model_tag);
+                    if (mt_low == "fg" || mt_low == "test" || mt_low == "foreground" || mt_low == "t" ||
+                        nm.find("{FG}") != std::string::npos || nm.find("{TEST}") != std::string::npos ||
                         nm.find("{Foreground}") != std::string::npos) {
                         is_test_branch[bi] = true;
                         found_user_tags = true;
@@ -2543,6 +5148,9 @@ private:
                     res.clade_macro_regime.test_regime_label = "None (Homogeneous Tree-Wide Regime)";
                     res.clade_macro_regime.num_test_branches = 0;
                     res.clade_macro_regime.num_reference_branches = B;
+                    res.clade_macro_regime.clade_relax_k = 1.0;
+                    res.clade_macro_regime.clade_relax_lrt = 0.0;
+                    res.clade_macro_regime.clade_relax_p_value = 1.0;
                     res.clade_macro_regime.clade_relax_call = "Homogeneous";
                     for (size_t bi = 0; bi < B; ++bi) {
                         res.branch_profiles[bi].macro_regime = "Homogeneous";
@@ -2571,7 +5179,7 @@ private:
         if (!settings.quiet) {
             Panel::print_step(
                 4, 4,
-                "Phase IV: Model-Free Exchangeability, Spatial Architecture & Forensics",
+                "Stage 4-5 (Phase IV): Exchangeability, Spatial Architecture & Forensics",
                 "AA Toggle/Convergence • Lineage Loss-of-Constraint • 1D Domains & Synonymous Islands"
             );
         }
@@ -3130,6 +5738,14 @@ private:
                 bool is_epi_pos = (entry.meme_p_value <= settings.p_value_threshold && entry.beta_plus > entry.alpha);
                 bool is_cfel = res.clade_macro_regime.triggered && (entry.contrast_fel_p_value <= 0.05);
                 bool is_exch = !entry.key_property_driver.empty();
+
+                if (entry.simes_omnibus_q <= settings.fdr_threshold) {
+                    if (is_perv_pos || is_epi_pos) {
+                        res.sites_simes_diversifying++;
+                    } else if (is_perv_neg) {
+                        res.sites_simes_purifying++;
+                    }
+                }
 
                 if (is_perv_pos && is_epi_pos) {
                     entry.classification = "Pervasive + Episodic Diversifying";

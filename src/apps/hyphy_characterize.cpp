@@ -40,12 +40,12 @@ static void print_characterize_usage(const char* prog) {
               << Console::bold("Parameters:") << "\n"
               << "  " << Console::brand("--code") << " <name>                Genetic code (default: Universal)\n"
               << "  " << Console::brand("--pvalue, -p") << " <float>         Per-test significance threshold (default: 0.10)\n"
-              << "  " << Console::brand("--fdr, -q") << " <float>            Benjamini-Hochberg / Simes FDR q-value threshold (default: 0.10)\n"
+              << "  " << Console::brand("--fdr") << " <float>                Benjamini-Hochberg / Simes FDR q-value threshold (default: 0.10)\n"
               << "  " << Console::brand("--branches, -b") << " <tag>         Optional foreground branch tag for RELAX/Contrast-FEL (default: BIC-gated auto)\n"
               << "  " << Console::brand("--coevolution") << "                Opt-in Tier 3 screen for epistatic co-substituting site pairs\n"
               << "  " << Console::brand("--no-spr") << "                     Disable coupled SPR + indel search\n"
               << "  " << Console::brand("--threads") << " <int>              Number of OpenMP threads\n"
-              << "  " << Console::brand("--quiet") << "                      Suppress progress output\n";
+              << "  " << Console::brand("--quiet, -q") << "                  Suppress progress output\n";
 }
 
 #ifdef HYPHY3_COMBINED_DRIVER
@@ -92,9 +92,31 @@ int main(int argc, char* argv[])
         } else if (arg == "--code" && i + 1 < argc) {
             code_name = argv[++i];
         } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-            settings.p_value_threshold = std::stod(argv[++i]);
+            std::string val_str = argv[++i];
+            try {
+                size_t pos = 0;
+                double v = std::stod(val_str, &pos);
+                if (pos != val_str.size() || !(v > 0.0 && v <= 1.0)) {
+                    throw std::invalid_argument("out of range");
+                }
+                settings.p_value_threshold = v;
+            } catch (const std::exception&) {
+                std::cerr << Console::danger("Error: ") << "Invalid --pvalue '" << val_str << "' (must be a number in (0, 1]).\n";
+                return 1;
+            }
         } else if (arg == "--fdr" && i + 1 < argc) {
-            settings.fdr_threshold = std::stod(argv[++i]);
+            std::string val_str = argv[++i];
+            try {
+                size_t pos = 0;
+                double v = std::stod(val_str, &pos);
+                if (pos != val_str.size() || !(v > 0.0 && v <= 1.0)) {
+                    throw std::invalid_argument("out of range");
+                }
+                settings.fdr_threshold = v;
+            } catch (const std::exception&) {
+                std::cerr << Console::danger("Error: ") << "Invalid --fdr '" << val_str << "' (must be a number in (0, 1]).\n";
+                return 1;
+            }
         } else if ((arg == "--branches" || arg == "-b") && i + 1 < argc) {
             settings.foreground_tag = argv[++i];
         } else if (arg == "--coevolution") {
@@ -102,17 +124,32 @@ int main(int argc, char* argv[])
         } else if (arg == "--no-spr") {
             settings.enable_coupled_spr = false;
         } else if (arg == "--threads" && i + 1 < argc) {
-            num_threads = std::stoi(argv[++i]);
+            std::string val_str = argv[++i];
+            try {
+                size_t pos = 0;
+                int v = std::stoi(val_str, &pos);
+                if (pos != val_str.size() || v < 1) {
+                    throw std::invalid_argument("out of range");
+                }
+                num_threads = v;
+            } catch (const std::exception&) {
+                std::cerr << Console::danger("Error: ") << "Invalid --threads '" << val_str << "' (must be a positive integer).\n";
+                return 1;
+            }
         } else if (arg == "--quiet" || arg == "-q") {
             settings.quiet = true;
         } else {
-            std::cerr << Console::danger("Error: ") << "Unknown argument '" << arg << "'. Use --help for usage.\n";
+            std::cerr << Console::danger("Error: ") << "Unknown or incomplete argument '" << arg << "'. Use --help for usage.\n";
             return 1;
         }
     }
 
     if (unaligned_path.empty() && aln_path.empty()) {
         print_characterize_usage(argv[0]);
+        return 1;
+    }
+    if (!unaligned_path.empty() && !aln_path.empty()) {
+        std::cerr << Console::danger("Error: ") << "Specify either --unaligned (-u) or --alignment (-a), not both.\n";
         return 1;
     }
 
@@ -128,11 +165,24 @@ int main(int argc, char* argv[])
     size_t slash = input_label.find_last_of("/\\");
     std::string short_label = (slash == std::string::npos) ? input_label : input_label.substr(slash + 1);
 
+    auto strip_json_stem = [](const std::string& p) -> std::string {
+        const std::string s1 = ".CHARACTERIZE.json";
+        if (p.size() > s1.size() && p.compare(p.size() - s1.size(), s1.size(), s1) == 0) {
+            return p.substr(0, p.size() - s1.size());
+        }
+        const std::string s2 = ".json";
+        if (p.size() > s2.size() && p.compare(p.size() - s2.size(), s2.size(), s2) == 0) {
+            return p.substr(0, p.size() - s2.size());
+        }
+        return p;
+    };
+
+    std::string output_stem = out_json_path.empty() ? input_label : strip_json_stem(out_json_path);
     if (out_json_path.empty()) {
         out_json_path = input_label + ".CHARACTERIZE.json";
     }
     if (out_html_path.empty()) {
-        out_html_path = input_label + ".CHARACTERIZE.html";
+        out_html_path = output_stem + ".CHARACTERIZE.html";
     }
 
     if (!settings.quiet) {
@@ -147,20 +197,38 @@ int main(int argc, char* argv[])
         Panel::print_card("Unified One-Button Configuration", cfg);
     }
 
-    auto gcode = GeneticCode::from_name(code_name);
+    std::shared_ptr<const GeneticCode> gcode;
+    try {
+        gcode = GeneticCode::from_name(code_name);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
+
     CharacterizeEngine engine(settings);
     CharacterizeResult res;
 
-    if (!unaligned_path.empty()) {
-        res = engine.run_from_unaligned_file(unaligned_path, gcode);
-    } else {
-        Alignment aln = Alignment::load(aln_path, gcode);
-        if (!tree_path.empty()) {
-            Tree tr = Tree::from_newick_file(tree_path);
-            res = engine.run_from_alignment(aln, tr);
+    try {
+        if (!unaligned_path.empty()) {
+            if (!tree_path.empty()) {
+                Tree tr = Tree::from_newick_file(tree_path);
+                auto seqs = JointAlignEngine::load_unaligned_fasta(unaligned_path, gcode);
+                res = engine.run_from_unaligned(seqs, gcode, tr);
+            } else {
+                res = engine.run_from_unaligned_file(unaligned_path, gcode);
+            }
         } else {
-            res = engine.run_from_alignment(aln);
+            Alignment aln = Alignment::load(aln_path, gcode);
+            if (!tree_path.empty()) {
+                Tree tr = Tree::from_newick_file(tree_path);
+                res = engine.run_from_alignment(aln, tr);
+            } else {
+                res = engine.run_from_alignment(aln);
+            }
         }
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
     }
 
     if (!settings.quiet) {
@@ -282,7 +350,9 @@ int main(int argc, char* argv[])
                    << "  │  ▲ Pervasive (FEL/dFEL): " << res.sites_pervasive_diversifying
                    << "  │  ▼ Purifying: " << res.sites_pervasive_purifying
                    << "  │  ⇄ Toggle/Convergent: " << res.sites_property_constrained_or_shifting
-                   << "  │  Simes q<=" << std::fixed << std::setprecision(2) << settings.fdr_threshold << ": " << res.sites_simes_fdr_significant;
+                   << "  │  Simes q<=" << std::fixed << std::setprecision(2) << settings.fdr_threshold << ": "
+                   << res.sites_simes_fdr_significant
+                   << " (▲" << res.sites_simes_diversifying << " div / ▼" << res.sites_simes_purifying << " pur)";
 
         s_q3_br << "aBSREL Diversifying: " << res.branches_episodic_diversifying
                 << "  │  RELAX Intensified: " << res.branches_intensified
@@ -293,12 +363,12 @@ int main(int argc, char* argv[])
         s_rt << std::fixed << std::setprecision(2) << res.runtime_seconds << " s";
 
         std::vector<std::pair<std::string, std::string>> summary_items = {
-            {"1. Is Data Trustworthy? (Homology/LOTO)", s_q1.str()},
-            {"2. Confounding Processes (Drift/Network/CpG)", s_q2.str()},
-            {"3A. Gene-Wide Adaptation (BUSTED-E)", s_q3_gene.str()},
-            {"3B. 1D Domain & Synonymous Architecture", s_q3_dom.str()},
-            {"3C. Site-Level Selection & Exchangeability", s_q3_sites.str()},
-            {"3D. Lineage Selection & Loss-of-Constraint", s_q3_br.str()},
+            {"Stage 0-1. Is Data Trustworthy? (Homology/LOTO)", s_q1.str()},
+            {"Stage 2-3. Confounding Processes (Drift/Network/CpG)", s_q2.str()},
+            {"Stage 4A. Gene-Wide Adaptation (BUSTED-E)", s_q3_gene.str()},
+            {"Stage 4B. 1D Domain & Synonymous Architecture", s_q3_dom.str()},
+            {"Stage 4C-5. Site-Level Selection & Exchangeability", s_q3_sites.str()},
+            {"Stage 4D. Lineage Selection & Loss-of-Constraint", s_q3_br.str()},
             {"Total Wall-Clock Time", s_rt.str()}
         };
         if (settings.enable_coevolution) {
@@ -332,16 +402,16 @@ int main(int argc, char* argv[])
         }
     }
     if (settings.emit_legacy_jsons) {
-        CharacterizeEngine::write_legacy_json_bundle(res, input_label);
+        CharacterizeEngine::write_legacy_json_bundle(res, output_stem);
         if (!settings.quiet) {
-            std::cout << Console::success("Saved legacy JSON bundle (.FEL.json, .MEME.json, .BUSTED.json) for: ") << input_label << "\n";
+            std::cout << Console::success("Saved legacy JSON bundle (.FEL.json, .MEME.json, .BUSTED.json) for: ") << output_stem << "\n";
         }
     }
     if (!out_msa_path.empty()) {
         std::ofstream mf(out_msa_path);
         if (mf.is_open()) {
             for (const auto& s : res.joint_align.map_alignment.sequences) {
-                mf << ">" << s.name << " [codons=" << res.joint_align.map_alignment.num_codons << "]\n" << s.raw_seq << "\n";
+                mf << ">" << s.name << "\n" << s.raw_seq << "\n";
             }
             if (!settings.quiet) {
                 std::cout << Console::success("Saved MAP codon alignment to: ") << out_msa_path << "\n";

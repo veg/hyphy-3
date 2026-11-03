@@ -371,6 +371,7 @@ inline bool load_codon_dataset(
             out.aln, opts.tree_file, opts.use_ohmic, opts.use_hyphaeon,
             opts.embeddings_file, capture_ohmic_net ? &out.ohmic_net : nullptr, &out.tree_source
         );
+        LikelihoodEngine::reconcile_tree_leaf_names(out.tree, out.aln);
     } catch (const std::exception& e) {
         std::cerr << Console::danger("Error resolving phylogeny: ") << e.what() << "\n";
         return false;

@@ -244,8 +244,8 @@ int main() {
         assert(json_str.find("\"effective_aa_alphabet\"") != std::string::npos);
         assert(json_str.find("\"lof_bayes_factor\"") != std::string::npos);
         std::string html_str = CharacterizeEngine::render_standalone_html(c_res, "IFITM3");
-        assert(html_str.find("1. Data &amp; Process Integrity:") != std::string::npos);
-        assert(html_str.find("1D Spatial Domain Architecture") != std::string::npos);
+        assert(html_str.find("Input Admission & Triage") != std::string::npos);
+        assert(html_str.find("Unified Site Atlas") != std::string::npos);
         std::cout << "[PASS] CharacterizeEngine Tier 1/2/3 Forensics on Mammalian IFITM3 ("
                   << c_res.spatial_domains.size() << " 1D domains, "
                   << c_res.sites_property_constrained_or_shifting << " Toggle/Convergent sites, JSON+HTML verified)\n";

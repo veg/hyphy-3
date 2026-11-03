@@ -130,11 +130,18 @@ struct JointAlignSettings {
     Scalar max_msa_expansion_ratio = 2.0;// maximum allowed C_total / median_L before aborting as staggered junk
 
     // Stage 1 settings
-    Scalar gap_open_penalty = 3.2;       // log-penalty for opening a codon deletion block (in nats)
-    Scalar gap_extend_penalty = 0.85;    // log-penalty per additional deleted codon in a contiguous block
+    Scalar transducer_gap_open = 2.85;   // Phase 2 progressive transducer affine gap-open penalty (in nats)
+    Scalar transducer_gap_extend = 0.65; // Phase 2 progressive transducer affine gap-extend penalty (in nats)
+    Scalar transducer_laplace_floor = 0.22; // Phase 2 homology Bayes-factor Laplace floor \epsilon_0
+    Scalar gap_open_penalty = 3.2;       // Phase 3 window realignment log-penalty for opening a codon deletion block
+    Scalar gap_extend_penalty = 0.85;    // Phase 3 window realignment log-penalty per additional deleted codon
     size_t window_flank_codons = 2;      // conserved anchor codons on each side of a gappy region
     size_t max_window_codons = 18;       // maximum width of a local realignment window
     size_t em_iterations = 2;            // Inside-Outside cavity realignment EM sweeps
+
+    // Subquadratic scaling settings for large alignments (N > 64 taxa or L > 200 codons)
+    size_t subquadratic_taxon_threshold = 64;   // switch to O(N sqrt(N)) landmark + k-mer k-NN graph when N > threshold
+    size_t subquadratic_length_threshold = 200; // switch to O(B * L) seed-chain anchor-banded profile DP when min(L1, L2) > threshold
 
     // Stage 2 settings
     bool enable_coupled_topology_search = true;
@@ -144,6 +151,27 @@ struct JointAlignSettings {
     bool run_marginalized_fel = true;
     Scalar p_value_threshold = 0.10;
     bool quiet = false;
+};
+
+struct TransducerTaxonResult {
+    std::vector<int8_t> map_codons;          // length W
+    std::vector<uint64_t> map_masks;         // length W: resolved IUPAC bitmasks
+    std::string map_raw_subseq;              // length 3*W
+    Scalar input_log_score = 0.0;
+    Scalar map_log_score = 0.0;
+    Scalar log_partition_Z = 0.0;
+    Scalar map_posterior_prob = 1.0;
+    std::vector<Scalar> col_match_posterior; // length W: posterior prob that column w is a homologous Match
+    bool changed = false;
+    size_t codons_shifted = 0;
+
+    // Top K candidate placements with their exact Forward-Backward posterior weights
+    struct CandidatePlacement {
+        std::vector<int8_t> codons;
+        Scalar log_score = -1e20;
+        Scalar posterior_weight = 0.0;
+    };
+    std::vector<CandidatePlacement> top_candidates;
 };
 
 struct JointAlignResult {
@@ -159,6 +187,7 @@ struct JointAlignResult {
     Scalar stage2_mg94_log_l = 0.0;
 
     std::vector<WindowRealignmentSummary> windows;
+    std::vector<std::vector<TransducerTaxonResult>> window_taxon_results;
     std::vector<CoupledMoveEvent> coupled_moves;
     std::vector<MarginalizedSiteResult> site_results;
 
@@ -189,8 +218,443 @@ public:
         : settings(std::move(s)) {}
 
     // =========================================================================
+    // Empirical Two-Stratum (Core + Loop) Physicochemical & Multi-Hit Codon Model
+    //   Shared across Stage 1 Phase 2 (progressive profile alignment) and
+    //   Phase 3 (iterative Inside-Outside window refinement).
+    // =========================================================================
+    static Scalar aa_phys_dist(char a1, char a2) {
+        if (a1 == a2) return 0.0;
+        struct AAProps { char aa; Scalar pol, vol, chg, hyd; };
+        static constexpr AAProps table[] = {
+            {'A',  8.1,  31.0,  0.0,  1.8}, {'R', 10.5, 124.0,  1.0, -4.5},
+            {'N', 11.6,  56.0,  0.0, -3.5}, {'D', 13.0,  54.0, -1.0, -3.5},
+            {'C',  5.5,  55.0,  0.0,  2.5}, {'Q', 10.5,  85.0,  0.0, -3.5},
+            {'E', 12.3,  83.0, -1.0, -3.5}, {'G',  9.0,   3.0,  0.0, -0.4},
+            {'H', 10.4,  96.0,  0.5, -3.2}, {'I',  5.2, 111.0,  0.0,  4.5},
+            {'L',  4.9, 111.0,  0.0,  3.8}, {'K', 11.3, 119.0,  1.0, -3.9},
+            {'M',  5.7, 105.0,  0.0,  1.9}, {'F',  5.2, 132.0,  0.0,  2.8},
+            {'P',  8.0,  32.5,  0.0, -1.6}, {'S',  9.2,  32.0,  0.0, -0.8},
+            {'T',  8.6,  61.0,  0.0, -0.7}, {'W',  5.4, 170.0,  0.0, -0.9},
+            {'Y',  6.2, 136.0,  0.0, -1.3}, {'V',  5.9,  84.0,  0.0,  4.2}
+        };
+        const AAProps *p1 = nullptr, *p2 = nullptr;
+        for (const auto& e : table) { if (e.aa == a1) p1 = &e; if (e.aa == a2) p2 = &e; }
+        if (!p1 || !p2) return 0.5;
+        Scalar dp = (p1->pol - p2->pol) / 8.1;
+        Scalar dv = (p1->vol - p2->vol) / 167.0;
+        Scalar dc = (p1->chg - p2->chg) / 2.0;
+        Scalar dh = (p1->hyd - p2->hyd) / 9.0;
+        return std::clamp<Scalar>(std::sqrt((dp * dp + dv * dv + dc * dc + dh * dh) / 4.0), 0.0, 1.0);
+    }
+
+    struct EmpRegimeParams {
+        Scalar omega_hat = 0.25;
+        Scalar theta_tv  = 0.35;
+        Scalar theta_ct  = 1.00;
+        Scalar lambda_aa = 1.80;
+        Scalar delta_2nt = 0.15;
+        Scalar psi_3nt   = 0.04;
+        Scalar obs_mean_daa = 0.25;
+    };
+
+    struct EmpRegimeCounts {
+        Scalar sum_ag = 1.0, sum_ct = 1.0, sum_tv = 1.0;
+        Scalar sum_syn1 = 1.0, sum_ns1 = 1.0, sum_ns1_daa = 0.25;
+        Scalar sum_1nt = 1.0, sum_2nt = 0.5, sum_3nt = 0.1;
+
+        void init_from_neutral(Scalar mu0_daa) {
+            sum_ns1_daa = mu0_daa;
+        }
+
+        void add_codon_pair(int8_t c1, int8_t c2, const GeneticCode& code) {
+            if (c1 < 0 || c2 < 0 || c1 == c2) return;
+            const auto& diff = code.diff_matrix[c1][c2];
+            Scalar d_aa = diff.synonymous ? 0.0 : aa_phys_dist(code.sense_codon_aa[c1], code.sense_codon_aa[c2]);
+            if (diff.num_diffs == 1) {
+                sum_1nt += 1.0;
+                int b1 = diff.diff_from[0], b2 = diff.diff_to[0];
+                bool p1 = (b1 == 0 || b1 == 2), p2 = (b2 == 0 || b2 == 2);
+                if (p1 && p2) sum_ag += 1.0;
+                else if (!p1 && !p2) sum_ct += 1.0;
+                else sum_tv += 1.0;
+                if (diff.synonymous) {
+                    sum_syn1 += 1.0;
+                } else {
+                    sum_ns1 += 1.0;
+                    sum_ns1_daa += d_aa;
+                }
+            } else if (diff.num_diffs == 2) {
+                sum_2nt += 1.0;
+            } else if (diff.num_diffs == 3) {
+                sum_3nt += 1.0;
+            }
+        }
+
+        EmpRegimeParams finalize(
+            Scalar mu0_daa, Scalar var0_daa,
+            Scalar syn_to_ns_opp_ratio,
+            Scalar opp_1_to_2, Scalar opp_1_to_3
+        ) const {
+            EmpRegimeParams p;
+            p.theta_ct  = std::clamp<Scalar>(sum_ct / sum_ag, 0.40, 2.50);
+            p.theta_tv  = std::clamp<Scalar>(sum_tv / (sum_ag + sum_ct), 0.10, 0.85);
+            Scalar raw_omega = (sum_ns1 / sum_syn1) * syn_to_ns_opp_ratio;
+            p.omega_hat = std::clamp<Scalar>(raw_omega, 0.06, 1.50);
+            p.obs_mean_daa = sum_ns1_daa / std::max<Scalar>(1.0, sum_ns1);
+            Scalar raw_lambda = (mu0_daa - p.obs_mean_daa) / std::max<Scalar>(1e-4, var0_daa);
+            p.lambda_aa = std::clamp<Scalar>(raw_lambda, 0.0, 3.50);
+            p.delta_2nt = std::clamp<Scalar>((sum_2nt / sum_1nt) * opp_1_to_2, 0.06, 0.55);
+            p.psi_3nt   = std::clamp<Scalar>((sum_3nt / sum_1nt) * opp_1_to_3, 0.01, 0.25);
+            return p;
+        }
+    };
+
+    struct EmpiricalSpectralGenerator {
+        Matrix U_pi, V_pi;
+        Vector eigenvalues;
+        Scalar scale_factor = 1.0;
+
+        void build(const EmpRegimeParams& st, const Eigen::Matrix<Scalar, 3, 4>& pf,
+                   const Vector& pi, const GeneticCode& code) {
+            int nS = code.num_sense_codons;
+            Vector sqrt_pi(nS), inv_sqrt_pi(nS);
+            for (int i = 0; i < nS; ++i) {
+                sqrt_pi(i) = std::sqrt(std::max<Scalar>(pi(i), 1e-12));
+                inv_sqrt_pi(i) = 1.0 / sqrt_pi(i);
+            }
+            Scalar r_nuc[4][4] = {
+                {0.0, st.theta_tv, 1.0, st.theta_tv},
+                {st.theta_tv, 0.0, st.theta_tv, st.theta_ct},
+                {1.0, st.theta_tv, 0.0, st.theta_tv},
+                {st.theta_tv, st.theta_ct, st.theta_tv, 0.0}
+            };
+            Scalar sum_aa_w = 0.0;
+            int count_ns1 = 0;
+            for (int i = 0; i < nS; ++i) {
+                for (int j = i + 1; j < nS; ++j) {
+                    const auto& diff = code.diff_matrix[i][j];
+                    if (diff.num_diffs == 1 && !diff.synonymous) {
+                        sum_aa_w += std::exp(-st.lambda_aa * aa_phys_dist(code.sense_codon_aa[i], code.sense_codon_aa[j]));
+                        count_ns1++;
+                    }
+                }
+            }
+            Scalar mean_aa_w = (count_ns1 > 0) ? (sum_aa_w / static_cast<Scalar>(count_ns1)) : 1.0;
+
+            Matrix Q = Matrix::Zero(nS, nS);
+            for (int i = 0; i < nS; ++i) {
+                for (int j = 0; j < nS; ++j) {
+                    if (i == j) continue;
+                    const auto& diff = code.diff_matrix[i][j];
+                    Scalar d_aa = diff.synonymous ? 0.0 : aa_phys_dist(code.sense_codon_aa[i], code.sense_codon_aa[j]);
+                    Scalar aa_mod = diff.synonymous ? 1.0 : (st.omega_hat * std::exp(-st.lambda_aa * d_aa) / mean_aa_w);
+                    if (diff.num_diffs == 1) {
+                        Q(i, j) = aa_mod * r_nuc[diff.diff_from[0]][diff.diff_to[0]] * pf(diff.diff_pos[0], diff.diff_to[0]);
+                    } else if (diff.num_diffs == 2) {
+                        Scalar nr = r_nuc[diff.diff_from[0]][diff.diff_to[0]] * r_nuc[diff.diff_from[1]][diff.diff_to[1]];
+                        Scalar tf = pf(diff.diff_pos[0], diff.diff_to[0]) * pf(diff.diff_pos[1], diff.diff_to[1]);
+                        Scalar mh = diff.synonymous ? 1.0 : st.delta_2nt;
+                        Q(i, j) = aa_mod * mh * nr * tf;
+                    } else if (diff.num_diffs == 3) {
+                        Scalar nr = r_nuc[diff.diff_from[0]][diff.diff_to[0]] * r_nuc[diff.diff_from[1]][diff.diff_to[1]] * r_nuc[diff.diff_from[2]][diff.diff_to[2]];
+                        Scalar tf = pf(diff.diff_pos[0], diff.diff_to[0]) * pf(diff.diff_pos[1], diff.diff_to[1]) * pf(diff.diff_pos[2], diff.diff_to[2]);
+                        Scalar mh = diff.synonymous ? 1.0 : st.psi_3nt;
+                        Q(i, j) = aa_mod * mh * nr * tf;
+                    }
+                }
+                Q(i, i) = -Q.row(i).sum();
+            }
+            Scalar avg_rate = 0.0;
+            for (int i = 0; i < nS; ++i) avg_rate -= pi(i) * Q(i, i);
+            scale_factor = std::max<Scalar>(1e-12, avg_rate);
+
+            Matrix S_mat = sqrt_pi.asDiagonal() * Q * inv_sqrt_pi.asDiagonal();
+            S_mat = 0.5 * (S_mat + S_mat.transpose());
+            Eigen::SelfAdjointEigenSolver<Matrix> solver(S_mat);
+            eigenvalues = solver.eigenvalues().cwiseMin(0.0);
+            Matrix eigvecs = solver.eigenvectors();
+            U_pi = inv_sqrt_pi.asDiagonal() * eigvecs;
+            V_pi = eigvecs.transpose() * sqrt_pi.asDiagonal();
+        }
+
+        Matrix transition_matrix(Scalar branch_length) const {
+            Scalar conv = 3.0 / scale_factor;
+            Vector exp_l = (eigenvalues * (branch_length * conv)).array().exp();
+            return ((U_pi * exp_l.asDiagonal()) * V_pi).cwiseMax(0.0);
+        }
+    };
+
+    struct EmpiricalTwoStratumModel {
+        EmpRegimeParams emp_core, emp_loop;
+        Scalar w_loop = 0.30;
+        Scalar rho_loop_to_core = 4.0;
+        EmpiricalSpectralGenerator q_core, q_loop;
+        Vector pi;
+
+        Matrix transition_matrix(Scalar bl) const {
+            Scalar t = std::max<Scalar>(1e-4, bl);
+            return (1.0 - w_loop) * q_core.transition_matrix(t)
+                 + w_loop * q_loop.transition_matrix(rho_loop_to_core * t);
+        }
+
+        static EmpiricalTwoStratumModel calibrate(
+            const std::vector<std::vector<int8_t>>& taxon_codons,
+            const Eigen::Matrix<Scalar, 3, 4>& pos_freqs,
+            const Vector& pi_codon,
+            const GeneticCode& gcode,
+            size_t subquadratic_taxon_threshold = 64
+        ) {
+            EmpiricalTwoStratumModel m;
+            m.pi = pi_codon;
+            int S = gcode.num_sense_codons;
+            size_t N = taxon_codons.size();
+
+            Scalar sum_d0 = 0.0, sum_d0_sq = 0.0;
+            Scalar n_ns1_opp = 0.0, n_syn1_opp = 0.0;
+            Scalar n_1nt_opp = 0.0, n_2nt_opp = 0.0, n_3nt_opp = 0.0;
+            for (int i = 0; i < S; ++i) {
+                for (int j = i + 1; j < S; ++j) {
+                    const auto& diff = gcode.diff_matrix[i][j];
+                    if (diff.num_diffs == 1) {
+                        n_1nt_opp += 1.0;
+                        if (diff.synonymous) {
+                            n_syn1_opp += 1.0;
+                        } else {
+                            Scalar d = aa_phys_dist(gcode.sense_codon_aa[i], gcode.sense_codon_aa[j]);
+                            sum_d0 += d;
+                            sum_d0_sq += d * d;
+                            n_ns1_opp += 1.0;
+                        }
+                    } else if (diff.num_diffs == 2) {
+                        n_2nt_opp += 1.0;
+                    } else if (diff.num_diffs == 3) {
+                        n_3nt_opp += 1.0;
+                    }
+                }
+            }
+            Scalar mu0_daa = (n_ns1_opp > 0) ? (sum_d0 / n_ns1_opp) : 0.32;
+            Scalar var0_daa = (n_ns1_opp > 0) ? std::max<Scalar>(1e-4, sum_d0_sq / n_ns1_opp - mu0_daa * mu0_daa) : 0.035;
+            Scalar syn_to_ns_opp_ratio = (n_ns1_opp > 0) ? (n_syn1_opp / n_ns1_opp) : (0.25 / 0.75);
+            Scalar opp_1_to_2 = (n_2nt_opp > 0) ? (n_1nt_opp / n_2nt_opp) : 0.35;
+            Scalar opp_1_to_3 = (n_3nt_opp > 0) ? (n_1nt_opp / n_3nt_opp) : 0.32;
+
+            EmpRegimeCounts cnt_all, cnt_core, cnt_loop;
+            cnt_all.init_from_neutral(mu0_daa);
+            cnt_core.init_from_neutral(mu0_daa);
+            cnt_loop.init_from_neutral(mu0_daa);
+            Scalar sum_r_core = 0.0, sum_r_loop = 0.0;
+            size_t n_core = 0, n_loop = 0;
+
+            const bool use_subquadratic_cal = (N > subquadratic_taxon_threshold);
+            const size_t cal_stride = use_subquadratic_cal ? std::max<size_t>(1, N / 6) : 1;
+
+            for (size_t u = 0; u < N; ++u) {
+                const auto& su = taxon_codons[u];
+                for (size_t v = u + 1; v < N; ++v) {
+                    if (use_subquadratic_cal && (v - u) > 2 && ((v - u) % cal_stride != 0)) continue;
+                    const auto& sv = taxon_codons[v];
+                    if (su.empty() || sv.empty()) continue;
+                    size_t Lmin = std::min(su.size(), sv.size());
+                    size_t Lmax = std::max(su.size(), sv.size());
+                    if (Lmin < 5 || Lmax > Lmin * 2) continue;
+
+                    // Align (su, sv) via banded affine codon DP so internal indels never shift
+                    // post-indel codons out of register during Stage-0 rate matrix calibration.
+                    const auto& s_short = (su.size() <= sv.size()) ? su : sv;
+                    const auto& s_long  = (su.size() <= sv.size()) ? sv : su;
+                    int Ls = static_cast<int>(s_short.size());
+                    int Ll = static_cast<int>(s_long.size());
+                    int dL = Ll - Ls;
+                    int B0 = std::max(24, dL + 8);
+                    int band_w = 2 * B0 + dL + 3;
+                    constexpr Scalar kNegInf = -1e9;
+                    constexpr Scalar cal_g_open = 1.10;
+                    constexpr Scalar cal_g_ext  = 0.30;
+
+                    std::vector<Scalar> prev_M(Ll + 1, kNegInf), curr_M(Ll + 1, kNegInf);
+                    std::vector<Scalar> prev_D(Ll + 1, kNegInf), curr_D(Ll + 1, kNegInf);
+                    std::vector<uint8_t> bt_mat((Ls + 1) * band_w, 0); // 0=M, 1=D(up), 2=I(left)
+                    auto b_idx = [&](int r, int c) -> size_t {
+                        int off = c - (r - B0);
+                        return static_cast<size_t>(r * band_w + std::clamp(off, 0, band_w - 1));
+                    };
+
+                    int init_max = std::min(Ll, dL + B0);
+                    for (int c = 0; c <= init_max; ++c) {
+                        prev_M[c] = -std::min<Scalar>(cal_g_open + cal_g_ext * c, 3.80);
+                        bt_mat[b_idx(0, c)] = 2;
+                    }
+                    prev_M[0] = 0.0;
+
+                    for (int r = 1; r <= Ls; ++r) {
+                        int c_min = std::max(1, r - B0);
+                        int c_max = std::min(Ll, r + dL + B0);
+                        std::fill(curr_M.begin() + std::max(0, c_min - 1), curr_M.begin() + c_max + 1, kNegInf);
+                        std::fill(curr_D.begin() + std::max(0, c_min - 1), curr_D.begin() + c_max + 1, kNegInf);
+                        if (r <= B0) {
+                            Scalar pen = -std::min<Scalar>(cal_g_open + cal_g_ext * r, 3.80);
+                            curr_D[0] = pen;
+                            curr_M[0] = pen;
+                            bt_mat[b_idx(r, 0)] = 1;
+                        }
+                        int8_t ci = s_short[r - 1];
+                        Scalar ins_sc = kNegInf;
+                        for (int c = c_min; c <= c_max; ++c) {
+                            int8_t cj = s_long[c - 1];
+                            Scalar d_sc = std::max(prev_M[c] - cal_g_open - cal_g_ext, prev_D[c] - cal_g_ext);
+                            curr_D[c] = d_sc;
+                            ins_sc = std::max(curr_M[c - 1] - cal_g_open - cal_g_ext, ins_sc - cal_g_ext);
+                            Scalar sim = 0.0;
+                            if (ci >= 0 && cj >= 0) {
+                                if (ci == cj) sim = 1.00;
+                                else if (gcode.sense_codon_aa[ci] == gcode.sense_codon_aa[cj]) sim = 0.90;
+                                else if (gcode.diff_matrix[ci][cj].num_diffs == 1) sim = 0.30;
+                            }
+                            Scalar m_sc = prev_M[c - 1] + sim;
+                            if (m_sc >= d_sc && m_sc >= ins_sc) {
+                                curr_M[c] = m_sc;
+                                bt_mat[b_idx(r, c)] = 0;
+                            } else if (d_sc >= ins_sc) {
+                                curr_M[c] = d_sc;
+                                bt_mat[b_idx(r, c)] = 1;
+                            } else {
+                                curr_M[c] = ins_sc;
+                                bt_mat[b_idx(r, c)] = 2;
+                            }
+                        }
+                        std::swap(prev_M, curr_M);
+                        std::swap(prev_D, curr_D);
+                    }
+
+                    int best_c = Ll;
+                    Scalar best_sc = prev_M[Ll];
+                    for (int c = std::max(1, Ls - B0); c <= Ll; ++c) {
+                        Scalar sc = prev_M[c] - std::min<Scalar>(cal_g_open + cal_g_ext * (Ll - c), 3.80);
+                        if (sc > best_sc) { best_sc = sc; best_c = c; }
+                    }
+
+                    std::vector<std::pair<int8_t, int8_t>> matched_pairs;
+                    matched_pairs.reserve(Lmin);
+                    int cr = Ls, cc = best_c;
+                    int aa_matches = 0;
+                    while (cr > 0 && cc > 0) {
+                        uint8_t mv = bt_mat[b_idx(cr, cc)];
+                        if (mv == 0) {
+                            int8_t c1 = s_short[cr - 1], c2 = s_long[cc - 1];
+                            if (c1 >= 0 && c2 >= 0) {
+                                matched_pairs.push_back({c1, c2});
+                                if (c1 == c2 || gcode.sense_codon_aa[c1] == gcode.sense_codon_aa[c2]) aa_matches++;
+                            }
+                            cr--; cc--;
+                        } else if (mv == 1) {
+                            cr--;
+                        } else {
+                            cc--;
+                        }
+                    }
+                    if (matched_pairs.size() < Lmin / 2) continue;
+                    Scalar pair_aa_id = static_cast<Scalar>(aa_matches) / static_cast<Scalar>(matched_pairs.size());
+                    if (pair_aa_id < 0.35) continue;
+                    std::reverse(matched_pairs.begin(), matched_pairs.end());
+
+                    struct AlignedSite {
+                        int8_t c1, c2;
+                        Scalar d_nt;
+                        Scalar d_aa;
+                    };
+                    std::vector<AlignedSite> sites;
+                    sites.reserve(matched_pairs.size());
+                    Scalar sum_dnt = 0.0, sum_daa = 0.0;
+                    for (const auto& [c1, c2] : matched_pairs) {
+                        Scalar d_nt = 0.0, d_aa = 0.0;
+                        if (c1 != c2) {
+                            const auto& diff = gcode.diff_matrix[c1][c2];
+                            d_nt = static_cast<Scalar>(diff.num_diffs) / 3.0;
+                            if (!diff.synonymous) {
+                                d_aa = aa_phys_dist(gcode.sense_codon_aa[c1], gcode.sense_codon_aa[c2]);
+                            }
+                        }
+                        sites.push_back({c1, c2, d_nt, d_aa});
+                        sum_dnt += d_nt;
+                        sum_daa += d_aa;
+                        cnt_all.add_codon_pair(c1, c2, gcode);
+                    }
+                    if (sites.size() < 5 || sum_dnt <= 1e-9) continue;
+                    Scalar mean_dnt = sum_dnt / static_cast<Scalar>(sites.size());
+                    Scalar mean_daa = sum_daa / static_cast<Scalar>(sites.size());
+
+                    int M = static_cast<int>(sites.size());
+                    for (int k = 0; k < M; ++k) {
+                        int w0 = std::max(0, k - 2);
+                        int w1 = std::min(M - 1, k + 2);
+                        Scalar win_dnt = 0.0, win_daa = 0.0;
+                        for (int w = w0; w <= w1; ++w) {
+                            win_dnt += sites[w].d_nt;
+                            win_daa += sites[w].d_aa;
+                        }
+                        win_dnt /= static_cast<Scalar>(w1 - w0 + 1);
+                        win_daa /= static_cast<Scalar>(w1 - w0 + 1);
+                        bool is_loop = (mean_daa > 1e-9) ? (win_daa > mean_daa) : (win_dnt > mean_dnt);
+                        Scalar r_site = (mean_daa > 1e-9)
+                            ? 0.5 * (sites[k].d_nt / mean_dnt + sites[k].d_aa / mean_daa)
+                            : (sites[k].d_nt / mean_dnt);
+                        if (!is_loop) {
+                            n_core++;
+                            sum_r_core += r_site;
+                            cnt_core.add_codon_pair(sites[k].c1, sites[k].c2, gcode);
+                        } else {
+                            n_loop++;
+                            sum_r_loop += r_site;
+                            cnt_loop.add_codon_pair(sites[k].c1, sites[k].c2, gcode);
+                        }
+                    }
+                }
+            }
+
+            EmpRegimeParams emp_all = cnt_all.finalize(mu0_daa, var0_daa, syn_to_ns_opp_ratio, opp_1_to_2, opp_1_to_3);
+            m.emp_core = cnt_core.finalize(mu0_daa, var0_daa, syn_to_ns_opp_ratio, opp_1_to_2, opp_1_to_3);
+            m.emp_loop = cnt_loop.finalize(mu0_daa, var0_daa, syn_to_ns_opp_ratio, opp_1_to_2, opp_1_to_3);
+            m.emp_core.theta_ct = emp_all.theta_ct;
+            m.emp_core.theta_tv = emp_all.theta_tv;
+            m.emp_loop.theta_ct = emp_all.theta_ct;
+            m.emp_loop.theta_tv = emp_all.theta_tv;
+
+            if (n_core > 0 && n_loop > 0) {
+                Scalar w_l = static_cast<Scalar>(n_loop) / static_cast<Scalar>(n_core + n_loop);
+                Scalar r_c = sum_r_core / static_cast<Scalar>(n_core);
+                Scalar r_l = sum_r_loop / static_cast<Scalar>(n_loop);
+                m.w_loop = std::clamp<Scalar>(w_l, 0.10, 0.60);
+                m.rho_loop_to_core = std::clamp<Scalar>(r_l / std::max<Scalar>(0.28, r_c), 1.5, 11.0);
+            }
+
+            m.q_core.build(m.emp_core, pos_freqs, pi_codon, gcode);
+            m.q_loop.build(m.emp_loop, pos_freqs, pi_codon, gcode);
+            return m;
+        }
+
+        static EmpiricalTwoStratumModel from_alignment(const Alignment& aln) {
+            const auto& gcode = *(aln.code ? aln.code : GeneticCode::universal());
+            std::vector<std::vector<int8_t>> tc(aln.num_taxa);
+            for (size_t t = 0; t < aln.num_taxa; ++t) {
+                tc[t].reserve(aln.num_codons);
+                for (int8_t c : aln.sequences[t].codons) {
+                    if (c >= 0) tc[t].push_back(c);
+                }
+            }
+            return calibrate(tc, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+        }
+    };
+
+    // =========================================================================
     // Helper: Detect Indel-Ambiguous Codon Windows
     // =========================================================================
+    static inline bool is_gap_codon(const Sequence& seq, size_t c) {
+        if (3 * c + 3 <= seq.raw_seq.size()) {
+            return seq.raw_seq[3 * c] == '-' && seq.raw_seq[3 * c + 1] == '-' && seq.raw_seq[3 * c + 2] == '-';
+        }
+        return seq.codons[c] < 0;
+    }
+
     static std::vector<IndelWindow> detect_indel_windows(
         const Alignment& aln,
         size_t flank_codons = 2,
@@ -206,7 +670,7 @@ public:
         std::vector<size_t> last_ungapped(N, 0);
         for (size_t t = 0; t < N; ++t) {
             for (size_t c = 0; c < C; ++c) {
-                if (aln.sequences[t].codons[c] >= 0) {
+                if (!is_gap_codon(aln.sequences[t], c)) {
                     if (first_ungapped[t] == C) first_ungapped[t] = c;
                     last_ungapped[t] = c;
                 }
@@ -216,8 +680,12 @@ public:
         std::vector<size_t> internal_gaps_per_site(C, 0);
         for (size_t c = 0; c < C; ++c) {
             for (size_t t = 0; t < N; ++t) {
-                if (aln.sequences[t].codons[c] < 0) {
-                    internal_gaps_per_site[c]++;
+                if (is_gap_codon(aln.sequences[t], c)) {
+                    bool is_long_leading_missing = (c < first_ungapped[t] && first_ungapped[t] > 8);
+                    bool is_long_trailing_missing = (c > last_ungapped[t] && (C - 1 - last_ungapped[t]) > 8);
+                    if (!is_long_leading_missing && !is_long_trailing_missing) {
+                        internal_gaps_per_site[c]++;
+                    }
                 }
             }
         }
@@ -234,7 +702,6 @@ public:
                    (run_end + 1 < C && internal_gaps_per_site[run_end + 1] > 0) ||
                    (run_end + 2 < C && internal_gaps_per_site[run_end + 2] > 0))) {
                 run_end++;
-                if (run_end - run_start >= max_window_len - 2 * flank_codons) break;
             }
 
             size_t w_start = (run_start > flank_codons) ? (run_start - flank_codons) : 0;
@@ -255,8 +722,9 @@ public:
             c = run_end;
         }
 
-        // Populate window statistics and split any overly wide windows
+        // Populate window statistics and tile wide regions with 50% overlapping half-stride windows
         std::vector<IndelWindow> final_windows;
+        size_t stride = std::max<size_t>(1, max_window_len / 2);
         for (const auto& w : windows) {
             size_t cur_s = w.start_codon;
             while (cur_s < w.end_codon) {
@@ -271,7 +739,7 @@ public:
                     bool has_gap = false;
                     bool has_ungapped = false;
                     for (size_t k = cur_s; k < cur_e; ++k) {
-                        if (aln.sequences[t].codons[k] >= 0) {
+                        if (!is_gap_codon(aln.sequences[t], k)) {
                             has_ungapped = true;
                         } else {
                             has_gap = true;
@@ -287,7 +755,8 @@ public:
                 if (fw.num_gapped_taxa > 0) {
                     final_windows.push_back(fw);
                 }
-                cur_s = cur_e;
+                if (cur_e >= w.end_codon) break;
+                cur_s += stride;
             }
         }
         return final_windows;
@@ -308,7 +777,8 @@ public:
         size_t end_codon,
         std::vector<std::vector<Vector>>& out_leaf_cavity, // [col_offset][taxon_idx] -> Vector(S)
         const Matrix* foster_omega = nullptr,
-        Scalar conv_factor = 1.0
+        Scalar conv_factor = 1.0,
+        const EmpiricalTwoStratumModel* two_stratum = nullptr
     ) {
         size_t W = end_codon - start_codon;
         size_t N = aln.num_taxa;
@@ -358,7 +828,9 @@ public:
                     shunt_partner[t] = best_u;
                     shunt_weight[t] = w_sh;
                     Scalar d_sh = std::clamp(best_r_shunt * 0.15, 0.01, 0.50);
-                    P_shunt[t] = mg94.transition_matrix(d_sh * conv_factor);
+                    P_shunt[t] = (two_stratum != nullptr)
+                        ? two_stratum->transition_matrix(d_sh)
+                        : mg94.transition_matrix(d_sh * conv_factor);
                 }
             }
         }
@@ -460,26 +932,6 @@ public:
     //     2. Exact Forward-Backward posterior probability over placements
     //     3. Per-column posterior occupancy/homology confidence
     // =========================================================================
-    struct TransducerTaxonResult {
-        std::vector<int8_t> map_codons;          // length W
-        std::string map_raw_subseq;              // length 3*W
-        Scalar input_log_score = 0.0;
-        Scalar map_log_score = 0.0;
-        Scalar log_partition_Z = 0.0;
-        Scalar map_posterior_prob = 1.0;
-        std::vector<Scalar> col_match_posterior; // length W: posterior prob that column w is a homologous Match
-        bool changed = false;
-        size_t codons_shifted = 0;
-
-        // Top K candidate placements with their posterior weights (for Stage 3 marginalization)
-        struct CandidatePlacement {
-            std::vector<int8_t> codons;
-            Scalar log_score = -1e20;
-            Scalar posterior_weight = 0.0;
-        };
-        std::vector<CandidatePlacement> top_candidates;
-    };
-
     static TransducerTaxonResult solve_codon_indel_transducer_for_taxon(
         const Sequence& seq,
         size_t start_codon,
@@ -489,20 +941,30 @@ public:
         const JointAlignSettings& settings
     ) {
         size_t W = end_codon - start_codon;
+        int S_dim = static_cast<int>(leaf_cavity[0][taxon_idx].size());
+        uint64_t all_sense_mask = (S_dim < 64) ? ((1ULL << S_dim) - 1ULL) : ~0ULL;
+
         TransducerTaxonResult res;
         res.map_codons.resize(W);
+        res.map_masks.resize(W, all_sense_mask);
         res.col_match_posterior.assign(W, 1.0);
 
-        // Extract unaligned sense codons and their original raw 3-mer strings inside the window
+        // Extract unaligned non-gap codons (including partial IUPAC ambiguous codons) inside the window
         std::vector<int8_t> obs_codons;
+        std::vector<uint64_t> obs_masks;
         std::vector<std::string> obs_triplets;
         std::vector<size_t> orig_positions;
         for (size_t w = 0; w < W; ++w) {
             size_t c_idx = start_codon + w;
             int8_t c_state = seq.codons[c_idx];
+            uint64_t c_mask = (c_idx < seq.codon_masks.size() && seq.codon_masks[c_idx] != 0)
+                ? seq.codon_masks[c_idx]
+                : ((c_state >= 0) ? (1ULL << c_state) : all_sense_mask);
             res.map_codons[w] = c_state;
-            if (c_state >= 0) {
+            res.map_masks[w] = c_mask;
+            if (!is_gap_codon(seq, c_idx)) {
                 obs_codons.push_back(c_state);
+                obs_masks.push_back(c_mask);
                 obs_triplets.push_back(seq.raw_seq.substr(3 * c_idx, 3));
                 orig_positions.push_back(w);
             }
@@ -520,37 +982,56 @@ public:
             return res;
         }
 
-        // Precompute log-odds emission score E(j, w):
-        //   E(j, w) = log P_cavity(obs_codons[j] at w) - E_{s ~ pi}[log P_cavity(s at w)] + 2.4 * info(w)
-        // Using the full dynamic range of log P_cavity (without a linear +0.35 floor inside log!)
-        // ensures conserved motifs (like HYV/HFV, VALKVQIIAG,FDR, YMQ) have +4..+8 nats advantage
-        // at their true homologous column over neighboring columns, while shifting relative to the
-        // column baseline prevents Felsenstein missing-data gaps from beating real substitutions!
+        // Precompute exact Bayesian homology log-odds emission score E(j, w):
+        //   E(j, w) = ln( P_cavity(obs_codons[j] at w) / (1 / S) )
+        // At an all-gap / uninformative column (cav = 1/S), E(j, w) = 0.0 (neutral).
+        // At an informative column, E(j, w) > 0 iff obs_codons[j] is more probable under the
+        // phylogenetic leaf cavity than under random background emission (preventing 1-codon
+        // nonsynonymous stepping-stone jumps into long deletions).
         Eigen::MatrixXd log_E(M, W);
         std::vector<Scalar> col_gap_log_prior(W, 0.0);
-        int S_dim = static_cast<int>(leaf_cavity[0][taxon_idx].size());
+        Scalar uniform_p = 1.0 / static_cast<Scalar>(std::max(1, S_dim));
+        Scalar log_uniform_p = std::log(uniform_p);
         for (size_t w = 0; w < W; ++w) {
             const Vector& cav = leaf_cavity[w][taxon_idx];
             Scalar max_p = cav.maxCoeff();
-            // If cav is flat (max_p ~ 1/61, i.e., an empty/near-empty slack column in other taxa),
-            // strongly discourage placing codons into it and make gaps cheap at this slack column!
-            Scalar uniform_p = 1.0 / static_cast<Scalar>(std::max(1, S_dim));
-            Scalar col_informativeness = std::clamp((max_p - uniform_p) / (0.20 - uniform_p), 0.0, 1.0);
+            Scalar col_informativeness = std::clamp((max_p - uniform_p) / std::max<Scalar>(1e-6, 1.0 - uniform_p), 0.0, 1.0);
 
-            Scalar mean_log_p = 0.0;
-            for (int s = 0; s < S_dim; ++s) {
-                mean_log_p += std::log(std::max<Scalar>(1e-9, cav(s)));
-            }
-            mean_log_p /= static_cast<Scalar>( std::max(1, S_dim) );
             for (size_t j = 0; j < M; ++j) {
-                Scalar log_p = std::log(std::max<Scalar>(1e-9, cav(obs_codons[j])));
-                log_E(static_cast<Eigen::Index>(j), static_cast<Eigen::Index>(w)) =
-                    (log_p - mean_log_p) + 2.4 * col_informativeness - 1.5 * (1.0 - col_informativeness);
+                Scalar p_emit = 1e-9;
+                if (obs_codons[j] >= 0) {
+                    p_emit = cav(obs_codons[j]);
+                } else {
+                    uint64_t msk = obs_masks[j];
+                    Scalar sum_p = 0.0;
+                    int cnt_m = 0;
+                    for (int s = 0; s < S_dim; ++s) {
+                        if ((msk >> s) & 1ULL) {
+                            sum_p += cav(s);
+                            cnt_m++;
+                        }
+                    }
+                    p_emit = (cnt_m > 0) ? (sum_p / static_cast<Scalar>(cnt_m)) : uniform_p;
+                }
+                Scalar log_p = std::log(std::max<Scalar>(1e-9, p_emit));
+                log_E(static_cast<Eigen::Index>(j), static_cast<Eigen::Index>(w)) = (log_p - log_uniform_p);
             }
-            // Entropy / concentration of column w: conserved columns strongly resist gaps,
-            // while uninformative slack columns prefer gaps!
-            col_gap_log_prior[w] = -3.0 * max_p * col_informativeness;
+            col_gap_log_prior[w] = -settings.gap_extend_penalty * col_informativeness;
         }
+
+        bool has_left_codon = false;
+        for (size_t c = 0; c < start_codon; ++c) {
+            if (!is_gap_codon(seq, c)) { has_left_codon = true; break; }
+        }
+        bool has_right_codon = false;
+        for (size_t c = end_codon; c < seq.codons.size(); ++c) {
+            if (!is_gap_codon(seq, c)) { has_right_codon = true; break; }
+        }
+        const bool left_in_gap = (start_codon > 0 && has_left_codon && is_gap_codon(seq, start_codon - 1));
+        const bool right_in_gap = (end_codon < seq.codons.size() && has_right_codon && is_gap_codon(seq, end_codon));
+        const Scalar right_m_boundary_pen = right_in_gap
+            ? std::max<Scalar>(0.0, settings.gap_open_penalty - settings.gap_extend_penalty)
+            : 0.0;
 
         auto score_placement = [&](const std::vector<size_t>& pos) -> Scalar {
             // pos[0] < pos[1] < ... < pos[M-1] in {0 .. W-1}
@@ -560,7 +1041,7 @@ public:
                 is_match[pos[j]] = 1;
                 score += log_E(static_cast<Eigen::Index>(j), static_cast<Eigen::Index>(pos[j]));
             }
-            bool in_gap = false;
+            bool in_gap = left_in_gap;
             for (size_t w = 0; w < W; ++w) {
                 if (!is_match[w]) {
                     score += col_gap_log_prior[w];
@@ -573,6 +1054,9 @@ public:
                 } else {
                     in_gap = false;
                 }
+            }
+            if (!in_gap) {
+                score -= right_m_boundary_pen;
             }
             return score;
         };
@@ -598,8 +1082,13 @@ public:
             return mx + std::log(std::exp(a - mx) + std::exp(b - mx));
         };
 
-        fwd_M(0, 0) = 0.0;
-        vit_M(0, 0) = 0.0;
+        if (left_in_gap) {
+            fwd_G(0, 0) = 0.0;
+            vit_G(0, 0) = 0.0;
+        } else {
+            fwd_M(0, 0) = 0.0;
+            vit_M(0, 0) = 0.0;
+        }
 
         for (size_t w = 1; w <= W; ++w) {
             Scalar g_col = col_gap_log_prior[w - 1];
@@ -639,12 +1128,14 @@ public:
             }
         }
 
+        fwd_M(W, M) -= right_m_boundary_pen;
+        vit_M(W, M) -= right_m_boundary_pen;
         res.log_partition_Z = log_sum_exp(fwd_M(W, M), fwd_G(W, M));
 
         // Backward pass to compute exact per-column Match posterior probabilities
         Eigen::MatrixXd bwd_M = Eigen::MatrixXd::Constant(W + 1, M + 1, NEG_INF);
         Eigen::MatrixXd bwd_G = Eigen::MatrixXd::Constant(W + 1, M + 1, NEG_INF);
-        bwd_M(W, M) = 0.0;
+        bwd_M(W, M) = -right_m_boundary_pen;
         bwd_G(W, M) = 0.0;
 
         for (size_t w = W; w >= 1; --w) {
@@ -697,10 +1188,12 @@ public:
         if (map_positions.size() == M && res.map_log_score > res.input_log_score + 0.25 && map_positions != orig_positions) {
             res.changed = true;
             res.map_codons.assign(W, -1);
+            res.map_masks.assign(W, all_sense_mask);
             std::string new_raw(3 * W, '-');
             for (size_t j = 0; j < M; ++j) {
                 size_t col = map_positions[j];
                 res.map_codons[col] = obs_codons[j];
+                res.map_masks[col] = obs_masks[j];
                 new_raw.replace(3 * col, 3, obs_triplets[j]);
                 if (map_positions[j] != orig_positions[j]) {
                     res.codons_shifted++;
@@ -742,6 +1235,15 @@ public:
             add_candidate(block_pos);
         }
 
+        // Sort alternative placements (index >= 1) by descending posterior_weight, keeping index 0 as MAP
+        if (res.top_candidates.size() > 2) {
+            std::sort(res.top_candidates.begin() + 1, res.top_candidates.end(),
+                      [](const TransducerTaxonResult::CandidatePlacement& a,
+                         const TransducerTaxonResult::CandidatePlacement& b) {
+                          return a.posterior_weight > b.posterior_weight;
+                      });
+        }
+
         // Normalize candidate weights
         Scalar w_sum = 0.0;
         for (const auto& cp : res.top_candidates) w_sum += cp.posterior_weight;
@@ -777,10 +1279,14 @@ public:
         mg94.update(mg_params, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
         Scalar conv = (mg94.scale_factor > 1e-12) ? (3.0 / mg94.scale_factor) : 1.0;
 
+        // Unify Stage 1 Phase 2 and Phase 3 under the empirical two-stratum physicochemical + multi-hit model:
+        // P_b = (1 - \hat{w}_loop) \exp(t_b \hat{Q}_core) + \hat{w}_loop \exp(\hat{\rho}_{loop/core} t_b \hat{Q}_loop)
+        EmpiricalTwoStratumModel two_stratum = EmpiricalTwoStratumModel::from_alignment(aln);
+
         std::vector<Matrix> P_branches(tree.num_nodes());
         for (const auto& node : tree.nodes) {
             if (node.id != tree.root_id && node.parent_id != INVALID_INDEX) {
-                P_branches[node.id] = mg94.transition_matrix(node.branch_length * conv);
+                P_branches[node.id] = two_stratum.transition_matrix(node.branch_length);
             }
         }
 
@@ -794,7 +1300,45 @@ public:
         OhmicNetwork ohm_net = OhmicNetwork::infer(aln, ohm_s);
         const Matrix* omega_ptr = (ohm_net.Omega.rows() == static_cast<Eigen::Index>(N)) ? &ohm_net.Omega : nullptr;
 
-        // Joint MG94 Substitution + Phylogenetic Branch-Indel (Sankoff/Dollo birth-death) log-likelihood
+        // Calibrate empirical phylogenetic branch-indel parameters (lam_open, eps_ext, pi_indel) from (tree, aln)
+        size_t cal_gap_codons = 0;
+        size_t cal_gap_runs = 0;
+        for (size_t t = 0; t < N; ++t) {
+            bool in_g = false;
+            for (size_t c = 0; c < C; ++c) {
+                if (is_gap_codon(aln.sequences[t], c)) {
+                    cal_gap_codons++;
+                    if (!in_g) {
+                        cal_gap_runs++;
+                        in_g = true;
+                    }
+                } else {
+                    in_g = false;
+                }
+            }
+        }
+        Scalar total_tree_bl = 0.0;
+        for (const auto& node : tree.nodes) {
+            if (node.id != tree.root_id && node.parent_id != INVALID_INDEX) {
+                total_tree_bl += std::max<Scalar>(0.005, node.branch_length);
+            }
+        }
+        Scalar mean_gap_len = (cal_gap_runs > 0)
+            ? (static_cast<Scalar>(cal_gap_codons) / static_cast<Scalar>(cal_gap_runs))
+            : 2.5;
+        const Scalar emp_eps_ext = std::clamp<Scalar>(1.0 - 1.0 / std::max<Scalar>(1.25, mean_gap_len), 0.30, 0.85);
+        const Scalar emp_lam_open = (cal_gap_runs > 0 && C > 0)
+            ? std::clamp<Scalar>(
+                  static_cast<Scalar>(cal_gap_runs) / std::max<Scalar>(1.0, static_cast<Scalar>(C) * total_tree_bl),
+                  0.015, 0.12)
+            : 0.035;
+        const Scalar emp_pi_1 = std::clamp<Scalar>(
+            1.0 - static_cast<Scalar>(cal_gap_codons) / std::max<Scalar>(1.0, static_cast<Scalar>(N * C)),
+            0.55, 0.95
+        );
+        const Scalar emp_pi_0 = 1.0 - emp_pi_1;
+
+        // Joint Two-Stratum Substitution + 2-State Felsenstein Affine-Memory Branch-Indel log-likelihood
         auto eval_joint_tree_indel_lnl = [&](const Alignment& a, size_t w_start, size_t w_end) -> Scalar {
             Scalar total = 0.0;
             std::vector<Vector> node_L(tree.num_nodes(), Vector::Zero(S));
@@ -804,7 +1348,8 @@ public:
                 pat.states.resize(N);
                 for (size_t t = 0; t < N; ++t) {
                     pat.states[t] = a.sequences[t].codons[c];
-                    if (pat.states[t] < 0 && c < a.sequences[t].codon_masks.size() && a.sequences[t].codon_masks[c] != 0) {
+                    if (pat.states[t] < 0 && !is_gap_codon(a.sequences[t], c) &&
+                        c < a.sequences[t].codon_masks.size() && a.sequences[t].codon_masks[c] != 0) {
                         if (pat.ambiguous_masks.empty()) pat.ambiguous_masks.assign(N, 0);
                         pat.ambiguous_masks[t] = a.sequences[t].codon_masks[c];
                     }
@@ -817,164 +1362,267 @@ public:
             size_t W_len = w_end - w_start;
             if (W_len == 0) return total;
             size_t num_nodes = tree.num_nodes();
-            const Scalar lam_open = 0.035;
-            const Scalar eps_ext = 0.65;
-            std::vector<std::array<Scalar, 2>> dp(W_len * num_nodes, {0.0, 0.0});
-            std::vector<uint8_t> anc_state(W_len * num_nodes, 1);
 
-            for (int32_t nid : tree.post_order) {
-                const auto& node = tree.nodes[nid];
-                if (node.is_leaf) {
-                    int32_t tid = (nid < static_cast<int32_t>(leaf_to_taxon.size())) ? leaf_to_taxon[nid] : -1;
-                    for (size_t w = 0; w < W_len; ++w) {
-                        bool present = (tid >= 0 && a.sequences[tid].codons[w_start + w] >= 0);
-                        dp[w * num_nodes + nid][present ? 1 : 0] = 0.0;
-                        dp[w * num_nodes + nid][present ? 0 : 1] = -1e6;
-                    }
-                } else {
-                    for (size_t w = 0; w < W_len; ++w) {
-                        for (int su = 0; su <= 1; ++su) {
-                            Scalar acc = 0.0;
-                            for (int32_t cid : node.children) {
-                                Scalar tb = std::max<Scalar>(0.005, tree.nodes[cid].branch_length);
-                                Scalar p_chg = 1.0 - std::exp(-lam_open * tb);
-                                Scalar s_same = dp[w * num_nodes + cid][su] + std::log(1.0 - p_chg);
-                                Scalar s_diff = dp[w * num_nodes + cid][1 - su] + std::log(p_chg);
-                                acc += std::max(s_same, s_diff);
-                            }
-                            dp[w * num_nodes + nid][su] = acc;
-                        }
-                    }
-                }
-            }
+            // 2-State Felsenstein Sum-Product Marginalization with Horizontal Affine Memory:
+            // q_10[cid] = P(I_{pa, w-1} = 1, I_{cid, w-1} = 0 | I_{., 1:w-1}) (posterior deletion on branch cid)
+            // q_01[cid] = P(I_{pa, w-1} = 0, I_{cid, w-1} = 1 | I_{., 1:w-1}) (posterior insertion on branch cid)
+            std::vector<Scalar> q_10(num_nodes, 0.0);
+            std::vector<Scalar> q_01(num_nodes, 0.0);
+            std::vector<Scalar> p_00(num_nodes, 1.0), p_01(num_nodes, 0.0);
+            std::vector<Scalar> p_10(num_nodes, 0.0), p_11(num_nodes, 1.0);
+            std::vector<std::array<Scalar, 2>> d_in(num_nodes, {1.0, 1.0});
+            std::vector<std::array<Scalar, 2>> m_up(num_nodes, {1.0, 1.0});
+            std::vector<std::array<Scalar, 2>> v_out(num_nodes, {0.0, 0.0});
+
             for (size_t w = 0; w < W_len; ++w) {
-                anc_state[w * num_nodes + tree.root_id] =
-                    (dp[w * num_nodes + tree.root_id][1] >= dp[w * num_nodes + tree.root_id][0]) ? 1 : 0;
-            }
-            for (auto it = tree.post_order.rbegin(); it != tree.post_order.rend(); ++it) {
-                int32_t nid = *it;
-                const auto& node = tree.nodes[nid];
-                for (int32_t cid : node.children) {
-                    Scalar tb = std::max<Scalar>(0.005, tree.nodes[cid].branch_length);
-                    Scalar p_chg = 1.0 - std::exp(-lam_open * tb);
-                    for (size_t w = 0; w < W_len; ++w) {
-                        int su = anc_state[w * num_nodes + nid];
-                        Scalar s_same = dp[w * num_nodes + cid][su] + std::log(1.0 - p_chg);
-                        Scalar s_diff = dp[w * num_nodes + cid][1 - su] + std::log(p_chg);
-                        anc_state[w * num_nodes + cid] = (s_same >= s_diff) ? su : (1 - su);
+                // Step A: Build 2x2 branch transition matrices conditioned on horizontal affine memory from w-1
+                for (int32_t nid : tree.post_order) {
+                    if (nid == tree.root_id || tree.nodes[nid].parent_id == INVALID_INDEX) continue;
+                    Scalar tb = std::max<Scalar>(0.005, tree.nodes[nid].branch_length);
+                    Scalar p_open = 1.0 - std::exp(-emp_lam_open * tb);
+                    p_10[nid] = (1.0 - q_10[nid]) * (0.5 * p_open) + q_10[nid] * emp_eps_ext;
+                    p_01[nid] = (1.0 - q_01[nid]) * (0.5 * p_open) + q_01[nid] * emp_eps_ext;
+                    p_11[nid] = std::max<Scalar>(1e-12, 1.0 - p_10[nid]);
+                    p_00[nid] = std::max<Scalar>(1e-12, 1.0 - p_01[nid]);
+                }
+
+                // Step B: 2-State Felsenstein Inside (post-order bottom-up sum-product) pass
+                for (int32_t nid : tree.post_order) {
+                    const auto& node = tree.nodes[nid];
+                    if (node.is_leaf) {
+                        int32_t tid = (nid < static_cast<int32_t>(leaf_to_taxon.size())) ? leaf_to_taxon[nid] : -1;
+                        bool present = (tid >= 0 && !is_gap_codon(a.sequences[tid], w_start + w));
+                        d_in[nid][0] = present ? 0.0 : 1.0;
+                        d_in[nid][1] = present ? 1.0 : 0.0;
+                    } else {
+                        Scalar acc0 = 1.0, acc1 = 1.0;
+                        for (int32_t cid : node.children) {
+                            m_up[cid][0] = p_00[cid] * d_in[cid][0] + p_01[cid] * d_in[cid][1];
+                            m_up[cid][1] = p_10[cid] * d_in[cid][0] + p_11[cid] * d_in[cid][1];
+                            acc0 *= m_up[cid][0];
+                            acc1 *= m_up[cid][1];
+                        }
+                        d_in[nid][0] = acc0;
+                        d_in[nid][1] = acc1;
                     }
                 }
-            }
-            for (int32_t nid : tree.post_order) {
-                const auto& node = tree.nodes[nid];
-                for (int32_t cid : node.children) {
-                    Scalar tb = std::max<Scalar>(0.005, tree.nodes[cid].branch_length);
-                    Scalar p_open = 1.0 - std::exp(-lam_open * tb);
-                    int in_ev = 0;
-                    for (size_t w = 0; w < W_len; ++w) {
-                        int su = anc_state[w * num_nodes + nid];
-                        int sv = anc_state[w * num_nodes + cid];
-                        if (su == sv) {
-                            if (in_ev != 0) {
-                                total += std::log(1.0 - eps_ext);
-                                in_ev = 0;
-                            }
-                            if (su == 1) total += -lam_open * tb;
-                        } else {
-                            int ev_t = (su == 0 && sv == 1) ? 1 : 2;
-                            if (in_ev == ev_t) {
-                                total += std::log(eps_ext);
-                            } else {
-                                if (in_ev != 0) total += std::log(1.0 - eps_ext);
-                                total += std::log(0.5 * p_open);
-                                in_ev = ev_t;
+
+                Scalar L_col = emp_pi_0 * d_in[tree.root_id][0] + emp_pi_1 * d_in[tree.root_id][1];
+                total += std::log(std::max<Scalar>(1e-300, L_col));
+
+                // Step C: 2-State Felsenstein Outside (pre-order top-down) pass to update q_10 and q_01
+                v_out[tree.root_id][0] = emp_pi_0;
+                v_out[tree.root_id][1] = emp_pi_1;
+                for (auto it = tree.post_order.rbegin(); it != tree.post_order.rend(); ++it) {
+                    int32_t uid = *it;
+                    const auto& node = tree.nodes[uid];
+                    if (node.is_leaf) continue;
+                    size_t k_ch = node.children.size();
+                    for (size_t i = 0; i < k_ch; ++i) {
+                        int32_t cid = node.children[i];
+                        Scalar v_sib0 = v_out[uid][0];
+                        Scalar v_sib1 = v_out[uid][1];
+                        for (size_t j = 0; j < k_ch; ++j) {
+                            if (i != j) {
+                                int32_t sj = node.children[j];
+                                v_sib0 *= m_up[sj][0];
+                                v_sib1 *= m_up[sj][1];
                             }
                         }
+                        v_out[cid][0] = v_sib0 * p_00[cid] + v_sib1 * p_10[cid];
+                        v_out[cid][1] = v_sib0 * p_01[cid] + v_sib1 * p_11[cid];
+
+                        Scalar w00 = v_sib0 * p_00[cid] * d_in[cid][0];
+                        Scalar w01 = v_sib0 * p_01[cid] * d_in[cid][1];
+                        Scalar w10 = v_sib1 * p_10[cid] * d_in[cid][0];
+                        Scalar w11 = v_sib1 * p_11[cid] * d_in[cid][1];
+                        Scalar w_sum = w00 + w01 + w10 + w11;
+                        if (w_sum > 1e-300) {
+                            q_01[cid] = w01 / w_sum;
+                            q_10[cid] = w10 / w_sum;
+                        } else {
+                            q_01[cid] = 0.0;
+                            q_10[cid] = 0.0;
+                        }
                     }
-                    if (in_ev != 0) total += std::log(1.0 - eps_ext);
                 }
             }
             return total;
         };
 
         auto eval_window_lnl = [&](const Alignment& a, size_t w_start, size_t w_end) -> Scalar {
-            return eval_joint_tree_indel_lnl(a, w_start, w_end);
+            size_t m_start = (w_start > 0) ? (w_start - 1) : 0;
+            size_t m_end = std::min(a.num_codons, w_end + 1);
+            return eval_joint_tree_indel_lnl(a, m_start, m_end);
         };
 
+        summaries.resize(windows.size());
         for (size_t wi = 0; wi < windows.size(); ++wi) {
+            const auto& win = windows[wi];
+            size_t w_start = win.start_codon;
+            size_t w_end = win.end_codon;
+            summaries[wi].window = win;
+            summaries[wi].initial_window_log_l = eval_window_lnl(aln, w_start, w_end);
+            summaries[wi].polished_window_log_l = summaries[wi].initial_window_log_l;
+            summaries[wi].column_homology_posteriors.assign(w_end - w_start, 1.0);
+            out_window_taxon_results[wi].resize(N);
+        }
+
+        auto step_single_window = [&](size_t wi) -> bool {
             const auto& win = windows[wi];
             size_t w_start = win.start_codon;
             size_t w_end = win.end_codon;
             size_t W = w_end - w_start;
 
-            WindowRealignmentSummary sum;
-            sum.window = win;
-            sum.initial_window_log_l = eval_window_lnl(aln, w_start, w_end);
-            sum.polished_window_log_l = sum.initial_window_log_l;
-            sum.column_homology_posteriors.assign(W, 1.0);
+            Scalar cur_lnl = eval_window_lnl(aln, w_start, w_end);
+            std::vector<std::vector<Vector>> leaf_cavity;
+            compute_window_leaf_cavities(tree, aln, mg94, P_branches, w_start, w_end, leaf_cavity, omega_ptr, conv, &two_stratum);
 
-            std::vector<TransducerTaxonResult> latest_taxon_res(N);
+            Alignment batch_aln = aln;
+            size_t batch_taxa_changed = 0;
+            size_t batch_codons_shifted = 0;
+            std::vector<TransducerTaxonResult> cand_taxon_res(N);
+            struct TaxonProposal {
+                size_t taxon_idx;
+                Scalar gain;
+            };
+            std::vector<TaxonProposal> proposals;
+
+            for (size_t t = 0; t < N; ++t) {
+                auto tr = solve_codon_indel_transducer_for_taxon(
+                    aln.sequences[t], w_start, w_end, t, leaf_cavity, settings
+                );
+                if (tr.changed) {
+                    for (size_t w = 0; w < W; ++w) {
+                        batch_aln.sequences[t].codons[w_start + w] = tr.map_codons[w];
+                        if (w_start + w < batch_aln.sequences[t].codon_masks.size()) {
+                            batch_aln.sequences[t].codon_masks[w_start + w] = tr.map_masks[w];
+                        }
+                    }
+                    batch_aln.sequences[t].raw_seq.replace(3 * w_start, 3 * W, tr.map_raw_subseq);
+                    batch_taxa_changed++;
+                    batch_codons_shifted += tr.codons_shifted;
+                    proposals.push_back({t, tr.map_log_score - tr.input_log_score});
+                }
+                cand_taxon_res[t] = std::move(tr);
+            }
+
+            if (out_window_taxon_results[wi][0].col_match_posterior.empty()) {
+                out_window_taxon_results[wi] = cand_taxon_res;
+            }
+
+            if (proposals.empty()) return false;
+
+            // Sort proposing taxa in descending order of transducer log-odds gain
+            std::sort(proposals.begin(), proposals.end(),
+                      [](const TaxonProposal& a, const TaxonProposal& b) { return a.gain > b.gain; });
+
+            // Coordinate-wise Gauss-Seidel updates in descending gain order (preventing sister swaps
+            // and rejecting noisy moves), compared against the coordinated clade batch move:
+            Alignment seq_aln = aln;
+            Scalar seq_lnl = cur_lnl;
+            size_t seq_taxa_changed = 0;
+            size_t seq_codons_shifted = 0;
+            std::vector<TransducerTaxonResult> seq_taxon_res = cand_taxon_res;
+
+            for (size_t pi_idx = 0; pi_idx < proposals.size(); ++pi_idx) {
+                size_t t = proposals[pi_idx].taxon_idx;
+                if (seq_taxa_changed > 0) {
+                    compute_window_leaf_cavities(tree, seq_aln, mg94, P_branches, w_start, w_end, leaf_cavity, omega_ptr, conv, &two_stratum);
+                    seq_taxon_res[t] = solve_codon_indel_transducer_for_taxon(
+                        seq_aln.sequences[t], w_start, w_end, t, leaf_cavity, settings
+                    );
+                }
+                if (!seq_taxon_res[t].changed) continue;
+
+                Alignment trial_aln = seq_aln;
+                for (size_t w = 0; w < W; ++w) {
+                    trial_aln.sequences[t].codons[w_start + w] = seq_taxon_res[t].map_codons[w];
+                    if (w_start + w < trial_aln.sequences[t].codon_masks.size()) {
+                        trial_aln.sequences[t].codon_masks[w_start + w] = seq_taxon_res[t].map_masks[w];
+                    }
+                }
+                trial_aln.sequences[t].raw_seq.replace(3 * w_start, 3 * W, seq_taxon_res[t].map_raw_subseq);
+                Scalar trial_lnl = eval_window_lnl(trial_aln, w_start, w_end);
+                if (trial_lnl > seq_lnl) {
+                    seq_aln = std::move(trial_aln);
+                    seq_lnl = trial_lnl;
+                    seq_taxa_changed++;
+                    seq_codons_shifted += seq_taxon_res[t].codons_shifted;
+                }
+            }
+
+            Scalar batch_lnl = (batch_taxa_changed > 1) ? eval_window_lnl(batch_aln, w_start, w_end) : -1e30;
+            if (seq_lnl >= batch_lnl && seq_lnl > cur_lnl) {
+                aln = std::move(seq_aln);
+                summaries[wi].polished_window_log_l = seq_lnl;
+                summaries[wi].num_taxa_realigned += seq_taxa_changed;
+                summaries[wi].num_codons_shifted += seq_codons_shifted;
+                out_window_taxon_results[wi] = std::move(seq_taxon_res);
+                return true;
+            } else if (batch_lnl > cur_lnl) {
+                aln = std::move(batch_aln);
+                summaries[wi].polished_window_log_l = batch_lnl;
+                summaries[wi].num_taxa_realigned += batch_taxa_changed;
+                summaries[wi].num_codons_shifted += batch_codons_shifted;
+                out_window_taxon_results[wi] = std::move(cand_taxon_res);
+                return true;
+            }
+            return false;
+        };
+
+        // Group contiguous overlapping half-stride tiles into chains and polish with
+        // bidirectional (forward + backward) Gauss-Seidel sweeps
+        size_t chain_start = 0;
+        while (chain_start < windows.size()) {
+            size_t chain_end = chain_start;
+            while (chain_end + 1 < windows.size() &&
+                   windows[chain_end + 1].start_codon < windows[chain_end].end_codon) {
+                chain_end++;
+            }
 
             for (size_t iter = 0; iter < settings.em_iterations; ++iter) {
-                std::vector<std::vector<Vector>> leaf_cavity;
-                compute_window_leaf_cavities(tree, aln, mg94, P_branches, w_start, w_end, leaf_cavity, omega_ptr, conv);
+                bool any_accepted = false;
+                // Forward pass: chain_start -> ... -> chain_end
+                for (size_t wi = chain_start; wi <= chain_end; ++wi) {
+                    if (step_single_window(wi)) any_accepted = true;
+                }
+                // Backward pass across overlapping tiles: chain_end - 1 -> ... -> chain_start
+                if (chain_end > chain_start) {
+                    for (size_t wi = chain_end; wi > chain_start; --wi) {
+                        if (step_single_window(wi - 1)) any_accepted = true;
+                    }
+                }
+                if (!any_accepted) break;
+            }
 
-                Alignment candidate_aln = aln;
-                size_t iter_taxa_changed = 0;
-                size_t iter_codons_shifted = 0;
+            for (size_t wi = chain_start; wi <= chain_end; ++wi) {
+                const auto& win = windows[wi];
+                size_t w_start = win.start_codon;
+                size_t w_end = win.end_codon;
+                size_t W = w_end - w_start;
+                summaries[wi].polished_window_log_l = eval_window_lnl(aln, w_start, w_end);
+                summaries[wi].delta_log_l = summaries[wi].polished_window_log_l - summaries[wi].initial_window_log_l;
 
-                for (size_t t = 0; t < N; ++t) {
-                    auto tr = solve_codon_indel_transducer_for_taxon(
-                        aln.sequences[t], w_start, w_end, t, leaf_cavity, settings
-                    );
-                    if (tr.changed) {
-                        for (size_t w = 0; w < W; ++w) {
-                            candidate_aln.sequences[t].codons[w_start + w] = tr.map_codons[w];
+                for (size_t w = 0; w < W; ++w) {
+                    Scalar acc_conf = 0.0;
+                    size_t count = 0;
+                    for (size_t t = 0; t < N; ++t) {
+                        if (!out_window_taxon_results[wi][t].col_match_posterior.empty()) {
+                            bool is_map_match = (aln.sequences[t].codons[w_start + w] >= 0);
+                            Scalar p_m = out_window_taxon_results[wi][t].col_match_posterior[w];
+                            Scalar conf = is_map_match ? p_m : (1.0 - p_m);
+                            acc_conf += conf;
+                            count++;
                         }
-                        candidate_aln.sequences[t].raw_seq.replace(3 * w_start, 3 * W, tr.map_raw_subseq);
-                        iter_taxa_changed++;
-                        iter_codons_shifted += tr.codons_shifted;
                     }
-                    latest_taxon_res[t] = std::move(tr);
-                }
-
-                if (iter_taxa_changed > 0) {
-                    Scalar cand_lnl = eval_window_lnl(candidate_aln, w_start, w_end);
-                    if (cand_lnl > sum.polished_window_log_l) {
-                        aln = std::move(candidate_aln);
-                        sum.polished_window_log_l = cand_lnl;
-                        sum.num_taxa_realigned += iter_taxa_changed;
-                        sum.num_codons_shifted += iter_codons_shifted;
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
+                    Scalar col_conf = (count > 0) ? (acc_conf / static_cast<Scalar>(count)) : 1.0;
+                    summaries[wi].column_homology_posteriors[w] = col_conf;
+                    out_site_homology_posteriors[w_start + w] = col_conf;
                 }
             }
 
-            // Compute column-wise posterior homology confidence across all gapped taxa in this window
-            for (size_t w = 0; w < W; ++w) {
-                Scalar acc_conf = 0.0;
-                size_t count = 0;
-                for (size_t t = 0; t < N; ++t) {
-                    if (!latest_taxon_res[t].col_match_posterior.empty()) {
-                        // Confidence that taxon t's state (Match vs Gap) at column w agrees with its MAP state
-                        bool is_map_match = (aln.sequences[t].codons[w_start + w] >= 0);
-                        Scalar p_m = latest_taxon_res[t].col_match_posterior[w];
-                        Scalar conf = is_map_match ? p_m : (1.0 - p_m);
-                        acc_conf += conf;
-                        count++;
-                    }
-                }
-                Scalar col_conf = (count > 0) ? (acc_conf / static_cast<Scalar>(count)) : 1.0;
-                sum.column_homology_posteriors[w] = col_conf;
-                out_site_homology_posteriors[w_start + w] = col_conf;
-            }
-
-            sum.delta_log_l = sum.polished_window_log_l - sum.initial_window_log_l;
-            out_window_taxon_results[wi] = std::move(latest_taxon_res);
-            summaries.push_back(std::move(sum));
+            chain_start = chain_end + 1;
         }
 
         // Post-Stage-1 Redundant Column Compaction:
@@ -997,7 +1645,7 @@ public:
             aln.num_codons = aln.sequences[0].codons.size();
         };
 
-        // 1. Remove any completely empty (all-gap) codon columns
+        // Remove any completely empty (all-gap) codon columns evacuated during window realignment
         for (size_t c = aln.num_codons; c > 0; --c) {
             size_t col = c - 1;
             bool all_gap = true;
@@ -1009,259 +1657,6 @@ public:
             }
             if (all_gap && aln.num_codons > 1) {
                 erase_alignment_column(col);
-            }
-        }
-
-        // 2. Collapse disjoint order-preserving split columns within radius 5 if joint phylogenetic score strictly improves
-        bool compacted = true;
-        while (compacted && aln.num_codons > 2) {
-            compacted = false;
-            for (size_t c1 = 0; c1 < aln.num_codons; ++c1) {
-                size_t n1 = 0;
-                for (size_t t = 0; t < N; ++t) {
-                    if (aln.sequences[t].codons[c1] >= 0) n1++;
-                }
-                if (n1 == 0 || n1 == N) continue;
-
-                size_t max_c2 = std::min(aln.num_codons - 1, c1 + 5);
-                for (size_t c2 = c1 + 1; c2 <= max_c2; ++c2) {
-                    bool can_merge = true;
-                    size_t n2 = 0;
-                    for (size_t t = 0; t < N; ++t) {
-                        bool has1 = (aln.sequences[t].codons[c1] >= 0);
-                        bool has2 = (aln.sequences[t].codons[c2] >= 0);
-                        if (has1 && has2) {
-                            can_merge = false;
-                            break;
-                        }
-                        if (has2) {
-                            n2++;
-                            for (size_t mid = c1 + 1; mid < c2; ++mid) {
-                                if (aln.sequences[t].codons[mid] >= 0) {
-                                    can_merge = false;
-                                    break;
-                                }
-                            }
-                            if (!can_merge) break;
-                        }
-                    }
-                    if (!can_merge || n2 == 0) continue;
-
-                    // Evaluate local window [w_lo, w_hi) before vs after merging c2 into c1
-                    size_t w_lo = (c1 >= 2) ? (c1 - 2) : 0;
-                    size_t w_hi = std::min(aln.num_codons, c2 + 3);
-                    Scalar score_before = eval_joint_tree_indel_lnl(aln, w_lo, w_hi);
-
-                    Alignment test_aln = aln;
-                    for (size_t t = 0; t < N; ++t) {
-                        if (test_aln.sequences[t].codons[c2] >= 0) {
-                            test_aln.sequences[t].codons[c1] = test_aln.sequences[t].codons[c2];
-                            test_aln.sequences[t].raw_seq.replace(3 * c1, 3, test_aln.sequences[t].raw_seq.substr(3 * c2, 3));
-                        }
-                        test_aln.sequences[t].codons.erase(test_aln.sequences[t].codons.begin() + static_cast<std::ptrdiff_t>(c2));
-                        test_aln.sequences[t].raw_seq.erase(3 * c2, 3);
-                    }
-                    test_aln.num_codons--;
-                    Scalar score_after = eval_joint_tree_indel_lnl(test_aln, w_lo, w_hi - 1);
-
-                    if (score_after > score_before) {
-                        for (size_t t = 0; t < N; ++t) {
-                            if (aln.sequences[t].codons[c2] >= 0) {
-                                aln.sequences[t].codons[c1] = aln.sequences[t].codons[c2];
-                                aln.sequences[t].raw_seq.replace(3 * c1, 3, aln.sequences[t].raw_seq.substr(3 * c2, 3));
-                            }
-                        }
-                        if (c1 < out_site_homology_posteriors.size() && c2 < out_site_homology_posteriors.size()) {
-                            Scalar w1 = static_cast<Scalar>(n1) / static_cast<Scalar>(n1 + n2);
-                            Scalar w2 = static_cast<Scalar>(n2) / static_cast<Scalar>(n1 + n2);
-                            out_site_homology_posteriors[c1] =
-                                w1 * out_site_homology_posteriors[c1] + w2 * out_site_homology_posteriors[c2];
-                        }
-                        erase_alignment_column(c2);
-                        compacted = true;
-                        break;
-                    }
-                }
-                if (compacted) break;
-            }
-            if (compacted) continue;
-
-            // 3. Collapse shifted motif blocks [c1 .. c2] where every taxon has at least k_gap gaps
-            // in the span [c1 .. c2] (e.g., Clade A has gaps at c1..c1+k-1 and codons at c1+k..c2,
-            // while Clade B has codons at c1..c2-k and gaps at c2-k+1..c2):
-            for (size_t span = 2; span <= 9 && !compacted; ++span) {
-                for (size_t c1 = 0; c1 + span <= aln.num_codons; ++c1) {
-                    size_t c2 = c1 + span - 1;
-                    // Find minimum number of gap codons across all taxa in [c1 .. c2]
-                    size_t min_gaps_in_span = span + 1;
-                    size_t max_codons_in_span = 0;
-                    for (size_t t = 0; t < N; ++t) {
-                        size_t g_cnt = 0;
-                        size_t m_cnt = 0;
-                        for (size_t c = c1; c <= c2; ++c) {
-                            if (aln.sequences[t].codons[c] < 0) g_cnt++;
-                            else m_cnt++;
-                        }
-                        min_gaps_in_span = std::min(min_gaps_in_span, g_cnt);
-                        max_codons_in_span = std::max(max_codons_in_span, m_cnt);
-                    }
-                    if (min_gaps_in_span == 0 || max_codons_in_span == 0) continue;
-
-                    // Every taxon has <= (span - min_gaps_in_span) codons in this span!
-                    // Try compacting [c1 .. c2] of length `span` into `new_span = span - min_gaps_in_span` columns
-                    // by preserving each taxon's relative order of codons (left-aligned or right-aligned if shorter):
-                    size_t new_span = span - min_gaps_in_span;
-                    size_t w_lo = (c1 >= 2) ? (c1 - 2) : 0;
-                    size_t w_hi = std::min(aln.num_codons, c2 + 3);
-                    Scalar score_before = eval_joint_tree_indel_lnl(aln, w_lo, w_hi);
-
-                    Alignment test_aln = aln;
-                    for (size_t t = 0; t < N; ++t) {
-                        std::vector<int8_t> sub_codons;
-                        std::vector<std::string> sub_trips;
-                        bool had_leading_gap = (aln.sequences[t].codons[c1] < 0);
-                        bool had_trailing_gap = (aln.sequences[t].codons[c2] < 0);
-                        for (size_t c = c1; c <= c2; ++c) {
-                            if (aln.sequences[t].codons[c] >= 0) {
-                                sub_codons.push_back(aln.sequences[t].codons[c]);
-                                sub_trips.push_back(aln.sequences[t].raw_seq.substr(3 * c, 3));
-                            }
-                        }
-                        std::vector<int8_t> packed_c(new_span, -1);
-                        std::string packed_raw(3 * new_span, '-');
-                        size_t offset = (had_leading_gap && !had_trailing_gap && sub_codons.size() < new_span)
-                                        ? (new_span - sub_codons.size()) : 0;
-                        for (size_t k = 0; k < sub_codons.size() && (offset + k) < new_span; ++k) {
-                            packed_c[offset + k] = sub_codons[k];
-                            packed_raw.replace(3 * (offset + k), 3, sub_trips[k]);
-                        }
-                        test_aln.sequences[t].codons.erase(
-                            test_aln.sequences[t].codons.begin() + static_cast<std::ptrdiff_t>(c1),
-                            test_aln.sequences[t].codons.begin() + static_cast<std::ptrdiff_t>(c2 + 1)
-                        );
-                        test_aln.sequences[t].codons.insert(
-                            test_aln.sequences[t].codons.begin() + static_cast<std::ptrdiff_t>(c1),
-                            packed_c.begin(), packed_c.end()
-                        );
-                        test_aln.sequences[t].raw_seq.replace(3 * c1, 3 * span, packed_raw);
-                    }
-                    test_aln.num_codons = test_aln.sequences[0].codons.size();
-
-                    // Re-run a quick 1-pass taxon transducer over [w_lo, w_hi - min_gaps_in_span) on test_aln
-                    // so any taxon with < new_span codons snaps to its exact highest-likelihood column!
-                    size_t new_w_hi = w_hi - min_gaps_in_span;
-                    size_t new_W = new_w_hi - w_lo;
-                    if (new_W >= 2) {
-                        std::vector<std::vector<Vector>> sub_cavity;
-                        compute_window_leaf_cavities(tree, test_aln, mg94, P_branches, w_lo, new_w_hi, sub_cavity, omega_ptr, conv);
-                        for (size_t t = 0; t < N; ++t) {
-                            auto tr = solve_codon_indel_transducer_for_taxon(
-                                test_aln.sequences[t], w_lo, new_w_hi, t, sub_cavity, settings
-                            );
-                            if (tr.changed) {
-                                for (size_t w = 0; w < new_W; ++w) {
-                                    test_aln.sequences[t].codons[w_lo + w] = tr.map_codons[w];
-                                }
-                                test_aln.sequences[t].raw_seq.replace(3 * w_lo, 3 * new_W, tr.map_raw_subseq);
-                            }
-                        }
-                    }
-
-                    Scalar score_after = eval_joint_tree_indel_lnl(test_aln, w_lo, new_w_hi);
-
-                    if (score_after > score_before) {
-                        aln = std::move(test_aln);
-                        if (c1 + min_gaps_in_span <= out_site_homology_posteriors.size()) {
-                            out_site_homology_posteriors.erase(
-                                out_site_homology_posteriors.begin() + static_cast<std::ptrdiff_t>(c1),
-                                out_site_homology_posteriors.begin() + static_cast<std::ptrdiff_t>(c1 + min_gaps_in_span)
-                            );
-                        }
-                        compacted = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (aln.num_codons >= 6) {
-            // Check N-terminal window [0 .. min(12, C)) for split terminal deletions
-            size_t n_end = std::min<size_t>(12, aln.num_codons);
-            Scalar cur_n_joint = eval_joint_tree_indel_lnl(aln, 0, n_end);
-            Alignment cand_n = aln;
-            bool any_n_cand = false;
-            for (size_t t = 0; t < N; ++t) {
-                // If taxon has gaps in [0 .. n_end), try flush-right packing (contiguous N-terminal deletion)
-                std::vector<int8_t> sub_c;
-                std::vector<std::string> sub_r;
-                for (size_t c = 0; c < n_end; ++c) {
-                    if (cand_n.sequences[t].codons[c] >= 0) {
-                        sub_c.push_back(cand_n.sequences[t].codons[c]);
-                        sub_r.push_back(cand_n.sequences[t].raw_seq.substr(3 * c, 3));
-                    }
-                }
-                bool has_n_gap = false;
-                for (size_t c = 0; c < std::min<size_t>(4, n_end); ++c) {
-                    if (cand_n.sequences[t].codons[c] < 0) has_n_gap = true;
-                }
-                if (sub_c.size() > 0 && sub_c.size() < n_end && has_n_gap) {
-                    size_t n_gaps = n_end - sub_c.size();
-                    std::vector<int8_t> packed_c(n_end, -1);
-                    std::string packed_r(3 * n_end, '-');
-                    for (size_t k = 0; k < sub_c.size(); ++k) {
-                        packed_c[n_gaps + k] = sub_c[k];
-                        packed_r.replace(3 * (n_gaps + k), 3, sub_r[k]);
-                    }
-                    if (!std::equal(packed_c.begin(), packed_c.end(), cand_n.sequences[t].codons.begin())) {
-                        for (size_t c = 0; c < n_end; ++c) cand_n.sequences[t].codons[c] = packed_c[c];
-                        cand_n.sequences[t].raw_seq.replace(0, 3 * n_end, packed_r);
-                        any_n_cand = true;
-                    }
-                }
-            }
-            if (any_n_cand) {
-                Scalar new_n_joint = eval_joint_tree_indel_lnl(cand_n, 0, n_end);
-                if (new_n_joint > cur_n_joint) {
-                    aln = std::move(cand_n);
-                }
-            }
-
-            // Check C-terminal window [C - min(8, C) .. C) for split terminal deletions
-            size_t c_start = aln.num_codons - std::min<size_t>(8, aln.num_codons);
-            size_t c_end = aln.num_codons;
-            Scalar cur_c_joint = eval_joint_tree_indel_lnl(aln, c_start, c_end);
-            Alignment cand_c = aln;
-            bool any_c_cand = false;
-            for (size_t t = 0; t < N; ++t) {
-                std::vector<int8_t> sub_c;
-                std::vector<std::string> sub_r;
-                for (size_t c = c_start; c < c_end; ++c) {
-                    if (cand_c.sequences[t].codons[c] >= 0) {
-                        sub_c.push_back(cand_c.sequences[t].codons[c]);
-                        sub_r.push_back(cand_c.sequences[t].raw_seq.substr(3 * c, 3));
-                    }
-                }
-                size_t w_len = c_end - c_start;
-                if (sub_c.size() > 0 && sub_c.size() < w_len) {
-                    std::vector<int8_t> packed_c(w_len, -1);
-                    std::string packed_r(3 * w_len, '-');
-                    for (size_t k = 0; k < sub_c.size(); ++k) {
-                        packed_c[k] = sub_c[k];
-                        packed_r.replace(3 * k, 3, sub_r[k]);
-                    }
-                    if (!std::equal(packed_c.begin(), packed_c.end(),
-                                    cand_c.sequences[t].codons.begin() + static_cast<std::ptrdiff_t>(c_start))) {
-                        for (size_t k = 0; k < w_len; ++k) cand_c.sequences[t].codons[c_start + k] = packed_c[k];
-                        cand_c.sequences[t].raw_seq.replace(3 * c_start, 3 * w_len, packed_r);
-                        any_c_cand = true;
-                    }
-                }
-            }
-            if (any_c_cand) {
-                Scalar new_c_joint = eval_joint_tree_indel_lnl(cand_c, c_start, c_end);
-                if (new_c_joint > cur_c_joint) {
-                    aln = std::move(cand_c);
-                }
             }
         }
 
@@ -1328,6 +1723,125 @@ public:
         size_t N = aln.num_taxa;
         int S = gcode.num_sense_codons;
 
+        // Calibrate empirical affine indel parameters on current alignment (matching Stage 1 Phase 3)
+        size_t C = aln.num_codons;
+        size_t cal_gap_runs = 0, cal_gap_ext = 0, cal_gap_codons = 0;
+        for (size_t t = 0; t < N; ++t) {
+            bool in_g = false;
+            for (size_t c = 0; c < C; ++c) {
+                bool g = is_gap_codon(aln.sequences[t], c);
+                if (g) {
+                    cal_gap_codons++;
+                    if (!in_g) { cal_gap_runs++; in_g = true; }
+                    else { cal_gap_ext++; }
+                } else {
+                    in_g = false;
+                }
+            }
+        }
+        Scalar total_tree_len = 0.0;
+        for (const auto& nd : tree.nodes) {
+            if (nd.id != tree.root_id && nd.parent_id != INVALID_INDEX) {
+                total_tree_len += std::max<Scalar>(0.005, nd.branch_length);
+            }
+        }
+        const Scalar emp_eps_ext = (cal_gap_runs + cal_gap_ext > 0)
+            ? std::clamp<Scalar>(static_cast<Scalar>(cal_gap_ext) / static_cast<Scalar>(cal_gap_runs + cal_gap_ext), 0.25, 0.92)
+            : 0.65;
+        const Scalar emp_lam_open = (C > 0 && total_tree_len > 1e-4)
+            ? std::clamp<Scalar>(static_cast<Scalar>(cal_gap_runs) / ( static_cast<Scalar>(C) * total_tree_len), 0.005, 0.25)
+            : 0.035;
+        const Scalar emp_pi_1 = std::clamp<Scalar>(
+            1.0 - static_cast<Scalar>(cal_gap_codons) / std::max<Scalar>(1.0, static_cast<Scalar>(N * C)),
+            0.55, 0.95
+        );
+        const Scalar emp_pi_0 = 1.0 - emp_pi_1;
+
+        auto eval_window_indel_lnl = [&](const Tree& t_cand, const Alignment& a_cand, const std::vector<size_t>& l2t, size_t w_start, size_t w_end) -> Scalar {
+            size_t m_start = (w_start > 0) ? (w_start - 1) : 0;
+            size_t m_end = std::min(a_cand.num_codons, w_end + 1);
+            size_t W_len = (m_end > m_start) ? (m_end - m_start) : 0;
+            if (W_len == 0) return 0.0;
+            size_t num_nodes = t_cand.num_nodes();
+
+            std::vector<Scalar> q_10(num_nodes, 0.0), q_01(num_nodes, 0.0);
+            std::vector<Scalar> p_00(num_nodes, 1.0), p_01(num_nodes, 0.0);
+            std::vector<Scalar> p_10(num_nodes, 0.0), p_11(num_nodes, 1.0);
+            std::vector<std::array<Scalar, 2>> d_in(num_nodes, {1.0, 1.0});
+            std::vector<std::array<Scalar, 2>> m_up(num_nodes, {1.0, 1.0});
+            std::vector<std::array<Scalar, 2>> v_out(num_nodes, {0.0, 0.0});
+
+            Scalar indel_ll = 0.0;
+            for (size_t w = 0; w < W_len; ++w) {
+                for (int32_t nid : t_cand.post_order) {
+                    if (nid == t_cand.root_id || t_cand.nodes[nid].parent_id == INVALID_INDEX) continue;
+                    Scalar tb = std::max<Scalar>(0.005, t_cand.nodes[nid].branch_length);
+                    Scalar p_open = 1.0 - std::exp(-emp_lam_open * tb);
+                    p_10[nid] = (1.0 - q_10[nid]) * (0.5 * p_open) + q_10[nid] * emp_eps_ext;
+                    p_01[nid] = (1.0 - q_01[nid]) * (0.5 * p_open) + q_01[nid] * emp_eps_ext;
+                    p_11[nid] = std::max<Scalar>(1e-12, 1.0 - p_10[nid]);
+                    p_00[nid] = std::max<Scalar>(1e-12, 1.0 - p_01[nid]);
+                }
+                for (int32_t nid : t_cand.post_order) {
+                    const auto& node = t_cand.nodes[nid];
+                    if (node.is_leaf) {
+                        int32_t tid = (nid < static_cast<int32_t>(l2t.size())) ? static_cast<int32_t>(l2t[nid]) : -1;
+                        bool present = (tid >= 0 && !is_gap_codon(a_cand.sequences[tid], m_start + w));
+                        d_in[nid][0] = present ? 0.0 : 1.0;
+                        d_in[nid][1] = present ? 1.0 : 0.0;
+                    } else {
+                        Scalar acc0 = 1.0, acc1 = 1.0;
+                        for (int32_t cid : node.children) {
+                            m_up[cid][0] = p_00[cid] * d_in[cid][0] + p_01[cid] * d_in[cid][1];
+                            m_up[cid][1] = p_10[cid] * d_in[cid][0] + p_11[cid] * d_in[cid][1];
+                            acc0 *= m_up[cid][0];
+                            acc1 *= m_up[cid][1];
+                        }
+                        d_in[nid][0] = acc0;
+                        d_in[nid][1] = acc1;
+                    }
+                }
+                Scalar L_col = emp_pi_0 * d_in[t_cand.root_id][0] + emp_pi_1 * d_in[t_cand.root_id][1];
+                indel_ll += std::log(std::max<Scalar>(1e-300, L_col));
+
+                v_out[t_cand.root_id][0] = emp_pi_0;
+                v_out[t_cand.root_id][1] = emp_pi_1;
+                for (auto it = t_cand.post_order.rbegin(); it != t_cand.post_order.rend(); ++it) {
+                    int32_t uid = *it;
+                    const auto& node = t_cand.nodes[uid];
+                    if (node.is_leaf) continue;
+                    size_t k_ch = node.children.size();
+                    for (size_t i = 0; i < k_ch; ++i) {
+                        int32_t cid = node.children[i];
+                        Scalar v_sib0 = v_out[uid][0], v_sib1 = v_out[uid][1];
+                        for (size_t j = 0; j < k_ch; ++j) {
+                            if (i != j) {
+                                int32_t sj = node.children[j];
+                                v_sib0 *= m_up[sj][0];
+                                v_sib1 *= m_up[sj][1];
+                            }
+                        }
+                        v_out[cid][0] = v_sib0 * p_00[cid] + v_sib1 * p_10[cid];
+                        v_out[cid][1] = v_sib0 * p_01[cid] + v_sib1 * p_11[cid];
+
+                        Scalar w00 = v_sib0 * p_00[cid] * d_in[cid][0];
+                        Scalar w01 = v_sib0 * p_01[cid] * d_in[cid][1];
+                        Scalar w10 = v_sib1 * p_10[cid] * d_in[cid][0];
+                        Scalar w11 = v_sib1 * p_11[cid] * d_in[cid][1];
+                        Scalar w_sum = w00 + w01 + w10 + w11;
+                        if (w_sum > 1e-300) {
+                            q_01[cid] = w01 / w_sum;
+                            q_10[cid] = w10 / w_sum;
+                        } else {
+                            q_01[cid] = 0.0;
+                            q_10[cid] = 0.0;
+                        }
+                    }
+                }
+            }
+            return indel_ll;
+        };
+
         auto eval_total_mg94_lnl = [&](const Tree& t_cand, const Alignment& a_cand) -> Scalar {
             std::vector<Matrix> P_br(t_cand.num_nodes());
             for (const auto& nd : t_cand.nodes) {
@@ -1343,6 +1857,9 @@ public:
                 total += static_cast<Scalar>(pat.weight) * FELAnalyzer::compute_pattern_log_likelihood(
                     t_cand, pat, l2t, mg94, P_br, node_L, node_scale
                 );
+            }
+            for (const auto& w_sum : windows) {
+                total += eval_window_indel_lnl(t_cand, a_cand, l2t, w_sum.window.start_codon, w_sum.window.end_codon);
             }
             return total;
         };
@@ -1448,21 +1965,22 @@ public:
                 }
                 TreeEngine::optimize_branches_gtr(cand_tree, nuc_aln, gtr, 3, 1e-2, &local_brs);
 
-                // Score pure substitution change first
+                // Score uncoupled topological change (including indel likelihood on current alignment)
                 Scalar sub_only_ll = eval_total_mg94_lnl(cand_tree, aln);
                 Scalar delta_sub = sub_only_ll - current_mg94_ll;
 
-                // If the move is within striking distance (delta_sub > -8.0), run coupled boundary realignment
+                // If the move is within striking distance (delta_sub > -15.0), run coupled boundary realignment
                 // on the moved clade leaves_u under the new topology cand_tree!
-                if (delta_sub > -8.0) {
+                if (delta_sub > -15.0) {
                     Alignment cand_aln = aln;
                     size_t clade_realigned = 0;
 
                     if (!windows.empty()) {
+                        EmpiricalTwoStratumModel two_stratum = EmpiricalTwoStratumModel::from_alignment(cand_aln);
                         std::vector<Matrix> P_br(cand_tree.num_nodes());
                         for (const auto& nd : cand_tree.nodes) {
                             if (nd.id != cand_tree.root_id && nd.parent_id != INVALID_INDEX) {
-                                P_br[nd.id] = mg94.transition_matrix(nd.branch_length * conv);
+                                P_br[nd.id] = two_stratum.transition_matrix(nd.branch_length);
                             }
                         }
 
@@ -1472,7 +1990,7 @@ public:
                             size_t W = w_end - w_start;
 
                             std::vector<std::vector<Vector>> cav;
-                            compute_window_leaf_cavities(cand_tree, cand_aln, mg94, P_br, w_start, w_end, cav, &Omega, conv);
+                            compute_window_leaf_cavities(cand_tree, cand_aln, mg94, P_br, w_start, w_end, cav, &Omega, conv, &two_stratum);
 
                             for (size_t tid : leaves_u) {
                                 auto tr = solve_codon_indel_transducer_for_taxon(
@@ -1489,59 +2007,11 @@ public:
                         }
                     }
 
+                    Alignment cand_nuc_aln;
                     if (clade_realigned > 0) {
-                        // Keep N- and C-terminal deletions contiguous flush against the alignment termini
-                        size_t C_cand = cand_aln.num_codons;
-                        if (C_cand >= 6) {
-                            size_t n_end = std::min<size_t>(12, C_cand);
-                            size_t c_start = C_cand - std::min<size_t>(8, C_cand);
-                            size_t w_len = C_cand - c_start;
-                            for (size_t tid : leaves_u) {
-                                bool has_n_gap = false;
-                                for (size_t c = 0; c < std::min<size_t>(4, n_end); ++c) {
-                                    if (cand_aln.sequences[tid].codons[c] < 0) has_n_gap = true;
-                                }
-                                if (has_n_gap) {
-                                    std::vector<int8_t> sc;
-                                    std::vector<std::string> sr;
-                                    for (size_t c = 0; c < n_end; ++c) {
-                                        if (cand_aln.sequences[tid].codons[c] >= 0) {
-                                            sc.push_back(cand_aln.sequences[tid].codons[c]);
-                                            sr.push_back(cand_aln.sequences[tid].raw_seq.substr(3 * c, 3));
-                                        }
-                                    }
-                                    if (sc.size() > 0 && sc.size() < n_end) {
-                                        size_t ng = n_end - sc.size();
-                                        for (size_t c = 0; c < n_end; ++c) cand_aln.sequences[tid].codons[c] = -1;
-                                        cand_aln.sequences[tid].raw_seq.replace(0, 3 * n_end, std::string(3 * n_end, '-'));
-                                        for (size_t k = 0; k < sc.size(); ++k) {
-                                            cand_aln.sequences[tid].codons[ng + k] = sc[k];
-                                            cand_aln.sequences[tid].raw_seq.replace(3 * (ng + k), 3, sr[k]);
-                                        }
-                                    }
-                                }
-                                if (cand_aln.sequences[tid].codons[C_cand - 1] < 0) {
-                                    std::vector<int8_t> sc;
-                                    std::vector<std::string> sr;
-                                    for (size_t c = c_start; c < C_cand; ++c) {
-                                        if (cand_aln.sequences[tid].codons[c] >= 0) {
-                                            sc.push_back(cand_aln.sequences[tid].codons[c]);
-                                            sr.push_back(cand_aln.sequences[tid].raw_seq.substr(3 * c, 3));
-                                        }
-                                    }
-                                    if (sc.size() > 0 && sc.size() < w_len) {
-                                        for (size_t k = 0; k < w_len; ++k) cand_aln.sequences[tid].codons[c_start + k] = -1;
-                                        cand_aln.sequences[tid].raw_seq.replace(3 * c_start, 3 * w_len, std::string(3 * w_len, '-'));
-                                        for (size_t k = 0; k < sc.size(); ++k) {
-                                            cand_aln.sequences[tid].codons[c_start + k] = sc[k];
-                                            cand_aln.sequences[tid].raw_seq.replace(3 * (c_start + k), 3, sr[k]);
-                                        }
-                                    }
-                                }
-                            }
-                        }
                         cand_aln.finalize(cand_aln.code);
-                        nuc_aln = cand_aln.to_nucleotide_alignment();
+                        cand_nuc_aln = cand_aln.to_nucleotide_alignment();
+                        TreeEngine::optimize_branches_gtr(cand_tree, cand_nuc_aln, gtr, 3, 1e-2, &local_brs);
                     }
 
                     Scalar joint_ll = (clade_realigned > 0) ? eval_total_mg94_lnl(cand_tree, cand_aln) : sub_only_ll;
@@ -1552,6 +2022,7 @@ public:
                         tree = std::move(cand_tree);
                         if (clade_realigned > 0) {
                             aln = std::move(cand_aln);
+                            nuc_aln = std::move(cand_nuc_aln);
                         }
                         node_leaves = compute_node_leaves();
                         CoupledMoveEvent ev;
@@ -1596,13 +2067,26 @@ public:
         fel_s.p_value_threshold = settings.p_value_threshold;
         fel_s.full_model = false;
 
-        // 1. Run standard FEL on the rigid input alignment
-        FELAnalyzer fel_rigid(tree, initial_aln, mg_params, fel_s);
-        fel_rigid.run();
-
-        // 2. Run FEL on the Stage 1+2 MAP realigned alignment
+        // 1. Run FEL on the Stage 1+2 MAP realigned alignment
         FELAnalyzer fel_map(tree, map_aln, mg_params, fel_s);
         fel_map.run();
+
+        // 2. Only run a separate FEL pass on initial_aln if Stage 1+2 modified at least one sequence
+        bool any_seq_changed = (initial_aln.num_codons != map_aln.num_codons);
+        if (!any_seq_changed) {
+            for (size_t t = 0; t < N; ++t) {
+                if (initial_aln.sequences[t].codons != map_aln.sequences[t].codons) {
+                    any_seq_changed = true;
+                    break;
+                }
+            }
+        }
+        std::optional<FELAnalyzer> fel_rigid_opt;
+        if (any_seq_changed && initial_aln.num_codons == map_aln.num_codons) {
+            fel_rigid_opt.emplace(tree, initial_aln, mg_params, fel_s);
+            fel_rigid_opt->run();
+        }
+        const auto& rigid_site_results = fel_rigid_opt.has_value() ? fel_rigid_opt->site_results : fel_map.site_results;
 
         // Map each site to its indel window (if any)
         std::vector<int> site_to_win(C, -1);
@@ -1630,7 +2114,7 @@ public:
             }
             r.gap_fraction = static_cast<Scalar>(gaps) / static_cast<Scalar>(N);
 
-            const auto& sr_rigid = fel_rigid.site_results[c];
+            const auto& sr_rigid = rigid_site_results[c];
             const auto& sr_map = fel_map.site_results[c];
 
             r.rigid_alpha = sr_rigid.alpha;
@@ -1960,29 +2444,268 @@ public:
     // =========================================================================
     JointAlignResult run(const Alignment& input_aln, std::optional<Tree> starting_tree = std::nullopt) {
         auto t0 = std::chrono::steady_clock::now();
+        if (input_aln.num_taxa < 3) {
+            throw std::runtime_error(
+                "Gate 1 (Input Size Gate): Phylogenetic selection analysis requires at least 3 homologous coding sequences (received " +
+                std::to_string(input_aln.num_taxa) + ")."
+            );
+        }
+        {
+            std::unordered_set<std::string> seen_names;
+            for (const auto& sq : input_aln.sequences) {
+                if (!seen_names.insert(sq.name).second) {
+                    throw std::runtime_error(
+                        "Gate 1 (Duplicate Taxon Identifier): Input alignment contains duplicate sequence identifier '" +
+                        sq.name + "'. Every sequence must have a unique taxon name."
+                    );
+                }
+            }
+        }
+
         JointAlignResult res;
         res.initial_alignment = input_aln;
         res.map_alignment = input_aln;
+
+        const auto& gcode_adm = *(input_aln.code ? input_aln.code : GeneticCode::universal());
+        auto is_raw_stop_triplet = [&](const std::string& raw, size_t c) -> bool {
+            if (3 * c + 2 >= raw.size()) return false;
+            char c1 = raw[3 * c], c2 = raw[3 * c + 1], c3 = raw[3 * c + 2];
+            if (c1 == '-' || c2 == '-' || c3 == '-' || c1 == 'N' || c2 == 'N' || c3 == 'N' ||
+                c1 == '?' || c2 == '?' || c3 == '?') {
+                return false;
+            }
+            return gcode_adm.is_stop_triplet(c1, c2, c3);
+        };
+
+        // Check if aligned input has a native stop column in the trailing 15% followed by 3' UTR codons (E2)
+        size_t utr_trim_col = res.map_alignment.num_codons;
+        if (res.map_alignment.num_codons >= 50) {
+            size_t tail_start = std::max<size_t>(40, (res.map_alignment.num_codons * 85) / 100);
+            for (size_t c = tail_start; c < res.map_alignment.num_codons; ++c) {
+                size_t stop_taxa = 0, non_gap_taxa = 0;
+                for (size_t t = 0; t < res.map_alignment.num_taxa; ++t) {
+                    if (3 * c + 2 < res.map_alignment.sequences[t].raw_seq.size()) {
+                        std::string trip = res.map_alignment.sequences[t].raw_seq.substr(3 * c, 3);
+                        if (trip != "---" && trip != "NNN" && trip != "???") {
+                            non_gap_taxa++;
+                            if (is_raw_stop_triplet(res.map_alignment.sequences[t].raw_seq, c)) stop_taxa++;
+                        }
+                    }
+                }
+                if (non_gap_taxa >= 3 && stop_taxa * 4 >= non_gap_taxa) {
+                    utr_trim_col = c;
+                    break;
+                }
+            }
+            if (utr_trim_col < res.map_alignment.num_codons) {
+                auto trim_aln_to = [&](Alignment& a, size_t new_c) {
+                    for (auto& sq : a.sequences) {
+                        if (sq.codons.size() > new_c) sq.codons.resize(new_c);
+                        if (sq.codon_masks.size() > new_c) sq.codon_masks.resize(new_c);
+                        if (sq.raw_seq.size() > 3 * new_c) sq.raw_seq.resize(3 * new_c);
+                    }
+                    a.num_codons = new_c;
+                    a.finalize(a.code);
+                };
+                trim_aln_to(res.initial_alignment, utr_trim_col);
+                trim_aln_to(res.map_alignment, utr_trim_col);
+            }
+        }
+
+        // Populate admission audit summary and enforce Gate 2 reading-frame check for aligned inputs
+        const Alignment& cur_aln = res.map_alignment;
+        res.admission_report.total_input_sequences = cur_aln.num_taxa;
+        res.admission_report.admitted_sequences = cur_aln.num_taxa;
+        res.admission_report.entries.resize(cur_aln.num_taxa);
+        size_t aligned_stop_failures = 0;
+        for (size_t t = 0; t < cur_aln.num_taxa; ++t) {
+            auto& ent = res.admission_report.entries[t];
+            ent.name = cur_aln.sequences[t].name;
+            ent.raw_nt_length = input_aln.sequences[t].raw_seq.size();
+            size_t valid_cods = 0, stops = 0;
+            for (size_t c = 0; c < cur_aln.num_codons; ++c) {
+                int8_t sc = cur_aln.sequences[t].codons[c];
+                if (sc >= 0) valid_cods++;
+                else if (c + 1 < cur_aln.num_codons && is_raw_stop_triplet(cur_aln.sequences[t].raw_seq, c)) {
+                    stops++;
+                }
+            }
+            ent.codon_length = valid_cods;
+            ent.internal_stops_frame0 = stops;
+            if (stops > 0) {
+                aligned_stop_failures++;
+                ent.reason = "Aligned sequence (" + std::to_string(stops) + " internal stop(s) masked)";
+            } else if (utr_trim_col < input_aln.num_codons) {
+                ent.reason = "Aligned in-frame CDS (3' UTR trimmed at codon " + std::to_string(utr_trim_col + 1) + ")";
+            } else if (cur_aln.num_codons > 0 && valid_cods * 2 < cur_aln.num_codons) {
+                ent.reason = "Partial coverage (" + std::to_string(valid_cods) + "/" + std::to_string(cur_aln.num_codons) + " codons)";
+            } else {
+                ent.reason = "Clean in-frame CDS";
+            }
+        }
+
+        if (settings.enforce_admission_control &&
+            (cur_aln.num_taxa - aligned_stop_failures < 3 ||
+             static_cast<double>(aligned_stop_failures) / static_cast<double>(cur_aln.num_taxa) > 0.25)) {
+            std::string code_hint;
+            const std::vector<std::string> alt_codes = {
+                "Vertebrate-mtDNA", "Invertebrate-mtDNA", "Yeast-mtDNA", "Mold-Protozoan-mtDNA",
+                "Ciliate-Nuclear", "Euplotid-Nuclear", "Echinoderm-mtDNA", "Ascidian-mtDNA",
+                "Flatworm-mtDNA", "Blepharisma-Nuclear", "Chlorophycean-mtDNA", "Trematode-mtDNA"
+            };
+            size_t best_clean = cur_aln.num_taxa - aligned_stop_failures;
+            std::string best_code_name;
+            for (const auto& cname : alt_codes) {
+                auto alt_gc = GeneticCode::from_name(cname);
+                if (!alt_gc) continue;
+                size_t clean_cnt = 0;
+                for (size_t t = 0; t < cur_aln.num_taxa; ++t) {
+                    bool has_st = false;
+                    for (size_t c = 0; c + 1 < cur_aln.num_codons; ++c) {
+                        if (3 * c + 2 >= cur_aln.sequences[t].raw_seq.size()) continue;
+                        char c1 = cur_aln.sequences[t].raw_seq[3 * c];
+                        char c2 = cur_aln.sequences[t].raw_seq[3 * c + 1];
+                        char c3 = cur_aln.sequences[t].raw_seq[3 * c + 2];
+                        if (c1 == '-' || c2 == '-' || c3 == '-' || c1 == 'N' || c2 == 'N' || c3 == 'N') continue;
+                        if (alt_gc->is_stop_triplet(c1, c2, c3)) { has_st = true; break; }
+                    }
+                    if (!has_st) clean_cnt++;
+                }
+                if (clean_cnt > best_clean && clean_cnt >= 3 &&
+                    static_cast<double>(cur_aln.num_taxa - clean_cnt) / static_cast<double>(cur_aln.num_taxa) <= 0.25) {
+                    best_clean = clean_cnt;
+                    best_code_name = cname;
+                }
+            }
+            if (!best_code_name.empty()) {
+                code_hint = " Hint: Re-running with '--code " + best_code_name + "' resolves internal stop codons in " +
+                            std::to_string(best_clean) + "/" + std::to_string(cur_aln.num_taxa) + " sequences.";
+            } else {
+                code_hint = " Hint: If sequences are out-of-frame or unaligned, re-run with '-u' (--unaligned) for automatic reading-frame rescue.";
+            }
+            std::ostringstream err;
+            err << "Gate 2 (Aligned Reading-Frame & Stop-Codon Gate): " << aligned_stop_failures << " of " << cur_aln.num_taxa
+                << " aligned sequences (" << std::fixed << std::setprecision(1)
+                << (100.0 * static_cast<double>(aligned_stop_failures) / static_cast<double>(cur_aln.num_taxa))
+                << "%) contain internal premature stop codons in frame +0." << code_hint;
+            throw std::runtime_error(err.str());
+        }
+
+        // Compute pairwise amino-acid identity and homology Z-scores across the aligned cohort for the audit report
+        {
+            std::vector<Scalar> pair_ids, pair_zs;
+            for (size_t i = 0; i < cur_aln.num_taxa; ++i) {
+                Scalar max_id = 0.0, max_z = 0.0;
+                for (size_t j = 0; j < cur_aln.num_taxa; ++j) {
+                    if (i == j) continue;
+                    size_t shared = 0, same_aa = 0;
+                    for (size_t c = 0; c < cur_aln.num_codons; ++c) {
+                        int8_t ci = cur_aln.sequences[i].codons[c];
+                        int8_t cj = cur_aln.sequences[j].codons[c];
+                        if (ci >= 0 && cj >= 0) {
+                            shared++;
+                            if (gcode_adm.sense_codon_aa[ci] == gcode_adm.sense_codon_aa[cj]) same_aa++;
+                        }
+                    }
+                    if (shared > 0) {
+                        Scalar id_ij = static_cast<Scalar>(same_aa) / static_cast<Scalar>(shared);
+                        Scalar p0 = 0.06;
+                        Scalar sd0 = std::sqrt(p0 * (1.0 - p0) / static_cast<Scalar>(shared));
+                        Scalar z_ij = (id_ij - p0) / std::max<Scalar>(1e-4, sd0);
+                        max_id = std::max(max_id, id_ij);
+                        max_z = std::max(max_z, z_ij);
+                        if (j > i) {
+                            pair_ids.push_back(id_ij);
+                            pair_zs.push_back(z_ij);
+                        }
+                    }
+                }
+                res.admission_report.entries[i].max_aa_identity = max_id;
+                res.admission_report.entries[i].max_homology_z = max_z;
+            }
+            if (!pair_ids.empty()) {
+                std::sort(pair_ids.begin(), pair_ids.end());
+                std::sort(pair_zs.begin(), pair_zs.end());
+                res.admission_report.median_aa_identity = pair_ids[pair_ids.size() / 2];
+                res.admission_report.median_pairwise_z = pair_zs[pair_zs.size() / 2];
+            }
+        }
 
         // 0. Build or optimize initial tree via Ohmic TreeEngine if not provided
         if (!settings.quiet) {
             Panel::print_step(
                 1, settings.run_marginalized_fel ? 5 : 4,
                 "Initial Phylogeny & Global Codon MG94 Fit",
-                std::to_string(input_aln.num_taxa) + " taxa × " + std::to_string(input_aln.num_codons) + " codons"
+                std::to_string(res.map_alignment.num_taxa) + " taxa × " + std::to_string(res.map_alignment.num_codons) + " codons"
             );
         }
+        bool user_supplied_tree = false;
         if (starting_tree.has_value()) {
             res.initial_tree = *starting_tree;
+            user_supplied_tree = true;
         } else if (!input_aln.embedded_tree_newick.empty()) {
             res.initial_tree = Tree::from_newick(input_aln.embedded_tree_newick);
+            user_supplied_tree = true;
         } else {
             TreeEngineSettings tes;
             tes.quiet = true;
+            if (res.map_alignment.num_taxa > settings.subquadratic_taxon_threshold) {
+                tes.perform_spr = false;
+                tes.perform_topological_gradients = false;
+                tes.lbfgs_max_iterations = 15;
+            }
             TreeEngine te(tes);
-            auto te_res = te.run(input_aln);
+            auto te_res = te.run(res.map_alignment);
             res.initial_tree = te_res.optimized_tree;
         }
+
+        // Sanitize numeric support values on internal nodes (e.g. FastTree "0.776") so branch names are unambiguous (E19)
+        for (auto& nd : res.initial_tree.nodes) {
+            if (!nd.is_leaf && !nd.name.empty()) {
+                bool is_numeric = true;
+                for (char ch : nd.name) {
+                    if (!std::isdigit(static_cast<unsigned char>(ch)) && ch != '.' && ch != '-' && ch != '+') {
+                        is_numeric = false;
+                        break;
+                    }
+                }
+                if (is_numeric) {
+                    nd.name = "Node_" + std::to_string(nd.id);
+                }
+            }
+        }
+
+        // Validate leaf correspondence when a tree was explicitly supplied or embedded (T1-08 / T5-10)
+        if (user_supplied_tree) {
+            std::vector<std::string> unmatched_leaves;
+            std::vector<bool> taxon_matched(res.initial_alignment.num_taxa, false);
+            for (const auto& nd : res.initial_tree.nodes) {
+                if (!nd.is_leaf) continue;
+                size_t tid = LikelihoodEngine::find_taxon_index(res.initial_alignment, nd.name);
+                if (tid == static_cast<size_t>(INVALID_INDEX) || tid >= res.initial_alignment.num_taxa) {
+                    unmatched_leaves.push_back(nd.name);
+                } else {
+                    taxon_matched[tid] = true;
+                }
+            }
+            std::vector<std::string> missing_taxa;
+            for (size_t t = 0; t < res.initial_alignment.num_taxa; ++t) {
+                if (!taxon_matched[t]) missing_taxa.push_back(res.initial_alignment.sequences[t].name);
+            }
+            if (!unmatched_leaves.empty() || !missing_taxa.empty()) {
+                std::ostringstream err;
+                err << "Gate 1 (Tree-Alignment Taxon Mismatch): Supplied phylogenetic tree does not match alignment taxa.";
+                if (!unmatched_leaves.empty()) {
+                    err << " Tree leaves absent from alignment (" << unmatched_leaves.size() << "): " << unmatched_leaves[0];
+                }
+                if (!missing_taxa.empty()) {
+                    err << " Alignment taxa absent from tree (" << missing_taxa.size() << "): " << missing_taxa[0];
+                }
+                throw std::runtime_error(err.str());
+            }
+        }
+
+        LikelihoodEngine::reconcile_tree_leaf_names(res.initial_tree, res.initial_alignment);
 
         // Fit global GTR + MG94 parameters on initial alignment and tree
         GTRFitter gtr_fitter(res.initial_tree, res.initial_alignment);
@@ -2181,6 +2904,7 @@ public:
 
             res.map_alignment.site_homology_posteriors = res.site_homology_posteriors;
             res.map_alignment.poa_gfa = res.poa_gfa;
+            res.window_taxon_results = std::move(window_taxon_results);
 
             if (!settings.quiet) {
                 Scalar mean_pp = 1.0, min_pp = 1.0;
@@ -2233,6 +2957,224 @@ public:
         return raw;
     }
 
+    // =========================================================================
+    // Subquadratic O(N L) Dayhoff-6 & Amino-Acid k-mer Bit-Sketch Preprocessing
+    // and Farthest-Point Landmark + k-NN Graph Construction for Large Alignments
+    // =========================================================================
+    struct LandmarkKmerGraph {
+        size_t num_taxa = 0;
+        size_t num_landmarks = 0;
+        std::vector<size_t> landmarks;                  // K landmark indices in [0, N)
+        std::vector<bool> is_landmark;                  // size N
+        std::vector<std::array<Scalar, 20>> aa_freqs;   // size N: amino-acid composition vector f_u(A)
+        std::vector<std::vector<size_t>> sparse_adj;    // size N: sorted neighbor indices v > u in E_sparse
+
+        static int aa_to_index20(char aa) {
+            switch (aa) {
+                case 'A': return 0;  case 'R': return 1;  case 'N': return 2;  case 'D': return 3;
+                case 'C': return 4;  case 'Q': return 5;  case 'E': return 6;  case 'G': return 7;
+                case 'H': return 8;  case 'I': return 9;  case 'L': return 10; case 'K': return 11;
+                case 'M': return 12; case 'F': return 13; case 'P': return 14; case 'S': return 15;
+                case 'T': return 16; case 'W': return 17; case 'Y': return 18; case 'V': return 19;
+                default:  return -1;
+            }
+        }
+
+        static int aa_to_dayhoff6(char aa) {
+            switch (aa) {
+                case 'A': case 'G': case 'P': case 'S': case 'T': return 0;
+                case 'D': case 'E': case 'N': case 'Q':           return 1;
+                case 'H': case 'K': case 'R':                     return 2;
+                case 'I': case 'L': case 'M': case 'V':           return 3;
+                case 'F': case 'W': case 'Y':                     return 4;
+                case 'C':                                         return 5;
+                default:                                          return -1;
+            }
+        }
+
+        static Scalar sketch_jaccard(
+            const std::array<uint64_t, 128>& a,
+            const std::array<uint64_t, 128>& b
+        ) {
+            size_t inter = 0, uni = 0;
+            for (size_t w = 0; w < 128; ++w) {
+                inter += static_cast<size_t>(__builtin_popcountll(a[w] & b[w]));
+                uni   += static_cast<size_t>(__builtin_popcountll(a[w] | b[w]));
+            }
+            return (uni > 0) ? (static_cast<Scalar>(inter) / static_cast<Scalar>(uni)) : 0.0;
+        }
+
+        Scalar expected_aa_identity(size_t u, size_t v) const {
+            Scalar dot = 0.0;
+            for (int a = 0; a < 20; ++a) {
+                dot += aa_freqs[u][a] * aa_freqs[v][a];
+            }
+            return std::clamp<Scalar>(dot, 0.04, 0.25);
+        }
+
+        static LandmarkKmerGraph build(
+            const std::vector<std::vector<int8_t>>& taxon_codons,
+            const GeneticCode& gcode,
+            size_t knn_degree = 8
+        ) {
+            LandmarkKmerGraph g;
+            size_t N = taxon_codons.size();
+            g.num_taxa = N;
+            g.is_landmark.assign(N, false);
+            g.aa_freqs.resize(N);
+            g.sparse_adj.resize(N);
+            if (N == 0) return g;
+
+            std::vector<std::array<uint64_t, 128>> sketches(N);
+            std::vector<size_t> lengths(N, 0);
+            for (size_t u = 0; u < N; ++u) {
+                sketches[u].fill(0ULL);
+                g.aa_freqs[u].fill(0.0);
+                const auto& seq = taxon_codons[u];
+                lengths[u] = seq.size();
+                std::vector<int> aa_idx;
+                std::vector<int> d6_idx;
+                aa_idx.reserve(seq.size());
+                d6_idx.reserve(seq.size());
+                size_t valid_aa = 0;
+                for (int8_t c : seq) {
+                    if (c >= 0 && c < gcode.num_sense_codons) {
+                        char aa = gcode.sense_codon_aa[c];
+                        int ai = aa_to_index20(aa);
+                        int di = aa_to_dayhoff6(aa);
+                        aa_idx.push_back(ai);
+                        d6_idx.push_back(di);
+                        if (ai >= 0) {
+                            g.aa_freqs[u][static_cast<size_t>(ai)] += 1.0;
+                            valid_aa++;
+                        }
+                    } else {
+                        aa_idx.push_back(-1);
+                        d6_idx.push_back(-1);
+                    }
+                }
+                if (valid_aa > 0) {
+                    for (int a = 0; a < 20; ++a) {
+                        g.aa_freqs[u][static_cast<size_t>(a)] /= static_cast<Scalar>(valid_aa);
+                    }
+                } else {
+                    g.aa_freqs[u].fill(0.05);
+                }
+
+                // Words 0..63: exact AA 3-mer bits
+                for (size_t i = 0; i + 2 < aa_idx.size(); ++i) {
+                    if (aa_idx[i] >= 0 && aa_idx[i + 1] >= 0 && aa_idx[i + 2] >= 0) {
+                        uint32_t code = static_cast<uint32_t>(aa_idx[i] * 400 + aa_idx[i + 1] * 20 + aa_idx[i + 2]);
+                        uint32_t h = (code * 2654435761u) >> 20; // 0..4095
+                        sketches[u][h >> 6] |= (1ULL << (h & 63));
+                    }
+                }
+                // Words 64..127: Dayhoff-6 physicochemical 5-mer bits
+                for (size_t i = 0; i + 4 < d6_idx.size(); ++i) {
+                    if (d6_idx[i] >= 0 && d6_idx[i + 1] >= 0 && d6_idx[i + 2] >= 0 &&
+                        d6_idx[i + 3] >= 0 && d6_idx[i + 4] >= 0) {
+                        uint32_t code = static_cast<uint32_t>(
+                            d6_idx[i] * 1296 + d6_idx[i + 1] * 216 + d6_idx[i + 2] * 36 + d6_idx[i + 3] * 6 + d6_idx[i + 4]
+                        );
+                        uint32_t h = (code * 2654435761u) >> 20; // 0..4095
+                        sketches[u][64 + (h >> 6)] |= (1ULL << (h & 63));
+                    }
+                }
+            }
+
+            // Select K = min(N, max(32, 2 * ceil(sqrt(N)))) landmarks via farthest-point traversal
+            size_t K = std::min<size_t>(N, std::max<size_t>(32, 2 * static_cast<size_t>(std::ceil(std::sqrt(static_cast<double>(N))))));
+            std::vector<size_t> sorted_lens = lengths;
+            std::sort(sorted_lens.begin(), sorted_lens.end());
+            size_t med_len = sorted_lens[N / 2];
+
+            size_t first_lm = 0;
+            size_t best_len_diff = std::numeric_limits<size_t>::max();
+            for (size_t u = 0; u < N; ++u) {
+                size_t diff = (lengths[u] >= med_len) ? (lengths[u] - med_len) : (med_len - lengths[u]);
+                if (diff < best_len_diff) {
+                    best_len_diff = diff;
+                    first_lm = u;
+                }
+            }
+
+            g.landmarks.push_back(first_lm);
+            g.is_landmark[first_lm] = true;
+            std::vector<Scalar> max_sim_to_lm(N, 0.0);
+            for (size_t u = 0; u < N; ++u) {
+                max_sim_to_lm[u] = sketch_jaccard(sketches[u], sketches[first_lm]);
+            }
+
+            while (g.landmarks.size() < K) {
+                size_t next_lm = N;
+                Scalar min_max_sim = 2.0;
+                for (size_t u = 0; u < N; ++u) {
+                    if (g.is_landmark[u] || lengths[u] == 0) continue;
+                    if (max_sim_to_lm[u] < min_max_sim) {
+                        min_max_sim = max_sim_to_lm[u];
+                        next_lm = u;
+                    }
+                }
+                if (next_lm >= N) break;
+                g.landmarks.push_back(next_lm);
+                g.is_landmark[next_lm] = true;
+                for (size_t u = 0; u < N; ++u) {
+                    if (!g.is_landmark[u]) {
+                        max_sim_to_lm[u] = std::max(max_sim_to_lm[u], sketch_jaccard(sketches[u], sketches[next_lm]));
+                    }
+                }
+            }
+            g.num_landmarks = g.landmarks.size();
+
+            // Build symmetric sparse adjacency list (all taxon-landmark edges + top knn_degree k-mer neighbors per taxon)
+            std::vector<std::vector<size_t>> knn_lists(N);
+            #pragma omp parallel for schedule(static)
+            for (size_t u = 0; u < N; ++u) {
+                std::vector<std::pair<Scalar, size_t>> cand;
+                cand.reserve(N);
+                for (size_t v = 0; v < N; ++v) {
+                    if (u == v) continue;
+                    cand.push_back({sketch_jaccard(sketches[u], sketches[v]), v});
+                }
+                size_t k_take = std::min(knn_degree, cand.size());
+                std::partial_sort(cand.begin(), cand.begin() + static_cast<ptrdiff_t>(k_take), cand.end(),
+                    [](const auto& a, const auto& b) {
+                        if (a.first != b.first) return a.first > b.first;
+                        return a.second < b.second;
+                    });
+                knn_lists[u].reserve(k_take);
+                for (size_t k = 0; k < k_take; ++k) {
+                    knn_lists[u].push_back(cand[k].second);
+                }
+            }
+
+            for (size_t u = 0; u < N; ++u) {
+                if (g.is_landmark[u]) {
+                    for (size_t v = u + 1; v < N; ++v) {
+                        g.sparse_adj[u].push_back(v);
+                    }
+                } else {
+                    std::vector<size_t> nbrs;
+                    for (size_t lm : g.landmarks) {
+                        if (lm > u) nbrs.push_back(lm);
+                    }
+                    for (size_t v : knn_lists[u]) {
+                        if (v > u) nbrs.push_back(v);
+                    }
+                    for (size_t v = u + 1; v < N; ++v) {
+                        for (size_t w : knn_lists[v]) {
+                            if (w == u) { nbrs.push_back(v); break; }
+                        }
+                    }
+                    std::sort(nbrs.begin(), nbrs.end());
+                    nbrs.erase(std::unique(nbrs.begin(), nbrs.end()), nbrs.end());
+                    g.sparse_adj[u] = std::move(nbrs);
+                }
+            }
+            return g;
+        }
+    };
+
     static std::pair<Scalar, Scalar> run_semiglobal_banded_dp_pair(
         const std::vector<int8_t>& s_a,
         const std::vector<int8_t>& s_b,
@@ -2283,6 +3225,10 @@ public:
         std::fill(prev_D.begin(), prev_D.begin() + static_cast<ptrdiff_t>(Ll + 1), kNegInf);
         std::fill(prev_id_M.begin(), prev_id_M.begin() + static_cast<ptrdiff_t>(Ll + 1), 0);
         std::fill(prev_id_D.begin(), prev_id_D.begin() + static_cast<ptrdiff_t>(Ll + 1), 0);
+        std::fill(curr_M.begin(), curr_M.begin() + static_cast<ptrdiff_t>(Ll + 1), kNegInf);
+        std::fill(curr_D.begin(), curr_D.begin() + static_cast<ptrdiff_t>(Ll + 1), kNegInf);
+        std::fill(curr_id_M.begin(), curr_id_M.begin() + static_cast<ptrdiff_t>(Ll + 1), 0);
+        std::fill(curr_id_D.begin(), curr_id_D.begin() + static_cast<ptrdiff_t>(Ll + 1), 0);
         int init_max = std::min(static_cast<int>(Ll), dL + B0);
         for (int c = 0; c <= init_max; ++c) {
             prev_M[static_cast<size_t>(c)] = 0.0;
@@ -2291,10 +3237,16 @@ public:
         for (size_t r = 1; r <= Ls; ++r) {
             int c_min = std::max(1, static_cast<int>(r) - B0);
             int c_max = std::min(static_cast<int>(Ll), static_cast<int>(r) + dL + B0);
-            std::fill(curr_M.begin(), curr_M.begin() + static_cast<ptrdiff_t>(Ll + 1), kNegInf);
-            std::fill(curr_D.begin(), curr_D.begin() + static_cast<ptrdiff_t>(Ll + 1), kNegInf);
-            std::fill(curr_id_M.begin(), curr_id_M.begin() + static_cast<ptrdiff_t>(Ll + 1), 0);
-            std::fill(curr_id_D.begin(), curr_id_D.begin() + static_cast<ptrdiff_t>(Ll + 1), 0);
+            int fill_lo = std::max(0, c_min - 2);
+            int fill_hi = std::min(static_cast<int>(Ll), c_max + 2);
+            curr_M[0] = kNegInf;
+            curr_D[0] = kNegInf;
+            curr_id_M[0] = 0;
+            curr_id_D[0] = 0;
+            std::fill(curr_M.begin() + fill_lo, curr_M.begin() + fill_hi + 1, kNegInf);
+            std::fill(curr_D.begin() + fill_lo, curr_D.begin() + fill_hi + 1, kNegInf);
+            std::fill(curr_id_M.begin() + fill_lo, curr_id_M.begin() + fill_hi + 1, 0);
+            std::fill(curr_id_D.begin() + fill_lo, curr_id_D.begin() + fill_hi + 1, 0);
             if (static_cast<int>(r) <= B0) {
                 Scalar pen = -std::min(g_open + g_ext * static_cast<Scalar>(r), g_cap);
                 curr_D[0] = pen;
@@ -2441,10 +3393,16 @@ public:
         for (size_t r = 1; r <= Ls; ++r) {
             int c_min = std::max(1, static_cast<int>(r) - B0);
             int c_max = std::min(static_cast<int>(Ll), static_cast<int>(r) + dL + B0);
-            std::fill(curr_M.begin(), curr_M.end(), kNegInf);
-            std::fill(curr_D.begin(), curr_D.end(), kNegInf);
-            std::fill(curr_tr_M.begin(), curr_tr_M.end(), TrackAcc{});
-            std::fill(curr_tr_D.begin(), curr_tr_D.end(), TrackAcc{});
+            int fill_lo = std::max(0, c_min - 2);
+            int fill_hi = std::min(static_cast<int>(Ll), c_max + 2);
+            curr_M[0] = kNegInf;
+            curr_D[0] = kNegInf;
+            curr_tr_M[0] = TrackAcc{};
+            curr_tr_D[0] = TrackAcc{};
+            std::fill(curr_M.begin() + fill_lo, curr_M.begin() + fill_hi + 1, kNegInf);
+            std::fill(curr_D.begin() + fill_lo, curr_D.begin() + fill_hi + 1, kNegInf);
+            std::fill(curr_tr_M.begin() + fill_lo, curr_tr_M.begin() + fill_hi + 1, TrackAcc{});
+            std::fill(curr_tr_D.begin() + fill_lo, curr_tr_D.begin() + fill_hi + 1, TrackAcc{});
             if (static_cast<int>(r) <= B0) {
                 Scalar pen = -std::min(g_open + g_ext * static_cast<Scalar>(r), g_cap);
                 curr_D[0] = pen;
@@ -2649,28 +3607,56 @@ public:
         }
 
         (void)precomputed_dp_similarity;
+        const bool use_subquadratic_taxa = (N > settings.subquadratic_taxon_threshold);
+        LandmarkKmerGraph lm_graph;
+        if (use_subquadratic_taxa) {
+            lm_graph = LandmarkKmerGraph::build(taxon_codons, *gcode, 8);
+        }
+
         Matrix D_tot  = Matrix::Zero(N, N);
         Matrix D_syn  = Matrix::Zero(N, N);
         Matrix D_ns   = Matrix::Zero(N, N);
         Matrix D_tn93 = Matrix::Zero(N, N);
+        Eigen::Matrix<uint8_t, Eigen::Dynamic, Eigen::Dynamic> pair_eval =
+            Eigen::Matrix<uint8_t, Eigen::Dynamic, Eigen::Dynamic>::Zero(N, N);
+
         #pragma omp parallel for schedule(dynamic)
         for (size_t i = 0; i < N; ++i) {
             const auto& seq_i = taxon_codons[i];
             size_t Li = seq_i.size();
-            for (size_t j = i + 1; j < N; ++j) {
-                const auto& seq_j = taxon_codons[j];
-                size_t Lj = seq_j.size();
-                if (Li == 0 || Lj == 0) continue;
+            if (use_subquadratic_taxa) {
+                for (size_t j : lm_graph.sparse_adj[i]) {
+                    const auto& seq_j = taxon_codons[j];
+                    size_t Lj = seq_j.size();
+                    if (Li == 0 || Lj == 0) continue;
+                    auto tr = run_semiglobal_multitrack_dp_pair(
+                        seq_i, seq_j, unaligned_seqs[i].raw_seq, unaligned_seqs[j].raw_seq, *gcode, pi_nuc
+                    );
+                    Eigen::Index ii = static_cast<Eigen::Index>(i);
+                    Eigen::Index jj = static_cast<Eigen::Index>(j);
+                    D_tot(ii, jj)  = D_tot(jj, ii)  = tr.d_tot;
+                    D_syn(ii, jj)  = D_syn(jj, ii)  = tr.d_syn;
+                    D_ns(ii, jj)   = D_ns(jj, ii)   = tr.d_ns;
+                    D_tn93(ii, jj) = D_tn93(jj, ii) = tr.d_tn93;
+                    pair_eval(ii, jj) = pair_eval(jj, ii) = 1;
+                }
+            } else {
+                for (size_t j = i + 1; j < N; ++j) {
+                    const auto& seq_j = taxon_codons[j];
+                    size_t Lj = seq_j.size();
+                    if (Li == 0 || Lj == 0) continue;
 
-                auto tr = run_semiglobal_multitrack_dp_pair(
-                    seq_i, seq_j, unaligned_seqs[i].raw_seq, unaligned_seqs[j].raw_seq, *gcode, pi_nuc
-                );
-                Eigen::Index ii = static_cast<Eigen::Index>(i);
-                Eigen::Index jj = static_cast<Eigen::Index>(j);
-                D_tot(ii, jj)  = D_tot(jj, ii)  = tr.d_tot;
-                D_syn(ii, jj)  = D_syn(jj, ii)  = tr.d_syn;
-                D_ns(ii, jj)   = D_ns(jj, ii)   = tr.d_ns;
-                D_tn93(ii, jj) = D_tn93(jj, ii) = tr.d_tn93;
+                    auto tr = run_semiglobal_multitrack_dp_pair(
+                        seq_i, seq_j, unaligned_seqs[i].raw_seq, unaligned_seqs[j].raw_seq, *gcode, pi_nuc
+                    );
+                    Eigen::Index ii = static_cast<Eigen::Index>(i);
+                    Eigen::Index jj = static_cast<Eigen::Index>(j);
+                    D_tot(ii, jj)  = D_tot(jj, ii)  = tr.d_tot;
+                    D_syn(ii, jj)  = D_syn(jj, ii)  = tr.d_syn;
+                    D_ns(ii, jj)   = D_ns(jj, ii)   = tr.d_ns;
+                    D_tn93(ii, jj) = D_tn93(jj, ii) = tr.d_tn93;
+                    pair_eval(ii, jj) = pair_eval(jj, ii) = 1;
+                }
             }
         }
 
@@ -2682,6 +3668,7 @@ public:
             for (size_t j = i + 1; j < N; ++j) {
                 Eigen::Index ii = static_cast<Eigen::Index>(i);
                 Eigen::Index jj = static_cast<Eigen::Index>(j);
+                if (!pair_eval(ii, jj)) continue;
                 if (D_tn93(ii, jj) < 0.35) {
                     sum_tn  += D_tn93(ii, jj);
                     sum_syn += D_syn(ii, jj);
@@ -2697,12 +3684,72 @@ public:
             for (size_t j = i + 1; j < N; ++j) {
                 Eigen::Index ii = static_cast<Eigen::Index>(i);
                 Eigen::Index jj = static_cast<Eigen::Index>(j);
+                if (!pair_eval(ii, jj)) continue;
                 Scalar d0 = D_tn93(ii, jj);
                 Scalar ds = D_syn(ii, jj) * scale_syn;
                 Scalar dn = D_ns(ii, jj) * scale_ns;
                 Scalar alpha_s = 0.20 * std::exp(-(d0 / 0.35) * (d0 / 0.35));
                 Scalar d = alpha_s * ds + (1.0 - alpha_s) * (0.85 * d0 + 0.15 * dn);
                 D_af(ii, jj) = D_af(jj, ii) = d;
+            }
+        }
+
+        // Subquadratic Four-Point Landmark Quartet Triangulation for unevaluated pairs (i, j) not in E_sparse:
+        // Given exact distances from all N taxa to the K landmarks P, for each taxon u we find its two closest
+        // landmarks p1(u), p2(u) in P and reconstruct D_af(i, j) = D_af(i, q) + D_af(j, p) - D_af(p, q)
+        // clamped to the exact metric triangle bounds across the anchor landmarks.
+        std::vector<size_t> near_lm1(N, 0), near_lm2(N, 0);
+        if (use_subquadratic_taxa && lm_graph.num_landmarks >= 2) {
+            for (size_t u = 0; u < N; ++u) {
+                size_t best1 = lm_graph.landmarks[0];
+                size_t best2 = lm_graph.landmarks[1];
+                Scalar d1 = D_af(static_cast<Eigen::Index>(u), static_cast<Eigen::Index>(best1));
+                Scalar d2 = D_af(static_cast<Eigen::Index>(u), static_cast<Eigen::Index>(best2));
+                if (d2 < d1) { std::swap(d1, d2); std::swap(best1, best2); }
+                for (size_t k = 2; k < lm_graph.num_landmarks; ++k) {
+                    size_t lm = lm_graph.landmarks[k];
+                    Scalar d = D_af(static_cast<Eigen::Index>(u), static_cast<Eigen::Index>(lm));
+                    if (d < d1) {
+                        d2 = d1; best2 = best1;
+                        d1 = d;  best1 = lm;
+                    } else if (d < d2) {
+                        d2 = d;  best2 = lm;
+                    }
+                }
+                near_lm1[u] = best1;
+                near_lm2[u] = best2;
+            }
+
+            for (size_t i = 0; i < N; ++i) {
+                Eigen::Index ii = static_cast<Eigen::Index>(i);
+                size_t p1 = near_lm1[i], p2 = near_lm2[i];
+                Eigen::Index ep1 = static_cast<Eigen::Index>(p1);
+                Eigen::Index ep2 = static_cast<Eigen::Index>(p2);
+                for (size_t j = i + 1; j < N; ++j) {
+                    Eigen::Index jj = static_cast<Eigen::Index>(j);
+                    if (pair_eval(ii, jj)) continue;
+                    size_t q1 = near_lm1[j], q2 = near_lm2[j];
+                    size_t p = p1;
+                    size_t q = (q1 != p) ? q1 : q2;
+                    Eigen::Index ep = static_cast<Eigen::Index>(p);
+                    Eigen::Index eq = static_cast<Eigen::Index>(q);
+                    Eigen::Index eq1 = static_cast<Eigen::Index>(q1);
+                    Eigen::Index eq2 = static_cast<Eigen::Index>(q2);
+
+                    Scalar d_4pt = D_af(ii, eq) + D_af(jj, ep) - D_af(ep, eq);
+                    std::array<Eigen::Index, 4> anchors = {ep1, ep2, eq1, eq2};
+                    Scalar d_min = 1e-4;
+                    Scalar d_max = 1e9;
+                    for (Eigen::Index er : anchors) {
+                        Scalar dip = D_af(ii, er);
+                        Scalar djp = D_af(jj, er);
+                        d_min = std::max(d_min, std::abs(dip - djp));
+                        d_max = std::min(d_max, dip + djp);
+                    }
+                    if (d_max < d_min) d_max = d_min;
+                    Scalar d_est = std::clamp(d_4pt, d_min, d_max);
+                    D_af(ii, jj) = D_af(jj, ii) = d_est;
+                }
             }
         }
 
@@ -2722,39 +3769,106 @@ public:
             sigma_af = std::max<Scalar>(1e-4, upper_d[upper_d.size() / 2]);
         }
 
-        Matrix W_af = Matrix::Zero(N, N);
-        for (size_t i = 0; i < N; ++i) {
-            for (size_t j = i + 1; j < N; ++j) {
-                Eigen::Index ii = static_cast<Eigen::Index>(i);
-                Eigen::Index jj = static_cast<Eigen::Index>(j);
-                Scalar d = D_af(ii, jj);
-                Scalar w = std::exp(-d / sigma_af) / (d + 1e-3);
-                W_af(ii, jj) = w;
-                W_af(jj, ii) = w;
-            }
-        }
-        Vector deg_af = W_af.rowwise().sum();
-        Matrix L_af = Matrix(deg_af.asDiagonal()) - W_af;
-        L_af = 0.5 * (L_af + L_af.transpose());
-
         Matrix Omega_af = D_af;
-        Eigen::SelfAdjointEigenSolver<Matrix> eig_af(L_af);
-        if (eig_af.info() == Eigen::Success) {
-            const Vector& ev = eig_af.eigenvalues();
-            const Matrix& evec = eig_af.eigenvectors();
-            Matrix L_pinv = Matrix::Zero(N, N);
-            for (Eigen::Index m = 0; m < ev.size(); ++m) {
-                if (ev(m) > 1e-10) {
-                    L_pinv.noalias() += (1.0 / ev(m)) * (evec.col(m) * evec.col(m).transpose());
-                }
-            }
+        if (!use_subquadratic_taxa) {
+            Matrix W_af = Matrix::Zero(N, N);
             for (size_t i = 0; i < N; ++i) {
                 for (size_t j = i + 1; j < N; ++j) {
                     Eigen::Index ii = static_cast<Eigen::Index>(i);
                     Eigen::Index jj = static_cast<Eigen::Index>(j);
-                    Scalar om = std::max<Scalar>(1e-4, L_pinv(ii, ii) + L_pinv(jj, jj) - 2.0 * L_pinv(ii, jj));
-                    Omega_af(ii, jj) = om;
-                    Omega_af(jj, ii) = om;
+                    Scalar d = D_af(ii, jj);
+                    Scalar w = std::exp(-d / sigma_af) / (d + 1e-3);
+                    W_af(ii, jj) = w;
+                    W_af(jj, ii) = w;
+                }
+            }
+            Vector deg_af = W_af.rowwise().sum();
+            Matrix L_af = Matrix(deg_af.asDiagonal()) - W_af;
+            L_af = 0.5 * (L_af + L_af.transpose());
+
+            Eigen::SelfAdjointEigenSolver<Matrix> eig_af(L_af);
+            if (eig_af.info() == Eigen::Success) {
+                const Vector& ev = eig_af.eigenvalues();
+                const Matrix& evec = eig_af.eigenvectors();
+                Matrix L_pinv = Matrix::Zero(N, N);
+                for (Eigen::Index m = 0; m < ev.size(); ++m) {
+                    if (ev(m) > 1e-10) {
+                        L_pinv.noalias() += (1.0 / ev(m)) * (evec.col(m) * evec.col(m).transpose());
+                    }
+                }
+                for (size_t i = 0; i < N; ++i) {
+                    for (size_t j = i + 1; j < N; ++j) {
+                        Eigen::Index ii = static_cast<Eigen::Index>(i);
+                        Eigen::Index jj = static_cast<Eigen::Index>(j);
+                        Scalar om = std::max<Scalar>(1e-4, L_pinv(ii, ii) + L_pinv(jj, jj) - 2.0 * L_pinv(ii, jj));
+                        Omega_af(ii, jj) = om;
+                        Omega_af(jj, ii) = om;
+                    }
+                }
+            }
+        } else {
+            // Subquadratic O(K^3 + N^2) Landmark Circuit Nystrom Resistance Extension:
+            // Solve exact Moore-Penrose pseudoinverse on the K x K landmark sub-circuit L_lm,
+            // then interpolate non-landmark port resistances via their two nearest landmark ports!
+            size_t K = lm_graph.num_landmarks;
+            Matrix W_lm = Matrix::Zero(K, K);
+            for (size_t a = 0; a < K; ++a) {
+                Eigen::Index ia = static_cast<Eigen::Index>(lm_graph.landmarks[a]);
+                for (size_t b = a + 1; b < K; ++b) {
+                    Eigen::Index ib = static_cast<Eigen::Index>(lm_graph.landmarks[b]);
+                    Scalar d = D_af(ia, ib);
+                    Scalar w = std::exp(-d / sigma_af) / (d + 1e-3);
+                    W_lm(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)) = w;
+                    W_lm(static_cast<Eigen::Index>(b), static_cast<Eigen::Index>(a)) = w;
+                }
+            }
+            Vector deg_lm = W_lm.rowwise().sum();
+            Matrix L_lm = Matrix(deg_lm.asDiagonal()) - W_lm;
+            L_lm = 0.5 * (L_lm + L_lm.transpose());
+            Matrix Omega_lm = Matrix::Zero(K, K);
+            Eigen::SelfAdjointEigenSolver<Matrix> eig_lm(L_lm);
+            if (eig_lm.info() == Eigen::Success) {
+                const Vector& ev = eig_lm.eigenvalues();
+                const Matrix& evec = eig_lm.eigenvectors();
+                Matrix L_pinv = Matrix::Zero(K, K);
+                for (Eigen::Index m = 0; m < ev.size(); ++m) {
+                    if (ev(m) > 1e-10) {
+                        L_pinv.noalias() += (1.0 / ev(m)) * (evec.col(m) * evec.col(m).transpose());
+                    }
+                }
+                for (size_t a = 0; a < K; ++a) {
+                    for (size_t b = a + 1; b < K; ++b) {
+                        Eigen::Index ea = static_cast<Eigen::Index>(a);
+                        Eigen::Index eb = static_cast<Eigen::Index>(b);
+                        Scalar om = std::max<Scalar>(1e-4, L_pinv(ea, ea) + L_pinv(eb, eb) - 2.0 * L_pinv(ea, eb));
+                        Omega_lm(ea, eb) = Omega_lm(eb, ea) = om;
+                    }
+                }
+                std::vector<size_t> taxon_to_lm_idx(N, 0);
+                for (size_t a = 0; a < K; ++a) taxon_to_lm_idx[lm_graph.landmarks[a]] = a;
+                std::vector<Scalar> attach_r(N, 0.0);
+                for (size_t u = 0; u < N; ++u) {
+                    if (lm_graph.is_landmark[u]) continue;
+                    Eigen::Index eu = static_cast<Eigen::Index>(u);
+                    Eigen::Index ep1 = static_cast<Eigen::Index>(near_lm1[u]);
+                    Eigen::Index ep2 = static_cast<Eigen::Index>(near_lm2[u]);
+                    Scalar d_stem = std::max<Scalar>(0.0, 0.5 * (D_af(eu, ep1) + D_af(eu, ep2) - D_af(ep1, ep2)));
+                    attach_r[u] = d_stem;
+                }
+                Scalar med_d_lm = std::max<Scalar>(1e-4, sigma_af);
+                Scalar med_om_lm = std::max<Scalar>(1e-4, Omega_lm.mean());
+                Scalar r_scale = med_om_lm / med_d_lm;
+                for (size_t i = 0; i < N; ++i) {
+                    Eigen::Index ii = static_cast<Eigen::Index>(i);
+                    Eigen::Index la = static_cast<Eigen::Index>(taxon_to_lm_idx[near_lm1[i]]);
+                    for (size_t j = i + 1; j < N; ++j) {
+                        Eigen::Index jj = static_cast<Eigen::Index>(j);
+                        Eigen::Index lb = static_cast<Eigen::Index>(taxon_to_lm_idx[near_lm1[j]]);
+                        Scalar om = (la == lb)
+                            ? (r_scale * D_af(ii, jj))
+                            : (Omega_lm(la, lb) + r_scale * (attach_r[i] + attach_r[j]));
+                        Omega_af(ii, jj) = Omega_af(jj, ii) = std::max<Scalar>(1e-4, om);
+                    }
                 }
             }
         }
@@ -2793,24 +3907,25 @@ public:
             std::cout << Console::muted(ss.str()) << std::flush;
         }
 
-        // 3. Build multi-scale MG94 rate matrices for Phase B Phylogenetic Transducer:
-        //    - mg94_branch: uses the actual branch lengths (bl_left, bl_right)
-        //    - mg94_deep: a broad evolutionary kernel (t = 0.65, omega = 0.6) so deeply divergent
-        //      homologous amino acids still have a positive Bayes Factor (> -2 * gap_open) and
-        //      never get split into staggered unaligned blocks!
-        MG94Parameters mg_p;
-        mg_p.alpha = 1.0;
-        mg_p.beta = 0.45;
-        MG94Matrix mg94;
-        mg94.update(mg_p, pos_freqs, pi_codon, *gcode);
-        Scalar conv = (mg94.scale_factor > 1e-12) ? (3.0 / mg94.scale_factor) : 1.0;
-        Matrix P_deep = mg94.transition_matrix(0.55 * conv);
+        // 3. Calibrate Stage-0 Empirical Codon Substitution Generator Q_emp (Core + Loop 2-rate mixture):
+        EmpiricalTwoStratumModel two_stratum = EmpiricalTwoStratumModel::calibrate(
+            taxon_codons, pos_freqs, pi_codon, *gcode, settings.subquadratic_taxon_threshold
+        );
 
-        // 4. Phase B: Bottom-Up Post-Order Phylogenetic MG94 Log-Odds Codon Transducer
+        // Empirical Two-Stratum Core + Loop transition probability matrix at true branch length t_b (t_0 = 0):
+        //   P_{s,x}(t_b) = (1 - \hat{w}_loop) \exp(t_b \hat{Q}_core) + \hat{w}_loop \exp(\hat{\rho}_{loop/core} t_b \hat{Q}_loop)
+        auto branch_transition_matrix = [&](Scalar bl) -> Matrix {
+            return two_stratum.transition_matrix(bl);
+        };
+
+        // 4. Phase B: Bottom-Up Post-Order Phylogenetic Codon Transducer (Forward Felsenstein Pruning)
+        //    Each profile column c at node v stores its standard Felsenstein partial conditional likelihood
+        //    vector \ell_c^{(v)} \in R_+^S (\ell_{c,x}^{(v)} \propto P(Data_{v,c} | X_v = x)), normalized so
+        //    that its equilibrium expectation is unity (\sum_{x=1}^S \pi_x \ell_{c,x}^{(v)} = 1).
         struct NodeProfile {
-            std::vector<Vector> D;                      // size L_u, each Vector(S)
-            std::vector<Scalar> occupancy;              // size L_u in (0, 1]
-            std::vector<std::vector<int32_t>> tax_pos;  // size L_u x N (-1 if gap in taxon t)
+            std::vector<Vector> L;                      // Felsenstein partial likelihoods \ell_c^{(v)}, size L_v x S
+            std::vector<Scalar> occupancy;              // clade column occupancy o_c^{(v)} in (0, 1]
+            std::vector<std::vector<int32_t>> tax_pos;  // size L_v x N (-1 if gap in taxon t)
             size_t num_leaves = 0;
         };
 
@@ -2818,68 +3933,53 @@ public:
         std::unordered_map<std::string, size_t> name_to_idx;
         for (size_t t = 0; t < N; ++t) name_to_idx[taxon_names[t]] = t;
 
-        auto log_odds_merge = [&](const Vector& d1, const Vector& d1_deep, Scalar occ1,
-                                  const Vector& d2, const Vector& d2_deep, Scalar occ2) -> Scalar {
-            // Multi-scale Phylogenetic Bayes Factor:
-            // Combines exact branch-length MG94 homology odds (70%) with deep-homology MG94 kernel (30%).
-            // A small Laplace pseudocount (0.15) prevents -Inf log-odds on highly variable sites while
-            // ensuring truly incompatible codons have BF < 1.0 (negative log-odds).
-            Scalar bf_exact = 0.0;
-            Scalar bf_deep = 0.0;
+        // Forward Felsenstein Homology Bayes Factor at parent u:
+        // Given forward conditional likelihood vectors L_i^{(L)} = P(t_L) \ell_i^{(L)} and L_j^{(R)} = P(t_R) \ell_j^{(R)}
+        // (each representing the probability that an ancestral codon s at parent u evolves forward down branch
+        // t_L or t_R to produce the observed leaf codons in clade L or R, normalized so \pi^T L_i^{(L)} = 1),
+        // the marginal likelihood ratio of homologous origin (single ancestor s ~ \pi at u) vs. independent
+        // origins (s_L ~ \pi, s_R ~ \pi) is simply \sum_s \pi_s L_{i,s}^{(L)} L_{j,s}^{(R)}.
+        const Scalar eps_floor = settings.transducer_laplace_floor;
+        auto homology_bayes_factor = [&](const Vector& L_left, const Vector& L_right) -> Scalar {
+            Scalar bf = 0.0;
             for (int s = 0; s < S; ++s) {
-                Scalar pi_s = std::max<Scalar>(1e-8, pi_codon(s));
-                bf_exact += (d1(s) * d2(s)) / pi_s;
-                bf_deep  += (d1_deep(s) * d2_deep(s)) / pi_s;
+                bf += pi_codon(s) * L_left(s) * L_right(s);
             }
-            Scalar bf = 0.70 * bf_exact + 0.30 * bf_deep + 0.15;
-            Scalar llr = std::log(std::max<Scalar>(1e-4, bf));
-            // Reward matching columns of similar taxon occupancy (prevents splitting shared framework/loop columns)
-            Scalar occ_balance = 1.0 - 0.85 * std::abs(occ1 - occ2);
-            return llr + 0.6 * std::log(std::max<Scalar>(0.15, occ_balance));
+            return bf;
         };
 
         auto align_two_profiles = [&](const NodeProfile& left, Scalar bl_left,
                                       const NodeProfile& right, Scalar bl_right) -> NodeProfile {
-            size_t L1 = left.D.size();
-            size_t L2 = right.D.size();
+            size_t L1 = left.L.size();
+            size_t L2 = right.L.size();
             if (L1 == 0) return right;
             if (L2 == 0) return left;
 
-            Scalar t1 = std::clamp(bl_left, 0.02, 0.80);
-            Scalar t2 = std::clamp(bl_right, 0.02, 0.80);
-            Matrix P1 = mg94.transition_matrix(t1 * conv);
-            Matrix P2 = mg94.transition_matrix(t2 * conv);
+            Matrix P1 = branch_transition_matrix(bl_left);
+            Matrix P2 = branch_transition_matrix(bl_right);
 
-            // Evolve both children's posterior state profiles to the parent node
-            std::vector<Vector> E1(L1), E2(L2), E1_deep(L1), E2_deep(L2);
+            // Forward ancestor-to-child Felsenstein conditional likelihood vectors at parent u:
+            //   L1_fwd[i](s) = \sum_{x=1}^S P_{s,x}(t_L) \ell_{i,x}^{(L)}
+            //   L2_fwd[j](s) = \sum_{y=1}^S P_{s,y}(t_R) \ell_{j,y}^{(R)}
+            std::vector<Vector> L1_fwd(L1), L2_fwd(L2);
             for (size_t i = 0; i < L1; ++i) {
-                E1[i] = P1.transpose() * left.D[i];
-                Scalar s1 = E1[i].sum();
-                if (s1 > 0.0) E1[i] /= s1;
-                E1_deep[i] = P_deep.transpose() * left.D[i];
-                Scalar sd1 = E1_deep[i].sum();
-                if (sd1 > 0.0) E1_deep[i] /= sd1;
+                L1_fwd[i] = P1 * left.L[i];
+                Scalar z1 = pi_codon.dot(L1_fwd[i]);
+                if (z1 > 0.0) L1_fwd[i] /= z1;
             }
             for (size_t j = 0; j < L2; ++j) {
-                E2[j] = P2.transpose() * right.D[j];
-                Scalar s2 = E2[j].sum();
-                if (s2 > 0.0) E2[j] /= s2;
-                E2_deep[j] = P_deep.transpose() * right.D[j];
-                Scalar sd2 = E2_deep[j].sum();
-                if (sd2 > 0.0) E2_deep[j] /= sd2;
+                L2_fwd[j] = P2 * right.L[j];
+                Scalar z2 = pi_codon.dot(L2_fwd[j]);
+                if (z2 > 0.0) L2_fwd[j] /= z2;
             }
 
-            // 3-State Affine Pair-HMM Codon Transducer:
-            //   State 0 (M): Match (i, j)
-            //   State 1 (I): Insert from left (i, -)
-            //   State 2 (D): Delete / Insert from right (-, j)
+            // 3-State Affine Pair-HMM Codon Transducer (Gotoh's algorithm):
+            //   State 0 (M): Homologous match (i, j)
+            //   State 1 (I): Left-clade insertion / right-clade deletion (i, -)
+            //   State 2 (D): Right-clade insertion / left-clade deletion (-, j)
             const Scalar NEG_INF = -1e18;
-            // Scale gap-open penalty with evolutionary distance t_pair = t1 + t2 so longer branches
-            // permit true indel events while short sister branches resist spurious gaps:
-            Scalar t_pair = std::clamp(bl_left + bl_right, 0.02, 1.20);
-            Scalar branch_scale = std::clamp(1.15 - 0.35 * std::min<Scalar>(1.0, t_pair / 0.40), 0.75, 1.15);
-            const Scalar g_open = settings.gap_open_penalty * branch_scale;
-            const Scalar g_ext = settings.gap_extend_penalty;
+            const Scalar g_open = settings.transducer_gap_open;
+            const Scalar g_ext  = settings.transducer_gap_extend;
 
             Eigen::MatrixXd dp_M = Eigen::MatrixXd::Constant(L1 + 1, L2 + 1, NEG_INF);
             Eigen::MatrixXd dp_I = Eigen::MatrixXd::Constant(L1 + 1, L2 + 1, NEG_INF);
@@ -2891,22 +3991,133 @@ public:
 
             dp_M(0, 0) = 0.0;
             for (size_t i = 1; i <= L1; ++i) {
-                dp_I(i, 0) = -g_open - static_cast<Scalar>(i - 1) * g_ext;
+                Scalar occ_L = left.occupancy[i - 1];
+                dp_I(i, 0) = (i == 1) ? (-g_open * occ_L) : (dp_I(i - 1, 0) - g_ext * occ_L);
                 bt_I(i, 0) = (i == 1) ? 0 : 1;
             }
             for (size_t j = 1; j <= L2; ++j) {
-                dp_D(0, j) = -g_open - static_cast<Scalar>(j - 1) * g_ext;
+                Scalar occ_R = right.occupancy[j - 1];
+                dp_D(0, j) = (j == 1) ? (-g_open * occ_R) : (dp_D(0, j - 1) - g_ext * occ_R);
                 bt_D(0, j) = (j == 1) ? 0 : 2;
             }
 
+            // Subquadratic O(B * L) Collinear 3-AA Seed-Chain Anchor Corridor when min(L1, L2) > subquadratic_length_threshold
+            const bool use_corridor = (std::min(L1, L2) > settings.subquadratic_length_threshold);
+            std::vector<size_t> j_lo_vec(L1 + 1, 1), j_hi_vec(L1 + 1, L2);
+            if (use_corridor) {
+                auto modal_aa = [&](const std::vector<Vector>& L_prof) -> std::vector<int> {
+                    std::vector<int> res(L_prof.size(), -1);
+                    for (size_t k = 0; k < L_prof.size(); ++k) {
+                        int best_s = -1;
+                        Scalar best_w = -1.0;
+                        for (int s = 0; s < S; ++s) {
+                            Scalar w = pi_codon(s) * L_prof[k](s);
+                            if (w > best_w) { best_w = w; best_s = s; }
+                        }
+                        if (best_s >= 0) {
+                            res[k] = LandmarkKmerGraph::aa_to_index20(gcode->sense_codon_aa[best_s]);
+                        }
+                    }
+                    return res;
+                };
+                auto aa1 = modal_aa(L1_fwd);
+                auto aa2 = modal_aa(L2_fwd);
+
+                // Extract low-multiplicity (<= 3 occurrences) 3-AA seed matches
+                std::unordered_map<uint32_t, std::vector<size_t>> pos1, pos2;
+                for (size_t i = 0; i + 2 < L1; ++i) {
+                    if (aa1[i] >= 0 && aa1[i + 1] >= 0 && aa1[i + 2] >= 0) {
+                        uint32_t kmer = static_cast<uint32_t>(aa1[i] * 400 + aa1[i + 1] * 20 + aa1[i + 2]);
+                        pos1[kmer].push_back(i + 1);
+                    }
+                }
+                for (size_t j = 0; j + 2 < L2; ++j) {
+                    if (aa2[j] >= 0 && aa2[j + 1] >= 0 && aa2[j + 2] >= 0) {
+                        uint32_t kmer = static_cast<uint32_t>(aa2[j] * 400 + aa2[j + 1] * 20 + aa2[j + 2]);
+                        pos2[kmer].push_back(j + 1);
+                    }
+                }
+
+                std::vector<std::pair<size_t, size_t>> seeds;
+                for (const auto& [kmer, v1] : pos1) {
+                    if (v1.size() > 3) continue;
+                    auto it2 = pos2.find(kmer);
+                    if (it2 == pos2.end() || it2->second.size() > 3) continue;
+                    for (size_t r : v1) {
+                        for (size_t c : it2->second) {
+                            seeds.push_back({r, c});
+                        }
+                    }
+                }
+                std::sort(seeds.begin(), seeds.end(), [](const auto& a, const auto& b) {
+                    if (a.first != b.first) return a.first < b.first;
+                    return a.second > b.second; // reverse second for strict LIS
+                });
+
+                // Longest strictly increasing collinear chain in O(M log M)
+                std::vector<std::pair<size_t, size_t>> anchors;
+                anchors.push_back({0, 0});
+                if (!seeds.empty()) {
+                    std::vector<size_t> tail_val;
+                    std::vector<size_t> tail_idx;
+                    std::vector<ptrdiff_t> parent(seeds.size(), -1);
+                    for (size_t m = 0; m < seeds.size(); ++m) {
+                        size_t c = seeds[m].second;
+                        auto it = std::lower_bound(tail_val.begin(), tail_val.end(), c);
+                        size_t pos = static_cast<size_t>(std::distance(tail_val.begin(), it));
+                        if (it == tail_val.end()) {
+                            tail_val.push_back(c);
+                            tail_idx.push_back(m);
+                        } else {
+                            *it = c;
+                            tail_idx[pos] = m;
+                        }
+                        if (pos > 0) parent[m] = static_cast<ptrdiff_t>(tail_idx[pos - 1]);
+                    }
+                    std::vector<std::pair<size_t, size_t>> chain;
+                    ptrdiff_t cur = static_cast<ptrdiff_t>(tail_idx.back());
+                    while (cur >= 0) {
+                        chain.push_back(seeds[static_cast<size_t>(cur)]);
+                        cur = parent[static_cast<size_t>(cur)];
+                    }
+                    std::reverse(chain.begin(), chain.end());
+                    for (const auto& pt : chain) anchors.push_back(pt);
+                }
+                anchors.push_back({L1, L2});
+
+                int max_diag_excursion = 0;
+                for (size_t k = 0; k + 1 < anchors.size(); ++k) {
+                    int dr = static_cast<int>(anchors[k + 1].first) - static_cast<int>(anchors[k].first);
+                    int dc = static_cast<int>(anchors[k + 1].second) - static_cast<int>(anchors[k].second);
+                    max_diag_excursion = std::max(max_diag_excursion, std::abs(dc - dr));
+                }
+                int dL_abs = static_cast<int>(std::max(L1, L2) - std::min(L1, L2));
+                int B_prof = std::max({64, dL_abs + 48, max_diag_excursion + 32});
+
+                size_t seg = 0;
+                for (size_t i = 1; i <= L1; ++i) {
+                    while (seg + 2 < anchors.size() && anchors[seg + 1].first < i) {
+                        seg++;
+                    }
+                    double r0 = static_cast<double>(anchors[seg].first);
+                    double c0 = static_cast<double>(anchors[seg].second);
+                    double r1 = static_cast<double>(anchors[seg + 1].first);
+                    double c1 = static_cast<double>(anchors[seg + 1].second);
+                    double frac = (r1 > r0) ? ((static_cast<double>(i) - r0) / (r1 - r0)) : 0.0;
+                    int j_cen = static_cast<int>(std::llround(c0 + frac * (c1 - c0)));
+                    j_lo_vec[i] = static_cast<size_t>(std::max(1, j_cen - B_prof));
+                    j_hi_vec[i] = static_cast<size_t>(std::min<int>(static_cast<int>(L2), j_cen + B_prof));
+                }
+            }
+
             for (size_t i = 1; i <= L1; ++i) {
-                for (size_t j = 1; j <= L2; ++j) {
-                    // 1. State I: align left[i-1] to gap. If left.occupancy[i-1] < 1.0, an indel event
-                    // already occurred inside the left subtree; propagating an existing partial column
-                    // across the parent node is a continuation rather than a full new indel event.
-                    Scalar occ_L = left.occupancy[i - 1];
-                    Scalar eff_open_I = g_open * (0.15 + 0.85 * occ_L * occ_L);
-                    Scalar eff_ext_I  = g_ext  * (0.15 + 0.85 * occ_L);
+                size_t j_start = j_lo_vec[i];
+                size_t j_end   = j_hi_vec[i];
+                for (size_t j = j_start; j <= j_end; ++j) {
+                    // 1. State I: align left[i-1] to gap, weighted by clade occupancy o_i^(L) (floored at 0.50)
+                    Scalar occ_L = std::max<Scalar>(0.50, left.occupancy[i - 1]);
+                    Scalar eff_open_I = g_open * occ_L;
+                    Scalar eff_ext_I  = g_ext  * occ_L;
                     Scalar i_from_m = dp_M(i - 1, j) - eff_open_I;
                     Scalar i_from_i = dp_I(i - 1, j) - eff_ext_I;
                     if (i_from_m >= i_from_i) {
@@ -2917,10 +4128,10 @@ public:
                         bt_I(i, j) = 1;
                     }
 
-                    // 2. State D: align right[j-1] to gap
-                    Scalar occ_R = right.occupancy[j - 1];
-                    Scalar eff_open_D = g_open * (0.15 + 0.85 * occ_R * occ_R);
-                    Scalar eff_ext_D  = g_ext  * (0.15 + 0.85 * occ_R);
+                    // 2. State D: align right[j-1] to gap, weighted by clade occupancy o_j^(R) (floored at 0.50)
+                    Scalar occ_R = std::max<Scalar>(0.50, right.occupancy[j - 1]);
+                    Scalar eff_open_D = g_open * occ_R;
+                    Scalar eff_ext_D  = g_ext  * occ_R;
                     Scalar d_from_m = dp_M(i, j - 1) - eff_open_D;
                     Scalar d_from_d = dp_D(i, j - 1) - eff_ext_D;
                     if (d_from_m >= d_from_d) {
@@ -2932,10 +4143,8 @@ public:
                     }
 
                     // 3. State M: homologous Match of left[i-1] and right[j-1]
-                    Scalar emit = log_odds_merge(
-                        E1[i - 1], E1_deep[i - 1], left.occupancy[i - 1],
-                        E2[j - 1], E2_deep[j - 1], right.occupancy[j - 1]
-                    );
+                    Scalar bf = homology_bayes_factor(L1_fwd[i - 1], L2_fwd[j - 1]);
+                    Scalar emit = std::log(std::max<Scalar>(1e-4, bf + eps_floor));
                     Scalar m0 = dp_M(i - 1, j - 1);
                     Scalar m1 = dp_I(i - 1, j - 1);
                     Scalar m2 = dp_D(i - 1, j - 1);
@@ -2984,11 +4193,14 @@ public:
             }
             std::reverse(path.begin(), path.end());
 
-            // Assemble merged ancestral profile
+            // Assemble merged parent profile using Felsenstein's pruning rule:
+            //   - Match (M): \ell_{c,s}^{(u)} = L_{i,s}^{(L)} * L_{j,s}^{(R)} / BF(i, j)
+            //   - Insertion (I, gap in R): \ell_{c,s}^{(u)} = L_{i,s}^{(L)}
+            //   - Deletion (D, gap in L): \ell_{c,s}^{(u)} = L_{j,s}^{(R)}
             NodeProfile parent;
             parent.num_leaves = left.num_leaves + right.num_leaves;
             size_t L_new = path.size();
-            parent.D.resize(L_new);
+            parent.L.resize(L_new);
             parent.occupancy.resize(L_new);
             parent.tax_pos.assign(L_new, std::vector<int32_t>(N, -1));
 
@@ -2998,237 +4210,28 @@ public:
             for (size_t col = 0; col < L_new; ++col) {
                 const auto& st = path[col];
                 if (st.op == 0) {
-                    // Combine posterior codon distributions via weighted mixture + Bayesian product
-                    Vector prod(S);
-                    for (int s = 0; s < S; ++s) {
-                        prod(s) = (E1[st.i](s) * E2[st.j](s)) / std::max<Scalar>(1e-8, pi_codon(s));
-                    }
-                    Scalar psum = prod.sum();
-                    Vector mix = w_left * E1[st.i] + w_right * E2[st.j];
-                    if (psum > 1e-6) {
-                        prod /= psum;
-                        parent.D[col] = 0.65 * prod + 0.35 * mix;
+                    Vector prod = L1_fwd[st.i].cwiseProduct(L2_fwd[st.j]);
+                    Scalar bf = pi_codon.dot(prod);
+                    if (bf > 1e-12) {
+                        parent.L[col] = prod / bf;
                     } else {
-                        parent.D[col] = mix;
+                        parent.L[col] = w_left * L1_fwd[st.i] + w_right * L2_fwd[st.j];
                     }
                     parent.occupancy[col] = w_left * left.occupancy[st.i] + w_right * right.occupancy[st.j];
                     for (size_t t = 0; t < N; ++t) {
                         parent.tax_pos[col][t] = (left.tax_pos[st.i][t] != -1) ? left.tax_pos[st.i][t] : right.tax_pos[st.j][t];
                     }
                 } else if (st.op == 1) {
-                    parent.D[col] = E1[st.i];
+                    parent.L[col] = L1_fwd[st.i];
                     parent.occupancy[col] = w_left * left.occupancy[st.i];
                     parent.tax_pos[col] = left.tax_pos[st.i];
                 } else {
-                    parent.D[col] = E2[st.j];
+                    parent.L[col] = L2_fwd[st.j];
                     parent.occupancy[col] = w_right * right.occupancy[st.j];
                     parent.tax_pos[col] = right.tax_pos[st.j];
                 }
             }
             return parent;
-        };
-
-        auto compact_profile = [&](NodeProfile& prof) {
-            size_t n_active = prof.num_leaves;
-            if (n_active < 2) return;
-            bool merged_any = true;
-            while (merged_any) {
-                merged_any = false;
-                size_t L_cur = prof.D.size();
-                if (L_cur < 2) break;
-
-                // Pass A: Multi-column staggered block compaction [col .. col+k-1] + [col+k .. col+2k-1] -> k columns
-                // Only collapse when the paired columns exhibit genuine evolutionary homology (BF > 1.0, i.e. above random chance),
-                // or when every active taxon is present in one of the two complementary blocks (n_left + n_right == n_active,
-                // meaning a core block was split by an I-then-D path) with compatible codons (BF > 0.35).
-                for (size_t k = 1; k <= 5 && !merged_any; ++k) {
-                    if (L_cur < 2 * k) continue;
-                    for (size_t col = 0; col + 2 * k <= L_cur; ++col) {
-                        bool disjoint = true;
-                        size_t n_left_taxa = 0, n_right_taxa = 0;
-                        for (size_t t = 0; t < N; ++t) {
-                            bool in_left = false, in_right = false;
-                            for (size_t r = 0; r < k; ++r) {
-                                if (prof.tax_pos[col + r][t] != -1) in_left = true;
-                                if (prof.tax_pos[col + k + r][t] != -1) in_right = true;
-                            }
-                            if (in_left && in_right) {
-                                disjoint = false;
-                                break;
-                            }
-                            if (in_left) n_left_taxa++;
-                            if (in_right) n_right_taxa++;
-                        }
-                        if (!disjoint || n_left_taxa == 0 || n_right_taxa == 0) continue;
-
-                        // Check average deep evolutionary homology across the k paired columns
-                        Scalar sum_bf = 0.0;
-                        for (size_t r = 0; r < k; ++r) {
-                            Vector d1_deep = P_deep.transpose() * prof.D[col + r];
-                            Vector d2_deep = P_deep.transpose() * prof.D[col + k + r];
-                            for (int s = 0; s < S; ++s) {
-                                sum_bf += (d1_deep(s) * d2_deep(s)) / std::max<Scalar>(1e-8, pi_codon(s));
-                            }
-                        }
-                        Scalar mean_bf = sum_bf / static_cast<Scalar>(k);
-                        bool full_complement = (n_left_taxa + n_right_taxa == n_active);
-                        if (mean_bf > 1.25 || (full_complement && mean_bf > 0.35)) {
-                            for (size_t r = 0; r < k; ++r) {
-                                size_t n1 = 0, n2 = 0;
-                                for (size_t t = 0; t < N; ++t) {
-                                    if (prof.tax_pos[col + r][t] != -1) n1++;
-                                    if (prof.tax_pos[col + k + r][t] != -1) {
-                                        n2++;
-                                        prof.tax_pos[col + r][t] = prof.tax_pos[col + k + r][t];
-                                    }
-                                }
-                                Scalar w1 = static_cast<Scalar>(n1) / static_cast<Scalar>(std::max<size_t>(1, n1 + n2));
-                                Scalar w2 = static_cast<Scalar>(n2) / static_cast<Scalar>(std::max<size_t>(1, n1 + n2));
-                                prof.D[col + r] = w1 * prof.D[col + r] + w2 * prof.D[col + k + r];
-                                prof.occupancy[col + r] = static_cast<Scalar>(n1 + n2) / static_cast<Scalar>(n_active);
-                            }
-                            prof.D.erase(prof.D.begin() + static_cast<std::ptrdiff_t>(col + k),
-                                         prof.D.begin() + static_cast<std::ptrdiff_t>(col + 2 * k));
-                            prof.occupancy.erase(prof.occupancy.begin() + static_cast<std::ptrdiff_t>(col + k),
-                                                 prof.occupancy.begin() + static_cast<std::ptrdiff_t>(col + 2 * k));
-                            prof.tax_pos.erase(prof.tax_pos.begin() + static_cast<std::ptrdiff_t>(col + k),
-                                               prof.tax_pos.begin() + static_cast<std::ptrdiff_t>(col + 2 * k));
-                            merged_any = true;
-                            break;
-                        }
-                    }
-                }
-                if (merged_any) continue;
-
-                // Pass B: Single-column sliding compaction across intermediate gap columns (up to radius 4)
-                for (size_t col = 0; col < L_cur; ++col) {
-                    size_t n1 = 0;
-                    for (size_t t = 0; t < N; ++t) {
-                        if (prof.tax_pos[col][t] != -1) n1++;
-                    }
-                    if (n1 == 0 || n1 >= n_active) continue;
-
-                    size_t max_other = std::min(L_cur - 1, col + 4);
-                    bool did_merge = false;
-                    for (size_t other = col + 1; other <= max_other; ++other) {
-                        bool disjoint_and_ordered = true;
-                        size_t n2 = 0;
-                        for (size_t t = 0; t < N; ++t) {
-                            int32_t p1 = prof.tax_pos[col][t];
-                            int32_t p2 = prof.tax_pos[other][t];
-                            if (p1 != -1 && p2 != -1) {
-                                disjoint_and_ordered = false;
-                                break;
-                            }
-                            if (p2 != -1) {
-                                n2++;
-                                for (size_t mid = col + 1; mid < other; ++mid) {
-                                    if (prof.tax_pos[mid][t] != -1) {
-                                        disjoint_and_ordered = false;
-                                        break;
-                                    }
-                                }
-                                if (!disjoint_and_ordered) break;
-                            }
-                        }
-                        if (!disjoint_and_ordered || n2 == 0) continue;
-
-                        Vector d1_deep = P_deep.transpose() * prof.D[col];
-                        Vector d2_deep = P_deep.transpose() * prof.D[other];
-                        Scalar bf = 0.0;
-                        for (int s = 0; s < S; ++s) {
-                            bf += (d1_deep(s) * d2_deep(s)) / std::max<Scalar>(1e-8, pi_codon(s));
-                        }
-                        bool full_complement = (n1 + n2 == n_active);
-                        if (bf > 1.50 || (full_complement && bf > 0.50)) {
-                            Scalar w1 = static_cast<Scalar>(n1) / static_cast<Scalar>(n1 + n2);
-                            Scalar w2 = static_cast<Scalar>(n2) / static_cast<Scalar>(n1 + n2);
-                            prof.D[col] = w1 * prof.D[col] + w2 * prof.D[other];
-                            prof.occupancy[col] = static_cast<Scalar>(n1 + n2) / static_cast<Scalar>(n_active);
-                            for (size_t t = 0; t < N; ++t) {
-                                if (prof.tax_pos[other][t] != -1) {
-                                    prof.tax_pos[col][t] = prof.tax_pos[other][t];
-                                }
-                            }
-                            prof.D.erase(prof.D.begin() + static_cast<std::ptrdiff_t>(other));
-                            prof.occupancy.erase(prof.occupancy.begin() + static_cast<std::ptrdiff_t>(other));
-                            prof.tax_pos.erase(prof.tax_pos.begin() + static_cast<std::ptrdiff_t>(other));
-                            merged_any = true;
-                            did_merge = true;
-                            break;
-                        }
-                    }
-                    if (did_merge) break;
-                }
-                if (merged_any) continue;
-
-                // Pass C: Non-adjacent multi-column block compaction [col .. col+k-1] + [other .. other+k-1] -> k columns
-                // Handles cases where an intermediate singleton insertion separates two k-column staggered blocks!
-                for (size_t k = 2; k <= 5 && !merged_any; ++k) {
-                    if (L_cur < 2 * k) continue;
-                    for (size_t col = 0; col + 2 * k <= L_cur && !merged_any; ++col) {
-                        size_t max_other = std::min(L_cur - k, col + k + 4);
-                        for (size_t other = col + k; other <= max_other; ++other) {
-                            bool valid_merge = true;
-                            size_t n_left_taxa = 0, n_right_taxa = 0;
-                            for (size_t t = 0; t < N; ++t) {
-                                bool in_left = false, in_right = false, in_mid = false;
-                                for (size_t r = 0; r < k; ++r) {
-                                    if (prof.tax_pos[col + r][t] != -1) in_left = true;
-                                    if (prof.tax_pos[other + r][t] != -1) in_right = true;
-                                }
-                                for (size_t mid = col + k; mid < other; ++mid) {
-                                    if (prof.tax_pos[mid][t] != -1) in_mid = true;
-                                }
-                                // Cannot merge if taxon has codons in both blocks, or has codons in both mid and right
-                                // (since moving right into left would cross mid and violate sequence order!)
-                                if ((in_left && in_right) || (in_mid && in_right)) {
-                                    valid_merge = false;
-                                    break;
-                                }
-                                if (in_left) n_left_taxa++;
-                                if (in_right) n_right_taxa++;
-                            }
-                            if (!valid_merge || n_left_taxa == 0 || n_right_taxa == 0) continue;
-
-                            Scalar sum_bf = 0.0;
-                            for (size_t r = 0; r < k; ++r) {
-                                Vector d1_deep = P_deep.transpose() * prof.D[col + r];
-                                Vector d2_deep = P_deep.transpose() * prof.D[other + r];
-                                for (int s = 0; s < S; ++s) {
-                                    sum_bf += (d1_deep(s) * d2_deep(s)) / std::max<Scalar>(1e-8, pi_codon(s));
-                                }
-                            }
-                            Scalar mean_bf = sum_bf / static_cast<Scalar>(k);
-                            bool full_complement = (n_left_taxa + n_right_taxa == n_active);
-                            if (mean_bf > 1.25 || (full_complement && mean_bf > 0.35)) {
-                                for (size_t r = 0; r < k; ++r) {
-                                    size_t n1 = 0, n2 = 0;
-                                    for (size_t t = 0; t < N; ++t) {
-                                        if (prof.tax_pos[col + r][t] != -1) n1++;
-                                        if (prof.tax_pos[other + r][t] != -1) {
-                                            n2++;
-                                            prof.tax_pos[col + r][t] = prof.tax_pos[other + r][t];
-                                        }
-                                    }
-                                    Scalar w1 = static_cast<Scalar>(n1) / static_cast<Scalar>(std::max<size_t>(1, n1 + n2));
-                                    Scalar w2 = static_cast<Scalar>(n2) / static_cast<Scalar>(std::max<size_t>(1, n1 + n2));
-                                    prof.D[col + r] = w1 * prof.D[col + r] + w2 * prof.D[other + r];
-                                    prof.occupancy[col + r] = static_cast<Scalar>(n1 + n2) / static_cast<Scalar>(n_active);
-                                }
-                                prof.D.erase(prof.D.begin() + static_cast<std::ptrdiff_t>(other),
-                                             prof.D.begin() + static_cast<std::ptrdiff_t>(other + k));
-                                prof.occupancy.erase(prof.occupancy.begin() + static_cast<std::ptrdiff_t>(other),
-                                                     prof.occupancy.begin() + static_cast<std::ptrdiff_t>(other + k));
-                                prof.tax_pos.erase(prof.tax_pos.begin() + static_cast<std::ptrdiff_t>(other),
-                                                   prof.tax_pos.begin() + static_cast<std::ptrdiff_t>(other + k));
-                                merged_any = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
         };
 
         for (int32_t nid : guide_tree.post_order) {
@@ -3240,18 +4243,19 @@ public:
                 size_t m = taxon_codons[tid].size();
                 NodeProfile lp;
                 lp.num_leaves = 1;
-                lp.D.resize(m);
+                lp.L.resize(m);
                 lp.occupancy.assign(m, 1.0);
                 lp.tax_pos.assign(m, std::vector<int32_t>(N, -1));
                 for (size_t k = 0; k < m; ++k) {
                     lp.tax_pos[k][tid] = static_cast<int32_t>(k);
                     int8_t sc = taxon_codons[tid][k];
                     if (sc >= 0 && sc < S) {
-                        lp.D[k] = Vector::Constant(S, 1e-5);
-                        lp.D[k](sc) = 1.0;
-                        lp.D[k] /= lp.D[k].sum();
+                        // Standard Felsenstein leaf conditional likelihood \ell_{k,x}^{(t)} = I[x == sc] / \pi_{sc}
+                        // normalized by the marginal equilibrium probability \pi_{sc} so \sum_x \pi_x \ell_{k,x}^{(t)} = 1.
+                        lp.L[k] = Vector::Zero(S);
+                        lp.L[k](sc) = 1.0 / std::max<Scalar>(1e-8, pi_codon(sc));
                     } else {
-                        lp.D[k] = pi_codon;
+                        lp.L[k] = Vector::Ones(S);
                     }
                 }
                 profiles[nid] = std::move(lp);
@@ -3262,18 +4266,16 @@ public:
                 Scalar bl0 = guide_tree.nodes[c0].branch_length;
                 for (size_t ci = 1; ci < node.children.size(); ++ci) {
                     int32_t ck = node.children[ci];
-                    cur = align_two_profiles(cur, (ci == 1) ? bl0 : 0.02, profiles[ck], guide_tree.nodes[ck].branch_length);
-                    compact_profile(cur);
+                    cur = align_two_profiles(cur, (ci == 1) ? bl0 : 1e-4, profiles[ck], guide_tree.nodes[ck].branch_length);
                 }
                 profiles[nid] = std::move(cur);
             }
         }
 
-        // 5. Final Root Profile Compaction
+        // 5. Assemble Root Profile Alignment
         NodeProfile root_prof = std::move(profiles[guide_tree.root_id]);
-        compact_profile(root_prof);
 
-        size_t C_total = root_prof.D.size();
+        size_t C_total = root_prof.L.size();
 
         Alignment de_novo_aln;
         for (size_t t = 0; t < N; ++t) {
@@ -3320,6 +4322,11 @@ public:
         // Refine the tree topology on the assembled alignment using Ohmic TreeEngine
         TreeEngineSettings tes;
         tes.quiet = true;
+        if (N > settings.subquadratic_taxon_threshold) {
+            tes.perform_spr = false;
+            tes.perform_topological_gradients = false;
+            tes.lbfgs_max_iterations = 15;
+        }
         TreeEngine te(tes);
         auto te_res = te.run(de_novo_aln);
 
@@ -3374,6 +4381,17 @@ public:
                 std::to_string(raw_seqs.size()) + ")."
             );
         }
+        {
+            std::unordered_set<std::string> seen_names;
+            for (const auto& sq : raw_seqs) {
+                if (!seen_names.insert(sq.name).second) {
+                    throw std::runtime_error(
+                        "Gate 1 (Duplicate Taxon Identifier): Input contains duplicate sequence identifier '" +
+                        sq.name + "'. Every sequence must have a unique taxon name."
+                    );
+                }
+            }
+        }
 
         // Gate 1: Global Alphabet Check (detect amino-acid protein FASTA masquerading as nucleotide CDS)
         size_t total_alpha = 0;
@@ -3401,14 +4419,22 @@ public:
             throw std::runtime_error(err.str());
         }
 
-        // Helper to extract in-frame triplets, strip terminal stop codon, and count internal stop codons
-        auto extract_frame_cds = [&](const std::string& nt_seq, int offset, size_t& out_internal_stops, std::vector<int8_t>& out_codons) -> std::string {
+        // Helper to extract in-frame triplets, strip terminal stop codon (and short 5'/3' UTR flanks), and count internal stop codons (E1)
+        auto extract_frame_cds = [&](const std::string& nt_seq, int offset, size_t& out_internal_stops,
+                                     std::vector<int8_t>& out_codons, bool* out_utr_trimmed = nullptr) -> std::string {
             out_internal_stops = 0;
             out_codons.clear();
+            if (out_utr_trimmed) *out_utr_trimmed = false;
             std::string clean;
             if (static_cast<size_t>(offset) >= nt_seq.size()) return clean;
             size_t usable_len = ((nt_seq.size() - static_cast<size_t>(offset)) / 3) * 3;
-            clean.reserve(usable_len);
+
+            std::vector<std::string> trips;
+            std::vector<int8_t> scs;
+            std::vector<bool> is_stop;
+            trips.reserve(usable_len / 3);
+            scs.reserve(usable_len / 3);
+            is_stop.reserve(usable_len / 3);
 
             for (size_t i = static_cast<size_t>(offset); i + 2 < static_cast<size_t>(offset) + usable_len; i += 3) {
                 std::string trip = nt_seq.substr(i, 3);
@@ -3416,18 +4442,61 @@ public:
                 for (char& ch : trip) {
                     if (ch == '-' || ch == '?') ch = 'N';
                 }
-                bool is_last = (i + 3 >= static_cast<size_t>(offset) + usable_len);
                 int8_t sc = gcode->triplet_to_sense(trip[0], trip[1], trip[2]);
                 bool has_n = (trip.find('N') != std::string::npos);
-                if (sc < 0 && !has_n) {
-                    if (is_last) {
-                        break; // strip terminal stop codon
-                    } else {
-                        out_internal_stops++;
+                trips.push_back(std::move(trip));
+                scs.push_back(sc);
+                is_stop.push_back(sc < 0 && !has_n);
+            }
+            size_t L = trips.size();
+            if (L == 0) return clean;
+
+            // Check if a short 5' UTR leader (<= 20 codons) with an early stop precedes an ATG-initiated ORF
+            size_t start_idx = 0;
+            size_t first_stop = L;
+            for (size_t k = 0; k < L; ++k) {
+                if (is_stop[k]) { first_stop = k; break; }
+            }
+            if (first_stop < std::min<size_t>(20, L / 6)) {
+                for (size_t k = first_stop + 1; k <= std::min<size_t>(25, L / 5); ++k) {
+                    if (trips[k] == "ATG") {
+                        size_t next_stop = L;
+                        for (size_t j = k + 1; j < L; ++j) {
+                            if (is_stop[j]) { next_stop = j; break; }
+                        }
+                        if (next_stop - k >= std::max<size_t>(settings.min_sense_codons, (L * 4) / 5)) {
+                            start_idx = k;
+                            first_stop = next_stop;
+                            if (out_utr_trimmed) *out_utr_trimmed = true;
+                            break;
+                        }
                     }
                 }
-                clean += trip;
-                out_codons.push_back(sc);
+            }
+
+            // If the first stop codon after start_idx is either the final codon OR lies within a trailing 3' UTR tail
+            // (<= min(25 codons, 12.5% of L) from the 3' end of a >=50-codon ORF), treat it as the terminal stop codon
+            // and trim any 3' UTR codons beyond it (E1: full-segment viral/GenBank records with 3' packaging tails).
+            size_t end_idx = L;
+            size_t max_3utr_codons = (L >= 50) ? std::min<size_t>(25, std::max<size_t>(1, L / 8)) : 0;
+            if (first_stop >= start_idx && first_stop < L) {
+                if (first_stop + 1 == L) {
+                    end_idx = first_stop;
+                } else if ((first_stop - start_idx) >= std::max<size_t>(settings.min_sense_codons, 50) &&
+                           (L - 1 - first_stop) <= max_3utr_codons) {
+                    end_idx = first_stop;
+                    if (out_utr_trimmed) *out_utr_trimmed = true;
+                }
+            }
+
+            clean.reserve((end_idx - start_idx) * 3);
+            for (size_t k = start_idx; k < end_idx; ++k) {
+                if (is_stop[k]) {
+                    if (k + 1 == end_idx) break;
+                    out_internal_stops++;
+                }
+                clean += trips[k];
+                out_codons.push_back(scs[k]);
             }
             return clean;
         };
@@ -3441,6 +4510,7 @@ public:
             std::vector<int8_t> codons;
             int frame_offset = 0;
             bool rev_comp = false;
+            bool utr_trimmed = false;
             size_t stops_frame0 = 0;
             size_t stops_chosen = 0;
             bool passed_gate2 = false;
@@ -3449,45 +4519,86 @@ public:
         std::vector<CandidateTaxon> candidates(raw_seqs.size());
         report.entries.resize(raw_seqs.size());
 
-        // First pass: check frame +0 on all sequences and build a reference amino-acid 3-mer table
-        // from unambiguous canonical sequences (0 internal stops AND start codon ATG).
-        std::unordered_set<uint32_t> clean_cohort_aa3mers;
-        auto count_aa_3mers = [&](const std::vector<int8_t>& cods, const std::unordered_set<uint32_t>& ref_set) -> size_t {
-            if (cods.size() < 3 || ref_set.empty()) return 0;
+        // First pass: check frame +0 on all sequences and build a per-sequence amino-acid 3-mer frequency map
+        // so that leave-one-out 3-mer matching can exclude a sequence's own 3-mers (fixing T1-03!).
+        std::unordered_map<uint32_t, size_t> cohort_aa3mer_seq_counts;
+        std::vector<bool> in_cohort_3mer_map(raw_seqs.size(), false);
+        auto extract_unique_3mers = [&](const std::vector<int8_t>& cods) -> std::unordered_set<uint32_t> {
+            std::unordered_set<uint32_t> u;
+            if (cods.size() < 3) return u;
+            u.reserve(cods.size());
+            for (size_t k = 0; k + 2 < cods.size(); ++k) {
+                if (cods[k] < 0 || cods[k + 1] < 0 || cods[k + 2] < 0) continue;
+                uint32_t h = (static_cast<uint32_t>(static_cast<uint8_t>(gcode->sense_codon_aa[cods[k]])) << 16)
+                           | (static_cast<uint32_t>(static_cast<uint8_t>(gcode->sense_codon_aa[cods[k + 1]])) << 8)
+                           |  static_cast<uint32_t>(static_cast<uint8_t>(gcode->sense_codon_aa[cods[k + 2]]));
+                u.insert(h);
+            }
+            return u;
+        };
+        auto add_seq_to_cohort_3mers = [&](size_t seq_idx, const std::vector<int8_t>& cods) {
+            if (in_cohort_3mer_map[seq_idx]) return;
+            auto u = extract_unique_3mers(cods);
+            for (uint32_t h : u) cohort_aa3mer_seq_counts[h]++;
+            in_cohort_3mer_map[seq_idx] = true;
+        };
+        auto count_other_cohort_3mers = [&](const std::vector<int8_t>& cods, const std::unordered_set<uint32_t>* self_set) -> size_t {
+            if (cods.size() < 3 || cohort_aa3mer_seq_counts.empty()) return 0;
             size_t hits = 0;
             for (size_t k = 0; k + 2 < cods.size(); ++k) {
                 if (cods[k] < 0 || cods[k + 1] < 0 || cods[k + 2] < 0) continue;
                 uint32_t h = (static_cast<uint32_t>(static_cast<uint8_t>(gcode->sense_codon_aa[cods[k]])) << 16)
                            | (static_cast<uint32_t>(static_cast<uint8_t>(gcode->sense_codon_aa[cods[k + 1]])) << 8)
                            |  static_cast<uint32_t>(static_cast<uint8_t>(gcode->sense_codon_aa[cods[k + 2]]));
-                if (ref_set.count(h)) hits++;
+                auto it = cohort_aa3mer_seq_counts.find(h);
+                if (it != cohort_aa3mer_seq_counts.end()) {
+                    size_t self_contrib = (self_set && self_set->count(h)) ? 1 : 0;
+                    if (it->second > self_contrib) hits++;
+                }
             }
             return hits;
         };
-        auto add_aa_3mers = [&](const std::vector<int8_t>& cods, std::unordered_set<uint32_t>& kset) {
-            if (cods.size() < 3) return;
-            for (size_t k = 0; k + 2 < cods.size(); ++k) {
-                if (cods[k] < 0 || cods[k + 1] < 0 || cods[k + 2] < 0) continue;
-                uint32_t h = (static_cast<uint32_t>(static_cast<uint8_t>(gcode->sense_codon_aa[cods[k]])) << 16)
-                           | (static_cast<uint32_t>(static_cast<uint8_t>(gcode->sense_codon_aa[cods[k + 1]])) << 8)
-                           |  static_cast<uint32_t>(static_cast<uint8_t>(gcode->sense_codon_aa[cods[k + 2]]));
-                kset.insert(h);
-            }
-        };
 
         for (size_t t = 0; t < raw_seqs.size(); ++t) {
-            std::string ungapped;
-            ungapped.reserve(raw_seqs[t].raw_seq.size());
-            size_t n_ambig = 0;
+            std::string clean_raw;
+            clean_raw.reserve(raw_seqs[t].raw_seq.size());
+            bool has_gaps = false;
             for (char ch : raw_seqs[t].raw_seq) {
+                if (std::isspace(static_cast<unsigned char>(ch))) continue;
                 char uc = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-                if (uc == '-' || std::isspace(static_cast<unsigned char>(uc))) continue;
+                if (uc == '-') has_gaps = true;
                 if (uc == 'U') uc = 'T';
-                if (uc != 'A' && uc != 'C' && uc != 'G' && uc != 'T') {
-                    uc = 'N';
-                    n_ambig++;
+                clean_raw += uc;
+            }
+            std::string ungapped;
+            ungapped.reserve(clean_raw.size());
+            size_t n_ambig = 0;
+            if (has_gaps && clean_raw.size() >= 3 && (clean_raw.size() % 3 == 0)) {
+                for (size_t k = 0; k + 2 < clean_raw.size(); k += 3) {
+                    char c1 = clean_raw[k], c2 = clean_raw[k + 1], c3 = clean_raw[k + 2];
+                    if (c1 == '-' || c2 == '-' || c3 == '-') continue;
+                    auto norm_nt = [&](char c) -> char {
+                        if (c == 'A' || c == 'C' || c == 'G' || c == 'T') return c;
+                        return 'N';
+                    };
+                    char n1 = norm_nt(c1), n2 = norm_nt(c2), n3 = norm_nt(c3);
+                    if (n1 == 'N' && n2 == 'N' && n3 == 'N') continue;
+                    if (n1 == 'N') n_ambig++;
+                    if (n2 == 'N') n_ambig++;
+                    if (n3 == 'N') n_ambig++;
+                    ungapped += n1;
+                    ungapped += n2;
+                    ungapped += n3;
                 }
-                ungapped += uc;
+            } else {
+                for (char uc : clean_raw) {
+                    if (uc == '-') continue;
+                    if (uc != 'A' && uc != 'C' && uc != 'G' && uc != 'T') {
+                        uc = 'N';
+                        n_ambig++;
+                    }
+                    ungapped += uc;
+                }
             }
 
             TaxonAdmissionEntry& ent = report.entries[t];
@@ -3512,9 +4623,11 @@ public:
 
             size_t stops0 = 0;
             std::vector<int8_t> cods0;
-            std::string cds0 = extract_frame_cds(ct.raw_nt, 0, stops0, cods0);
+            bool utr_trim0 = false;
+            std::string cds0 = extract_frame_cds(ct.raw_nt, 0, stops0, cods0, &utr_trim0);
             ent.internal_stops_frame0 = stops0;
             ct.stops_frame0 = stops0;
+            ct.utr_trimmed = utr_trim0;
 
             if (stops0 == 0 && cods0.size() >= settings.min_sense_codons) {
                 ct.clean_cds = std::move(cds0);
@@ -3524,21 +4637,27 @@ public:
                 ct.stops_chosen = 0;
                 ct.passed_gate2 = true;
                 ent.codon_length = ct.codons.size();
+                if (utr_trim0) {
+                    ent.reason = "Clean in-frame CDS (UTR flank trimmed)";
+                }
                 if (ct.clean_cds.size() >= 3 && ct.clean_cds.substr(0, 3) == "ATG") {
-                    add_aa_3mers(ct.codons, clean_cohort_aa3mers);
+                    add_seq_to_cohort_3mers(t, ct.codons);
                 }
             }
         }
-        // Fallback if no sequence started with ATG: seed 3-mer table from all stop-free frame-0 sequences
-        if (clean_cohort_aa3mers.empty()) {
-            for (const auto& ct : candidates) {
-                if (ct.passed_gate2) add_aa_3mers(ct.codons, clean_cohort_aa3mers);
+        // Fallback if fewer than 2 sequences started with ATG: seed 3-mer table from all stop-free frame-0 sequences
+        size_t atg_seeded = 0;
+        for (bool b : in_cohort_3mer_map) if (b) atg_seeded++;
+        if (atg_seeded < 2) {
+            for (size_t t = 0; t < candidates.size(); ++t) {
+                if (candidates[t].passed_gate2) add_seq_to_cohort_3mers(t, candidates[t].codons);
             }
         }
 
         // Second pass: scan all 6 frames (+0,+1,+2 on fwd & revcomp) for any sequence that either:
         //   (a) had internal stop codons in frame +0, OR
-        //   (b) did not start with ATG and has near-zero 3-mer homology in frame +0 (e.g. a GC-rich reverse-complemented sequence that happened to have 0 stops on the antisense strand!)
+        //   (b) did not start with ATG and has near-zero leave-one-out 3-mer homology in frame +0
+        //       (e.g. a reverse-complemented sequence that happened to have 0 stops on the antisense strand, T1-03!)
         size_t gate2_failures = 0;
         for (size_t t = 0; t < raw_seqs.size(); ++t) {
             CandidateTaxon& ct = candidates[t];
@@ -3547,7 +4666,11 @@ public:
                 gate2_failures++;
                 continue;
             }
-            size_t hits_frame0 = ct.passed_gate2 ? count_aa_3mers(ct.codons, clean_cohort_aa3mers) : 0;
+            std::unordered_set<uint32_t> self_3mers;
+            if (in_cohort_3mer_map[t]) self_3mers = extract_unique_3mers(ct.codons);
+            const std::unordered_set<uint32_t>* self_ptr = in_cohort_3mer_map[t] ? &self_3mers : nullptr;
+
+            size_t hits_frame0 = ct.passed_gate2 ? count_other_cohort_3mers(ct.codons, self_ptr) : 0;
             bool starts_atg0 = (ct.clean_cds.size() >= 3 && ct.clean_cds.substr(0, 3) == "ATG");
             if (ct.passed_gate2 && (starts_atg0 || hits_frame0 >= 15)) {
                 continue;
@@ -3568,11 +4691,12 @@ public:
                     size_t stops = 0;
                     std::vector<int8_t> cods;
                     std::string cds = extract_frame_cds(src, off, stops, cods);
-                if (stops == 0 && cods.size() >= settings.min_sense_codons) {
-                        size_t hits = count_aa_3mers(cods, clean_cohort_aa3mers);
+                    if (stops == 0 && cods.size() >= settings.min_sense_codons) {
+                        size_t min_rescue_hits = std::max<size_t>(8, cods.size() / 8);
+                        size_t hits = count_other_cohort_3mers(cods, self_ptr);
                         bool st_atg = (cds.size() >= 3 && cds.substr(0, 3) == "ATG");
-                        if ((!clean_cohort_aa3mers.empty() && hits > best_3mer_hits + 2 && hits >= 3) ||
-                            (clean_cohort_aa3mers.empty() && best_frame == -1 && !ct.passed_gate2)) {
+                        if ((!cohort_aa3mer_seq_counts.empty() && hits > best_3mer_hits + 4 && hits >= min_rescue_hits) ||
+                            (cohort_aa3mer_seq_counts.empty() && st_atg && best_frame == -1 && !ct.passed_gate2)) {
                             best_frame = off;
                             best_rc = (rc_flag == 1);
                             best_3mer_hits = hits;
@@ -3584,7 +4708,8 @@ public:
                 }
             }
 
-            if (best_frame != -1 && (clean_cohort_aa3mers.empty() || best_3mer_hits >= 3)) {
+            size_t req_hits = std::max<size_t>(8, best_cods.size() / 8);
+            if (best_frame != -1 && ((cohort_aa3mer_seq_counts.empty() && best_starts_atg) || best_3mer_hits >= req_hits)) {
                 ct.clean_cds = std::move(best_cds);
                 ct.codons = std::move(best_cods);
                 ct.frame_offset = best_frame;
@@ -3597,7 +4722,7 @@ public:
                 ent.codon_length = ct.codons.size();
                 ent.reason = std::string("Auto-rescued ORFs (") + (best_rc ? "rev-comp " : "fwd ") + "frame +" + std::to_string(best_frame) + ")";
                 report.rescued_frame_or_strand++;
-                if (best_starts_atg) add_aa_3mers(ct.codons, clean_cohort_aa3mers);
+                if (best_starts_atg) add_seq_to_cohort_3mers(t, ct.codons);
             } else if (!ct.passed_gate2) {
                 ent.status = "Quarantined";
                 ent.reason = "Internal premature stop codons in frame +0 (" + std::to_string(ct.stops_frame0) + " stops; pseudogene/intron/UTR)";
@@ -3609,12 +4734,47 @@ public:
         size_t gate2_survivors = raw_seqs.size() - gate2_failures;
         if (settings.enforce_admission_control &&
             (gate2_survivors < 3 || static_cast<double>(gate2_failures) / static_cast<double>(raw_seqs.size()) > 0.25)) {
+            std::string code_hint;
+            const std::vector<std::string> alt_codes = {
+                "Vertebrate-mtDNA", "Invertebrate-mtDNA", "Yeast-mtDNA", "Mold-Protozoan-mtDNA",
+                "Ciliate-Nuclear", "Euplotid-Nuclear", "Echinoderm-mtDNA", "Ascidian-mtDNA",
+                "Flatworm-mtDNA", "Blepharisma-Nuclear", "Chlorophycean-mtDNA", "Trematode-mtDNA"
+            };
+            size_t best_clean = gate2_survivors;
+            std::string best_code_name;
+            for (const auto& cname : alt_codes) {
+                auto alt_gc = GeneticCode::from_name(cname);
+                if (!alt_gc) continue;
+                size_t clean_cnt = 0;
+                for (const auto& ct : candidates) {
+                    if (ct.raw_nt.size() < settings.min_sense_codons * 3) continue;
+                    size_t usable = (ct.raw_nt.size() / 3) * 3;
+                    bool has_st = false;
+                    for (size_t i = 0; i + 5 < usable; i += 3) {
+                        char c1 = ct.raw_nt[i], c2 = ct.raw_nt[i + 1], c3 = ct.raw_nt[i + 2];
+                        if (c1 == 'N' || c2 == 'N' || c3 == 'N') continue;
+                        if (alt_gc->is_stop_triplet(c1, c2, c3)) { has_st = true; break; }
+                    }
+                    if (!has_st) clean_cnt++;
+                }
+                if (clean_cnt > best_clean && clean_cnt >= 3 &&
+                    static_cast<double>(raw_seqs.size() - clean_cnt) / static_cast<double>(raw_seqs.size()) <= 0.25) {
+                    best_clean = clean_cnt;
+                    best_code_name = cname;
+                }
+            }
+            if (!best_code_name.empty()) {
+                code_hint = " Hint: Re-running with '--code " + best_code_name + "' resolves internal stop codons in " +
+                            std::to_string(best_clean) + "/" + std::to_string(raw_seqs.size()) +
+                            " sequences (possible mitochondrial or non-standard genetic code).";
+            }
             std::ostringstream err;
             err << "Gate 2 (Reading-Frame & Stop-Codon Gate): " << gate2_failures << " of " << raw_seqs.size()
                 << " sequences (" << std::fixed << std::setprecision(1)
                 << (100.0 * static_cast<double>(gate2_failures) / static_cast<double>(raw_seqs.size()))
                 << "%) contain internal premature stop codons across reading frames or are too short. "
-                << "Input likely contains un-spliced genomic introns, 5'/3' UTRs, or non-coding sequences.";
+                << "Input likely contains un-spliced genomic introns, 5'/3' UTRs, or non-coding sequences."
+                << code_hint;
             throw std::runtime_error(err.str());
         }
 
@@ -3671,83 +4831,196 @@ public:
         Matrix ID_mat = Matrix::Zero(M, M);
         Matrix DP_mat = Matrix::Zero(M, M);
         Matrix MuID_mat = Matrix::Zero(M, M);
+        Eigen::MatrixXi eval_mask = Eigen::MatrixXi::Zero(M, M);
 
-        #pragma omp parallel for schedule(dynamic)
+        const bool use_subquadratic_gate3 = (M > settings.subquadratic_taxon_threshold);
+        std::vector<std::vector<int8_t>> cand_codons(M);
         for (size_t a = 0; a < M; ++a) {
-            const auto& seq_i = candidates[length_ok_indices[a]].codons;
+            cand_codons[a] = candidates[length_ok_indices[a]].codons;
+        }
+        LandmarkKmerGraph lm_graph;
+        if (use_subquadratic_gate3) {
+            lm_graph = LandmarkKmerGraph::build(cand_codons, *gcode, 8);
+        }
+
+        auto eval_pair_with_decoys = [&](size_t a, size_t b,
+                                         std::vector<Scalar>& prev_M, std::vector<Scalar>& curr_M,
+                                         std::vector<Scalar>& prev_D, std::vector<Scalar>& curr_D,
+                                         std::vector<size_t>& prev_id_M, std::vector<size_t>& curr_id_M,
+                                         std::vector<size_t>& prev_id_D, std::vector<size_t>& curr_id_D,
+                                         std::vector<int8_t>& shuf_i, std::vector<int8_t>& shuf_j) {
+            const auto& seq_i = cand_codons[a];
+            const auto& seq_j = cand_codons[b];
             size_t Li = seq_i.size();
-            std::vector<Scalar> prev_M, curr_M, prev_D, curr_D;
-            std::vector<size_t> prev_id_M, curr_id_M, prev_id_D, curr_id_D;
-            std::vector<int8_t> shuf_i, shuf_j;
+            size_t Lj = seq_j.size();
+            if (Li == 0 || Lj == 0) return;
 
-            for (size_t b = a + 1; b < M; ++b) {
-                const auto& seq_j = candidates[length_ok_indices[b]].codons;
-                size_t Lj = seq_j.size();
-                if (Li == 0 || Lj == 0) continue;
+            auto [norm_dp, aa_id] = run_semiglobal_banded_dp_pair(
+                seq_i, seq_j, *gcode, prev_M, curr_M, prev_D, curr_D, prev_id_M, curr_id_M, prev_id_D, curr_id_D);
+            Scalar L_eff = std::max<Scalar>(1.0, static_cast<Scalar>(std::min(Li, Lj)));
 
-                auto [norm_dp, aa_id] = run_semiglobal_banded_dp_pair(
-                    seq_i, seq_j, *gcode, prev_M, curr_M, prev_D, curr_D, prev_id_M, curr_id_M, prev_id_D, curr_id_D);
-                Scalar L_eff = std::max<Scalar>(1.0, static_cast<Scalar>(std::min(Li, Lj)));
+            constexpr int K_decoys = 16;
+            constexpr Scalar nu_0 = 16.0;
+            std::array<Scalar, K_decoys> id_null{};
+            std::array<Scalar, K_decoys> dp_null{};
+            shuf_i = seq_i;
+            shuf_j = seq_j;
+            uint64_t rng_state = 0x9E3779B97F4A7C15ULL ^
+                                 (static_cast<uint64_t>(a) * 1315423911ULL +
+                                  static_cast<uint64_t>(b) * 2654435761ULL);
 
-                // Calibrate composition- and length-matched null via K = 16 codon-shuffled decoys
-                // combined with analytical variance shrinkage (prior weight nu_0 = 16).
-                constexpr int K_decoys = 16;
-                constexpr Scalar nu_0 = 16.0;
-                std::array<Scalar, K_decoys> id_null{};
-                std::array<Scalar, K_decoys> dp_null{};
-                shuf_i = seq_i;
-                shuf_j = seq_j;
-                uint64_t rng_state = 0x9E3779B97F4A7C15ULL ^
-                                     (static_cast<uint64_t>(a) * 1315423911ULL +
-                                      static_cast<uint64_t>(b) * 2654435761ULL);
+            Scalar sum_id = 0.0, sum_dp = 0.0;
+            for (int k = 0; k < K_decoys; ++k) {
+                shuffle_codons_det(shuf_i, rng_state);
+                shuffle_codons_det(shuf_j, rng_state);
+                auto [dp_k, id_k] = run_semiglobal_banded_dp_pair(
+                    shuf_i, shuf_j, *gcode, prev_M, curr_M, prev_D, curr_D, prev_id_M, curr_id_M, prev_id_D, curr_id_D);
+                id_null[static_cast<size_t>(k)] = id_k;
+                dp_null[static_cast<size_t>(k)] = dp_k;
+                sum_id += id_k;
+                sum_dp += dp_k;
+            }
+            Scalar mu_id = sum_id / static_cast<Scalar>(K_decoys);
+            Scalar mu_dp = sum_dp / static_cast<Scalar>(K_decoys);
 
-                Scalar sum_id = 0.0, sum_dp = 0.0;
-                for (int k = 0; k < K_decoys; ++k) {
-                    shuffle_codons_det(shuf_i, rng_state);
-                    shuffle_codons_det(shuf_j, rng_state);
-                    auto [dp_k, id_k] = run_semiglobal_banded_dp_pair(
-                        shuf_i, shuf_j, *gcode, prev_M, curr_M, prev_D, curr_D, prev_id_M, curr_id_M, prev_id_D, curr_id_D);
-                    id_null[static_cast<size_t>(k)] = id_k;
-                    dp_null[static_cast<size_t>(k)] = dp_k;
-                    sum_id += id_k;
-                    sum_dp += dp_k;
+            Scalar var_id_samp = 0.0, var_dp_samp = 0.0;
+            for (int k = 0; k < K_decoys; ++k) {
+                Scalar d_id = id_null[static_cast<size_t>(k)] - mu_id;
+                Scalar d_dp = dp_null[static_cast<size_t>(k)] - mu_dp;
+                var_id_samp += d_id * d_id;
+                var_dp_samp += d_dp * d_dp;
+            }
+            var_id_samp /= static_cast<Scalar>(K_decoys - 1);
+            var_dp_samp /= static_cast<Scalar>(K_decoys - 1);
+
+            Scalar p_clamped = std::clamp<Scalar>(mu_id, 0.05, 0.95);
+            Scalar var_id_plug = (p_clamped * (1.0 - p_clamped)) / L_eff;
+            Scalar var_dp_plug = (0.35 * 0.35) / L_eff;
+
+            Scalar var_id_reg = (1.0 + 1.0 / static_cast<Scalar>(K_decoys)) *
+                std::max(var_id_plug, (nu_0 * var_id_plug + static_cast<Scalar>(K_decoys - 1) * var_id_samp) /
+                                      (nu_0 + static_cast<Scalar>(K_decoys - 1)));
+            Scalar var_dp_reg = (1.0 + 1.0 / static_cast<Scalar>(K_decoys)) *
+                std::max(var_dp_plug, (nu_0 * var_dp_plug + static_cast<Scalar>(K_decoys - 1) * var_dp_samp) /
+                                      (nu_0 + static_cast<Scalar>(K_decoys - 1)));
+
+            Scalar z_id = (aa_id - mu_id) / std::max<Scalar>(1e-4, std::sqrt(var_id_reg));
+            Scalar z_dp = (norm_dp - mu_dp) / std::max<Scalar>(1e-4, std::sqrt(var_dp_reg));
+            Scalar z_comb = 0.65 * z_id + 0.35 * z_dp;
+
+            Eigen::Index ea = static_cast<Eigen::Index>(a);
+            Eigen::Index eb = static_cast<Eigen::Index>(b);
+            Z_mat(ea, eb) = Z_mat(eb, ea) = z_comb;
+            ID_mat(ea, eb) = ID_mat(eb, ea) = aa_id;
+            DP_mat(ea, eb) = DP_mat(eb, ea) = norm_dp;
+            MuID_mat(ea, eb) = MuID_mat(eb, ea) = mu_id;
+            eval_mask(ea, eb) = eval_mask(eb, ea) = 1;
+        };
+
+        if (!use_subquadratic_gate3) {
+            #pragma omp parallel for schedule(dynamic)
+            for (size_t a = 0; a < M; ++a) {
+                std::vector<Scalar> prev_M, curr_M, prev_D, curr_D;
+                std::vector<size_t> prev_id_M, curr_id_M, prev_id_D, curr_id_D;
+                std::vector<int8_t> shuf_i, shuf_j;
+                for (size_t b = a + 1; b < M; ++b) {
+                    eval_pair_with_decoys(
+                        a, b, prev_M, curr_M, prev_D, curr_D, prev_id_M, curr_id_M, prev_id_D, curr_id_D, shuf_i, shuf_j);
                 }
-                Scalar mu_id = sum_id / static_cast<Scalar>(K_decoys);
-                Scalar mu_dp = sum_dp / static_cast<Scalar>(K_decoys);
-
-                Scalar var_id_samp = 0.0, var_dp_samp = 0.0;
-                for (int k = 0; k < K_decoys; ++k) {
-                    Scalar d_id = id_null[static_cast<size_t>(k)] - mu_id;
-                    Scalar d_dp = dp_null[static_cast<size_t>(k)] - mu_dp;
-                    var_id_samp += d_id * d_id;
-                    var_dp_samp += d_dp * d_dp;
+            }
+        } else {
+            // Subquadratic Gate 3:
+            // 1. Calibrate decoy excursion parameters on a compact landmark sample (<= 32 pairs)
+            size_t K_lm = lm_graph.landmarks.size();
+            std::vector<std::pair<size_t, size_t>> calib_pairs;
+            for (size_t k = 0; k < K_lm && calib_pairs.size() < 32; ++k) {
+                size_t u = lm_graph.landmarks[k];
+                size_t v = lm_graph.landmarks[(k + 1) % K_lm];
+                if (u != v) {
+                    if (u > v) std::swap(u, v);
+                    calib_pairs.push_back({u, v});
                 }
-                var_id_samp /= static_cast<Scalar>(K_decoys - 1);
-                var_dp_samp /= static_cast<Scalar>(K_decoys - 1);
+            }
+            Scalar sum_c_id = 0.0, sum_c_dp = 0.0;
+            size_t n_calib = calib_pairs.size();
+            {
+                std::vector<Scalar> prev_M, curr_M, prev_D, curr_D;
+                std::vector<size_t> prev_id_M, curr_id_M, prev_id_D, curr_id_D;
+                std::vector<int8_t> shuf_i, shuf_j;
+                for (const auto& [u, v] : calib_pairs) {
+                    eval_pair_with_decoys(
+                        u, v, prev_M, curr_M, prev_D, curr_D, prev_id_M, curr_id_M, prev_id_D, curr_id_D, shuf_i, shuf_j);
+                    Scalar L_eff = std::max<Scalar>(
+                        1.0, static_cast<Scalar>(std::min(cand_codons[u].size(), cand_codons[v].size())));
+                    Scalar p0_uv = lm_graph.expected_aa_identity(u, v);
+                    Scalar mu_id_uv = MuID_mat(static_cast<Eigen::Index>(u), static_cast<Eigen::Index>(v));
+                    sum_c_id += (mu_id_uv - p0_uv) * std::sqrt(L_eff);
 
-                Scalar p_clamped = std::clamp<Scalar>(mu_id, 0.05, 0.95);
-                Scalar var_id_plug = (p_clamped * (1.0 - p_clamped)) / L_eff;
-                Scalar var_dp_plug = (0.35 * 0.35) / L_eff;
+                    // Estimate decoy DP baseline from inverted Z_comb
+                    Scalar aa_id_uv = ID_mat(static_cast<Eigen::Index>(u), static_cast<Eigen::Index>(v));
+                    Scalar norm_dp_uv = DP_mat(static_cast<Eigen::Index>(u), static_cast<Eigen::Index>(v));
+                    Scalar z_uv = Z_mat(static_cast<Eigen::Index>(u), static_cast<Eigen::Index>(v));
+                    Scalar p_clamped = std::clamp<Scalar>(mu_id_uv, 0.05, 0.95);
+                    Scalar sd_id = std::sqrt((17.0 / 16.0) * (p_clamped * (1.0 - p_clamped)) / L_eff);
+                    Scalar sd_dp = std::sqrt((17.0 / 16.0) * (0.35 * 0.35) / L_eff);
+                    Scalar z_id_est = (aa_id_uv - mu_id_uv) / std::max<Scalar>(1e-4, sd_id);
+                    Scalar z_dp_est = (z_uv - 0.65 * z_id_est) / 0.35;
+                    Scalar mu_dp_est = norm_dp_uv - z_dp_est * sd_dp;
+                    sum_c_dp += mu_dp_est;
+                }
+            }
+            Scalar c_id_hat = (n_calib > 0) ? (sum_c_id / static_cast<Scalar>(n_calib)) : 0.85;
+            Scalar mu_dp_hat = (n_calib > 0) ? (sum_c_dp / static_cast<Scalar>(n_calib)) : -0.45;
 
-                Scalar var_id_reg = (1.0 + 1.0 / static_cast<Scalar>(K_decoys)) *
-                    std::max(var_id_plug, (nu_0 * var_id_plug + static_cast<Scalar>(K_decoys - 1) * var_id_samp) /
-                                          (nu_0 + static_cast<Scalar>(K_decoys - 1)));
-                Scalar var_dp_reg = (1.0 + 1.0 / static_cast<Scalar>(K_decoys)) *
-                    std::max(var_dp_plug, (nu_0 * var_dp_plug + static_cast<Scalar>(K_decoys - 1) * var_dp_samp) /
-                                          (nu_0 + static_cast<Scalar>(K_decoys - 1)));
+            // 2. Evaluate only sparse landmark + k-NN edges in O(M sqrt(M)) using 1 DP per edge
+            std::vector<std::pair<size_t, size_t>> sparse_edges;
+            for (size_t a = 0; a < M; ++a) {
+                for (size_t b : lm_graph.sparse_adj[a]) {
+                    if (a < b && eval_mask(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)) == 0) {
+                        sparse_edges.push_back({a, b});
+                    }
+                }
+            }
 
-                Scalar z_id = (aa_id - mu_id) / std::max<Scalar>(1e-4, std::sqrt(var_id_reg));
-                Scalar z_dp = (norm_dp - mu_dp) / std::max<Scalar>(1e-4, std::sqrt(var_dp_reg));
-                Scalar z_comb = 0.65 * z_id + 0.35 * z_dp;
+            #pragma omp parallel
+            {
+                std::vector<Scalar> prev_M, curr_M, prev_D, curr_D;
+                std::vector<size_t> prev_id_M, curr_id_M, prev_id_D, curr_id_D;
 
-                Z_mat(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)) = z_comb;
-                Z_mat(static_cast<Eigen::Index>(b), static_cast<Eigen::Index>(a)) = z_comb;
-                ID_mat(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)) = aa_id;
-                ID_mat(static_cast<Eigen::Index>(b), static_cast<Eigen::Index>(a)) = aa_id;
-                DP_mat(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)) = norm_dp;
-                DP_mat(static_cast<Eigen::Index>(b), static_cast<Eigen::Index>(a)) = norm_dp;
-                MuID_mat(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)) = mu_id;
-                MuID_mat(static_cast<Eigen::Index>(b), static_cast<Eigen::Index>(a)) = mu_id;
+                #pragma omp for schedule(dynamic, 16)
+                for (size_t e = 0; e < sparse_edges.size(); ++e) {
+                    size_t a = sparse_edges[e].first;
+                    size_t b = sparse_edges[e].second;
+                    const auto& seq_i = cand_codons[a];
+                    const auto& seq_j = cand_codons[b];
+                    size_t Li = seq_i.size();
+                    size_t Lj = seq_j.size();
+                    if (Li == 0 || Lj == 0) continue;
+
+                    auto [norm_dp, aa_id] = run_semiglobal_banded_dp_pair(
+                        seq_i, seq_j, *gcode, prev_M, curr_M, prev_D, curr_D, prev_id_M, curr_id_M, prev_id_D, curr_id_D);
+                    Scalar L_eff = std::max<Scalar>(1.0, static_cast<Scalar>(std::min(Li, Lj)));
+
+                    Scalar p0_ab = lm_graph.expected_aa_identity(a, b);
+                    Scalar mu_id = std::clamp<Scalar>(p0_ab + c_id_hat / std::sqrt(L_eff), 0.04, 0.90);
+                    Scalar mu_dp = mu_dp_hat;
+
+                    Scalar p_clamped = std::clamp<Scalar>(mu_id, 0.05, 0.95);
+                    Scalar var_id_reg = (17.0 / 16.0) * (p_clamped * (1.0 - p_clamped)) / L_eff;
+                    Scalar var_dp_reg = (17.0 / 16.0) * (0.35 * 0.35) / L_eff;
+
+                    Scalar z_id = (aa_id - mu_id) / std::max<Scalar>(1e-4, std::sqrt(var_id_reg));
+                    Scalar z_dp = (norm_dp - mu_dp) / std::max<Scalar>(1e-4, std::sqrt(var_dp_reg));
+                    Scalar z_comb = 0.65 * z_id + 0.35 * z_dp;
+
+                    Eigen::Index ea = static_cast<Eigen::Index>(a);
+                    Eigen::Index eb = static_cast<Eigen::Index>(b);
+                    Z_mat(ea, eb) = Z_mat(eb, ea) = z_comb;
+                    ID_mat(ea, eb) = ID_mat(eb, ea) = aa_id;
+                    DP_mat(ea, eb) = DP_mat(eb, ea) = norm_dp;
+                    MuID_mat(ea, eb) = MuID_mat(eb, ea) = mu_id;
+                    eval_mask(ea, eb) = eval_mask(eb, ea) = 1;
+                }
             }
         }
 
@@ -3765,15 +5038,30 @@ public:
             size_t head = 0;
             while (head < q.size()) {
                 size_t u = q[head++];
-                for (size_t v = 0; v < M; ++v) {
-                    Eigen::Index eu = static_cast<Eigen::Index>(u);
-                    Eigen::Index ev = static_cast<Eigen::Index>(v);
-                    Scalar min_id_edge = std::max<Scalar>(0.18, MuID_mat(eu, ev) + 0.04);
-                    if (comp_id[v] == -1 &&
-                        Z_mat(eu, ev) >= settings.min_homology_z &&
-                        ID_mat(eu, ev) >= min_id_edge) {
-                        comp_id[v] = cid;
-                        q.push_back(v);
+                Eigen::Index eu = static_cast<Eigen::Index>(u);
+                if (use_subquadratic_gate3) {
+                    for (size_t v : lm_graph.sparse_adj[u]) {
+                        Eigen::Index ev = static_cast<Eigen::Index>(v);
+                        if (eval_mask(eu, ev) == 0) continue;
+                        Scalar min_id_edge = std::max<Scalar>(0.18, MuID_mat(eu, ev) + 0.04);
+                        if (comp_id[v] == -1 &&
+                            Z_mat(eu, ev) >= settings.min_homology_z &&
+                            ID_mat(eu, ev) >= min_id_edge) {
+                            comp_id[v] = cid;
+                            q.push_back(v);
+                        }
+                    }
+                } else {
+                    for (size_t v = 0; v < M; ++v) {
+                        Eigen::Index ev = static_cast<Eigen::Index>(v);
+                        if (eval_mask(eu, ev) == 0) continue;
+                        Scalar min_id_edge = std::max<Scalar>(0.18, MuID_mat(eu, ev) + 0.04);
+                        if (comp_id[v] == -1 &&
+                            Z_mat(eu, ev) >= settings.min_homology_z &&
+                            ID_mat(eu, ev) >= min_id_edge) {
+                            comp_id[v] = cid;
+                            q.push_back(v);
+                        }
                     }
                 }
             }
@@ -3783,12 +5071,43 @@ public:
             }
         }
 
+        // Exact 16-decoy verification for any candidate disconnected from best_comp in subquadratic mode
+        if (use_subquadratic_gate3 && best_comp >= 0) {
+            std::vector<Scalar> prev_M, curr_M, prev_D, curr_D;
+            std::vector<size_t> prev_id_M, curr_id_M, prev_id_D, curr_id_D;
+            std::vector<int8_t> shuf_i, shuf_j;
+            for (size_t a = 0; a < M; ++a) {
+                if (comp_id[a] == best_comp) continue;
+                size_t best_b = a;
+                Scalar best_z = -1e9;
+                for (size_t b : lm_graph.sparse_adj[a]) {
+                    if (comp_id[b] == best_comp) {
+                        Scalar z_ab = Z_mat(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b));
+                        if (z_ab > best_z) {
+                            best_z = z_ab;
+                            best_b = b;
+                        }
+                    }
+                }
+                if (best_b != a) {
+                    eval_pair_with_decoys(
+                        a, best_b, prev_M, curr_M, prev_D, curr_D, prev_id_M, curr_id_M, prev_id_D, curr_id_D, shuf_i, shuf_j);
+                    Eigen::Index ea = static_cast<Eigen::Index>(a);
+                    Eigen::Index eb = static_cast<Eigen::Index>(best_b);
+                    Scalar min_id_edge = std::max<Scalar>(0.18, MuID_mat(ea, eb) + 0.04);
+                    if (Z_mat(ea, eb) >= settings.min_homology_z && ID_mat(ea, eb) >= min_id_edge) {
+                        comp_id[a] = best_comp;
+                    }
+                }
+            }
+        }
+
         for (size_t a = 0; a < M; ++a) {
             size_t orig = length_ok_indices[a];
             Scalar max_z = -1e9;
             Scalar max_id = 0.0;
             for (size_t b = 0; b < M; ++b) {
-                if (a == b) continue;
+                if (a == b || eval_mask(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)) == 0) continue;
                 max_z = std::max(max_z, Z_mat(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)));
                 max_id = std::max(max_id, ID_mat(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)));
             }
@@ -3797,10 +5116,18 @@ public:
 
             if (settings.enforce_admission_control && comp_id[a] != best_comp) {
                 report.entries[orig].status = "Quarantined";
+                report.entries[orig].frame_offset = 0;
+                report.entries[orig].reverse_complemented = false;
                 std::ostringstream rs;
-                rs << "Non-homologous outlier (max Z = " << std::fixed << std::setprecision(2)
-                   << report.entries[orig].max_homology_z << ", max AA identity = "
-                   << std::setprecision(1) << (max_id * 100.0) << "%)";
+                if (candidates[orig].stops_frame0 > 0) {
+                    rs << "Internal premature stop codons in frame +0 (" << candidates[orig].stops_frame0
+                       << " stops; max Z = " << std::fixed << std::setprecision(2)
+                       << report.entries[orig].max_homology_z << ")";
+                } else {
+                    rs << "Non-homologous outlier (max Z = " << std::fixed << std::setprecision(2)
+                       << report.entries[orig].max_homology_z << ", max AA identity = "
+                       << std::setprecision(1) << (max_id * 100.0) << "%)";
+                }
                 report.entries[orig].reason = rs.str();
             }
         }
@@ -3826,10 +5153,12 @@ public:
             for (size_t j = i + 1; j < N_adm; ++j) {
                 Eigen::Index u = static_cast<Eigen::Index>(admitted_m_indices[i]);
                 Eigen::Index v = static_cast<Eigen::Index>(admitted_m_indices[j]);
-                cohort_z.push_back(Z_mat(u, v));
-                cohort_id.push_back(ID_mat(u, v));
-                report.admitted_dp_similarity(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j)) = DP_mat(u, v);
-                report.admitted_dp_similarity(static_cast<Eigen::Index>(j), static_cast<Eigen::Index>(i)) = DP_mat(u, v);
+                if (eval_mask(u, v) != 0) {
+                    cohort_z.push_back(Z_mat(u, v));
+                    cohort_id.push_back(ID_mat(u, v));
+                    report.admitted_dp_similarity(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j)) = DP_mat(u, v);
+                    report.admitted_dp_similarity(static_cast<Eigen::Index>(j), static_cast<Eigen::Index>(i)) = DP_mat(u, v);
+                }
             }
         }
         if (!cohort_z.empty()) {
@@ -3882,10 +5211,8 @@ public:
         std::shared_ptr<const GeneticCode> gcode = nullptr
     ) {
         if (!gcode) gcode = GeneticCode::universal();
-        std::ifstream file(filepath);
-        if (!file.is_open()) {
-            throw std::runtime_error("Cannot open unaligned FASTA file: " + filepath);
-        }
+        std::string raw = Alignment::read_file_or_gzip(filepath);
+        std::istringstream file(raw);
 
         std::vector<Sequence> seqs;
         std::string line, current_name, current_seq;
@@ -3928,6 +5255,8 @@ public:
                     current_name = header.substr(start, end - start);
                 }
                 current_seq.clear();
+            } else if (line[0] == '(') {
+                break;
             } else {
                 for (char c : line) {
                     if (!std::isspace(static_cast<unsigned char>(c))) {
@@ -3939,18 +5268,24 @@ public:
             }
         }
         flush_seq();
+        if (seqs.empty()) {
+            // Fallback for PHYLIP / NEXUS / gzipped files passed to --unaligned
+            Alignment loaded = Alignment::load(filepath, gcode);
+            return strip_gaps_to_unaligned(loaded);
+        }
         return seqs;
     }
 
     JointAlignResult run_from_unaligned(
         const std::vector<Sequence>& unaligned_seqs,
-        std::shared_ptr<const GeneticCode> gcode = nullptr
+        std::shared_ptr<const GeneticCode> gcode = nullptr,
+        std::optional<Tree> starting_tree = std::nullopt
     ) {
         auto t0 = std::chrono::steady_clock::now();
         auto [admitted_seqs, adm_report] = triage_and_admit_unaligned_sequences(unaligned_seqs, gcode, settings);
         auto [de_novo_aln, de_novo_tree] = build_de_novo_codon_alignment_and_tree(
             admitted_seqs, gcode, settings, &adm_report.admitted_dp_similarity);
-        auto res = run(de_novo_aln, de_novo_tree);
+        auto res = run(de_novo_aln, starting_tree.has_value() ? starting_tree : std::optional<Tree>(de_novo_tree));
         res.admission_report = std::move(adm_report);
         auto t1 = std::chrono::steady_clock::now();
         res.runtime_seconds = std::chrono::duration<double>(t1 - t0).count();
@@ -4019,6 +5354,7 @@ public:
             auto te_res = te.run(base_aln);
             tree = te_res.optimized_tree;
         }
+        LikelihoodEngine::reconcile_tree_leaf_names(tree, base_aln);
 
         GTRFitter gtr_fitter(tree, base_aln);
         auto gtr_fit = gtr_fitter.fit();
@@ -4201,56 +5537,87 @@ public:
             const Scalar log_1m_ext_cv = std::log(1.0 - p_ext_cv);
 
             std::vector<Scalar> col_match_acc(C, 0.0);
+            constexpr int B_cv = 24;
+            constexpr int BAND_W = 2 * B_cv + 1;
+            const Scalar NEG_INF_CV = -1e18;
+
             for (size_t t = 0; t < N; ++t) {
                 std::vector<int8_t> obs;
                 obs.reserve(C);
+                std::vector<int> cum_obs(C + 1, 0);
                 for (size_t c = 0; c < C; ++c) {
                     if (aln.sequences[t].codons[c] >= 0) obs.push_back(aln.sequences[t].codons[c]);
+                    cum_obs[c + 1] = static_cast<int>(obs.size());
                 }
-                size_t M = obs.size();
-                Eigen::MatrixXd fwd_M = Eigen::MatrixXd::Constant(C + 1, M + 1, -1e18);
-                Eigen::MatrixXd fwd_G = Eigen::MatrixXd::Constant(C + 1, M + 1, -1e18);
-                fwd_M(0, 0) = 0.0;
+                int M = static_cast<int>(obs.size());
+                Eigen::MatrixXd fwd_M = Eigen::MatrixXd::Constant(C + 1, BAND_W, NEG_INF_CV);
+                Eigen::MatrixXd fwd_G = Eigen::MatrixXd::Constant(C + 1, BAND_W, NEG_INF_CV);
+                fwd_M(0, B_cv) = 0.0;
 
                 for (size_t w = 1; w <= C; ++w) {
                     const Vector& cav = full_cavity[w - 1][t];
-                    for (size_t j = 0; j <= M; ++j) {
-                        fwd_G(w, j) = log_sum_exp(fwd_M(w - 1, j) + log_open_cv, fwd_G(w - 1, j) + log_ext_cv);
-                        if (j >= 1) {
-                            Scalar emit = std::log(std::max<Scalar>(1e-12, cav(obs[j - 1])));
-                            fwd_M(w, j) = log_sum_exp(
-                                fwd_M(w - 1, j - 1) + log_1m_open_cv + emit,
-                                fwd_G(w - 1, j - 1) + log_1m_ext_cv + emit
+                    int center_prev = cum_obs[w - 1];
+                    int center_curr = cum_obs[w];
+                    int j_lo = std::max(0, center_curr - B_cv);
+                    int j_hi = std::min(M, center_curr + B_cv);
+                    for (int j = j_lo; j <= j_hi; ++j) {
+                        int k_curr = j - center_curr + B_cv;
+                        int k_prev_same = j - center_prev + B_cv;
+                        if (k_prev_same >= 0 && k_prev_same < BAND_W) {
+                            fwd_G(w, k_curr) = log_sum_exp(
+                                fwd_M(w - 1, k_prev_same) + log_open_cv,
+                                fwd_G(w - 1, k_prev_same) + log_ext_cv
+                            );
+                        }
+                        int k_prev_diag = (j - 1) - center_prev + B_cv;
+                        if (j >= 1 && k_prev_diag >= 0 && k_prev_diag < BAND_W) {
+                            Scalar emit = std::log(std::max<Scalar>(1e-12, cav(obs[static_cast<size_t>(j - 1)])));
+                            fwd_M(w, k_curr) = log_sum_exp(
+                                fwd_M(w - 1, k_prev_diag) + log_1m_open_cv + emit,
+                                fwd_G(w - 1, k_prev_diag) + log_1m_ext_cv + emit
                             );
                         }
                     }
                 }
-                Scalar log_Z = log_sum_exp(fwd_M(C, M), fwd_G(C, M));
+                Scalar log_Z = log_sum_exp(fwd_M(C, B_cv), fwd_G(C, B_cv));
                 ev.loto_cv_log_l += log_Z;
 
                 // Backward pass for Option 5 per-column posterior confidence
-                Eigen::MatrixXd bwd_M = Eigen::MatrixXd::Constant(C + 1, M + 1, -1e18);
-                Eigen::MatrixXd bwd_G = Eigen::MatrixXd::Constant(C + 1, M + 1, -1e18);
-                bwd_M(C, M) = 0.0;
-                bwd_G(C, M) = 0.0;
+                Eigen::MatrixXd bwd_M = Eigen::MatrixXd::Constant(C + 1, BAND_W, NEG_INF_CV);
+                Eigen::MatrixXd bwd_G = Eigen::MatrixXd::Constant(C + 1, BAND_W, NEG_INF_CV);
+                bwd_M(C, B_cv) = 0.0;
+                bwd_G(C, B_cv) = 0.0;
                 for (size_t w = C; w >= 1; --w) {
                     const Vector& cav = full_cavity[w - 1][t];
-                    for (size_t j = 0; j <= M; ++j) {
-                        Scalar to_g = bwd_G(w, j);
-                        bwd_M(w - 1, j) = log_sum_exp(bwd_M(w - 1, j), to_g + log_open_cv);
-                        bwd_G(w - 1, j) = log_sum_exp(bwd_G(w - 1, j), to_g + log_ext_cv);
-                        if (j >= 1) {
-                            Scalar emit = std::log(std::max<Scalar>(1e-12, cav(obs[j - 1])));
-                            Scalar to_m = bwd_M(w, j) + emit;
-                            bwd_M(w - 1, j - 1) = log_sum_exp(bwd_M(w - 1, j - 1), to_m + log_1m_open_cv);
-                            bwd_G(w - 1, j - 1) = log_sum_exp(bwd_G(w - 1, j - 1), to_m + log_1m_ext_cv);
+                    int center_prev = cum_obs[w - 1];
+                    int center_curr = cum_obs[w];
+                    int j_lo = std::max(0, center_curr - B_cv);
+                    int j_hi = std::min(M, center_curr + B_cv);
+                    for (int j = j_lo; j <= j_hi; ++j) {
+                        int k_curr = j - center_curr + B_cv;
+                        int k_prev_same = j - center_prev + B_cv;
+                        if (k_prev_same >= 0 && k_prev_same < BAND_W) {
+                            Scalar to_g = bwd_G(w, k_curr);
+                            bwd_M(w - 1, k_prev_same) = log_sum_exp(bwd_M(w - 1, k_prev_same), to_g + log_open_cv);
+                            bwd_G(w - 1, k_prev_same) = log_sum_exp(bwd_G(w - 1, k_prev_same), to_g + log_ext_cv);
+                        }
+                        int k_prev_diag = (j - 1) - center_prev + B_cv;
+                        if (j >= 1 && k_prev_diag >= 0 && k_prev_diag < BAND_W) {
+                            Scalar emit = std::log(std::max<Scalar>(1e-12, cav(obs[static_cast<size_t>(j - 1)])));
+                            Scalar to_m = bwd_M(w, k_curr) + emit;
+                            bwd_M(w - 1, k_prev_diag) = log_sum_exp(bwd_M(w - 1, k_prev_diag), to_m + log_1m_open_cv);
+                            bwd_G(w - 1, k_prev_diag) = log_sum_exp(bwd_G(w - 1, k_prev_diag), to_m + log_1m_ext_cv);
                         }
                     }
                 }
                 for (size_t w = 1; w <= C; ++w) {
-                    Scalar log_m = -1e18;
-                    for (size_t j = 1; j <= M; ++j) {
-                        log_m = log_sum_exp(log_m, fwd_M(w, j) + bwd_M(w, j));
+                    Scalar log_m = NEG_INF_CV;
+                    int center_curr = cum_obs[w];
+                    int j_lo = std::max(1, center_curr - B_cv);
+                    int j_hi = std::min(M, center_curr + B_cv);
+                    for (int j = j_lo; j <= j_hi; ++j) {
+                        int k_curr = j - center_curr + B_cv;
+                        log_m = log_sum_exp(log_m, fwd_M(w, k_curr) + bwd_M(w, k_curr));
                     }
                     Scalar p_m = std::clamp(std::exp(std::clamp(log_m - log_Z, -50.0, 0.0)), 0.0, 1.0);
                     bool is_match = (aln.sequences[t].codons[w - 1] >= 0);

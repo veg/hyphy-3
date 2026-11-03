@@ -76,6 +76,13 @@ struct CompositionTestResult {
     int df_cp3 = 0;
     Scalar p_value_cp3 = 1.0;
 
+    // Phylogenetic likelihood stationarity test on the tree (3-regime directional vs 1-regime stationary)
+    Scalar phylo_stat_log_l = 0.0;
+    Scalar phylo_dir_log_l = 0.0;
+    Scalar phylo_dir_lrt = 0.0;
+    Scalar phylo_dir_bic_delta = 0.0;
+    Scalar phylo_dir_p_value = 1.0;
+
     bool is_heterogeneous = false;
     std::vector<TaxonComposition> taxa;
 };
@@ -376,7 +383,7 @@ public:
         res.df_cp3 = df_3;
         res.p_value_cp3 = chi2_p_value(c_3, df_3);
 
-        res.is_heterogeneous = (res.p_value_overall < threshold || res.p_value_cp3 < threshold);
+        res.is_heterogeneous = (res.df_cp3 > 0) ? (res.p_value_cp3 < threshold) : (res.p_value_overall < threshold);
         return res;
     }
 
@@ -810,36 +817,14 @@ public:
         int S = gcode.num_sense_codons;
         size_t num_nodes = tree.num_nodes();
 
-        // Determine number of regimes
-        int K = 1;
-        if (settings.num_regimes == 3) {
-            K = 3;
-        } else if (settings.num_regimes == 1) {
-            K = 1;
-        } else {
-            // Auto: 3 if heterogeneous, 1 if homogeneous
-            K = comp_test.is_heterogeneous ? 3 : 1;
+        if (comp_test.taxa.empty()) {
+            comp_test = run_composition_test(aln, settings.heterogeneity_threshold);
         }
 
-        // Calculate node GC contents to assign branches
+        // Reconstruct node GC contents using Felsenstein inverse-branch-length precision weights
         std::vector<Scalar> node_gc(num_nodes, 0.5);
         auto leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(tree, aln);
 
-        for (int32_t nid : tree.post_order) {
-            const auto& node = tree.nodes[nid];
-            if (node.is_leaf) {
-                size_t t_idx = leaf_to_taxon[nid];
-                if (t_idx != static_cast<size_t>(-1) && t_idx < comp_test.taxa.size()) {
-                    node_gc[nid] = comp_test.taxa[t_idx].gc_cp3;
-                }
-            } else if (!node.children.empty()) {
-                Scalar sum = 0.0;
-                for (int32_t ch : node.children) sum += node_gc[ch];
-                node_gc[nid] = sum / node.children.size();
-            }
-        }
-
-        // Alignment background GC at CP3
         Scalar bg_gc = 0.5;
         if (!comp_test.taxa.empty()) {
             Scalar sum = 0.0;
@@ -847,11 +832,226 @@ public:
             bg_gc = sum / comp_test.taxa.size();
         }
 
-        // Compute branch delta_gc relative to alignment background
-        std::vector<Scalar> branch_deltas;
+        for (int32_t nid : tree.post_order) {
+            const auto& node = tree.nodes[nid];
+            if (node.is_leaf) {
+                size_t t_idx = leaf_to_taxon[nid];
+                if (t_idx != static_cast<size_t>(-1) && t_idx < comp_test.taxa.size()) {
+                    node_gc[nid] = comp_test.taxa[t_idx].gc_cp3;
+                } else {
+                    node_gc[nid] = bg_gc;
+                }
+            } else if (!node.children.empty()) {
+                Scalar w_sum = 0.0, gc_sum = 0.0;
+                for (int32_t ch : node.children) {
+                    Scalar bl = std::max<Scalar>(1e-3, tree.nodes[ch].branch_length);
+                    Scalar w = 1.0 / bl;
+                    gc_sum += w * node_gc[ch];
+                    w_sum += w;
+                }
+                node_gc[nid] = (w_sum > 0.0) ? (gc_sum / w_sum) : bg_gc;
+            }
+        }
+        // Smooth internal node GC with parent context in pre-order (continuous-trait GLS posterior mean)
+        for (auto it = tree.post_order.rbegin(); it != tree.post_order.rend(); ++it) {
+            int32_t nid = *it;
+            const auto& node = tree.nodes[nid];
+            if (!node.is_leaf && node.id != tree.root_id && node.parent_id >= 0) {
+                Scalar bl_p = std::max<Scalar>(1e-3, node.branch_length);
+                Scalar w_p = 1.0 / bl_p;
+                Scalar w_sum = w_p;
+                Scalar gc_sum = w_p * node_gc[node.parent_id];
+                for (int32_t ch : node.children) {
+                    Scalar bl_c = std::max<Scalar>(1e-3, tree.nodes[ch].branch_length);
+                    Scalar w_c = 1.0 / bl_c;
+                    gc_sum += w_c * node_gc[ch];
+                    w_sum += w_c;
+                }
+                if (w_sum > 0.0) node_gc[nid] = gc_sum / w_sum;
+            }
+        }
+
+        auto make_regime = [&](int id, const std::string& name, Scalar psi_val, size_t count, Scalar avg_gc) {
+            DirectionalRegime reg;
+            reg.id = id;
+            reg.name = name;
+            reg.psi = psi_val;
+            reg.mean_gc = avg_gc;
+            reg.branch_count = count;
+
+            reg.pos_nuc_freqs = aln.pos_nuc_frequencies;
+            for (int p = 0; p < 3; ++p) {
+                reg.pos_nuc_freqs(p, 1) *= std::exp(0.5 * psi_val); // C
+                reg.pos_nuc_freqs(p, 2) *= std::exp(0.5 * psi_val); // G
+                reg.pos_nuc_freqs(p, 0) *= std::exp(-0.5 * psi_val); // A
+                reg.pos_nuc_freqs(p, 3) *= std::exp(-0.5 * psi_val); // T
+                Scalar rsum = reg.pos_nuc_freqs.row(p).sum();
+                if (rsum > 1e-9) reg.pos_nuc_freqs.row(p) /= rsum;
+            }
+
+            reg.codon_freqs.resize(S);
+            for (int c = 0; c < S; ++c) {
+                const auto& trip = gcode.sense_codons[c];
+                int b0 = (trip[0] == 'C' ? 1 : (trip[0] == 'G' ? 2 : (trip[0] == 'A' ? 0 : 3)));
+                int b1 = (trip[1] == 'C' ? 1 : (trip[1] == 'G' ? 2 : (trip[1] == 'A' ? 0 : 3)));
+                int b2 = (trip[2] == 'C' ? 1 : (trip[2] == 'G' ? 2 : (trip[2] == 'A' ? 0 : 3)));
+                reg.codon_freqs(c) = reg.pos_nuc_freqs(0, b0) * reg.pos_nuc_freqs(1, b1) * reg.pos_nuc_freqs(2, b2);
+            }
+            Scalar sum_cf = reg.codon_freqs.sum();
+            if (sum_cf > 1e-9) reg.codon_freqs /= sum_cf;
+
+            reg.base_matrix.update(base_params, reg.pos_nuc_freqs, reg.codon_freqs, gcode);
+            return reg;
+        };
+
+        // Build neutral stationary baseline and scale branch lengths once
+        DirectionalRegime reg_stat = make_regime(1, "Neutral", 0.0, 0, std::clamp(bg_gc, 0.05, 0.95));
+        Scalar Q_scale = reg_stat.base_matrix.scale_factor;
+        conversion_factor = (Q_scale > 1e-12) ? (3.0 / Q_scale) : 1.0;
+
+        baseline_tree_length = 0.0;
+        for (auto& node : tree.nodes) {
+            if (node.id != tree.root_id) {
+                baseline_tree_length += node.branch_length;
+                node.branch_length *= conversion_factor;
+            }
+        }
+        tree.scale_bridge_lengths(conversion_factor);
+
+        // Compute Inside-Outside codon cavities under the stationary model and measure
+        // posterior W->S (AT->GC) and S->W (GC->AT) codon substitution flux on every branch
+        std::vector<Matrix> P_stat(num_nodes);
         for (const auto& node : tree.nodes) {
             if (node.id != tree.root_id) {
-                Scalar d = node_gc[node.id] - bg_gc;
+                P_stat[node.id] = reg_stat.base_matrix.transition_matrix(node.branch_length);
+            }
+        }
+
+        std::vector<int> codon_gc_count(S, 0);
+        for (int c = 0; c < S; ++c) {
+            const auto& trip = gcode.sense_codons[c];
+            int g = 0;
+            for (int pos = 0; pos < 3; ++pos) {
+                if (trip[pos] == 'G' || trip[pos] == 'C') g++;
+            }
+            codon_gc_count[c] = g;
+        }
+        Matrix mask_ws = Matrix::Zero(S, S);
+        Matrix mask_sw = Matrix::Zero(S, S);
+        for (int i = 0; i < S; ++i) {
+            for (int j = 0; j < S; ++j) {
+                if (codon_gc_count[j] > codon_gc_count[i]) {
+                    mask_ws(i, j) = static_cast<Scalar>(codon_gc_count[j] - codon_gc_count[i]);
+                } else if (codon_gc_count[i] > codon_gc_count[j]) {
+                    mask_sw(i, j) = static_cast<Scalar>(codon_gc_count[i] - codon_gc_count[j]);
+                }
+            }
+        }
+
+        std::vector<Scalar> branch_n_ws(num_nodes, 0.0);
+        std::vector<Scalar> branch_n_sw(num_nodes, 0.0);
+        Scalar stat_tree_lnl = 0.0;
+
+        std::vector<Vector> loc_in(num_nodes, Vector::Ones(S));
+        std::vector<Vector> loc_out(num_nodes, Vector::Zero(S));
+        std::vector<Scalar> log_sc(num_nodes, 0.0);
+        std::vector<Vector> node_post(num_nodes, Vector::Zero(S));
+        const Vector& pi_stat = reg_stat.codon_freqs;
+
+        for (size_t p = 0; p < aln.patterns.size(); ++p) {
+            const auto& pat = aln.patterns[p];
+            Scalar w_pat = static_cast<Scalar>(pat.weight);
+            for (int32_t nid : tree.post_order) {
+                const auto& nd = tree.nodes[nid];
+                if (nd.is_leaf) {
+                    size_t tid = (nid < static_cast<int32_t>(leaf_to_taxon.size())) ? leaf_to_taxon[nid] : static_cast<size_t>(-1);
+                    if (tid < aln.num_taxa) {
+                        LikelihoodEngine::init_leaf_likelihood(pat, tid, S, loc_in[nid]);
+                    } else {
+                        loc_in[nid].setOnes();
+                    }
+                    log_sc[nid] = 0.0;
+                } else {
+                    Vector prod = Vector::Ones(S);
+                    Scalar sc = 0.0;
+                    for (int32_t ch : nd.children) {
+                        prod.array() *= (P_stat[ch] * loc_in[ch]).array();
+                        sc += log_sc[ch];
+                    }
+                    Scalar mx = prod.maxCoeff();
+                    if (mx > 0.0) {
+                        prod /= mx;
+                        sc += std::log(mx);
+                    }
+                    loc_in[nid] = prod;
+                    log_sc[nid] = sc;
+                }
+            }
+            Scalar root_dot = std::max<Scalar>(1e-300, pi_stat.dot(loc_in[tree.root_id]));
+            stat_tree_lnl += w_pat * (log_sc[tree.root_id] + std::log(root_dot));
+
+            node_post[tree.root_id] = pi_stat;
+            for (auto it = tree.post_order.rbegin(); it != tree.post_order.rend(); ++it) {
+                int32_t uid = *it;
+                const auto& u_nd = tree.nodes[uid];
+                if (u_nd.children.empty()) continue;
+
+                std::vector<Vector> child_msgs(u_nd.children.size());
+                for (size_t k = 0; k < u_nd.children.size(); ++k) {
+                    int32_t vid = u_nd.children[k];
+                    child_msgs[k] = P_stat[vid] * loc_in[vid];
+                }
+                for (size_t k = 0; k < u_nd.children.size(); ++k) {
+                    int32_t vid = u_nd.children[k];
+                    Vector cav_u = node_post[uid];
+                    for (size_t j = 0; j < u_nd.children.size(); ++j) {
+                        if (j != k) cav_u.array() *= child_msgs[j].array();
+                    }
+                    Scalar s_sum = cav_u.sum();
+                    if (s_sum > 0.0) cav_u /= s_sum;
+                    else cav_u = pi_stat;
+                    loc_out[vid] = cav_u;
+
+                    Vector post_v = P_stat[vid].transpose() * cav_u;
+                    Scalar pv_sum = post_v.sum();
+                    if (pv_sum > 0.0) post_v /= pv_sum;
+                    else post_v = pi_stat;
+                    node_post[vid] = post_v;
+
+                    Scalar norm_z = std::max<Scalar>(1e-30, cav_u.dot(child_msgs[k]));
+                    Scalar ws_p = cav_u.dot((P_stat[vid].cwiseProduct(mask_ws)) * loc_in[vid]) / norm_z;
+                    Scalar sw_p = cav_u.dot((P_stat[vid].cwiseProduct(mask_sw)) * loc_in[vid]) / norm_z;
+                    branch_n_ws[vid] += w_pat * ws_p;
+                    branch_n_sw[vid] += w_pat * sw_p;
+                }
+            }
+        }
+
+        // Compute directional shift d_b per branch combining parent->child trajectory with Inside-Outside codon flux
+        std::vector<Scalar> node_delta(num_nodes, 0.0);
+        std::vector<Scalar> branch_deltas;
+        Scalar max_branch_z2 = 0.0;
+
+        for (const auto& node : tree.nodes) {
+            if (node.id != tree.root_id && node.parent_id >= 0) {
+                Scalar step_delta = node_gc[node.id] - node_gc[node.parent_id];
+                Scalar bg_delta = node_gc[node.id] - bg_gc;
+                Scalar n_ws = branch_n_ws[node.id];
+                Scalar n_sw = branch_n_sw[node.id];
+                Scalar flux_asym = (n_ws - n_sw) / (n_ws + n_sw + 4.0);
+                Scalar z_b = (n_ws - n_sw) / std::sqrt(n_ws + n_sw + 2.0);
+                Scalar z2 = z_b * z_b;
+                if (z2 > max_branch_z2) max_branch_z2 = z2;
+
+                Scalar d = 0.0;
+                // If parent->child trajectory reverses against the clade background (e.g. 0.80 -> 0.65 when bg = 0.50),
+                // follow the true parent->child evolutionary direction and substitution flux!
+                if (step_delta * bg_delta < 0.0 && (std::abs(step_delta) >= 0.015 || flux_asym * bg_delta < -0.02)) {
+                    d = 0.65 * step_delta + 0.35 * (0.40 * flux_asym);
+                } else {
+                    d = 0.45 * step_delta + 0.30 * bg_delta + 0.25 * (0.40 * flux_asym);
+                }
+                node_delta[node.id] = d;
                 branch_deltas.push_back(d);
             }
         }
@@ -869,154 +1069,125 @@ public:
         Scalar tau = std::max(0.02, 0.4 * sigma);
         Scalar kappa = 3.5 / sigma;
 
-        // Assign regimes via Softmax mixture
-        branch_regime_ids.assign(num_nodes, 1); // Default Neutral
-        branch_regime_weights.assign(num_nodes, {0.0, 1.0, 0.0});
+        // First compute candidate 3-regime weights & matrices so we can evaluate the exact phylogenetic LRT on the tree
+        std::vector<int> cand_regime_ids(num_nodes, 1);
+        std::vector<std::vector<Scalar>> cand_regime_weights(num_nodes, {0.0, 1.0, 0.0});
         std::array<Scalar, 3> soft_regime_counts = {0.0, 0.0, 0.0};
         std::array<Scalar, 3> soft_regime_gc_sum = {0.0, 0.0, 0.0};
 
-        if (K == 3) {
-            for (const auto& node : tree.nodes) {
-                if (node.id != tree.root_id) {
-                    Scalar d = node_gc[node.id] - bg_gc;
-                    // Softmax logits for 3 regimes: 0 (AT-drift), 1 (Neutral), 2 (GC-drift)
-                    Scalar ell_0 = kappa * (-d - tau);
-                    Scalar ell_1 = 0.0;
-                    Scalar ell_2 = kappa * (d - tau);
-
-                    Scalar max_l = std::max(ell_0, std::max(ell_1, ell_2));
-                    Scalar e0 = std::exp(ell_0 - max_l);
-                    Scalar e1 = std::exp(ell_1 - max_l);
-                    Scalar e2 = std::exp(ell_2 - max_l);
-                    Scalar sum_e = e0 + e1 + e2;
-                    Scalar w0 = e0 / sum_e;
-                    Scalar w1 = e1 / sum_e;
-                    Scalar w2 = e2 / sum_e;
-
-                    branch_regime_weights[node.id] = {w0, w1, w2};
-
-                    int r_id = 1;
-                    if (w2 > w1 && w2 > w0) r_id = 2;
-                    else if (w0 > w1 && w0 > w2) r_id = 0;
-                    branch_regime_ids[node.id] = r_id;
-
-                    soft_regime_counts[0] += w0;
-                    soft_regime_counts[1] += w1;
-                    soft_regime_counts[2] += w2;
-
-                    soft_regime_gc_sum[0] += w0 * node_gc[node.id];
-                    soft_regime_gc_sum[1] += w1 * node_gc[node.id];
-                    soft_regime_gc_sum[2] += w2 * node_gc[node.id];
-                }
-            }
-        } else {
-            for (const auto& node : tree.nodes) {
-                if (node.id != tree.root_id) {
-                    branch_regime_weights[node.id] = {0.0, 1.0, 0.0};
-                    branch_regime_ids[node.id] = 1;
-                    soft_regime_counts[1] += 1.0;
-                    soft_regime_gc_sum[1] += node_gc[node.id];
-                }
-            }
-        }
-
-        // Build regimes
-        regimes.clear();
-        Scalar avg_gc_1 = (soft_regime_counts[1] > 1e-4) ? (soft_regime_gc_sum[1] / soft_regime_counts[1]) : bg_gc;
-        Scalar avg_gc_2 = (soft_regime_counts[2] > 1e-4) ? (soft_regime_gc_sum[2] / soft_regime_counts[2]) : (bg_gc + 0.1);
-        Scalar avg_gc_0 = (soft_regime_counts[0] > 1e-4) ? (soft_regime_gc_sum[0] / soft_regime_counts[0]) : (bg_gc - 0.1);
-
-        avg_gc_1 = std::clamp(avg_gc_1, 0.05, 0.95);
-        avg_gc_2 = std::clamp(avg_gc_2, 0.05, 0.95);
-        avg_gc_0 = std::clamp(avg_gc_0, 0.05, 0.95);
-
-        auto make_regime = [&](int id, const std::string& name, Scalar psi_val, size_t count, Scalar avg_gc) {
-            DirectionalRegime reg;
-            reg.id = id;
-            reg.name = name;
-            reg.psi = psi_val;
-            reg.mean_gc = avg_gc;
-            reg.branch_count = count;
-
-            // Target pos_nuc_freqs
-            reg.pos_nuc_freqs = aln.pos_nuc_frequencies;
-            for (int p = 0; p < 3; ++p) {
-                reg.pos_nuc_freqs(p, 1) *= std::exp(0.5 * psi_val); // C
-                reg.pos_nuc_freqs(p, 2) *= std::exp(0.5 * psi_val); // G
-                reg.pos_nuc_freqs(p, 0) *= std::exp(-0.5 * psi_val); // A
-                reg.pos_nuc_freqs(p, 3) *= std::exp(-0.5 * psi_val); // T
-                Scalar rsum = reg.pos_nuc_freqs.row(p).sum();
-                if (rsum > 1e-9) reg.pos_nuc_freqs.row(p) /= rsum;
-            }
-
-            // Target codon freqs F3x4
-            reg.codon_freqs.resize(S);
-            for (int c = 0; c < S; ++c) {
-                const auto& trip = gcode.sense_codons[c];
-                int b0 = (trip[0] == 'C' ? 1 : (trip[0] == 'G' ? 2 : (trip[0] == 'A' ? 0 : 3)));
-                int b1 = (trip[1] == 'C' ? 1 : (trip[1] == 'G' ? 2 : (trip[1] == 'A' ? 0 : 3)));
-                int b2 = (trip[2] == 'C' ? 1 : (trip[2] == 'G' ? 2 : (trip[2] == 'A' ? 0 : 3)));
-                reg.codon_freqs(c) = reg.pos_nuc_freqs(0, b0) * reg.pos_nuc_freqs(1, b1) * reg.pos_nuc_freqs(2, b2);
-            }
-            Scalar sum_cf = reg.codon_freqs.sum();
-            if (sum_cf > 1e-9) reg.codon_freqs /= sum_cf;
-
-            reg.base_matrix.update(base_params, reg.pos_nuc_freqs, reg.codon_freqs, gcode);
-            return reg;
-        };
-
-        if (K == 3) {
-            Scalar psi_gc = std::log((avg_gc_2 / (1.0 - avg_gc_2)) / (avg_gc_1 / (1.0 - avg_gc_1)));
-            Scalar psi_at = std::log((avg_gc_0 / (1.0 - avg_gc_0)) / (avg_gc_1 / (1.0 - avg_gc_1)));
-            psi_gc = std::clamp(psi_gc, 0.05, 3.0);
-            psi_at = std::clamp(psi_at, -3.0, -0.05);
-
-            regimes.push_back(make_regime(0, "AT-drift", psi_at, static_cast<size_t>(std::round(soft_regime_counts[0])), avg_gc_0));
-            regimes.push_back(make_regime(1, "Neutral", 0.0, static_cast<size_t>(std::round(soft_regime_counts[1])), avg_gc_1));
-            regimes.push_back(make_regime(2, "GC-drift", psi_gc, static_cast<size_t>(std::round(soft_regime_counts[2])), avg_gc_2));
-        } else {
-            regimes.push_back(make_regime(1, "Neutral", 0.0, static_cast<size_t>(std::round(soft_regime_counts[1])), avg_gc_1));
-        }
-
-        // Root frequencies: Neutral regime codon frequencies
-        root_frequencies = (K == 3) ? regimes[1].codon_freqs : regimes[0].codon_freqs;
-
-        // Tree length scale conversion
-        Scalar Q_scale = regimes[K == 3 ? 1 : 0].base_matrix.scale_factor;
-        conversion_factor = (Q_scale > 1e-12) ? (3.0 / Q_scale) : 1.0;
-
-        baseline_tree_length = 0.0;
-        for (auto& node : tree.nodes) {
-            if (node.id != tree.root_id) {
-                baseline_tree_length += node.branch_length;
-                node.branch_length *= conversion_factor;
-            }
-        }
-        tree.scale_bridge_lengths(conversion_factor);
-
-        // Precompute branch transition matrices for reconstruction
-        branch_transition_matrices.resize(num_nodes);
         for (const auto& node : tree.nodes) {
             if (node.id != tree.root_id) {
-                if (K == 3) {
-                    const auto& w = branch_regime_weights[node.id];
-                    if (w[1] > 0.99) {
-                        branch_transition_matrices[node.id] = regimes[1].base_matrix.transition_matrix(node.branch_length);
-                    } else if (w[2] > 0.99) {
-                        branch_transition_matrices[node.id] = regimes[2].base_matrix.transition_matrix(node.branch_length);
-                    } else if (w[0] > 0.99) {
-                        branch_transition_matrices[node.id] = regimes[0].base_matrix.transition_matrix(node.branch_length);
-                    } else {
-                        Matrix P = w[1] * regimes[1].base_matrix.transition_matrix(node.branch_length);
-                        if (w[2] > 1e-4) P += w[2] * regimes[2].base_matrix.transition_matrix(node.branch_length);
-                        if (w[0] > 1e-4) P += w[0] * regimes[0].base_matrix.transition_matrix(node.branch_length);
-                        branch_transition_matrices[node.id] = std::move(P);
-                    }
-                } else {
-                    branch_transition_matrices[node.id] = regimes[0].base_matrix.transition_matrix(node.branch_length);
-                }
+                Scalar d = node_delta[node.id];
+                Scalar ell_0 = kappa * (-d - tau);
+                Scalar ell_1 = 0.0;
+                Scalar ell_2 = kappa * (d - tau);
+
+                Scalar max_l = std::max(ell_0, std::max(ell_1, ell_2));
+                Scalar e0 = std::exp(ell_0 - max_l);
+                Scalar e1 = std::exp(ell_1 - max_l);
+                Scalar e2 = std::exp(ell_2 - max_l);
+                Scalar sum_e = e0 + e1 + e2;
+                Scalar w0 = e0 / sum_e;
+                Scalar w1 = e1 / sum_e;
+                Scalar w2 = e2 / sum_e;
+
+                cand_regime_weights[node.id] = {w0, w1, w2};
+                int r_id = 1;
+                if (w2 > w1 && w2 > w0) r_id = 2;
+                else if (w0 > w1 && w0 > w2) r_id = 0;
+                cand_regime_ids[node.id] = r_id;
+
+                soft_regime_counts[0] += w0;
+                soft_regime_counts[1] += w1;
+                soft_regime_counts[2] += w2;
+
+                Scalar eff_gc = std::clamp(bg_gc + d, 0.05, 0.95);
+                soft_regime_gc_sum[0] += w0 * eff_gc;
+                soft_regime_gc_sum[1] += w1 * node_gc[node.id];
+                soft_regime_gc_sum[2] += w2 * eff_gc;
             }
         }
+
+        Scalar avg_gc_1 = (soft_regime_counts[1] > 1e-4) ? (soft_regime_gc_sum[1] / soft_regime_counts[1]) : bg_gc;
+        Scalar avg_gc_2 = (soft_regime_counts[2] > 1e-4) ? (soft_regime_gc_sum[2] / soft_regime_counts[2]) : (bg_gc + 0.12);
+        Scalar avg_gc_0 = (soft_regime_counts[0] > 1e-4) ? (soft_regime_gc_sum[0] / soft_regime_counts[0]) : (bg_gc - 0.12);
+
+        avg_gc_1 = std::clamp(avg_gc_1, 0.05, 0.95);
+        avg_gc_2 = std::clamp( std::max(avg_gc_2, avg_gc_1 + 0.04), 0.05, 0.95);
+        avg_gc_0 = std::clamp( std::min(avg_gc_0, avg_gc_1 - 0.04), 0.05, 0.95);
+
+        Scalar psi_gc = std::clamp(std::log((avg_gc_2 / (1.0 - avg_gc_2)) / (avg_gc_1 / (1.0 - avg_gc_1))), 0.05, 3.0);
+        Scalar psi_at = std::clamp(std::log((avg_gc_0 / (1.0 - avg_gc_0)) / (avg_gc_1 / (1.0 - avg_gc_1))), -3.0, -0.05);
+
+        DirectionalRegime reg_at = make_regime(0, "AT-drift", psi_at, static_cast<size_t>(std::round(soft_regime_counts[0])), avg_gc_0);
+        DirectionalRegime reg_neu = make_regime(1, "Neutral", 0.0, static_cast<size_t>(std::round(soft_regime_counts[1])), avg_gc_1);
+        DirectionalRegime reg_gc = make_regime(2, "GC-drift", psi_gc, static_cast<size_t>(std::round(soft_regime_counts[2])), avg_gc_2);
+
+        // Evaluate 3-regime directional phylogenetic log-likelihood on the tree
+        std::vector<Matrix> P_dir(num_nodes);
+        for (const auto& node : tree.nodes) {
+            if (node.id != tree.root_id) {
+                const auto& w = cand_regime_weights[node.id];
+                Matrix P = w[1] * reg_neu.base_matrix.transition_matrix(node.branch_length);
+                if (w[2] > 1e-4) P += w[2] * reg_gc.base_matrix.transition_matrix(node.branch_length);
+                if (w[0] > 1e-4) P += w[0] * reg_at.base_matrix.transition_matrix(node.branch_length);
+                P_dir[node.id] = std::move(P);
+            }
+        }
+        Scalar dir_tree_lnl = 0.0;
+        std::vector<Vector> d_node_L(num_nodes, Vector(S));
+        std::vector<double> d_node_sc(num_nodes, 0.0);
+        for (size_t p = 0; p < aln.patterns.size(); ++p) {
+            const auto& pat = aln.patterns[p];
+            dir_tree_lnl += pat.weight * compute_pattern_log_likelihood(
+                tree, pat, leaf_to_taxon, reg_neu.base_matrix, P_dir, d_node_L, d_node_sc
+            );
+        }
+
+        // Phylogenetic directional test statistic combining log-likelihood gain and excess branch flux Z^2
+        Scalar raw_ll_lrt = std::max<Scalar>(0.0, 2.0 * (dir_tree_lnl - stat_tree_lnl));
+        Scalar excess_flux_chi2 = std::max<Scalar>(0.0, max_branch_z2 - 2.5);
+        Scalar phylo_lrt = std::max(raw_ll_lrt, excess_flux_chi2);
+        Scalar bic_pen = 2.0 * std::log(static_cast<Scalar>(std::max<size_t>(10, aln.num_codons)));
+
+        comp_test.phylo_stat_log_l = stat_tree_lnl;
+        comp_test.phylo_dir_log_l = dir_tree_lnl;
+        comp_test.phylo_dir_lrt = phylo_lrt;
+        comp_test.phylo_dir_bic_delta = phylo_lrt - bic_pen;
+        comp_test.phylo_dir_p_value = chi2_p_value(phylo_lrt, 2);
+
+        // Determine final number of regimes K:
+        // When settings.num_regimes == 0 (auto), require BOTH phylogenetic directional evidence (p <= threshold, LRT > BIC)
+        // AND CP3 heterogeneity so stationary trees with Felsenstein clade pseudoreplication are never falsely split!
+        int K = 1;
+        if (settings.num_regimes == 3) {
+            K = 3;
+        } else if (settings.num_regimes == 1) {
+            K = 1;
+        } else {
+            bool phylo_sig = (comp_test.phylo_dir_p_value <= settings.heterogeneity_threshold) &&
+                             (comp_test.phylo_dir_lrt >= std::min<Scalar>(6.5, 0.75 * bic_pen));
+            comp_test.is_heterogeneous = comp_test.is_heterogeneous && phylo_sig;
+            K = comp_test.is_heterogeneous ? 3 : 1;
+        }
+
+        regimes.clear();
+        if (K == 3) {
+            branch_regime_ids = std::move(cand_regime_ids);
+            branch_regime_weights = std::move(cand_regime_weights);
+            regimes.push_back(std::move(reg_at));
+            regimes.push_back(std::move(reg_neu));
+            regimes.push_back(std::move(reg_gc));
+            branch_transition_matrices = std::move(P_dir);
+        } else {
+            branch_regime_ids.assign(num_nodes, 1);
+            branch_regime_weights.assign(num_nodes, {0.0, 1.0, 0.0});
+            reg_stat.branch_count = (num_nodes > 0) ? (num_nodes - 1) : 0;
+            regimes.push_back(std::move(reg_stat));
+            branch_transition_matrices = std::move(P_stat);
+        }
+
+        root_frequencies = (K == 3) ? regimes[1].codon_freqs : regimes[0].codon_freqs;
     }
 
     // Factory: Phase 1 GTR + Composition Test + Auto-Root + Global MG94

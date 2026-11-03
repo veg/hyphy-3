@@ -114,7 +114,46 @@ public:
         auto it_lower = aln.lower_taxon_to_index.find(lower);
         if (it_lower != aln.lower_taxon_to_index.end()) return it_lower->second;
 
+        // Unique prefix fallback (e.g. species tree leaf "HUMAN" matching "HUMAN015495" in 20333182,
+        // or genus leaf "Homo" matching "Homo_sapiens" in 25716091) when length >= 3
+        if (lower.size() >= 3) {
+            size_t matched_idx = static_cast<size_t>(-1);
+            size_t match_count = 0;
+            for (const auto& [seq_lower, idx] : aln.lower_taxon_to_index) {
+                if ((seq_lower.size() > lower.size() && seq_lower.compare(0, lower.size(), lower) == 0) ||
+                    (seq_lower.size() >= 3 && lower.size() > seq_lower.size() && lower.compare(0, seq_lower.size(), seq_lower) == 0)) {
+                    matched_idx = idx;
+                    match_count++;
+                }
+            }
+            if (match_count == 1) {
+                return matched_idx;
+            }
+        }
+
         return static_cast<size_t>(-1);
+    }
+
+    static void reconcile_tree_leaf_names(Tree& tree, const Alignment& aln) {
+        bool any_renamed = false;
+        for (auto& node : tree.nodes) {
+            if (node.is_leaf) {
+                size_t idx = find_taxon_index(aln, node.name);
+                if (idx != static_cast<size_t>(-1) && idx < aln.sequences.size() &&
+                    node.name != aln.sequences[idx].name) {
+                    node.name = aln.sequences[idx].name;
+                    any_renamed = true;
+                }
+            }
+        }
+        if (any_renamed) {
+            tree.leaf_name_to_id.clear();
+            for (const auto& nd : tree.nodes) {
+                if (nd.is_leaf) {
+                    tree.leaf_name_to_id[nd.name] = nd.id;
+                }
+            }
+        }
     }
 
     static std::vector<size_t> build_leaf_to_taxon_map(const Tree& tree, const Alignment& aln) {
