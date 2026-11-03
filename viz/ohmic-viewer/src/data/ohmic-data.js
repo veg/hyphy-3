@@ -100,10 +100,29 @@ export function parseNewick(newickStr) {
   return { root, nodes, leaves, nodeByName };
 }
 
+// The one filter the KPI card, bridges table and network tree share for the τ slider
+export function bridgePassesTau(bridge, tau) {
+  return bridge.shuntStress >= tau;
+}
+
+export function countActiveBridges(bridges, tau) {
+  return bridges.filter((b) => bridgePassesTau(b, tau)).length;
+}
+
+export function bridgeCountText(shown, total) {
+  return `Showing ${shown} of ${total} bridges`;
+}
+
 export class OhmicDataModel {
   constructor(rawJson) {
     this.raw = rawJson || {};
     this._parse();
+  }
+
+  // The producer, for the host's header chip. Ohmic is hyphy3-only; --legacy-json
+  // output is the v3 document plus the HyPhy-style `input` block.
+  get formatLabel() {
+    return this.raw.input ? 'hyphy3 --legacy-json' : 'hyphy3 v3';
   }
 
   _parse() {
