@@ -497,8 +497,10 @@ export class SiteTrackCanvas {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
 
+    let last = null;
     for (let s = from; s <= to; s += codonTickStep(to - from + 1)) {
       const x = frame.scaleX(s);
+      last = { s, x };
       ctx.strokeStyle = this.colors.gridLine;
       ctx.beginPath();
       ctx.moveTo(x, frame.top);
@@ -508,7 +510,9 @@ export class SiteTrackCanvas {
       ctx.fillText(String(s), x, bottom + 8);
     }
     // Last codon tick if not overlapping
-    ctx.fillText(String(to), frame.scaleX(to), bottom + 8);
+    const xTo = frame.scaleX(to);
+    const gap = (ctx.measureText(String(last.s)).width + ctx.measureText(String(to)).width) / 2 + 6;
+    if (last.s !== to && xTo - last.x >= gap) ctx.fillText(String(to), xTo, bottom + 8);
   }
 
   render() {

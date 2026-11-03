@@ -283,10 +283,10 @@ test('the KPI cards read the result at the live alpha', () => {
   assert.deepEqual(text(topology, none), ['Not applicable', 'No breakpoints to test']);
 
   const old = view(new GardResults(oldV3Doc()));
-  assert.deepEqual(text(topology, old), ['Supported', 'Topology tests not in this file · ΔAICc_topology 145.0']);
+  assert.deepEqual(text(topology, old), ['Topology change', 'Topology tests not in this file · ΔAICc_topology 145.0']);
   assert.equal(topology.tone(old.stats, old), 'muted');
   assert.equal(ohmic.available(old.data), false);
-  assert.equal(gardTopologyValue(old.stats, old), 'Supported');
+  assert.equal(gardTopologyValue(old.stats, old), 'Topology change');
   assert.match(gardTopologySub(old.stats, old), /not in this file/);
 });
 

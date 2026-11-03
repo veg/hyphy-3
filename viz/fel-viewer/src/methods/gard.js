@@ -67,7 +67,7 @@ export function gardTopologyValue(stats, { data }) {
   if (!data.breaks.length) return 'Not applicable';
   if (!data.capabilities.topology) {
     const supported = data.topology?.supported;
-    return supported == null ? '–' : (supported ? 'Supported' : 'Not supported');
+    return supported == null ? '–' : (supported ? 'Topology change' : 'Branch lengths only');
   }
   return `${stats.incongruent} of ${stats.breakpoints} incongruent`;
 }

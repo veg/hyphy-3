@@ -2288,12 +2288,22 @@
   color: var(--ink);
 }
 
+/* Tall enough for a few dozen taxa at full row height; past that it scrolls, the
+   moved-taxa legend pinned above the tree */
 .gard-tree-host {
   width: 100%;
-  max-height: 520px;
+  max-height: max(520px, 80vh);
   overflow: auto;
   border: 1px solid var(--grid-line);
   border-radius: 3px;
+}
+
+.gard-tree-host .branch-tree-legend {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 4px 8px;
+  background: var(--panel);
 }
 
 .gard-tree-summary {
