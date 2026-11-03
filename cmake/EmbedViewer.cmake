@@ -8,7 +8,8 @@
 # therefore: resolve imports depth-first from src/index.js, emit each module once in
 # dependency order, drop the import lines and `export` keywords, and wrap everything in
 # one function scope that publishes the entry module's exports as window.HyPhyFELViewer
-# (the same global the former UMD build exposed).
+# (the same global the former UMD build exposed) and under the neutral window.HyPhyViewer.
+# The Ohmic viewer (viz/ohmic-viewer) is bundled the same way as window.HyPhyOhmicViewer.
 
 cmake_minimum_required(VERSION 3.20)
 
@@ -16,7 +17,8 @@ if(NOT VIEWER_DIR OR NOT OUTPUT)
     message(FATAL_ERROR "EmbedViewer.cmake needs -DVIEWER_DIR=... and -DOUTPUT=...")
 endif()
 
-function(_bundle_viewer viewer_dir global_name js_out_var css_out_var n_modules_out_var)
+# global_names: the window properties that receive the entry module's exports
+function(_bundle_viewer viewer_dir global_names js_out_var css_out_var n_modules_out_var)
     set(_ordered "")
     set(_visiting "")
 
@@ -65,6 +67,20 @@ function(_bundle_viewer viewer_dir global_name js_out_var css_out_var n_modules_
     endforeach()
     list(JOIN _api ", " _api_list)
 
+    # All modules share one scope after bundling, so top-level names must be unique across modules
+    set(_declared "")
+    foreach(_module IN LISTS _ordered)
+        file(STRINGS "${_module}" _decls REGEX "^(export )?(async )?(class|function|const|let|var) [A-Za-z_$][A-Za-z0-9_$]*")
+        foreach(_decl IN LISTS _decls)
+            string(REGEX REPLACE "^(export )?(async )?(class|function|const|let|var) ([A-Za-z_$][A-Za-z0-9_$]*).*$" "\\4" _name "${_decl}")
+            if(_name IN_LIST _declared)
+                message(FATAL_ERROR "Top-level name '${_name}' is declared in more than one viewer module "
+                                    "(again in ${_module}). Bundled modules share one scope; rename one of them.")
+            endif()
+            list(APPEND _declared "${_name}")
+        endforeach()
+    endforeach()
+
     set(_js "(function () {\n'use strict';\n")
     foreach(_module IN LISTS _ordered)
         file(READ "${_module}" _src)
@@ -78,7 +94,11 @@ function(_bundle_viewer viewer_dir global_name js_out_var css_out_var n_modules_
         endif()
         string(APPEND _js "\n// ---- ${_rel} ----\n${_src}\n")
     endforeach()
-    string(APPEND _js "\nwindow.${global_name} = { ${_api_list} };\n})();\n")
+    set(_targets "")
+    foreach(_global IN LISTS global_names)
+        string(APPEND _targets "window.${_global} = ")
+    endforeach()
+    string(APPEND _js "\n${_targets}{ ${_api_list} };\n})();\n")
 
     # Stylesheets are linked from the dev page rather than imported, so embed them all
     file(GLOB _css_files "${viewer_dir}/src/styles/*.css")
@@ -95,7 +115,7 @@ function(_bundle_viewer viewer_dir global_name js_out_var css_out_var n_modules_
     set(${n_modules_out_var} "${_n_mod}" PARENT_SCOPE)
 endfunction()
 
-_bundle_viewer("${VIEWER_DIR}" "HyPhyFELViewer" _js _css _n_modules)
+_bundle_viewer("${VIEWER_DIR}" "HyPhyFELViewer;HyPhyViewer" _js _css _n_modules)
 
 if(OHMIC_VIEWER_DIR AND EXISTS "${OHMIC_VIEWER_DIR}/src/index.js")
     _bundle_viewer("${OHMIC_VIEWER_DIR}" "HyPhyOhmicViewer" _ohmic_js _ohmic_css _n_ohmic_modules)
@@ -202,7 +222,7 @@ if(EXISTS "${OUTPUT}")
 endif()
 if(_changed)
     file(WRITE "${OUTPUT}" "${_header}")
-    message(STATUS "Embedded ${_n_modules} FEL/MEME viewer modules and ${_n_ohmic_modules} Ohmic viewer modules into ${OUTPUT}")
+    message(STATUS "Embedded ${_n_modules} results viewer modules and ${_n_ohmic_modules} Ohmic viewer modules into ${OUTPUT}")
 endif()
 if(STAMP)
     file(TOUCH "${STAMP}")

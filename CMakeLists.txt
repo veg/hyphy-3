@@ -302,6 +302,14 @@ if(HYPHY3_BUILD_TESTS)
         RELAXTest ContrastFELTest PRIMETest MSSTest JointAlignTest
         PROPERTIES LABELS deep
     )
+
+    # Viewer unit tests (node:test, no packages). Node expands the glob itself; a bare
+    # directory argument is resolved as a module by Node 22 and fails.
+    find_program(NODE_EXECUTABLE node)
+    if(NODE_EXECUTABLE)
+        add_test(NAME ViewerUnitTests
+            COMMAND ${NODE_EXECUTABLE} --test ${CMAKE_CURRENT_SOURCE_DIR}/viz/fel-viewer/tests/*.test.mjs)
+    endif()
 endif()
 
 
@@ -358,7 +366,7 @@ add_executable(hyphy3-prime src/apps/hyphy_prime.cpp)
 target_link_libraries(hyphy3-prime PRIVATE hyphy3_report)
 
 add_executable(hyphy3-gard src/apps/hyphy_gard.cpp)
-target_link_libraries(hyphy3-gard PRIVATE hyphy3_core)
+target_link_libraries(hyphy3-gard PRIVATE hyphy3_report)
 
 add_executable(hyphy3-slac src/apps/hyphy_slac.cpp)
 target_link_libraries(hyphy3-slac PRIVATE hyphy3_report)

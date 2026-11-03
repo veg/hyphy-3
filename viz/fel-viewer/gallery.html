@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Viewer Component Gallery</title>
+  <!--
+    Developer gallery for viewer components that FEL/MEME do not mount. It loads the src
+    modules directly (it is not embedded in hyphy3), so serve this directory over http:
+      gallery.html?fixture=<path to a v3 JSON>[&sites=<v3 JSON with site_results>][&length=<branch_lengths key>]
+    Paths are relative to this page. sites defaults to the fixture; length defaults to the
+    first branch_lengths key found in phylogeny.nodes. The unsupported-method notice loads
+    &unsupported=<result JSON of a method without a viewer>, or a synthetic BUSTED result.
+    The branch-keyed shell runs a gallery-local config over synthetic branch rows, with a
+    log-scale controller whose p/q toggle drives the shell's statistic. The posterior
+    controller runs a standalone KpiBar over synthetic posteriors.
+    The aBSREL table reads branch_results from &branches=<v3 aBSREL JSON> (default: the
+    fixture when it has them): its columns come from the file's declared columns, some
+    start hidden behind the column chooser, and the drawer steps through the visible rows.
+    The virtual table draws 5000 synthetic rows a window at a time.
+    Site tracks with stacked, clickable bands load &prime=<PRIME v3 JSON> and
+    &contrast=<Contrast-FEL v3 JSON> (MatrixBand: click a row label to focus it, a cell to
+    select its site), &gard=<GARD v3 JSON> (SegmentBand, GardTickBand and the GardTreeCard: click a segment) and
+    &slac=<SLAC v3 JSON> (mirrored EvidenceBand: the series under the pointer is picked by y;
+    the same file also drives an OverviewTrack with the SLAC preset, its brush shown from 60
+    codons so it zooms even a short alignment) and &dfel=<dFEL v3 JSON> (the dFEL hero: its
+    GC/AT TickStripBand sits behind a stack toggle, on by default only when K > 1; under it
+    the DirectionalModelCard, opened: composition screen, GC strip, regime tree, root bars).
+    RateGridHeatmap loads &fubar=<FUBAR JSON, v3 or legacy>: the estimated grid weights and
+    the posterior of the site with the highest P[β>α], its mode outlined and mean marked.
+    The hidden tab holds a BranchTree built while display:none; showing the tab draws it. Clicking a branch in the full tree selects it in the mini tree.
+  -->
+  <link rel="stylesheet" href="src/styles/viewer.css" />
+  <style>
+    body {
+      margin: 0;
+      padding: 20px 24px 36px;
+      background-color: var(--chassis);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    h1 {
+      font-size: 13px;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      margin: 0 0 4px;
+    }
+    .gallery-source {
+      font-family: "SF Mono", Monaco, monospace;
+      font-size: 10px;
+      color: var(--stone);
+      margin-bottom: 16px;
+    }
+    .gallery-row {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .gallery-card {
+      background-color: var(--panel);
+      border: 1px solid var(--hairline);
+      border-radius: 4px;
+      padding: 14px 16px;
+      min-width: 0;
+    }
+    .gallery-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+    .gallery-card-head .plot-tool-btn {
+      margin-left: 6px;
+    }
+    .gallery-note {
+      font-family: "SF Mono", Monaco, monospace;
+      font-size: 10px;
+      color: var(--stone);
+      margin-top: 8px;
+      min-height: 12px;
+    }
+    body > .gallery-card + .gallery-card {
+      margin-top: 16px;
+    }
+    #shell-unsupported.hyphy-fel-container {
+      min-height: 0;
+    }
+    .gallery-card-head .seg-btn {
+      font-size: 10px;
+    }
+    .gallery-track-tall .evidence-canvas-container {
+      height: 340px;
+    }
+
+  </style>
+</head>
+<body>
+  <h1>Viewer Component Gallery</h1>
+  <div class="gallery-source" id="gallery-source">No fixture: add ?fixture=&lt;path to a v3 JSON&gt;</div>
+
+  <div class="gallery-row">
+    <div class="gallery-card">
+      <div class="gallery-card-head">
+        <span>BranchTree</span>
+        <span>
+          <button type="button" class="plot-tool-btn" id="tree-svg">SVG</button>
+          <button type="button" class="plot-tool-btn" id="tree-png">PNG</button>
+        </span>
+      </div>
+      <div id="tree-full"></div>
+      <div class="gallery-note" id="tree-note"></div>
+    </div>
+    <div class="gallery-card">
+      <div class="gallery-card-head"><span>BranchTree · mini</span></div>
+      <div id="tree-mini"></div>
+    </div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head">
+      <span>BranchTree · built inside a hidden tab, leaf labels from an accessor</span>
+      <button type="button" class="plot-tool-btn" id="tree-tab-btn">Show tab</button>
+    </div>
+    <div id="tree-hidden" hidden></div>
+    <div class="gallery-note" id="hidden-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>SiteTrackCanvas · MatrixBand, PRIME property × site λ (click a label to focus a property)</span></div>
+    <div id="track-prime" class="gallery-track-tall"></div>
+    <div class="gallery-note" id="prime-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>SiteTrackCanvas · MatrixBand, Contrast-FEL relative β by set, muted background row</span></div>
+    <div id="track-contrast" class="gallery-track-tall"></div>
+    <div class="gallery-note" id="contrast-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>OverviewTrack · GARD hero and tree card, segments and breakpoints (click a segment)</span></div>
+    <div id="track-gard"></div>
+    <div id="track-gard-card"></div>
+    <div class="gallery-note" id="gard-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>SiteTrackCanvas · mirrored EvidenceBand, SLAC (series picked by pointer y)</span></div>
+    <div id="track-slac"></div>
+    <div class="gallery-note" id="slac-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>OverviewTrack · SLAC preset, the brush zooms the track (Evidence | Effect)</span></div>
+    <div id="track-slac-overview"></div>
+    <div class="gallery-note" id="slac-overview-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>dFEL · EvidencePlot with a toggled GC/AT TickStripBand, DirectionalModelCard</span></div>
+    <div id="track-dfel"></div>
+    <div class="gallery-note" id="dfel-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>OverviewBrush</span></div>
+    <div id="brush"></div>
+    <div class="gallery-note" id="brush-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>ViewerShell · method without a viewer</span></div>
+    <div id="shell-unsupported"></div>
+    <div class="gallery-note" id="shell-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head">
+      <span>ViewerShell · branch rows, run threshold, log-scale cutoff with p/q toggle</span>
+    </div>
+    <div id="shell-branches"></div>
+    <div class="gallery-note" id="branch-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head">
+      <span>ViewerShell · aBSREL branch rows, columns from the file, column chooser, drawer prev/next</span>
+    </div>
+    <div id="shell-absrel"></div>
+    <div class="gallery-note" id="absrel-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>ResultsTable · virtual scroll over 5000 rows</span></div>
+    <div id="table-virtual"></div>
+    <div class="gallery-note" id="virtual-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>KpiBar · posterior cutoff (≥), cards replacing differently keyed blanks</span></div>
+    <div id="kpi-posterior"></div>
+    <div class="gallery-note" id="posterior-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>RateGridHeatmap · FUBAR grid weights and a site posterior on ordinal axes</span></div>
+    <div class="rate-grid-pair" id="rate-grid"></div>
+    <div class="gallery-note" id="fubar-note"></div>
+  </div>
+
+  <div class="gallery-card">
+    <div class="gallery-card-head"><span>ViewerShell · dark theme (tokens overridden by .hyphy-theme-dark)</span></div>
+    <div id="shell-dark"></div>
+    <div class="gallery-note" id="dark-note"></div>
+  </div>
+
+  <script type="module">
+    import { ViewerShell } from './src/shell/viewer-shell.js';
+    import { KpiBar, thresholdPasses, thresholdRelation } from './src/components/kpi-bar.js';
+    import { ResultsTable } from './src/components/results-table.js';
+    import { Drawer } from './src/components/drawer.js';
+    import { BranchTree } from './src/components/branch-tree.js';
+    import { OverviewBrush } from './src/components/overview-brush.js';
+    import { SiteTrackCanvas } from './src/components/site-track.js';
+    import { EvidenceBand } from './src/components/evidence-band.js';
+    import { MatrixBand } from './src/components/matrix-band.js';
+    import { RateGridHeatmap } from './src/components/rate-grid-heatmap.js';
+    import { OverviewTrack } from './src/components/overview-track.js';
+    import { FUBARData } from './src/data/fubar-data.js';
+    import { SLACData } from './src/data/slac-data.js';
+    import { slacTrackModes, SLAC_BRUSH } from './src/methods/slac.js';
+    import { DFELData } from './src/data/dfel-data.js';
+    import { dfelHero, DirectionalModelCard } from './src/methods/dfel.js';
+    import { GardResults } from './src/data/gard-data.js';
+    import { gardHero } from './src/methods/gard.js';
+    import { GardTreeCard } from './src/components/gard-trees.js';
+    import { PALETTE } from './src/data/palette.js';
+    import { formatPValue, formatThreshold } from './src/core/format.js';
+
+    const params = new URLSearchParams(location.search);
+    const fetchJSON = path => fetch(path).then(r => {
+      if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+      return r.json();
+    });
+
+    // Sample style callback, shaped for aBSREL node metadata: significant branches are
+    // split into their omega classes by proportion and labelled with the corrected p;
+    // untested branches are dashed grey; everything else stays plain ink.
+    function sampleStyle(threshold) {
+      return (node, meta) => {
+        if (!meta) return null;
+        if (meta.is_tested === false) return { stroke: PALETTE.branchGrey, dash: [4, 3] };
+        const p = meta.corrected_p_value;
+        if (!(p <= threshold)) return null;
+        return {
+          stroke: PALETTE.accent,
+          width: 3,
+          segments: (meta.rate_distribution || []).map(c => ({
+            fraction: c.proportion,
+            stroke: c.omega > 1 ? PALETTE.accent : (c.omega < 1 ? PALETTE.purifying : PALETTE.ink)
+          })),
+          label: p === 0 ? 'p < 1e-16' : `p = ${formatPValue(p)}`
+        };
+      };
+    }
+
+    function firstLengthKey(nodes) {
+      for (const meta of Object.values(nodes)) {
+        const keys = Object.keys(meta.branch_lengths || {});
+        if (keys.length) return keys[0];
+      }
+      return null;
+    }
+
+    function showTrees(json) {
+      const phylogeny = json.phylogeny || {};
+      const nodes = phylogeny.nodes || {};
+      const lengthKey = params.get('length') || firstLengthKey(nodes);
+      const threshold = json.statistical_tests?.branch_level_summary?.threshold ?? json.analysis?.settings?.p_threshold ?? 0.05;
+      const style = sampleStyle(threshold);
+      const note = document.getElementById('tree-note');
+
+      const full = new BranchTree(document.getElementById('tree-full'), {
+        lengthKey, style, exportName: 'gallery-tree',
+        onHover: name => { note.textContent = name ? `hover: ${name}` : `selected: ${full.selected?.name ?? 'none'}`; },
+        onSelect: name => { mini.select(name); }
+      });
+      const mini = new BranchTree(document.getElementById('tree-mini'), { lengthKey, style, mini: true });
+      full.setLegend([
+        { label: `ω > 1 class, Holm p ≤ ${formatThreshold(threshold)}`, stroke: PALETTE.accent },
+        { label: 'ω < 1 class', stroke: PALETTE.purifying },
+        { label: 'Not significant', stroke: PALETTE.ink },
+        { label: 'Not tested', stroke: PALETTE.branchGrey, dash: true }
+      ]);
+      full.setTree(phylogeny.newick, nodes);
+      mini.setTree(phylogeny.newick, nodes);
+      note.textContent = `branch lengths: ${lengthKey || 'newick'}`;
+
+      showHiddenTree(phylogeny, nodes, lengthKey);
+      document.getElementById('tree-svg').addEventListener('click', () => full.exportSVG());
+      document.getElementById('tree-png').addEventListener('click', () => full.exportPNG());
+      return [full, mini];
+    }
+
+    // Built while its tab is display:none, so the container has no width yet; the tree's
+    // ResizeObserver draws it when the tab is shown. Significant leaves carry their Holm p.
+    function showHiddenTree(phylogeny, nodes, lengthKey) {
+      const note = document.getElementById('hidden-note');
+      const tab = document.getElementById('tree-hidden');
+      const tree = new BranchTree(tab, {
+        lengthKey,
+        mini: true,
+        leafLabel: (node, meta) => (meta?.is_positive ? `${node.name} · Holm p ${formatPValue(meta.corrected_p_value)}` : node.name)
+      });
+      tree.setTree(phylogeny.newick, nodes);
+      note.textContent = `built at width ${tree.width}`;
+      document.getElementById('tree-tab-btn').addEventListener('click', () => {
+        tab.hidden = !tab.hidden;
+        // The observer runs after the next layout, so read the width a frame later
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          note.textContent = `built at width 0; ${tab.hidden ? 'hidden' : `drawn at ${tree.width}px once shown`}`;
+        }));
+      });
+    }
+
+    const columnRows = table => {
+      const ids = Object.keys(table.data);
+      return table.data[ids[0]].map((_, i) => Object.fromEntries(ids.map(id => [id, table.data[id][i]])));
+    };
+    const negLog10 = p => (p == null ? null : -Math.log10(Math.max(p, 1e-15)));
+    const tipRows = pairs => pairs.map(([label, value]) =>
+      `<div class="tip-row"><span class="tip-lbl">${label}:</span> <span class="tip-val font-mono">${value}</span></div>`).join('');
+    const tip = (title, pairs, hint) =>
+      `<div class="tip-header"><span class="tip-title">${title}</span></div><div class="tip-grid">${tipRows(pairs)}</div>${hint ? `<div class="tip-hint">${hint}</div>` : ''}`;
+
+    // PRIME: omnibus evidence over a property x site lambda matrix (lambda > 0 conserved in
+    // blue, < 0 changing in orange). A cell is outlined when its property passes stage 2,
+    // half strength at raw p <= 0.05. Focusing a property swaps the top band to its raw p.
+    const PRIME_SHORT = {
+      AlphaHelix_Propensity_ChouFasman: 'α-helix',
+      BetaSheet_Propensity_ChouFasman: 'β-sheet',
+      Hydrophobicity_KyteDoolittle: 'Hydro',
+      Isoelectric_Point_pI: 'pI',
+      Volume_Angstrom3: 'Volume'
+    };
+
+    function showPrimeTrack(json) {
+      const note = document.getElementById('prime-note');
+      const props = json.properties.map(p => ({ key: p.name, label: PRIME_SHORT[p.name] || p.name, title: p.description }));
+      const stage2 = (r, key, t) => r.omnibus_q_value <= t && r[`class_${key}`] !== 'Neutral';
+      const omnibusTone = (r, track) => {
+        const lambdas = props.filter(p => stage2(r, p.key, track.threshold)).map(p => r[`lambda_${p.key}`]);
+        if (lambdas.some(l => l < 0)) return 'div';
+        return lambdas.length ? 'pur' : null;
+      };
+      let focus = null;
+      const band = new EvidenceBand({
+        value: r => (r.nonsynonymous_substitutions ? negLog10(focus ? r[`p_${focus}`] : r.omnibus_p_value) : null),
+        tone: (r, track) => {
+          if (!focus) return omnibusTone(r, track);
+          if (r[`p_${focus}`] > 0.05) return null;
+          return r[`lambda_${focus}`] < 0 ? 'div' : 'pur';
+        },
+        rule: null,
+        shape: 'dot',
+        label: '−log₁₀ p',
+        tooltip: r => tip(`Codon #${r.site}`, [['omnibus p', formatPValue(r.omnibus_p_value)], ['omnibus q', formatPValue(r.omnibus_q_value)]],
+          'Click to select this site')
+      });
+      const matrix = new MatrixBand({
+        rows: props,
+        value: (r, row) => (r.nonsynonymous_substitutions ? r[`lambda_${row.key}`] : null),
+        emphasis: (r, row, track) => (stage2(r, row.key, track.threshold) ? 2 : (r[`p_${row.key}`] <= 0.05 ? 1 : 0)),
+        positive: PALETTE.purifying,
+        negative: PALETTE.accent,
+        tooltip: (r, row) => tip(`Codon #${r.site} · ${row.label}`, [
+          ['λ', r[`lambda_${row.key}`].toFixed(3)],
+          ['raw p', formatPValue(r[`p_${row.key}`])],
+          ['Holm p', formatPValue(r[`adj_p_${row.key}`])],
+          ['call', r[`class_${row.key}`]]
+        ]),
+        rowTooltip: row => tip(row.title, [], focus === row.key ? 'Click to return to the omnibus test' : 'Click to focus this property'),
+        onFocus: key => {
+          focus = key;
+          track.subLabel.textContent = key ? `−log₁₀ raw p for ${key}` : '−log₁₀ omnibus p';
+          note.textContent = `focus: ${key ?? 'omnibus'}; λ extent ±${matrix.extent(track).toFixed(2)} from the file`;
+        }
+      });
+      const track = new SiteTrackCanvas(document.getElementById('track-prime'), {
+        title: 'Property Constraint Landscape',
+        subtitle: '−log₁₀ omnibus p',
+        band,
+        stack: [matrix],
+        threshold: json.statistical_tests.site_level_summary.threshold,
+        sites: d => d.rows,
+        siteCount: d => d.rows.length,
+        exportName: 'gallery_prime',
+        onSiteSelect: (site, row) => { note.textContent = `site-select: ${site} (omnibus p ${formatPValue(row.omnibus_p_value)})`; },
+        onRegionHover: region => { if (region?.kind === 'row') note.textContent = `hover label: ${region.key}`; }
+      });
+      track.setData({ rows: columnRows(json.site_results) });
+      note.textContent = `${props.length} properties; λ extent ±${matrix.extent(track).toFixed(2)} from the file`;
+      return track;
+    }
+
+    // Contrast-FEL: per-set beta relative to the site's geometric-mean centre, clamped at
+    // 4-fold; columns of sites that fail the cutoff fade, invariant sites stay blank, and
+    // the background set (never tested) is muted
+    function showContrastTrack(json) {
+      const note = document.getElementById('contrast-note');
+      const nodes = Object.values(json.phylogeny.nodes);
+      const columns = json.site_results.data;
+      const groups = [...new Set(nodes.filter(n => n.is_testable).map(n => n.group))].filter(g => `beta_${g}` in columns).sort();
+      const branches = g => nodes.filter(n => n.group === g).length;
+      const rows = groups.map(g => ({ key: `beta_${g}`, label: `${g} · ${branches(g)} br` }));
+      if ('beta_background' in columns) rows.push({ key: 'beta_background', label: 'Background', muted: true });
+      const floor = b => Math.max(b, 1e-4);
+      const centre = r => Math.exp(groups.reduce((sum, g) => sum + Math.log(floor(r[`beta_${g}`])), 0) / groups.length);
+      const invariant = r => r.contrast_tag === 'Invariant';
+
+      const band = new EvidenceBand({
+        value: r => (invariant(r) ? null : negLog10(r.p_value)),
+        tone: (r, track) => (r.p_value <= track.threshold ? 'div' : null),
+        label: '−log₁₀ p',
+        tooltip: r => tip(`Codon #${r.site}`, [['p', formatPValue(r.p_value)], ['q', formatPValue(r.q_value)], ['call (run)', r.contrast_tag]])
+      });
+      const matrix = new MatrixBand({
+        rows,
+        value: (r, row) => (invariant(r) ? null : Math.log2(floor(r[row.key]) / centre(r))),
+        emphasis: (r, row, track) => (r.p_value <= track.threshold ? 2 : 0),
+        extent: 2,
+        tierOpacity: [0.2, 0.2, 1],
+        tooltip: (r, row) => tip(`Codon #${r.site} · ${row.label}`, [
+          ['β', r[row.key].toFixed(3)],
+          ['log₂ β / centre', Math.log2(floor(r[row.key]) / centre(r)).toFixed(2)],
+          ['p', formatPValue(r.p_value)]
+        ]),
+        onFocus: key => { note.textContent = `focus group: ${key ?? 'none'}`; }
+      });
+      const track = new SiteTrackCanvas(document.getElementById('track-contrast'), {
+        title: 'Contrast-FEL Set Strip',
+        subtitle: `−log₁₀ p; gallery cutoff p ≤ 0.25 so a few columns pass`,
+        band,
+        stack: [matrix],
+        gutter: 84,
+        threshold: 0.25,
+        sites: d => d.rows,
+        siteCount: d => d.rows.length,
+        exportName: 'gallery_contrast_fel',
+        onSiteSelect: (site, row) => { note.textContent = `site-select: ${site} (p ${formatPValue(row.p_value)})`; }
+      });
+      track.setData({ rows: columnRows(json.site_results) });
+      note.textContent = `sets: ${rows.map(r => r.label).join(', ')}`;
+      return track;
+    }
+
+    // GARD: the hero with its real bands (log | linear support, segments toned by call, Ohmic
+    // candidates) and the tree card under it; the brush shows from 1000 sites
+    function showGardTrack(json) {
+      const note = document.getElementById('gard-note');
+      const data = new GardResults(json);
+      const select = (site) => { note.textContent = `site-select: ${site}`; };
+      const hero = gardHero(document.getElementById('track-gard'), { threshold: 0.05, onSiteSelect: select });
+      hero.setData(data);
+      const card = new GardTreeCard(document.getElementById('track-gard-card'));
+      card.setThreshold(0.05);
+      card.setData(data);
+      const stats = data.getStats(0.05);
+      note.textContent = `${stats.segments} segments, ${stats.incongruent} of ${stats.breakpoints} incongruent at α 0.05, support offset ${data.off}`;
+    }
+
+    // SLAC: positive selection above zero, negative below; the selected series gets the ring
+    function showSlacTrack(json) {
+      const note = document.getElementById('slac-note');
+      const band = new EvidenceBand({
+        value: r => negLog10(r.p_positive),
+        tone: (r, track) => (r.p_positive <= track.threshold ? 'div' : null),
+        mirror: {
+          value: r => negLog10(r.p_negative),
+          tone: (r, track) => (r.p_negative <= track.threshold ? 'pur' : null)
+        },
+        label: ['more non-synonymous ▲', 'more synonymous ▼'],
+        tooltip: (r, track, point) => tip(`Codon #${r.site}`, point.series
+          ? [['p (negative)', formatPValue(r.p_negative)]]
+          : [['p (positive)', formatPValue(r.p_positive)]])
+      });
+      const track = new SiteTrackCanvas(document.getElementById('track-slac'), {
+        title: 'SLAC Two-Sided Evidence',
+        subtitle: '−log₁₀ p, positive above zero and negative below',
+        band,
+        threshold: 0.1,
+        sites: d => d.rows,
+        siteCount: d => d.rows.length,
+        exportName: 'gallery_slac',
+        onSiteSelect: (site, row) => {
+          note.textContent = `site-select: ${site}, ${track.selectedSeries ? `negative series, p ${formatPValue(row.p_negative)}` : `positive series, p ${formatPValue(row.p_positive)}`}`;
+        }
+      });
+      track.setData({ rows: columnRows(json.site_results) });
+      showSlacOverview(json);
+    }
+
+    // The SLAC hero outside the shell, with the brush threshold lowered so cd2 zooms too
+    function showSlacOverview(json) {
+      const note = document.getElementById('slac-overview-note');
+      const view = new OverviewTrack(document.getElementById('track-slac-overview'), {
+        track: (container) => new SiteTrackCanvas(container, {
+          title: 'Selection Evidence Landscape',
+          modes: slacTrackModes(),
+          threshold: 0.1,
+          exportName: 'gallery_slac_overview'
+        }),
+        brush: Object.assign({}, SLAC_BRUSH, { minSites: 60 }),
+        window: 60,
+        onSiteSelect: (site) => { note.textContent = `site-select: ${site}`; }
+      });
+      view.setData(new SLACData(json));
+      note.textContent = `${view.track.numSites} codons, window ${view.span}`;
+    }
+
+    // The dFEL hero and model card outside the shell; the card is opened whatever K is
+    function showDfelTrack(json) {
+      const note = document.getElementById('dfel-note');
+      const host = document.getElementById('track-dfel');
+      const data = new DFELData(json);
+      const hero = dfelHero(host, { threshold: 0.1, onSiteSelect: (site) => { note.textContent = `site-select: ${site}`; } });
+      hero.setData(data);
+      const card = new DirectionalModelCard(host);
+      card.setData(data);
+      card.setExpanded(true);
+      note.textContent = `K = ${data.K}, strip ${hero.stackShown ? 'shown' : 'hidden'} by default`;
+    }
+
+    function showBrush(json) {
+      const note = document.getElementById('brush-note');
+      const data = json.site_results?.data;
+      const brush = new OverviewBrush(document.getElementById('brush'), {
+        minSites: 0,
+        threshold: json.analysis?.settings?.pvalue_threshold ?? 0.1,
+        tone: (row, t) => (row.p_value <= t ? (row.beta > row.alpha ? 'accent' : 'purifying') : null),
+        onSiteSelect: site => { note.textContent = `selected site ${site}`; },
+        onViewportChange: (start, end) => { note.textContent = `window ${start + 1}–${end}`; }
+      });
+      if (!data?.site || !data.p_value) {
+        note.textContent = 'This file has no site_results.p_value; pass &sites=<v3 JSON with site results>.';
+        return brush;
+      }
+      const rows = data.site.map((site, i) => ({ site, p_value: data.p_value[i], alpha: data.alpha?.[i], beta: data.beta?.[i] }));
+      brush.setData(rows, json.dataset?.codon_sites || rows.length);
+      brush.setViewport(0, Math.min(40, rows.length));
+      return brush;
+    }
+
+    // The shell recognizes the method but has no config for it, so it shows the notice
+    // in place of a report rather than drawing the file as FEL
+    async function showUnsupported() {
+      const path = params.get('unsupported');
+      const json = path ? await fetchJSON(path) : { analysis: { id: 'busted' } };
+      const mount = document.getElementById('shell-unsupported');
+      const note = document.getElementById('shell-note');
+      mount.addEventListener('data-unsupported', e => { note.textContent = `data-unsupported: ${e.detail.method}`; });
+      new ViewerShell(mount).load(json);
+    }
+
+    function showRateGrid(json) {
+      const data = new FUBARData(json);
+      const mount = document.getElementById('rate-grid');
+      const top = data.siteResults.reduce((a, b) => (b.probPos > a.probPos ? b : a));
+      new RateGridHeatmap(mount, { title: 'Estimated grid weights', caption: data.formatLabel, size: 240, grid: data.grid, weights: data.grid.weight });
+      const weights = data.sitePosterior(top.site);
+      if (weights) {
+        new RateGridHeatmap(mount, {
+          title: `Codon #${top.site} posterior`,
+          caption: 'Mode outlined; ✕ marks the posterior mean',
+          size: 240,
+          grid: data.grid,
+          weights,
+          mode: true,
+          mean: { alpha: top.alpha, beta: top.beta }
+        });
+      }
+      document.getElementById('fubar-note').textContent = `${data.grid.dims}×${data.grid.dims} grid; codon #${top.site} has P[β>α] = ${top.probPos.toFixed(3)}`;
+    }
+
+    // The dark theme only overrides the :root tokens, so any method's report follows it
+    function showDarkShell(json) {
+      const mount = document.getElementById('shell-dark');
+      const shell = new ViewerShell(mount, { theme: 'dark' });
+      shell.load(json);
+      document.getElementById('dark-note').textContent = `${shell.config.id} report, theme: dark`;
+      return shell;
+    }
+
+    // A gallery-local branch-keyed config: rows are keyed by branch name and the parser has
+    // no getSite, so the shell's site-select detail and the drawer go through config.row.
+    // The file's run threshold (0.05) seeds the shell over the controller's seed (0.1),
+    // and the p/q toggle switches the statistic every view tests and labels.
+    const BRANCH_ROWS = [
+      { branch: 'Node3', p: 0.002, q: 0.012 },
+      { branch: 'Pig', p: 0.011, q: 0.033 },
+      { branch: 'Cow', p: 0.031, q: 0.062 },
+      { branch: 'Node7', p: 0.048, q: 0.072 },
+      { branch: 'Human', p: 0.21, q: 0.25 },
+      { branch: 'Mouse', p: 0.64, q: 0.64 }
+    ];
+
+    class BranchRows {
+      constructor(json) {
+        this.branches = json.branches;
+        this.runThreshold = json.analysis.settings.pvalue_threshold;
+        this.numSites = 0;
+        this.numTaxa = json.branches.length;
+      }
+      getStats() {
+        return { totalBranches: this.branches.length };
+      }
+    }
+
+    const branchRow = (data, key) => data.branches.find(r => r.branch === key) || null;
+    const passes = (row, t, view) => row[view.statistic] <= t;
+    const significant = (view) => view.data.branches.filter(r => passes(r, view.threshold, view)).length;
+    const BRANCH_CONTROLLER = {
+      title: 'Significance Cutoff',
+      statistic: 'p',
+      direction: 'le',
+      scale: 'log',
+      min: 0.001,
+      max: 1,
+      step: 0.01,
+      presets: [0.1, 0.05, 0.01],
+      seed: 0.1,
+      format: formatThreshold,
+      caption: ({ statistic }) => statistic === 'q'
+        ? 'q: Benjamini-Hochberg over the tested branches'
+        : 'p: uncorrected, one test per branch',
+      toggle: { statistics: ['p', 'q'] }
+    };
+    const statCell = (stat) => (r, view) =>
+      `<td class="font-mono pval-cell ${view.statistic === stat && r[stat] <= view.threshold ? 'pval-sig font-bold' : ''}">${formatPValue(r[stat])}</td>`;
+
+    const BRANCH_CONFIG = {
+      id: 'branch-demo',
+      Parser: BranchRows,
+      controller: BRANCH_CONTROLLER,
+      row: branchRow,
+      defaultFilter: 'significant',
+      kpis: (parent, hooks) => new KpiBar(parent, {
+        cards: [
+          { id: 'tested', label: 'Branches', value: stats => String(stats.totalBranches), sub: () => 'tested', tone: 'ink' },
+          { id: 'sig', label: 'Significant', value: (stats, view) => String(significant(view)),
+            sub: (stats, view) => `at ${view.statistic} ≤ ${formatThreshold(view.threshold)}`, tone: 'accent' }
+        ],
+        controller: BRANCH_CONTROLLER,
+        threshold: hooks.threshold,
+        statistic: hooks.statistic,
+        onThresholdChange: hooks.onThresholdChange,
+        onStatisticChange: hooks.onStatisticChange
+      }),
+      hero: () => ({ setData() {} }),
+      table: (parent, hooks) => new ResultsTable(parent, {
+        title: 'Branches',
+        rowKey: 'branch',
+        rows: data => data.branches,
+        columns: [
+          { id: 'branch', header: 'Branch', cell: r => `<td class="font-mono">${r.branch}</td>` },
+          { id: 'p', header: 'p', cell: statCell('p') },
+          { id: 'q', header: 'q', cell: statCell('q') }
+        ],
+        filters: [
+          { id: 'significant', key: 'sig', label: 'Significant', count: (stats, view) => significant(view),
+            test: passes, subtitle: n => `${n} branches` },
+          { id: 'all', key: 'all', label: 'All', count: stats => stats.totalBranches,
+            test: () => true, subtitle: n => `${n} branches` }
+        ],
+        emptyState: () => ({ title: 'No branch passes the cutoff.' }),
+        threshold: hooks.threshold,
+        statistic: hooks.statistic,
+        filterType: hooks.filterType,
+        onSelect: (key, row, action) => hooks.onSiteSelect(key, action)
+      }),
+      drawer: (container, hooks) => new Drawer(container, {
+        emptyTag: 'Branch —',
+        row: branchRow,
+        header: (r, { threshold, statistic }) => r[statistic] <= threshold
+          ? { tag: r.branch, tone: 'div', badge: `Significant (${statistic})` }
+          : { tag: r.branch, tone: 'neutral', badge: 'Not significant' },
+        tabs: [{
+          id: 'summary',
+          label: 'Branch',
+          comment: 'Branch statistics',
+          render: (panel, r, { statistic, threshold }) => {
+            panel.textContent = `${r.branch}: ${statistic} = ${formatPValue(r[statistic])} against ${statistic} ≤ ${formatThreshold(threshold)}`;
+          }
+        }],
+        threshold: hooks.threshold,
+        statistic: hooks.statistic,
+        onClose: hooks.onClose
+      }),
+      diagnostics: data => `<div class="diag-item"><span class="diag-lbl">Run threshold</span><span class="diag-val font-mono">${data.runThreshold}</span></div>`
+    };
+
+    function showBranchShell() {
+      const mount = document.getElementById('shell-branches');
+      const note = document.getElementById('branch-note');
+      const shell = new ViewerShell(mount);
+      shell.mount(BRANCH_CONFIG);
+      mount.addEventListener('site-select', e => {
+        note.textContent = `site-select: ${e.detail.site} → ${JSON.stringify(e.detail.raw)}`;
+      });
+      shell.load({ branches: BRANCH_ROWS, analysis: { settings: { pvalue_threshold: 0.05 } } });
+      note.textContent = `threshold seeded from the run: ${shell.threshold} (controller seed ${BRANCH_CONTROLLER.seed})`;
+      mount.addEventListener('statistic-change', e => {
+        note.textContent = `statistic-change: ${e.detail.statistic}`;
+      });
+      mount.addEventListener('threshold-change', e => {
+        note.textContent = `threshold-change: ${e.detail.threshold}`;
+      });
+    }
+
+    // A 'ge' cutoff on posterior probabilities, FUBAR-style. The blank card is keyed
+    // differently from the real ones, so setData redraws the cards from their own
+    // markup, and the second card's widget gets its slot.
+    const POSTERIOR_CONTROLLER = {
+      title: 'Posterior Cutoff',
+      statistic: 'PP',
+      direction: 'ge',
+      min: 0.5,
+      max: 1,
+      step: 0.01,
+      presets: [0.9, 0.95, 0.99],
+      seed: 0.9,
+      format: formatThreshold
+    };
+    const POSTERIORS = [0.999, 0.993, 0.97, 0.955, 0.93, 0.91, 0.82, 0.64, 0.41, 0.12, 0.08, 0.03];
+
+    function showPosteriorBar() {
+      const note = document.getElementById('posterior-note');
+      const positive = t => POSTERIORS.filter(pp => thresholdPasses(POSTERIOR_CONTROLLER, pp, t)).length;
+      const bar = new KpiBar(document.getElementById('kpi-posterior'), {
+        blank: [{ id: 'pending', label: 'Posterior Sites', placeholder: 'waiting for data' }],
+        cards: [
+          { id: 'sites', label: 'Sites', value: () => String(POSTERIORS.length), sub: () => 'with a posterior', tone: 'ink' },
+          { id: 'positive', label: 'Pervasive Positive', tone: 'accent',
+            value: (stats, view) => `▲ ${positive(view.threshold)}`,
+            sub: (stats, view) => `PP(β > α) ${thresholdRelation(POSTERIOR_CONTROLLER)} ${formatThreshold(view.threshold)}`,
+            widget: (el, stats, view) => {
+              el.style.cssText = 'display:flex;gap:2px;margin-top:8px;height:10px';
+              el.innerHTML = POSTERIORS.map(pp => {
+                const on = thresholdPasses(POSTERIOR_CONTROLLER, pp, view.threshold);
+                return `<span title="PP ${pp}" style="flex:1;background:${on ? PALETTE.accent : PALETTE.branchGrey};opacity:${on ? 1 : 0.35}"></span>`;
+              }).join('');
+            } }
+        ],
+        controller: POSTERIOR_CONTROLLER,
+        onThresholdChange: t => { note.textContent = `onThresholdChange: ${t}`; }
+      });
+      bar.setData({ getStats: () => ({}) });
+      note.textContent = `seeded at ${bar.threshold}; cards: ${[...bar.el.querySelectorAll('.kpi-card:not(.kpi-card-control)')].map(c => c.id).join(', ')}`;
+      return bar;
+    }
+
+    // aBSREL's v3 branch_results: a columnar table whose columns the file declares. The
+    // config builds one table column per declared column, so the table's columns are
+    // resolved from each load; the Holm p and LRT show by default, the rest wait in the
+    // chooser, and the EBF count is gated on a capability the parser derives from the file.
+    class AbsrelBranches {
+      constructor(json) {
+        const table = json.branch_results;
+        const ids = Object.keys(table.data);
+        this.declared = table.columns;
+        this.branches = table.data.branch.map((branch, i) => Object.fromEntries(ids.map(id => [id, table.data[id][i]])));
+        this.runThreshold = json.statistical_tests?.branch_level_summary?.threshold ?? null;
+        this.capabilities = { ebf: ids.includes('sites_ebf_100'), srv: Boolean(json.settings?.srv) };
+        this.numSites = json.dataset?.codon_sites;
+        this.numTaxa = json.dataset?.taxa_count;
+      }
+      getStats(t) {
+        return { tested: this.branches.length, positive: this.branches.filter(r => r.corrected_p_value <= t).length };
+      }
+    }
+
+    const ABSREL_HEADERS = {
+      corrected_p_value: 'Holm p',
+      uncorrected_p_value: 'p',
+      lrt: 'LRT',
+      baseline_omega: 'Baseline ω',
+      full_branch_length: 'Length',
+      rate_classes: 'ω classes',
+      sites_ebf_100: 'Sites EBF ≥ 100'
+    };
+    const ABSREL_HIDDEN = ['uncorrected_p_value', 'baseline_omega', 'full_branch_length'];
+    const ABSREL_CAPABILITY = { sites_ebf_100: 'ebf' };
+
+    function absrelValue(id, type, value, view) {
+      if (/p_value$/.test(id)) {
+        const sig = id === 'corrected_p_value' && value <= view.threshold;
+        return `<td class="font-mono pval-cell ${sig ? 'pval-sig font-bold' : ''}">${formatPValue(value)}</td>`;
+      }
+      if (type === 'float') return `<td class="font-mono">${value.toFixed(3)}</td>`;
+      return `<td class="font-mono">${value}</td>`;
+    }
+
+    function absrelColumns(data) {
+      const declared = Object.entries(data.declared)
+        .filter(([id]) => id !== 'branch' && id !== 'positive')
+        .map(([id, meta]) => ({
+          id,
+          header: ABSREL_HEADERS[id] || id,
+          title: meta.description,
+          hiddenByDefault: ABSREL_HIDDEN.includes(id),
+          availableWhen: ABSREL_CAPABILITY[id] && (caps => caps[ABSREL_CAPABILITY[id]]),
+          cell: (r, view) => absrelValue(id, meta.type, r[id], view),
+          csv: [{ header: id, value: r => r[id] }],
+          sort: r => r[id]
+        }));
+      return [
+        { id: 'branch', header: 'Branch', cell: r => `<td class="font-mono font-bold">${r.branch}</td>`,
+          csv: [{ header: 'branch', value: r => r.branch }], sort: r => r.branch },
+        ...declared,
+        { id: 'srv', header: 'SRV', availableWhen: caps => caps.srv, cell: () => '<td>—</td>' }
+      ];
+    }
+
+    const absrelRow = (data, key) => data.branches.find(r => r.branch === key) || null;
+    const ABSREL_CONTROLLER = {
+      title: 'Holm p Cutoff',
+      statistic: 'p',
+      direction: 'le',
+      min: 0.001,
+      max: 0.2,
+      step: 0.005,
+      presets: [0.1, 0.05, 0.01],
+      seed: 0.05,
+      format: formatThreshold
+    };
+
+    const ABSREL_CONFIG = {
+      id: 'absrel-demo',
+      Parser: AbsrelBranches,
+      controller: ABSREL_CONTROLLER,
+      row: absrelRow,
+      defaultFilter: 'all',
+      kpis: (parent, hooks) => new KpiBar(parent, {
+        cards: [
+          { id: 'tested', label: 'Tested Branches', value: stats => String(stats.tested), sub: (stats, { data }) => `${data.numTaxa} taxa`, tone: 'ink' },
+          { id: 'positive', label: 'Episodic Selection', value: stats => `▲ ${stats.positive}`,
+            sub: (stats, view) => `Holm p ≤ ${formatThreshold(view.threshold)}`, tone: 'accent' }
+        ],
+        controller: ABSREL_CONTROLLER,
+        threshold: hooks.threshold,
+        statistic: hooks.statistic,
+        onThresholdChange: hooks.onThresholdChange
+      }),
+      hero: () => ({ setData() {} }),
+      table: (parent, hooks) => new ResultsTable(parent, {
+        title: 'Branches',
+        rowKey: 'branch',
+        rows: data => data.branches,
+        columns: absrelColumns,
+        filters: [
+          { id: 'positive', key: 'pos', glyph: '▲', label: 'Episodic', count: stats => stats.positive,
+            test: (r, t) => r.corrected_p_value <= t, subtitle: (n, t) => `${n} branches at Holm p ≤ ${formatThreshold(t)}` },
+          { id: 'all', key: 'all', label: 'All Branches', count: stats => stats.tested,
+            test: () => true, subtitle: n => `all ${n} tested branches` }
+        ],
+        defaultSort: { column: 'corrected_p_value', dir: 'asc' },
+        search: { placeholder: 'Branch name...', match: (r, q) => r.branch.toLowerCase().includes(q),
+          noMatch: { title: 'No branch matches' } },
+        emptyState: () => ({ title: 'No branch passes the cutoff.' }),
+        exportName: 'gallery_absrel',
+        threshold: hooks.threshold,
+        statistic: hooks.statistic,
+        filterType: hooks.filterType,
+        onSelect: (key, row, action) => hooks.onSiteSelect(key, action)
+      }),
+      drawer: (container, hooks) => new Drawer(container, {
+        emptyTag: 'Branch —',
+        row: absrelRow,
+        header: (r, { threshold }) => r.corrected_p_value <= threshold
+          ? { tag: r.branch, tone: 'div', badge: '▲ Episodic Selection' }
+          : { tag: r.branch, tone: 'neutral', badge: 'Not significant' },
+        tabs: [{
+          id: 'summary',
+          label: 'Branch',
+          comment: 'Declared branch_results columns',
+          render: (panel, r, { data }) => {
+            panel.innerHTML = `<div class="drawer-section"><div class="drawer-stats-grid">${Object.entries(data.declared)
+              .filter(([id]) => id !== 'branch')
+              .map(([id, meta]) => `<div class="drawer-stat-card" title="${meta.description}">
+                <span class="dstat-label">${ABSREL_HEADERS[id] || id}</span>
+                <span class="dstat-value font-mono">${typeof r[id] === 'number' && !Number.isInteger(r[id]) ? formatPValue(r[id]) : r[id]}</span>
+              </div>`).join('')}</div></div>`;
+          }
+        }],
+        siblings: hooks.siblings,
+        onStep: hooks.onStep,
+        threshold: hooks.threshold,
+        statistic: hooks.statistic,
+        onClose: hooks.onClose
+      }),
+      diagnostics: data => `<div class="diag-item"><span class="diag-lbl">Run threshold</span><span class="diag-val font-mono">${data.runThreshold}</span></div>`
+    };
+
+    function showAbsrelShell(json) {
+      const mount = document.getElementById('shell-absrel');
+      const note = document.getElementById('absrel-note');
+      if (!json?.branch_results) {
+        note.textContent = 'This file has no branch_results; pass &branches=<v3 aBSREL JSON>.';
+        return null;
+      }
+      // aBSREL has no registered config yet, so its analysis id would bring the unsupported
+      // notice; the shell gets the v3 sections the parser reads, under the mounted config
+      const shell = new ViewerShell(mount);
+      shell.mount(ABSREL_CONFIG);
+      shell.load({
+        branch_results: json.branch_results,
+        statistical_tests: json.statistical_tests,
+        dataset: json.dataset,
+        settings: json.analysis?.settings
+      });
+      const offered = shell.table.columns.filter(c => c.cell).map(c => c.id);
+      const gated = absrelColumns(shell.data).filter(c => !offered.includes(c.id) && c.cell).map(c => c.id);
+      note.textContent = `columns from the file: ${offered.join(', ')}; gated out: ${gated.join(', ') || 'none'}`;
+      mount.addEventListener('site-select', e => {
+        note.textContent = `site-select: ${e.detail.site} (${shell.siblingKeys().indexOf(e.detail.site) + 1} of ${shell.siblingKeys().length} visible rows)`;
+      });
+      return shell;
+    }
+
+    // Synthetic site rows past the virtual threshold: only the rows in view are in the DOM
+    function showVirtualTable() {
+      const note = document.getElementById('virtual-note');
+      const rows = Array.from({ length: 5000 }, (_, i) => ({ site: i + 1, p: ((i * 7919) % 1000) / 1000 + 0.0005 }));
+      const table = new ResultsTable(document.getElementById('table-virtual'), {
+        title: 'Sites',
+        rows: data => data.rows,
+        columns: [
+          { id: 'site', header: 'Site', width: 90, cell: r => `<td class="font-mono font-bold">#${r.site}</td>`, sort: r => r.site },
+          { id: 'p', header: 'p-value', cell: (r, { threshold }) => `<td class="font-mono pval-cell ${r.p <= threshold ? 'pval-sig font-bold' : ''}">${formatPValue(r.p)}</td>`, sort: r => r.p }
+        ],
+        filters: [
+          { id: 'all', key: 'vall', label: 'All Sites', count: () => rows.length, test: () => true, subtitle: n => `${n} sites` },
+          { id: 'sig', key: 'vsig', label: 'p ≤ 0.1', count: () => rows.filter(r => r.p <= 0.1).length, test: (r, t) => r.p <= t, subtitle: n => `${n} sites` }
+        ],
+        search: { placeholder: 'Site...', match: (r, q) => String(r.site).startsWith(q), noMatch: { title: 'No site matches' } },
+        emptyState: () => ({ title: 'No rows' }),
+        virtualize: true,
+        threshold: 0.1,
+        onSelect: site => { note.textContent = `selected site ${site}`; }
+      });
+      table.setData({ rows, getStats: () => ({}) });
+      const report = () => {
+        const drawn = table.tbody.querySelectorAll('tr[data-site]');
+        note.textContent = `${table.bodyRows.length} rows, ${drawn.length} in the DOM: #${drawn[0].dataset.site}–#${drawn[drawn.length - 1].dataset.site} (row height ${table.rowHeight}px)`;
+      };
+      table.tableScroll.addEventListener('scroll', () => requestAnimationFrame(report));
+      report();
+      return table;
+    }
+
+    async function main() {
+      await showUnsupported();
+      showBranchShell();
+      showPosteriorBar();
+      showVirtualTable();
+      const fixture = params.get('fixture');
+      const branches = params.get('branches') || fixture;
+      if (branches) showAbsrelShell(await fetchJSON(branches));
+      if (params.get('dark')) showDarkShell(await fetchJSON(params.get('dark')));
+      else document.getElementById('dark-note').textContent = 'pass &dark=<FEL or MEME JSON> to draw a dark report';
+      if (params.get('fubar')) showRateGrid(await fetchJSON(params.get('fubar')));
+      else document.getElementById('fubar-note').textContent = 'pass &fubar=<FUBAR JSON> to draw the rate grid';
+      const tracks = { prime: showPrimeTrack, contrast: showContrastTrack, gard: showGardTrack, slac: showSlacTrack, dfel: showDfelTrack };
+      for (const [param, show] of Object.entries(tracks)) {
+        if (params.get(param)) show(await fetchJSON(params.get(param)));
+        else document.getElementById(`${param}-note`).textContent = `pass &${param}=<v3 JSON> to draw this track`;
+      }
+      if (!fixture) return;
+      const sites = params.get('sites') || fixture;
+      document.getElementById('gallery-source').textContent = `tree: ${fixture}   sites: ${sites}   branches: ${branches}`;
+      const [treeJSON, sitesJSON] = await Promise.all([fetchJSON(fixture), fetchJSON(sites)]);
+
+      const trees = showTrees(treeJSON);
+      const brush = showBrush(sitesJSON);
+      const fit = () => {
+        for (const tree of trees) tree.resize(tree.container.clientWidth);
+        brush.resize(brush.container.clientWidth);
+      };
+      fit();
+      window.addEventListener('resize', fit);
+    }
+
+    main().catch(err => {
+      document.getElementById('gallery-source').textContent = String(err);
+      console.error(err);
+    });
+  </script>
+</body>
+</html>

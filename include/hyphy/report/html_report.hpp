@@ -1,6 +1,6 @@
 #pragma once
-// Self-contained HTML reports: the results viewer (viz/fel-viewer, embedded at build time by
-// cmake/EmbedViewer.cmake), its stylesheet and the analysis JSON are inlined into one file that
+// Self-contained HTML reports: the results viewer (viz/fel-viewer, or viz/ohmic-viewer for Ohmic;
+// embedded at build time by cmake/EmbedViewer.cmake), its stylesheet and the analysis JSON are inlined into one file that
 // opens from file:// with no network access, server, Node or Python.
 
 #include <hyphy/report/viewer_assets.hpp>
@@ -16,16 +16,47 @@
 
 namespace hyphy::report {
 
+// How the report presents one analysis: the nav badge (HTML), the viewer element it mounts and
+// the embedded bundle that defines that element.
+struct ReportViewer {
+    std::string method;
+    std::string badge;
+    std::string tag;
+    const std::string& (*js)() = assets::viewer_js;
+    const std::string& (*css)() = assets::viewer_css;
+};
+
 // Analyses whose results the embedded viewer renders correctly. Extend as viewers are added.
+inline const std::vector<ReportViewer>& report_viewers() {
+    static const std::vector<ReportViewer> viewers = {
+        {"fel", "FEL &bull; Pervasive Selection", "hyphy-fel-viewer"},
+        {"meme", "MEME &bull; Episodic Selection", "hyphy-meme-viewer"},
+        {"fubar", "FUBAR &bull; Bayesian Pervasive Selection", "hyphy-viewer"},
+        {"slac", "SLAC &bull; Ancestral Counting", "hyphy-viewer"},
+        {"dfel", "dFEL &bull; Directional Selection", "hyphy-viewer"},
+        {"gard", "GARD &bull; Recombination Breakpoints", "hyphy-viewer"},
+        {"ohmic", "OHMIC &bull; Phylogenetic Network", "hyphy-ohmic-viewer", assets::ohmic_viewer_js,
+         assets::ohmic_viewer_css},
+    };
+    return viewers;
+}
+
+inline const ReportViewer* find_viewer(const std::string& method) {
+    const auto& v = report_viewers();
+    auto it = std::find_if(v.begin(), v.end(), [&](const ReportViewer& r) { return r.method == method; });
+    return it == v.end() ? nullptr : &*it;
+}
+
 inline const std::vector<std::string>& supported_analyses() {
-    static const std::vector<std::string> methods = {"fel", "meme", "dfel", "ohmic"};
+    static const std::vector<std::string> methods = [] {
+        std::vector<std::string> m;
+        for (const auto& v : report_viewers()) m.push_back(v.method);
+        return m;
+    }();
     return methods;
 }
 
-inline bool has_viewer(const std::string& method) {
-    const auto& m = supported_analyses();
-    return std::find(m.begin(), m.end(), method) != m.end();
-}
+inline bool has_viewer(const std::string& method) { return find_viewer(method) != nullptr; }
 
 namespace detail {
 
@@ -77,6 +108,65 @@ inline std::string basename(const std::string& path) {
     return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
+// Site-table column names, from either the [[name, description], ...] array
+// or the { name: description } object that hyphy3 MEME writes
+inline std::vector<std::string> mle_header_names(const nlohmann::json& j) {
+    std::vector<std::string> names;
+    if (!j.contains("MLE") || !j["MLE"].is_object() || !j["MLE"].contains("headers")) return names;
+    const auto& headers = j["MLE"]["headers"];
+    if (headers.is_array()) {
+        for (const auto& h : headers) {
+            const auto& name = h.is_array() && !h.empty() ? h[0] : h;
+            if (name.is_string()) names.push_back(name.get<std::string>());
+        }
+    } else if (headers.is_object()) {
+        for (const auto& item : headers.items()) names.push_back(item.key());
+    }
+    return names;
+}
+
+// Legacy files without a usable info: structural signatures, ordered so that no
+// method is taken for one whose layout it shares (detectMethod in the viewer
+// checks the same signatures in the same order)
+inline std::string method_from_layout(const nlohmann::json& j) {
+    const auto names = mle_header_names(j);
+    auto has_header = [&](const std::string& name) {
+        return std::find(names.begin(), names.end(), name) != names.end();
+    };
+    auto object_at = [&](const char* key) -> const nlohmann::json& {
+        static const nlohmann::json empty = nlohmann::json::object();
+        return j.contains(key) && j[key].is_object() ? j[key] : empty;
+    };
+    const auto& tests = object_at("test results");
+    const auto& fits = object_at("fits");
+
+    if (j.contains("MLE") && j["MLE"].is_object() && j["MLE"].contains("content") &&
+        j["MLE"]["content"].is_object() && j["MLE"]["content"].contains("0")) {
+        const auto& first_partition = j["MLE"]["content"]["0"];
+        if (first_partition.is_object() && first_partition.contains("by-site")) return "slac";
+    }
+    if (j.contains("grid") && j.contains("posterior")) return "fubar";
+    if (has_header("P-value (overall)")) return "contrast-fel";
+    if (has_header("PRIME LogL")) return "prime";
+    if (fits.contains("Unconstrained model") && tests.contains("p-value")) return "busted";
+    if (tests.contains("positive test results")) return "absrel";
+    if (tests.contains("relaxation or intensification parameter")) return "relax";
+    if (j.contains("breakpointData") && j["breakpointData"].is_object()) return "gard";
+
+    bool beta_plus = false, alpha_eq_beta = false;
+    for (const auto& n : names) {
+        std::string name = lower(n);
+        if (name.find("beta") != std::string::npos &&
+            (name.find('+') != std::string::npos || name.find("plus") != std::string::npos)) {
+            beta_plus = true;
+        }
+        if (name == "alpha=beta") alpha_eq_beta = true;
+    }
+    if (beta_plus) return "meme";
+    if (alpha_eq_beta) return "fel";
+    return "";
+}
+
 }  // namespace detail
 
 // Identify the analysis that produced a result JSON (hyphy3 modern v3 or HyPhy 2.5 legacy).
@@ -98,31 +188,18 @@ inline std::string detect_analysis(const nlohmann::json& j) {
         if (start != std::string::npos) {
             size_t end = info.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-", start);
             std::string lead = info.substr(start, end == std::string::npos ? std::string::npos : end - start);
-            if (lead == "directional") return "dfel";
-            static const std::vector<std::string> known = {"fel", "meme", "dfel", "ohmic", "slac", "fubar", "busted", "absrel",
-                                                           "relax", "prime", "gard", "contrast-fel", "bgm", "fade"};
+            static const std::vector<std::string> known = {"fel", "meme", "dfel", "ohmic", "slac", "fubar", "busted",
+                                                           "absrel", "relax", "prime", "gard", "contrast-fel", "bgm",
+                                                           "fade"};
             if (std::find(known.begin(), known.end(), lead) != known.end()) return lead;
         }
         if (info.find("(fubar") != std::string::npos) return "fubar";
+        if (start != std::string::npos && info.compare(start, 15, "directional fel") == 0) return "dfel";
         if (info.find("ohmic") != std::string::npos) return "ohmic";
     }
 
-    // Older legacy files without usable info: recognize FEL/MEME from their site-table headers
-    if (j.contains("MLE") && j["MLE"].contains("headers") && j["MLE"]["headers"].is_array()) {
-        bool beta_plus = false, alpha_eq_beta = false;
-        for (const auto& h : j["MLE"]["headers"]) {
-            std::string name = detail::lower(h.is_array() && !h.empty() && h[0].is_string() ? h[0].get<std::string>()
-                                             : h.is_string() ? h.get<std::string>() : "");
-            if (name.find("beta") != std::string::npos &&
-                (name.find('+') != std::string::npos || name.find("plus") != std::string::npos)) {
-                beta_plus = true;
-            }
-            if (name == "alpha=beta") alpha_eq_beta = true;
-        }
-        if (beta_plus) return "meme";
-        if (alpha_eq_beta) return "fel";
-    }
-    return "";
+    // Legacy output without a usable info: recognize the method from its layout
+    return detail::method_from_layout(j);
 }
 
 inline std::string supported_analyses_text() {
@@ -145,24 +222,22 @@ inline std::string render_html(const std::string& json_text, const std::string& 
         throw std::runtime_error("Cannot create HTML report: input is not valid JSON (" + std::string(e.what()) + ")");
     }
     const std::string method = detect_analysis(j);
-    if (!has_viewer(method)) {
+    const ReportViewer* viewer = find_viewer(method);
+    if (!viewer) {
         throw std::runtime_error("Cannot create HTML report: no HTML viewer for " +
                                  (method.empty() ? std::string("this result file") : "'" + method + "' results") +
                                  " yet (available for: " + supported_analyses_text() + ")");
     }
 
-    const bool is_meme = method == "meme";
-    const bool is_ohmic = method == "ohmic";
-    const bool is_dfel = method == "dfel";
-    const std::string badge = is_ohmic ? "OHMIC &bull; Phylogenetic Network"
-                            : is_meme  ? "MEME &bull; Episodic Selection"
-                            : is_dfel  ? "dFEL &bull; Directional Selection"
-                                       : "FEL &bull; Pervasive Selection";
-    const std::string tag = is_ohmic ? "hyphy-ohmic-viewer"
-                          : is_meme  ? "hyphy-meme-viewer"
-                                     : "hyphy-fel-viewer";
-    const std::string& css_bundle = is_ohmic ? assets::ohmic_viewer_css() : assets::viewer_css();
-    const std::string& js_bundle  = is_ohmic ? assets::ohmic_viewer_js()  : assets::viewer_js();
+    const std::string& badge = viewer->badge;
+    const std::string& tag = viewer->tag;
+    std::string viewer_tags;
+    std::vector<std::string> seen_tags;
+    for (const auto& v : report_viewers()) {
+        if (std::find(seen_tags.begin(), seen_tags.end(), v.tag) != seen_tags.end()) continue;
+        seen_tags.push_back(v.tag);
+        viewer_tags += (viewer_tags.empty() ? "" : ", ") + v.tag;
+    }
     const std::string name = detail::html_escape(detail::basename(source_name));
 
     std::ostringstream html;
@@ -199,13 +274,15 @@ inline std::string render_html(const std::string& json_text, const std::string& 
       color: #767672; font-family: "SF Mono", Monaco, monospace; font-size: 11px;
       background-color: #EDEDE9; border: 1px solid #D1D1CB; border-radius: 2px; padding: 2px 8px;
     }
+    .app-nav-meta { display: flex; align-items: center; gap: 8px; }
+    .app-nav-format { font-weight: 700; letter-spacing: 0.5px; }
     #viewer-mount {
       flex: 1 1 0%; min-height: 0; display: flex; position: relative;
       overflow-y: auto; overflow-x: hidden;
     }
-    hyphy-fel-viewer, hyphy-meme-viewer, hyphy-ohmic-viewer { width: 100%; height: 100%; display: block; }
+    )" << viewer_tags << R"( { width: 100%; height: 100%; display: block; }
     /* Viewer stylesheet */
-)" << detail::css_for_style(css_bundle) << R"(
+)" << detail::css_for_style(viewer->css()) << R"(
   </style>
 </head>
 <body>
@@ -216,19 +293,32 @@ inline std::string render_html(const std::string& json_text, const std::string& 
         <span>)" << badge << R"(</span>
         <span class="app-brand-dot">&#9679;</span>
       </div>
-      <div class="app-nav-title"><span>)" << name << R"(</span></div>
+      <div class="app-nav-meta">
+        <div class="app-nav-title"><span>)" << name << R"(</span></div>
+      </div>
     </nav>
     <div id="viewer-mount">
       <)" << tag << R"( id="hyphy-viewer" theme="light"></)" << tag << R"(>
     </div>
   </div>
   <script>
-)" << detail::js_for_script(js_bundle) << R"(
+)" << detail::js_for_script(viewer->js()) << R"(
   </script>
   <script>
     const payload = )" << detail::json_for_script(json_text) << R"(;
+    // The producer chip ('hyphy3 v3', 'HyPhy 2.5 legacy') sits beside the file name
+    function showFormat(event) {
+      const label = event.detail && event.detail.formatLabel;
+      if (!label) return;
+      const meta = document.querySelector('.app-nav-meta');
+      const chip = meta.querySelector('.app-nav-format') || document.createElement('div');
+      chip.className = 'app-nav-title app-nav-format';
+      chip.textContent = label;
+      meta.prepend(chip);
+    }
     function startViewer() {
       const viewer = document.getElementById('hyphy-viewer');
+      viewer.addEventListener('data-loaded', showFormat);
       customElements.whenDefined(')" << tag << R"(').then(function () { viewer.load(payload); });
     }
     if (document.readyState === 'loading') {

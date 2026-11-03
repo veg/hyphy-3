@@ -1,0 +1,72 @@
+/**
+ * House number formatters shared by every method viewer.
+ */
+
+import { erfc } from './stats.js';
+
+// Cutoff labels: two decimals unless the cutoff needs three (0.005, 0.106, 0.995), so a
+// label always reads back as the cutoff it names and never rounds 0.999 up to 1.00
+export function formatThreshold(t) {
+  const two = t.toFixed(2);
+  return Math.abs(Number(two) - t) < 1e-9 ? two : t.toFixed(3);
+}
+
+// FEL/MEME site p-values: scientific notation below 1e-4
+export function formatPValue(p, digits = 2) {
+  return p < 0.0001 ? p.toExponential(digits) : p.toFixed(4);
+}
+
+// FEL site omega, where alpha = 0 makes beta/alpha unbounded
+export function formatOmegaInf(omega, digits = 2) {
+  return omega >= 100 ? '∞' : omega.toFixed(digits);
+}
+
+// Empirical Bayes factors; huge values are capped rather than spelled out
+export function formatEBF(val, cap = '≥10,000') {
+  if (val == null) return '—';
+  if (val >= 10000) return cap;
+  if (val >= 1000) return `${(val / 1000).toFixed(1)}k`;
+  if (val >= 100) return val.toFixed(0);
+  return val.toFixed(1);
+}
+
+// Bayes factors that can fall below 1 (FUBAR): two significant digits there, so
+// strong evidence against never reads as an impossible 0.0
+export function formatBayesFactor(val) {
+  return val != null && val < 1 ? val.toPrecision(2) : formatEBF(val);
+}
+
+// HyPhy 2.5 underflows tiny p-values to exactly 0; say so instead of printing 0
+export function formatP(p, digits = 2) {
+  return p === 0 ? 'p < 1e-16' : formatPValue(p, digits);
+}
+
+// The '(computed)' sub-value for an underflowed p: the 1-df chi-square tail
+// erfc(sqrt(LR/2)), or null when there is no positive LR to recompute from
+export function formatComputedP(lrt) {
+  if (!(lrt > 0)) return null;
+  return `${formatPValue(erfc(Math.sqrt(lrt / 2)))} (computed)`;
+}
+
+// Omega from rate-class fits: legacy sentinels (1e10) and large v3 values
+// read as '>1000', and a class pinned at the floor reads as a plain '0'
+export function formatOmega(omega, digits = 2) {
+  if (omega >= 1000) return '>1000';
+  if (omega <= 0) return '0';
+  return omega.toFixed(digits);
+}
+
+export function formatPosterior(p) {
+  return p.toFixed(3);
+}
+
+// Substitution counts are fractional when ties are split between paths
+export function formatCount(n) {
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
+// A signed difference, signed after rounding so −0.004 reads +0.00, not −0.00
+export function formatSigned(v, digits = 2) {
+  const rounded = Number(v.toFixed(digits));
+  return `${rounded < 0 ? '−' : '+'}${Math.abs(rounded).toFixed(digits)}`;
+}

@@ -1,4 +1,6 @@
-// Genetic code tables, biophysical chemistry palettes, and Dieter Rams / Braun industrial color schemes
+// Genetic code tables and selection colour schemes
+
+import { PALETTE, withAlpha } from './palette.js';
 
 export const CODON_TABLE = {
   // Phenylalanine
@@ -76,71 +78,27 @@ export function translateCodon(codon) {
   return '?';
 }
 
-// Dieter Rams / Braun Industrial Architectural Palette
-export const RAMS_COLORS = {
-  chassisBg: '#F2F2EF',       // Warm matte off-white chassis
-  panelBg: '#FFFFFF',         // Crisp flat white panel
-  hairline: '#D1D1CB',        // Precision 1px structural line
-  gridLine: '#EAEAE6',        // Subtle cell grid
-  ink: '#1A1A18',             // Deep neutral charcoal ink
-  stone: '#767672',           // Secondary warm stone label
-  dotMuted: '#B8B8B2',        // Muted consensus dots
-  signalOrange: '#EB5E28',    // Iconic Braun Signal Orange (Diversifying / Focus)
-  industrialCobalt: '#1E40AF',// Technical Cobalt Blue (Purifying)
-  amberOchre: '#B45309'       // Precision Amber (Perplexity ⚡)
-};
-
-// Calibrated Matte Zappo Palette (Dieter Rams aesthetic: desaturated, tactile industrial tones)
-export const ZAPPO_COLORS = {
-  // Aliphatic / hydrophobic (matte stone chalk)
-  'A': '#E2DDD9', 'I': '#D6CFCA', 'L': '#D6CFCA', 'M': '#D6CFCA', 'V': '#D6CFCA',
-  // Aromatic (warm raw sienna)
-  'F': '#D97706', 'W': '#B45309', 'Y': '#D97706',
-  // Positive / basic (Braun technical cobalt)
-  'K': '#1E40AF', 'R': '#1E40AF', 'H': '#3B82F6',
-  // Negative / acidic (Braun matte vermilion)
-  'D': '#DC2626', 'E': '#DC2626',
-  // Conformationally special (warm burnt umber)
-  'P': '#9A3412', 'G': '#9A3412',
-  // Cysteine (matte brass)
-  'C': '#CA8A04',
-  // Hydrophilic / polar (slate graphite)
-  'S': '#4B5563', 'T': '#4B5563', 'N': '#4B5563', 'Q': '#4B5563',
-  // Stop / Gap / Unknown
-  '*': '#6B7280', '-': '#E5E7EB', '?': '#D1D5DB'
-};
-
-export const NUCLEOTIDE_COLORS = {
-  'A': '#1E40AF', // Cobalt
-  'C': '#047857', // Sage green
-  'G': '#EB5E28', // Braun Orange
-  'T': '#DC2626', // Vermilion
-  'U': '#DC2626',
-  '-': '#D1D5DB',
-  'N': '#9CA3AF'
-};
-
 // Selection Palette (Disciplined Braun signal colors on neutral ground)
 export const SELECTION_COLORS = {
   'diversifying': {
-    fill: '#EB5E28',                           // Iconic Braun Orange
-    fillLight: 'rgba(235, 94, 40, 0.12)',
-    text: '#EB5E28',
-    border: '#D9480F',
+    fill: PALETTE.accent,
+    fillLight: withAlpha(PALETTE.accent, 0.12),
+    text: PALETTE.accent,
+    border: PALETTE.accentBorder,
     label: '▲ Diversifying'
   },
   'purifying': {
-    fill: '#1E40AF',                           // Industrial Cobalt
-    fillLight: 'rgba(30, 64, 175, 0.10)',
-    text: '#1E40AF',
-    border: '#1E3A8A',
+    fill: PALETTE.purifying,
+    fillLight: withAlpha(PALETTE.purifying, 0.10),
+    text: PALETTE.purifying,
+    border: PALETTE.purifyingDeep,
     label: '▼ Purifying'
   },
   'neutral': {
-    fill: '#9CA3AF',
-    fillLight: 'rgba(156, 163, 175, 0.06)',
-    text: '#6B7280',
-    border: '#D1D5DB',
+    fill: PALETTE.neutral,
+    fillLight: withAlpha(PALETTE.neutral, 0.06),
+    text: PALETTE.neutralText,
+    border: PALETTE.neutralBorder,
     label: '-'
   }
 };
