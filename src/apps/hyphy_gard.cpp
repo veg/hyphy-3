@@ -3,6 +3,7 @@
 #include "hyphy/core/tree.hpp"
 #include "hyphy/core/console.hpp"
 #include "hyphy/analyses/gard.hpp"
+#include "hyphy/report/html_report.hpp"
 
 #include <iostream>
 #include <string>
@@ -38,6 +39,7 @@ static void print_gard_usage(const char* prog) {
               << "  " << Console::brand("--output, -o") << " <file>           Path to output JSON file (default: <alignment>.GARD.json)\n"
               << "  " << Console::brand("--format") << " <fmt>                Output format: 'modern' (default) or 'legacy'\n"
               << "  " << Console::brand("--legacy-json") << "                  Output HyPhy 2.5 compatible JSON\n"
+              << "  " << Console::brand("--html") << " <file>                  Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--no-chart") << "                     Disable dynamic breakpoint track & sparkline\n"
               << "  " << Console::brand("--force-tty") << "                    Force ANSI in-place dynamic chart updates\n"
               << "  " << Console::brand("--quiet, -q") << "                    Suppress progress output\n"
@@ -50,6 +52,7 @@ static void print_gard_usage(const char* prog) {
 int run_gard(int argc, char* argv[]) {
     std::string alignment_file;
     std::string output_file;
+    std::string html_file;
     std::string run_mode = "Normal";
     std::string output_format = "modern";
     size_t max_breakpoints = 10000;
@@ -64,6 +67,8 @@ int run_gard(int argc, char* argv[]) {
             alignment_file = argv[++i];
         } else if ((arg == "--output" || arg == "-o") && i + 1 < argc) {
             output_file = argv[++i];
+        } else if (arg == "--html" && i + 1 < argc) {
+            html_file = argv[++i];
         } else if ((arg == "--mode" || arg == "-m") && i + 1 < argc) {
             run_mode = argv[++i];
         } else if ((arg == "--max-breakpoints" || arg == "-b") && i + 1 < argc) {
@@ -144,6 +149,17 @@ int run_gard(int argc, char* argv[]) {
         }
         out << json_out.dump(2) << "\n";
         out.close();
+
+        if (!html_file.empty()) {
+            try {
+                hyphy::report::write_html_report(output_file, html_file);
+                std::cout << Console::success("✔") << " " << Console::bold("Saved HTML report to: ")
+                          << Console::brand(html_file) << "\n\n";
+            } catch (const std::exception& e) {
+                std::cerr << Console::danger("Error writing HTML report: ") << e.what() << "\n";
+                return 1;
+            }
+        }
 
         if (!quiet) {
             std::string bp_list;

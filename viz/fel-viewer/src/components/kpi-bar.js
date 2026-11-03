@@ -19,12 +19,14 @@
 //     seed is the starting cutoff, and statistic the one the cutoff applies to until
 //     the shell switches it (options.statistic). format(t) prints a cutoff for labels.
 //     caption: a muted line under the slider, a string or caption({ threshold,
-//       statistic }) for one that follows the cutoff.
+//       statistic, data }) for one that follows the cutoff (and the loaded result).
 //     toggle: { statistics: ['p', 'q'] } adds a switch that reports the chosen
 //       statistic through options.onStatisticChange.
 //     scale: 'linear' (default) or 'log'. On a log scale min and max are still
 //       cutoffs, step is in decades, and slider position x is the cutoff 10^x.
 //     presetLabel(t): a shorter preset pill label than the full cutoff label.
+//     enabled(data): false for a result the cutoff does not apply to; the slider and presets
+//       are disabled and the caption reads disabledCaption.
 
 const KPI_TONE_CLASSES = {
   accent: 'kpi-value kpi-text-orange',
@@ -104,10 +106,10 @@ export function thresholdRelation(controller) {
 }
 
 // The caption line's text for a cutoff, or null for a controller without one
-export function thresholdCaption(controller, threshold, statistic) {
+export function thresholdCaption(controller, threshold, statistic, data = null) {
   const { caption } = controller;
   if (caption == null) return null;
-  return typeof caption === 'function' ? caption({ threshold, statistic }) : caption;
+  return typeof caption === 'function' ? caption({ threshold, statistic, data }) : caption;
 }
 
 function statisticToggleMarkup(controller, statistic) {
@@ -177,6 +179,7 @@ export class KpiBar {
     this.threshold = this.options.threshold ?? this.controller.seed;
     this.statistic = this.options.statistic ?? this.controller.statistic;
     this.data = null;
+    this.enabled = true;
     this.initDOM();
   }
 
@@ -255,7 +258,19 @@ export class KpiBar {
   }
 
   updateCaption() {
-    if (this.caption) this.caption.textContent = thresholdCaption(this.controller, this.threshold, this.statistic);
+    if (!this.caption) return;
+    this.caption.textContent = !this.enabled && this.controller.disabledCaption
+      ? this.controller.disabledCaption
+      : thresholdCaption(this.controller, this.threshold, this.statistic, this.data);
+  }
+
+  // Whether the cutoff applies to the loaded result
+  setEnabled(enabled) {
+    this.enabled = enabled;
+    this.slider.disabled = !enabled;
+    this.presetBtns.forEach(btn => { btn.disabled = !enabled; });
+    this.controlEl.classList.toggle('kpi-control-disabled', !enabled);
+    this.updateCaption();
   }
 
   setThreshold(p, triggerCallback = false) {
@@ -296,6 +311,7 @@ export class KpiBar {
 
   setData(data) {
     this.data = data;
+    this.setEnabled(this.controller.enabled?.(data) ?? true);
     this.cards = this.options.cards.filter(card => !card.available || card.available(data));
     this.fillCards();
     this.updateStats();

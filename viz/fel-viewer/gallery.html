@@ -20,7 +20,7 @@
     The virtual table draws 5000 synthetic rows a window at a time.
     Site tracks with stacked, clickable bands load &prime=<PRIME v3 JSON> and
     &contrast=<Contrast-FEL v3 JSON> (MatrixBand: click a row label to focus it, a cell to
-    select its site), &gard=<GARD v3 JSON> (SegmentBand: click a segment) and
+    select its site), &gard=<GARD v3 JSON> (SegmentBand, GardTickBand and the GardTreeCard: click a segment) and
     &slac=<SLAC v3 JSON> (mirrored EvidenceBand: the series under the pointer is picked by y;
     the same file also drives an OverviewTrack with the SLAC preset, its brush shown from 60
     codons so it zooms even a short alignment) and &dfel=<dFEL v3 JSON> (the dFEL hero: its
@@ -144,8 +144,9 @@
   </div>
 
   <div class="gallery-card">
-    <div class="gallery-card-head"><span>SiteTrackCanvas · SegmentBand, GARD segments and breakpoints (click a segment)</span></div>
+    <div class="gallery-card-head"><span>OverviewTrack · GARD hero and tree card, segments and breakpoints (click a segment)</span></div>
     <div id="track-gard"></div>
+    <div id="track-gard-card"></div>
     <div class="gallery-note" id="gard-note"></div>
   </div>
 
@@ -229,7 +230,6 @@
     import { SiteTrackCanvas } from './src/components/site-track.js';
     import { EvidenceBand } from './src/components/evidence-band.js';
     import { MatrixBand } from './src/components/matrix-band.js';
-    import { SegmentBand } from './src/components/segment-band.js';
     import { RateGridHeatmap } from './src/components/rate-grid-heatmap.js';
     import { OverviewTrack } from './src/components/overview-track.js';
     import { FUBARData } from './src/data/fubar-data.js';
@@ -237,6 +237,9 @@
     import { slacTrackModes, SLAC_BRUSH } from './src/methods/slac.js';
     import { DFELData } from './src/data/dfel-data.js';
     import { dfelHero, DirectionalModelCard } from './src/methods/dfel.js';
+    import { GardResults } from './src/data/gard-data.js';
+    import { gardHero } from './src/methods/gard.js';
+    import { GardTreeCard } from './src/components/gard-trees.js';
     import { PALETTE } from './src/data/palette.js';
     import { formatPValue, formatThreshold } from './src/core/format.js';
 
@@ -457,49 +460,19 @@
       return track;
     }
 
-    // GARD: model-averaged breakpoint support over the best model's segments. Support keys
-    // map to 1-based sites with the file's own offset (left segment end - breakpoint key).
+    // GARD: the hero with its real bands (log | linear support, segments toned by call, Ohmic
+    // candidates) and the tree card under it; the brush shows from 1000 sites
     function showGardTrack(json) {
       const note = document.getElementById('gard-note');
-      const parts = json.partitions;
-      const best = json.model_selection.best_model_breakpoints;
-      const offset = best.length ? parts[0].end_site - best[0] : 1;
-      const rows = Object.entries(json.site_breakpoint_support)
-        .map(([key, w]) => ({ site: Number(key) + offset, w }))
-        .sort((a, b) => a.site - b.site);
-      const ranked = rows.slice().sort((a, b) => b.w - a.w);
-      const band = new EvidenceBand({
-        value: r => r.w,
-        tone: (r, track) => (r.w >= track.threshold ? 'div' : null),
-        domain: (all, track) => [0, Math.max(track.threshold, Math.max(...all.map(r => r.w)) * 1.1)],
-        ticks: 4,
-        tickFormat: v => v.toFixed(2),
-        rule: 'ge',
-        ruleLabel: t => `support ≥ ${formatThreshold(t)}`,
-        shape: 'dot',
-        label: 'support',
-        tooltip: r => tip(`Site ${r.site}`, [['support', r.w < 1e-3 ? r.w.toExponential(2) : r.w.toFixed(3)], ['rank', `${ranked.indexOf(r) + 1} of ${rows.length}`]])
-      });
-      const segments = new SegmentBand({ segments: d => d.segments });
-      new SiteTrackCanvas(document.getElementById('track-gard'), {
-        title: 'Breakpoint Map',
-        subtitle: 'model-averaged support by nucleotide site',
-        band,
-        stack: [segments],
-        threshold: 0.05,
-        sites: d => d.rows,
-        siteCount: d => d.sites,
-        exportName: 'gallery_gard',
-        onSiteSelect: site => { note.textContent = `site-select: ${site}`; },
-        onRegionSelect: region => {
-          note.textContent = `region-select: segment ${region.index + 1}, sites ${region.segment.start}–${region.segment.end}`;
-        }
-      }).setData({
-        rows,
-        sites: json.dataset.sites_count,
-        segments: parts.map(p => ({ key: p.partition_index, start: p.start_site, end: p.end_site }))
-      });
-      note.textContent = `${parts.length} segments, breakpoints ${best.join(', ') || 'none'}, support offset ${offset}`;
+      const data = new GardResults(json);
+      const select = (site) => { note.textContent = `site-select: ${site}`; };
+      const hero = gardHero(document.getElementById('track-gard'), { threshold: 0.05, onSiteSelect: select });
+      hero.setData(data);
+      const card = new GardTreeCard(document.getElementById('track-gard-card'));
+      card.setThreshold(0.05);
+      card.setData(data);
+      const stats = data.getStats(0.05);
+      note.textContent = `${stats.segments} segments, ${stats.incongruent} of ${stats.breakpoints} incongruent at α 0.05, support offset ${data.off}`;
     }
 
     // SLAC: positive selection above zero, negative below; the selected series gets the ring

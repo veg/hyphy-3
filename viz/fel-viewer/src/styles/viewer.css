@@ -2107,3 +2107,198 @@
   white-space: pre-line;
   margin: 10px 0 6px 0;
 }
+
+/* GARD: the breakpoint call badge, the disabled alpha controller and the tree views */
+.gard-call {
+  white-space: nowrap;
+}
+
+.gard-call-incongruent {
+  background-color: var(--accent-tint);
+  color: var(--accent);
+}
+
+.gard-call-branch {
+  background-color: var(--inset);
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+}
+
+.gard-call-untested {
+  background-color: var(--inset);
+  color: var(--stone);
+}
+
+.kpi-control-disabled .kpi-slider,
+.kpi-control-disabled .preset-pill {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* The card under the table: model selection and the partition-by-tree matrix side by side, the tree comparison below */
+.hyphy-gard-card {
+  background-color: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.gard-card-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.gard-panel {
+  flex: 1 1 320px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gard-compare {
+  flex-basis: auto;
+}
+
+.gard-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.gard-panel-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--stone);
+}
+
+.gard-figure {
+  width: 100%;
+}
+
+.gard-figure > svg {
+  display: block;
+}
+
+.gard-caption {
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--stone);
+}
+
+.gard-selects {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gard-select {
+  background-color: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-family: "SF Mono", Monaco, monospace;
+}
+
+.gard-vs {
+  font-size: 10px;
+  color: var(--stone);
+}
+
+/* The matrix: one row per partition, one column per tree; its own scroll when wide */
+.gard-matrix-host {
+  overflow-x: auto;
+}
+
+.gard-matrix {
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.gard-matrix th,
+.gard-matrix td {
+  padding: 4px 10px;
+  text-align: right;
+  border-bottom: 1px solid var(--grid-line);
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.gard-matrix th {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--stone);
+}
+
+.gard-matrix tbody th {
+  text-align: left;
+}
+
+.gard-matrix-best {
+  font-weight: 700;
+}
+
+.gard-matrix-rejected {
+  background-color: var(--accent-tint);
+}
+
+/* A pair of trees, side by side where there is room; each scrolls inside a bounded host */
+.gard-tree-cols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.gard-tree-col {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.gard-tree-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.gard-tree-title {
+  font-size: 11px;
+  font-weight: 700;
+  font-family: "SF Mono", Monaco, monospace;
+  color: var(--ink);
+}
+
+.gard-tree-host {
+  width: 100%;
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid var(--grid-line);
+  border-radius: 3px;
+}
+
+.gard-tree-summary {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.gard-drawer-pair .gard-tree-col {
+  flex-basis: 100%;
+}

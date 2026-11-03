@@ -15,9 +15,10 @@ test('every config supplies what the shell mounts', () => {
       assert.equal(typeof config[part], 'function', `${id}.${part}`);
     }
     assert.equal(typeof config.controller.seed, 'number', `${id}.controller.seed`);
-    // p-values and q-values pass at or below the cutoff, posteriors at or above it
+    // p-values and q-values pass at or below the cutoff, posteriors at or above it; GARD's
+    // family-wise alpha is also a cutoff the tests must fall under
     const { statistic, direction } = config.controller;
-    assert.ok(direction === 'ge' ? statistic === 'Posterior' : ['p', 'q'].includes(statistic), `${id}.controller.statistic`);
+    assert.ok(direction === 'ge' ? statistic === 'Posterior' : ['p', 'q', 'α'].includes(statistic), `${id}.controller.statistic`);
   }
 });
 
@@ -29,8 +30,8 @@ test('configs are looked up by method id, case-insensitively', () => {
   assert.equal(methodConfig('constructor'), null);
 });
 
-test('FEL, MEME, FUBAR, SLAC and dFEL results get their own config, v3 or legacy', { skip: noFixtures }, () => {
-  const files = readdirSync(FIXTURES).filter(f => /^(fel|meme|fubar|slac|dfel)_.*\.json$/.test(f));
+test('FEL, MEME, FUBAR, SLAC, dFEL and GARD results get their own config, v3 or legacy', { skip: noFixtures }, () => {
+  const files = readdirSync(FIXTURES).filter(f => /^(fel|meme|fubar|slac|dfel|gard)_.*\.json$/.test(f));
   assert.ok(files.length > 0);
   for (const file of files) {
     const json = JSON.parse(readFileSync(new URL(file, FIXTURES), 'utf8'));
@@ -48,7 +49,7 @@ test('only unrecognized results fall back; a recognized method without a viewer 
   assert.deepEqual(resolveConfig({ analysis: { id: 'busted' } }, fallback), { method: 'busted', config: null });
   assert.deepEqual(resolveConfig({ analysis: { info: 'Directional FEL detects site-level selection' } }, fallback),
     { method: 'dfel', config: METHOD_CONFIGS.dfel });
-  assert.deepEqual(resolveConfig({ breakpointData: {} }, fallback), { method: 'gard', config: null });
+  assert.deepEqual(resolveConfig({ breakpointData: {} }, fallback), { method: 'gard', config: METHOD_CONFIGS.gard });
   assert.deepEqual(resolveConfig({ MLE: { content: { 0: { 'by-site': {} } } } }, fallback), { method: 'slac', config: METHOD_CONFIGS.slac });
   assert.deepEqual(resolveConfig({ grid: [], posterior: {} }, fallback), { method: 'fubar', config: METHOD_CONFIGS.fubar });
   assert.deepEqual(resolveConfig({ analysis: { id: 'fel' } }, fallback), { method: 'fel', config: METHOD_CONFIGS.fel });

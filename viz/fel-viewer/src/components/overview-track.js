@@ -5,7 +5,8 @@
 //
 // options.track(container) builds the SiteTrackCanvas; options.brush holds the
 // OverviewBrush options (value, tone, rule, toneLabels, maxValue, minSites); window is
-// the number of sites the track shows when zoomed; onSiteSelect(site) reports a site
+// the number of sites the track shows when zoomed, or window(numSites) for one that scales
+// with the alignment; onSiteSelect(site) reports a site
 // picked on either part.
 
 import { OverviewBrush } from './overview-brush.js';
@@ -51,7 +52,8 @@ export class OverviewTrack {
     this.track.setData(data);
     const numSites = this.track.numSites;
     this.brush.setData(this.track.rows, numSites);
-    this.span = numSites >= this.brush.options.minSites ? Math.min(numSites, this.options.window) : 0;
+    const { window: size } = this.options;
+    this.span = numSites >= this.brush.options.minSites ? Math.min(numSites, typeof size === 'function' ? size(numSites) : size) : 0;
     this.brushHost.style.display = this.zoomed ? '' : 'none';
     if (this.zoomed) {
       this.brush.setViewport(0, this.span);

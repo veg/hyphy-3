@@ -5,6 +5,7 @@ import { Drawer } from '../src/components/drawer.js';
 import { thresholdLabel } from '../src/components/kpi-bar.js';
 import { FELData, runPThreshold } from '../src/data/fel-data.js';
 import { SITE_P_THRESHOLD } from '../src/methods/fel.js';
+import { METHOD_CONFIGS } from '../src/methods/registry.js';
 
 // Just enough DOM for the shell and the drawer to build their layout
 class FakeElement {
@@ -13,6 +14,8 @@ class FakeElement {
     this.events = [];
     this.style = {};
     this.classList = { add() {}, remove() {}, toggle() {} };
+    this.childNodes = [{ nodeValue: '' }];
+    this.dataset = {};
   }
   appendChild(el) { this.children.push(el); return el; }
   prepend(el) { this.children.unshift(el); }
@@ -20,10 +23,18 @@ class FakeElement {
   remove() {}
   addEventListener() {}
   querySelector() { return new FakeElement(); }
+  querySelectorAll() { return []; }
   dispatchEvent(e) { this.events.push(e); }
+  // What the real views draw with: a canvas that takes any call, a measured box, siblings
+  insertAdjacentHTML() {}
+  before() {}
+  append(...els) { this.children.push(...els); }
+  getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 290 }; }
+  getContext() { return new Proxy({}, { get: (target, key) => (key === 'measureText' ? () => ({ width: 0 }) : () => {}), set: () => true }); }
 }
 globalThis.document = { createElement: () => new FakeElement() };
 globalThis.window = { addEventListener() {}, removeEventListener() {} };
+globalThis.ResizeObserver = class { observe() {} disconnect() {} };
 
 // A view that records what the shell fans out to it
 class RecordingView {
@@ -246,4 +257,37 @@ test('a secondary view mounts under the table, before diagnostics, and shares da
 
   // Configs without one mount exactly the four views they always did
   assert.equal(shellWith(branchConfig(GE_CONTROLLER)).views.length, 4);
+});
+
+test('a GARD result mounts every view, seeds the family-wise alpha and survives a theme switch', () => {
+  const tree = '((A:0.1,B:0.1)N1:0.2,(C:0.1,D:0.1)N2:0.2,E:0.3);';
+  const doc = {
+    analysis: { id: 'gard' },
+    dataset: { taxa_count: 5, sites_count: 200 },
+    baseline: { aicc: 500, tree },
+    model_selection: { best_model_breakpoints: [99], best_model_aicc: 400, improvements: [{ breakpoints_count: 1, breakpoints: [99], delta_aicc: 100 }] },
+    partitions: [{ partition_index: 0, start_site: 1, end_site: 100, tree }, { partition_index: 1, start_site: 101, end_site: 200, tree }],
+    site_breakpoint_support: { 99: 0.9 },
+    topology_test: {
+      test_type: 'both',
+      breakpoints: [{ breakpoint: 100, left_partition: [1, 100], right_partition: [101, 200], kh_p_value_left: 0, kh_p_value_right: 0, sh_p_value_left: 0, sh_p_value_right: 0, statistically_significant: true }]
+    }
+  };
+  const picked = [];
+  const shell = new ViewerShell(new FakeElement(), { onSiteSelect: (site, row) => picked.push([site, row?.index]) });
+  shell.load(doc);
+  assert.equal(shell.config, METHOD_CONFIGS.gard);
+  assert.equal(shell.threshold, 0.05);
+  assert.equal(shell.statistic, 'α');
+  assert.equal(shell.views.length, 5);
+  const loaded = shell.container.events.find(e => e.type === 'data-loaded').detail;
+  assert.deepEqual([loaded.numSites, loaded.numTaxa, loaded.stats.incongruent, loaded.formatLabel], [200, 5, 1, 'hyphy3 v3']);
+
+  shell.setTheme('dark');
+  shell.setThreshold(0.001);
+  assert.equal(shell.threshold, 0.001);
+  shell.selectSite(100);
+  assert.deepEqual(picked, [[100, 1]]);
+  assert.equal(shell.container.events.find(e => e.type === 'site-select').detail.raw.site, 100);
+  assert.deepEqual(shell.siblingKeys(), [100]);
 });
