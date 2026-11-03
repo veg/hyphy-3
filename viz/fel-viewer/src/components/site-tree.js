@@ -216,7 +216,7 @@ export class SiteTree {
     for (const c of root.children || []) computeDist(c, 0);
 
     const leftPad = 32;
-    const labelArea = 180; // space for leaf text on right
+    const labelArea = 210; // leaf text plus the codon badge at x + 130, up to 64 wide
     const treeW = Math.max(160, availableWidth - leftPad - labelArea);
 
     const computeX = (n) => {
@@ -300,7 +300,7 @@ export class SiteTree {
         svg += `  <circle cx="${n.x}" cy="${n.y}" r="3" fill="${isDiff ? PALETTE.accent : PALETTE.stone}"/>\n`;
 
         // Taxon name
-        svg += `  <text x="${n.x + 8}" y="${n.y}" class="tree-leaf-text">${n.name || 'Leaf'}</text>\n`;
+        svg += `  <text x="${n.x + 8}" y="${n.y}" class="tree-leaf-text">${(n.name || 'Leaf').replace(/\{[^}]*\}$/, '')}</text>\n`;
 
         // Codon / AA Pill Badge
         const tagX = n.x + 130;

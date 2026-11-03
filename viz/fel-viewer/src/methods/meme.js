@@ -320,7 +320,7 @@ export const MEME_CONFIG = Object.assign({}, FEL_CONFIG, {
     onThresholdChange: hooks.onThresholdChange,
     onStatisticChange: hooks.onStatisticChange
   }),
-  hero: (parent, hooks) => siteEvidencePlot(parent, hooks, MEME_EVIDENCE),
+  hero: (parent, hooks) => siteEvidencePlot(parent, hooks, MEME_EVIDENCE, 'hyphy_meme_evidence_plot'),
   table: (parent, hooks) => siteResultsTable(parent, hooks, MEME_TABLE),
   drawer: (container, hooks) => siteDrawer(container, hooks, MEME_DRAWER),
   diagnostics: memeDiagnostics

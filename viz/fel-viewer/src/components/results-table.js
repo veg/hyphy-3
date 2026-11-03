@@ -431,6 +431,7 @@ ${search ? resultsSearchMarkup(search) : ''}
     const rows = this.visibleRows();
     this.subtitle.textContent = filter.subtitle(rows.length, this.threshold);
 
+    this.fallbackRows = [];
     if (rows.length === 0) {
       this.tableEl.style.display = 'none';
       this.emptyEl.style.display = 'block';
@@ -483,6 +484,7 @@ ${search ? resultsSearchMarkup(search) : ''}
       html += `<button type="button" class="btn-jump" data-filter="${state.jump.filter}">${state.jump.label}</button>`;
     }
     if (state.fallback?.length) {
+      this.fallbackRows = state.fallback;
       html += `
         <div class="empty-fallback">
           <div class="empty-fallback-label">Closest calls</div>
@@ -494,6 +496,12 @@ ${search ? resultsSearchMarkup(search) : ''}
     }
     this.emptyEl.innerHTML = html;
     this.emptyEl.querySelector('.btn-jump')?.addEventListener('click', () => this.setFilterType(state.jump.filter));
+  }
+
+  // The rows the drawer steps through: the table's, or the closest calls when it is empty
+  stepRows() {
+    const rows = this.visibleRows();
+    return rows.length ? rows : (this.fallbackRows || []);
   }
 
   // CSV of the current filter, search and sort

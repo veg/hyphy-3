@@ -1,4 +1,5 @@
 import { translateCodon, getRateSparkGlyphs } from './genetic-code.js';
+import { detectMethod, FORMAT_LABELS } from '../core/detect-method.js';
 
 // HyPhy 2.5 column order of each legacy site table. hyphy3 --legacy-json writes MEME's
 // MLE.headers as an object, whose keys come out alphabetized while the content rows keep this
@@ -56,7 +57,12 @@ export class FELData {
     this.analysisType = 'fel';
     this.isMEME = false;
 
+    this.format = detectMethod(json).format;
     this.parse(json);
+  }
+
+  get formatLabel() {
+    return FORMAT_LABELS[this.format];
   }
 
   parse(json) {

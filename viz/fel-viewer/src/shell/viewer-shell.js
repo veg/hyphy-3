@@ -343,7 +343,8 @@ export class ViewerShell {
   // The keys of the rows the table shows, in its filter, search and sort order
   siblingKeys() {
     const table = this.table;
-    return table?.visibleRows ? table.visibleRows().map(r => r[table.rowKey]) : [];
+    const rows = table?.stepRows ? table.stepRows() : table?.visibleRows?.();
+    return rows ? rows.map(r => r[table.rowKey]) : [];
   }
 
   // Table Filter API

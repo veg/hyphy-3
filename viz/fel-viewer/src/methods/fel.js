@@ -562,9 +562,10 @@ export const FEL_EVIDENCE = {
   }
 };
 
-export function siteEvidencePlot(parent, hooks, preset) {
+export function siteEvidencePlot(parent, hooks, preset, exportName = 'hyphy_fel_evidence_plot') {
   return new EvidencePlot(parent, {
     preset,
+    exportName,
     threshold: hooks.threshold,
     onSiteSelect: (site) => hooks.onSiteSelect(site)
   });
@@ -574,6 +575,8 @@ export function siteDrawer(container, hooks, drawer) {
   return new Drawer(container, Object.assign({}, drawer, {
     threshold: hooks.threshold,
     statistic: hooks.statistic,
+    siblings: hooks.siblings,
+    onStep: hooks.onStep,
     onClose: hooks.onClose
   }));
 }
@@ -594,6 +597,7 @@ export function siteResultsTable(parent, hooks, table) {
 export const FEL_CONFIG = {
   id: 'fel',
   Parser: FELData,
+  formatLabel: (data) => data.formatLabel,
   controller: SITE_P_THRESHOLD,
   row: siteRow,
   defaultFilter: FEL_TABLE.defaultFilter,
