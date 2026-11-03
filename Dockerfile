@@ -26,6 +26,7 @@ COPY viz/ /src/viz/
 RUN cmake -S /src -B /build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DHYPHY3_GIT_COMMIT=docker \
+    -DHYPHY3_BUILD_TESTS=OFF \
     && cmake --build /build --target \
         hyphy3 \
         hyphy3-fel \
@@ -64,5 +65,9 @@ COPY --from=builder /build/hyphy3-* /usr/local/bin/
 
 WORKDIR /data
 
-ENTRYPOINT ["hyphy3"]
-CMD ["--help"]
+# No ENTRYPOINT, so workflow engines (Snakemake, Nextflow, apptainer exec, ...)
+# can run their own shell command in the container. Usage:
+#   docker run --rm IMAGE                                   # prints hyphy3 help
+#   docker run --rm -v "$PWD":/data IMAGE hyphy3 busted ... # run an analysis
+#   docker run --rm IMAGE hyphy3-fel --help                # standalone apps
+CMD ["hyphy3", "--help"]
