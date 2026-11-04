@@ -3151,7 +3151,9 @@ private:
         if (res.directional_drift_active && dfel_analyzer) {
             res.chosen_root_branch = dfel_analyzer->root_result.chosen_branch_name;
             res.chosen_root_weight = dfel_analyzer->root_result.chosen_weight;
+#ifndef __EMSCRIPTEN__
             dfel_analyzer->run();
+#endif
 
             // Map dfel_analyzer's BFS-indexed branch_regime_weights and branch_regime_ids back onto work_tree's
             // node IDs via leaf-bipartition matching so work_tree node IDs (and Stage 2 routed_spr_trees)
@@ -3332,6 +3334,44 @@ private:
             }
             return P_mix.cwiseMax(1e-15);
         };
+        auto branch_grid_apply_P = [&](int32_t bid, size_t g_idx, Scalar eff_t, const Vector& vec) -> Vector {
+            Scalar t_pos = std::max<Scalar>(0.0, eff_t);
+            if (num_k_regimes == 1 || !dfel_analyzer || bid < 0 || bid >= static_cast<int32_t>(dfel_analyzer->branch_regime_weights.size())) {
+                const auto& sd = regime_spectral_grids[0][g_idx];
+                Vector exp_d = (sd.evals.array() * t_pos).exp();
+                Vector out = sd.R * (exp_d.cwiseProduct(sd.L * vec));
+                return out.cwiseMax(1e-15);
+            }
+            const auto& w_vec = dfel_analyzer->branch_regime_weights[bid];
+            Vector out = Vector::Zero(S);
+            for (size_t k_reg = 0; k_reg < 3; ++k_reg) {
+                Scalar wk = (k_reg < w_vec.size()) ? w_vec[k_reg] : (k_reg == 1 ? 1.0 : 0.0);
+                if (wk <= 1e-6) continue;
+                const auto& sd = regime_spectral_grids[k_reg][g_idx];
+                Vector exp_d = (sd.evals.array() * t_pos).exp();
+                out.noalias() += wk * (sd.R * (exp_d.cwiseProduct(sd.L * vec)));
+            }
+            return out.cwiseMax(1e-15);
+        };
+        auto branch_grid_apply_PT = [&](int32_t bid, size_t g_idx, Scalar eff_t, const Vector& vec) -> Vector {
+            Scalar t_pos = std::max<Scalar>(0.0, eff_t);
+            if (num_k_regimes == 1 || !dfel_analyzer || bid < 0 || bid >= static_cast<int32_t>(dfel_analyzer->branch_regime_weights.size())) {
+                const auto& sd = regime_spectral_grids[0][g_idx];
+                Vector exp_d = (sd.evals.array() * t_pos).exp();
+                Vector out = sd.L.transpose() * (exp_d.cwiseProduct(sd.R.transpose() * vec));
+                return out.cwiseMax(1e-15);
+            }
+            const auto& w_vec = dfel_analyzer->branch_regime_weights[bid];
+            Vector out = Vector::Zero(S);
+            for (size_t k_reg = 0; k_reg < 3; ++k_reg) {
+                Scalar wk = (k_reg < w_vec.size()) ? w_vec[k_reg] : (k_reg == 1 ? 1.0 : 0.0);
+                if (wk <= 1e-6) continue;
+                const auto& sd = regime_spectral_grids[k_reg][g_idx];
+                Vector exp_d = (sd.evals.array() * t_pos).exp();
+                out.noalias() += wk * (sd.L.transpose() * (exp_d.cwiseProduct(sd.R.transpose() * vec)));
+            }
+            return out.cwiseMax(1e-15);
+        };
 
         // Compute Inside L_{v, c} and Outside U_{u, c} for every site c
         // incorporating Decision 2 (K=3 POA path ensemble marginalization for PP_c < 0.99 with Bayes-updated posterior weights)
@@ -3474,19 +3514,19 @@ private:
             const auto& active_l2t = (r_idx >= 0) ? routed_spr_trees[r_idx].leaf_to_taxon : leaf_to_taxon;
 
             size_t act_nodes = std::max(max_tree_nodes, active_tree.num_nodes());
-            std::vector<Matrix> P_site(act_nodes);
-            for (const auto& nd : active_tree.nodes) {
-                if (nd.id != active_tree.root_id && nd.parent_id != INVALID_INDEX) {
-                    P_site[nd.id] = branch_grid_transition_matrix(nd.id, g_near, alpha_c * nd.branch_length * conv);
-                }
-            }
+            auto apply_site_P = [&](int32_t nid, const Vector& v) -> Vector {
+                return branch_grid_apply_P(nid, g_near, alpha_c * active_tree.nodes[nid].branch_length * conv, v);
+            };
+            auto apply_site_PT = [&](int32_t nid, const Vector& u) -> Vector {
+                return branch_grid_apply_PT(nid, g_near, alpha_c * active_tree.nodes[nid].branch_length * conv, u);
+            };
 
             auto edge_mask_gamma = [&](int32_t nid) -> Scalar {
                 if (!node_mask_gamma || nid < 0 || static_cast<size_t>(nid) >= node_mask_gamma->size()) return 0.0;
                 return (*node_mask_gamma)[nid];
             };
             auto masked_upward_msg = [&](int32_t nid, const Vector& loc_in_nid) -> Vector {
-                Vector raw_m = P_site[nid] * loc_in_nid;
+                Vector raw_m = apply_site_P(nid, loc_in_nid);
                 Scalar gm = edge_mask_gamma(nid);
                 if (gm <= 1e-6) return raw_m;
                 return (1.0 - gm) * raw_m + gm * Vector::Ones(S);
@@ -3729,7 +3769,7 @@ private:
                             else cav_d = root_pi;
                             realiz.loc_out[d] = cav_d;
 
-                            Vector post_d = P_site[d].transpose() * cav_d;
+                            Vector post_d = apply_site_PT(d, cav_d);
                             Scalar pd_sum = post_d.sum();
                             if (pd_sum > 0.0) post_d /= pd_sum;
                             else post_d = root_pi;
@@ -3777,7 +3817,7 @@ private:
                             else cav_q = root_pi;
                             realiz.loc_out[qid] = cav_q;
 
-                            Vector post_q = P_site[qid].transpose() * cav_q;
+                            Vector post_q = apply_site_PT(qid, cav_q);
                             Scalar pq_s = post_q.sum();
                             if (pq_s > 0.0) post_q /= pq_s;
                             else post_q = root_pi;
@@ -3802,7 +3842,7 @@ private:
                         else cav_u = root_pi;
                         realiz.loc_out[vid] = cav_u;
 
-                        Vector post_v = P_site[vid].transpose() * cav_u;
+                        Vector post_v = apply_site_PT(vid, cav_u);
                         Scalar pv_sum = post_v.sum();
                         if (pv_sum > 0.0) post_v /= pv_sum;
                         else post_v = root_pi;
@@ -4215,6 +4255,35 @@ private:
                     entry.alpha = dfel_analyzer->site_results[c].alpha;
                     entry.beta_pervasive = dfel_analyzer->site_results[c].beta;
                 }
+            } else if (res.directional_drift_active && dfel_analyzer) {
+                Scalar df_null_ll = 0.0;
+                for (size_t bi = 0; bi < B; ++bi) df_null_ll += std::log(std::max<Scalar>(1e-30, W_tensor[c][bi][8]));
+                Scalar df_alt_ll = df_null_ll;
+                size_t best_df_g = 8;
+                for (size_t g = 0; g < G; ++g) {
+                    Scalar ll = 0.0;
+                    for (size_t bi = 0; bi < B; ++bi) ll += std::log(std::max<Scalar>(1e-30, W_tensor[c][bi][g]));
+                    if (ll > df_alt_ll) { df_alt_ll = ll; best_df_g = g; }
+                }
+                Scalar w_lo = (best_df_g > 0) ? omega_grid[best_df_g - 1] : omega_grid[0];
+                Scalar w_hi = (best_df_g + 1 < G) ? omega_grid[best_df_g + 1] : omega_grid[G - 1];
+                Scalar best_df_w = omega_grid[best_df_g];
+                for (int it = 0; it < 10; ++it) {
+                    Scalar m1 = w_lo + 0.381966 * (w_hi - w_lo);
+                    Scalar m2 = w_lo + 0.618034 * (w_hi - w_lo);
+                    Scalar l1 = 0.0, l2 = 0.0;
+                    for (size_t bi = 0; bi < B; ++bi) {
+                        l1 += std::log(std::max<Scalar>(1e-30, eval_branch_site_omega(c, bi, m1)));
+                        l2 += std::log(std::max<Scalar>(1e-30, eval_branch_site_omega(c, bi, m2)));
+                    }
+                    if (l1 > l2) { w_hi = m2; if (l1 > df_alt_ll) { df_alt_ll = l1; best_df_w = m1; } }
+                    else { w_lo = m1; if (l2 > df_alt_ll) { df_alt_ll = l2; best_df_w = m2; } }
+                }
+                entry.dfel_lrt = std::max<Scalar>(0.0, 2.0 * (df_alt_ll - df_null_ll)) * entry.column_homology_posterior;
+                entry.dfel_p_value = std::erfc(std::sqrt(entry.dfel_lrt / 2.0));
+                if (site_routed_tree_idx[c] < 0) {
+                    entry.beta_pervasive = best_df_w * std::max<Scalar>(0.05, entry.alpha);
+                }
             } else {
                 entry.dfel_lrt = entry.fel_lrt;
                 entry.dfel_p_value = entry.fel_p_value;
@@ -4330,6 +4399,48 @@ private:
             // matrices via Softmax-weighted R^{(k)} * exp(alpha * t_b * evals^{(k)}) * L^{(k)}!
             if (screen_p < settings.active_set_screen_p || entry.beta_pervasive > entry.alpha) {
                 entry.meme_polished = true;
+#ifdef __EMSCRIPTEN__
+                // In single-threaded WebAssembly, polish (w_minus, w_plus, wp) directly on the continuous
+                // Inside-Outside sufficiency surface eval_branch_site_omega(c, bi, w)
+                auto eval_io_meme_ll = [&](Scalar wm, Scalar wp_val, Scalar wpl) -> Scalar {
+                    Scalar ll = 0.0;
+                    for (size_t bi = 0; bi < B; ++bi) {
+                        Scalar m1 = eval_branch_site_omega(c, bi, wm);
+                        Scalar mp = eval_branch_site_omega(c, bi, wpl);
+                        ll += std::log(std::max<Scalar>(1e-30, (1.0 - wp_val) * m1 + wp_val * mp));
+                    }
+                    return ll;
+                };
+                std::array<Scalar, 3> init_io = {w_minus_opt, wp_opt, std::max<Scalar>(1.05, w_plus_opt)};
+                std::array<Scalar, 3> lb_io = {0.0, 0.0, 1.0};
+                std::array<Scalar, 3> ub_io = {1.0, 0.99, 25.0};
+                auto opt_io = opt::NelderMeadND<3>::minimize(
+                    [&](const std::array<Scalar, 3>& x) { return -eval_io_meme_ll(x[0], x[1], x[2]); },
+                    init_io, lb_io, ub_io, 1e-4, 60
+                );
+                Scalar polished_alt_ll = std::max(best_alt_ll, -opt_io.f);
+                if (-opt_io.f >= best_alt_ll) {
+                    w_minus_opt = opt_io.x[0];
+                    wp_opt = opt_io.x[1];
+                    w_plus_opt = opt_io.x[2];
+                }
+                Scalar lo_n = 0.0, hi_n = 1.0;
+                Scalar polished_null_ll = best_null_ll;
+                for (int it = 0; it < 12; ++it) {
+                    Scalar m1 = lo_n + 0.381966 * (hi_n - lo_n);
+                    Scalar m2 = lo_n + 0.618034 * (hi_n - lo_n);
+                    Scalar l1 = eval_io_meme_ll(m1, 0.0, m1);
+                    Scalar l2 = eval_io_meme_ll(m2, 0.0, m2);
+                    if (l1 > l2) { hi_n = m2; polished_null_ll = std::max(polished_null_ll, l1); }
+                    else { lo_n = m1; polished_null_ll = std::max(polished_null_ll, l2); }
+                }
+                raw_meme_lrt = (w_plus_opt > 1.0 && wp_opt > 1e-5)
+                    ? std::max<Scalar>(0.0, 2.0 * (polished_alt_ll - polished_null_ll))
+                    : 0.0;
+                entry.beta_minus = w_minus_opt * eff_alpha;
+                entry.beta_plus = w_plus_opt * eff_alpha;
+                entry.weight_plus = wp_opt;
+#else
                 int r_idx = site_routed_tree_idx[c];
                 const Tree& active_tree = (r_idx >= 0) ? routed_spr_trees[r_idx].spr_tree : work_tree;
                 const auto& active_l2t = (r_idx >= 0) ? routed_spr_trees[r_idx].leaf_to_taxon : leaf_to_taxon;
@@ -4368,14 +4479,23 @@ private:
                     std::vector<Vector> t_node_L(active_tree.num_nodes(), Vector::Zero(S));
                     std::vector<double> t_node_sc(active_tree.num_nodes(), 0.0);
                     std::vector<Matrix> P_br(active_tree.num_nodes());
+                    std::vector<SpectralDecomp> sd1_reg(num_k_regimes), sdp_reg(num_k_regimes);
+                    Scalar cached_w1 = -1.0, cached_wp = -1.0;
 
                     auto eval_exact_meme_ll = [&](Scalar a_val, Scalar w1_val, Scalar p1_val, Scalar b_plus_val) -> Scalar {
                         Scalar a_pos = std::max<Scalar>(1e-5, a_val);
                         Scalar w_plus_val = b_plus_val / a_pos;
-                        std::vector<SpectralDecomp> sd1_reg(num_k_regimes), sdp_reg(num_k_regimes);
-                        for (size_t k_reg = 0; k_reg < num_k_regimes; ++k_reg) {
-                            sd1_reg[k_reg] = spectral_decompose_regime_omega(k_reg, w1_val);
-                            sdp_reg[k_reg] = spectral_decompose_regime_omega(k_reg, w_plus_val);
+                        if (std::abs(w1_val - cached_w1) > 1e-12) {
+                            for (size_t k_reg = 0; k_reg < num_k_regimes; ++k_reg) {
+                                sd1_reg[k_reg] = spectral_decompose_regime_omega(k_reg, w1_val);
+                            }
+                            cached_w1 = w1_val;
+                        }
+                        if (std::abs(w_plus_val - cached_wp) > 1e-12) {
+                            for (size_t k_reg = 0; k_reg < num_k_regimes; ++k_reg) {
+                                sdp_reg[k_reg] = spectral_decompose_regime_omega(k_reg, w_plus_val);
+                            }
+                            cached_wp = w_plus_val;
                         }
                         Scalar p_plus_wt = 1.0 - p1_val;
                         for (const auto& nd : active_tree.nodes) {
@@ -4460,6 +4580,7 @@ private:
                     entry.beta_plus = bp_abs;
                     entry.weight_plus = wp_opt;
                 }
+#endif
             } else {
                 entry.beta_minus = w_minus_opt * eff_alpha;
                 entry.beta_plus = w_plus_opt * eff_alpha;
@@ -5224,14 +5345,15 @@ private:
                 for (size_t bi = 0; bi < B; ++bi) {
                     int32_t bid = active_branches[bi];
                     Scalar eff_t = std::max<Scalar>(1e-4, entry.alpha * work_tree.nodes[bid].branch_length * conv);
-                    Matrix P_b = branch_grid_transition_matrix(bid, g_near, eff_t);
                     const Vector& U = site_outside[c][bid];
                     const Vector& L = site_inside[c][bid];
-                    Scalar Z_b = std::max<Scalar>(1e-30, U.dot(P_b * L));
+                    Vector Pb_L = branch_grid_apply_P(bid, g_near, eff_t, L);
+                    Vector PTb_U = branch_grid_apply_PT(bid, g_near, eff_t, U);
+                    Scalar Z_b = std::max<Scalar>(1e-30, U.dot(Pb_L));
 
                     // Posterior parent and child state distributions on branch bi
-                    Vector post_parent = (U.array() * (P_b * L).array()) / Z_b;
-                    Vector post_child = ((P_b.transpose() * U).array() * L.array()) / Z_b;
+                    Vector post_parent = (U.array() * Pb_L.array()) / Z_b;
+                    Vector post_child = (PTb_U.array() * L.array()) / Z_b;
 
                     int map_parent_aa = -1, map_child_aa = -1;
                     Scalar max_p_prob = -1.0, max_c_prob = -1.0;

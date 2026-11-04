@@ -1,5 +1,6 @@
 # Build directories
 build/
+build-wasm/
 bin/
 lib/
 cmake-build-*/
@@ -43,6 +44,7 @@ generated/
 !viz/**/*.json
 *.html
 !viz/**/*.html
+!web/**/*.html
 *.cache
 *.log
 *.FEL.json

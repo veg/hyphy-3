@@ -1,0 +1,1169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WALRUS // ONE PING ONLY — HyPhy-3 C++20 WebAssembly Sonar Console</title>
+<style>
+  :root {
+    --bg-abyss: #04080e;
+    --bg-hull: #08101a;
+    --bg-panel: #0b1623;
+    --border-steel: #182b40;
+    --sonar-green: #38bdf8;
+    --sonar-phosphor: #22d3ee;
+    --sonar-emerald: #10b981;
+    --crimson-core: #ef4444;
+    --crimson-glow: #dc2626;
+    --crimson-deep: #7f1d1d;
+    --amber-warn: #f59e0b;
+    --text-primary: #e2e8f0;
+    --text-muted: #7dd3fc;
+    --text-dim: #64748b;
+    --mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    background: radial-gradient(circle at 50% 18%, #0d1f33 0%, var(--bg-abyss) 70%);
+    color: var(--text-primary);
+    font-family: var(--sans);
+    min-height: 100vh;
+    overflow-x: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Subtle CRT / Sonar scanline overlay */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.012) 0px,
+      rgba(255, 255, 255, 0.012) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    z-index: 9999;
+  }
+
+  /* Top tactical bulkhead bar */
+  header.bulkhead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 12px 24px;
+    background: rgba(8, 16, 26, 0.92);
+    border-bottom: 1px solid var(--border-steel);
+    backdrop-filter: blur(8px);
+  }
+
+  .brand-block {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .vessel-badge {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #041019;
+    background: var(--sonar-phosphor);
+    padding: 4px 9px;
+    border-radius: 3px;
+    box-shadow: 0 0 12px rgba(34, 211, 238, 0.45);
+  }
+
+  .brand-title {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #f8fafc;
+  }
+
+  .brand-subtitle {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--text-dim);
+    letter-spacing: 0.04em;
+  }
+
+  .quote-banner {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-style: italic;
+    color: #94a3b8;
+    letter-spacing: 0.03em;
+  }
+
+  .quote-banner strong {
+    color: #f87171;
+    font-style: normal;
+  }
+
+  .status-cluster {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+  }
+
+  .wasm-led {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    color: #6ee7b7;
+  }
+
+  .wasm-led.loading {
+    background: rgba(245, 158, 11, 0.12);
+    border-color: rgba(245, 158, 11, 0.4);
+    color: #fcd34d;
+  }
+
+  .wasm-led.busy {
+    background: rgba(239, 68, 68, 0.16);
+    border-color: rgba(239, 68, 68, 0.5);
+    color: #fca5a5;
+  }
+
+  .led-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 8px currentColor;
+  }
+
+  /* Main Conn Deck */
+  main.conn-deck {
+    max-width: 1360px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 20px 24px 36px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    flex: 1;
+  }
+
+  .tactical-grid {
+    display: grid;
+    grid-template-columns: 1.05fr 0.9fr 1.15fr;
+    gap: 18px;
+    align-items: stretch;
+  }
+
+  @media (max-width: 1080px) {
+    .tactical-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .console-bay {
+    background: linear-gradient(180deg, rgba(13, 25, 42, 0.92) 0%, rgba(7, 14, 24, 0.96) 100%);
+    border: 1px solid var(--border-steel);
+    border-radius: 10px;
+    padding: 18px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    position: relative;
+  }
+
+  .bay-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid rgba(56, 189, 248, 0.16);
+    padding-bottom: 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--sonar-phosphor);
+  }
+
+  .bay-header span.sub {
+    color: var(--text-dim);
+    font-weight: 500;
+  }
+
+  /* Target & Torpedo Tube Intake */
+  .field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .field-label {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: #94a3b8;
+  }
+
+  select.tactical-select {
+    width: 100%;
+    background: #050c14;
+    color: #f1f5f9;
+    border: 1px solid #1e3a5f;
+    border-radius: 6px;
+    padding: 9px 11px;
+    font-family: var(--mono);
+    font-size: 12px;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+
+  select.tactical-select:hover,
+  select.tactical-select:focus {
+    border-color: var(--sonar-phosphor);
+    box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.15);
+  }
+
+  .target-brief {
+    font-size: 12px;
+    line-height: 1.45;
+    color: #94a3b8;
+    background: rgba(4, 10, 18, 0.65);
+    border-left: 3px solid var(--sonar-phosphor);
+    padding: 8px 10px;
+    border-radius: 0 5px 5px 0;
+    font-family: var(--mono);
+  }
+
+  /* File Drop Hatch (Label, NOT a button) */
+  label.sonar-hatch {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 6px;
+    padding: 14px 12px;
+    border: 1.5px dashed #25486e;
+    border-radius: 8px;
+    background: rgba(6, 15, 26, 0.7);
+    cursor: pointer;
+    transition: all 0.18s ease;
+    flex: 1;
+    min-height: 96px;
+  }
+
+  label.sonar-hatch:hover,
+  label.sonar-hatch.dragover {
+    border-color: var(--sonar-phosphor);
+    background: rgba(14, 38, 62, 0.55);
+    box-shadow: inset 0 0 18px rgba(34, 211, 238, 0.12);
+  }
+
+  label.sonar-hatch input[type="file"] {
+    display: none;
+  }
+
+  .hatch-title {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    color: #e2e8f0;
+  }
+
+  .hatch-sub {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--text-dim);
+  }
+
+  /* CENTER BAY: THE ONE BUTTON ("ONE PING ONLY") */
+  .fire-control-bay {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    text-align: center;
+    background: radial-gradient(circle at 50% 48%, rgba(127, 29, 29, 0.24) 0%, rgba(7, 14, 24, 0.97) 72%);
+  }
+
+  .ping-housing {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 8px 0;
+  }
+
+  /* Outer metallic bezel ring */
+  .ping-bezel {
+    width: 214px;
+    height: 214px;
+    border-radius: 50%;
+    padding: 13px;
+    background: conic-gradient(
+      from 0deg,
+      #1e293b,
+      #475569,
+      #0f172a,
+      #334155,
+      #1e293b
+    );
+    box-shadow:
+      0 14px 35px rgba(0, 0, 0, 0.8),
+      0 0 30px rgba(239, 68, 68, 0.22),
+      inset 0 2px 4px rgba(255, 255, 255, 0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* THE ONLY BUTTON IN THE ENTIRE APP */
+  button#one-ping-button {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    border: 3px solid #fca5a5;
+    background: radial-gradient(circle at 38% 32%, #f87171 0%, #dc2626 45%, #7f1d1d 92%);
+    color: #fff;
+    font-family: var(--mono);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    box-shadow:
+      0 0 28px rgba(239, 68, 68, 0.65),
+      inset 0 6px 14px rgba(255, 255, 255, 0.35),
+      inset 0 -10px 18px rgba(69, 10, 10, 0.85);
+    transition: transform 0.12s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.2s ease, filter 0.2s ease;
+    user-select: none;
+    position: relative;
+    overflow: hidden;
+  }
+
+  button#one-ping-button:hover:not(:disabled) {
+    transform: scale(1.035);
+    box-shadow:
+      0 0 44px rgba(239, 68, 68, 0.9),
+      inset 0 6px 16px rgba(255, 255, 255, 0.45),
+      inset 0 -10px 18px rgba(69, 10, 10, 0.85);
+  }
+
+  button#one-ping-button:active:not(:disabled) {
+    transform: scale(0.96);
+    box-shadow:
+      0 0 18px rgba(239, 68, 68, 0.6),
+      inset 0 8px 22px rgba(40, 5, 5, 0.9);
+  }
+
+  button#one-ping-button:disabled {
+    cursor: wait;
+    filter: saturate(0.75);
+  }
+
+  button#one-ping-button.pinging {
+    animation: sonarPulseRing 1.6s infinite ease-in-out;
+  }
+
+  @keyframes sonarPulseRing {
+    0%, 100% {
+      box-shadow:
+        0 0 22px rgba(239, 68, 68, 0.65),
+        0 0 0 0 rgba(34, 211, 238, 0.55),
+        inset 0 6px 14px rgba(255, 255, 255, 0.3);
+    }
+    50% {
+      box-shadow:
+        0 0 46px rgba(239, 68, 68, 0.95),
+        0 0 0 18px rgba(34, 211, 238, 0),
+        inset 0 6px 14px rgba(255, 255, 255, 0.45);
+    }
+  }
+
+  .btn-kicker {
+    font-size: 9.5px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: #fecaca;
+    opacity: 0.92;
+  }
+
+  .btn-main-label {
+    font-size: 20px;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    line-height: 1.1;
+    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.65);
+  }
+
+  .btn-sub-label {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    color: #fee2e2;
+    background: rgba(0, 0, 0, 0.28);
+    padding: 2px 8px;
+    border-radius: 99px;
+    margin-top: 2px;
+  }
+
+  .sonar-Order {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: #94a3b8;
+  }
+
+  /* RIGHT BAY: Polar Sonar Scope + Live Acoustic Telemetry */
+  .sonar-telemetry-wrap {
+    display: grid;
+    grid-template-columns: 168px 1fr;
+    gap: 14px;
+    align-items: stretch;
+    flex: 1;
+  }
+
+  @media (max-width: 640px) {
+    .sonar-telemetry-wrap {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .scope-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: #030810;
+    border: 1px solid #16324f;
+    border-radius: 8px;
+    padding: 8px;
+  }
+
+  canvas#sonar-scope {
+    width: 148px;
+    height: 148px;
+    border-radius: 50%;
+    display: block;
+  }
+
+  .scope-caption {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--sonar-phosphor);
+    margin-top: 6px;
+    letter-spacing: 0.08em;
+  }
+
+  .telemetry-log {
+    background: #03070d;
+    border: 1px solid #152a42;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.48;
+    color: #a5f3fc;
+    height: 220px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.8);
+  }
+
+  .telemetry-log .log-stage {
+    color: #38bdf8;
+    font-weight: 700;
+  }
+
+  .telemetry-log .log-metric {
+    color: #cbd5e1;
+  }
+
+  .telemetry-log .log-ok {
+    color: #34d399;
+    font-weight: 700;
+  }
+
+  .telemetry-log .log-err {
+    color: #f87171;
+    font-weight: 700;
+  }
+
+  /* Report Deck (Embedded Full Interactive WALRUS HTML Report) */
+  section.report-deck {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-steel);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 16px 44px rgba(0, 0, 0, 0.65);
+    min-height: 780px;
+  }
+
+  .report-deck-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px 18px;
+    background: #07111d;
+    border-bottom: 1px solid var(--border-steel);
+    font-family: var(--mono);
+    font-size: 11.5px;
+  }
+
+  .report-deck-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #e2e8f0;
+    font-weight: 700;
+  }
+
+  .export-links {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .export-links a {
+    color: var(--sonar-phosphor);
+    text-decoration: none;
+    padding: 4px 10px;
+    border: 1px solid rgba(34, 211, 238, 0.35);
+    border-radius: 4px;
+    background: rgba(34, 211, 238, 0.08);
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .export-links a:hover {
+    background: rgba(34, 211, 238, 0.18);
+    border-color: var(--sonar-phosphor);
+  }
+
+  .export-links a.hidden {
+    display: none;
+  }
+
+  .report-viewport-wrap {
+    position: relative;
+    flex: 1;
+    min-height: 740px;
+    background: #040911;
+    display: flex;
+  }
+
+  iframe#walrus-report-frame {
+    width: 100%;
+    height: 820px;
+    border: none;
+    background: #f8fafc;
+    display: none;
+  }
+
+  .standby-overlay {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 40px 24px;
+    color: #64748b;
+    font-family: var(--mono);
+    gap: 10px;
+  }
+
+  .standby-overlay .sonar-crest {
+    font-size: 13px;
+    letter-spacing: 0.16em;
+    color: var(--sonar-phosphor);
+    text-transform: uppercase;
+  }
+
+  .standby-overlay p {
+    max-width: 620px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #94a3b8;
+  }
+</style>
+</head>
+<body>
+
+<header class="bulkhead">
+  <div class="brand-block">
+    <span class="vessel-badge">SSN-701 // WALRUS WASM</span>
+    <div>
+      <div class="brand-title">HYPHY-3 WALRUS // ACOUSTIC PHYLOGENOMIC SONAR</div>
+      <div class="brand-subtitle">C++20 Eigen + Codon Pair-HMM + Ohmic Wheatstone + 3-Regime Softmax • 100% In-Browser WebAssembly</div>
+    </div>
+  </div>
+  <div class="quote-banner">
+    “Give me a ping, Vasily. <strong>One ping only, please.</strong>”
+  </div>
+  <div class="status-cluster">
+    <div id="wasm-status-pill" class="wasm-led loading">
+      <span class="led-dot"></span>
+      <span id="wasm-status-text">LOADING C++20 WASM CORE…</span>
+    </div>
+  </div>
+</header>
+
+<main class="conn-deck">
+  <div class="tactical-grid">
+    <!-- BAY 1: TARGET SELECTION & FILE INTAKE HATCH -->
+    <div class="console-bay">
+      <div class="bay-header">
+        <span>01 // TARGET ACQUISITION</span>
+        <span class="sub" id="active-target-badge">bglobin.nex</span>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label" for="sample-select">Pre-Loaded Empirical Target</label>
+        <select id="sample-select" class="tactical-select">
+          <option value="bglobin.nex">TARGET 01 // Vertebrate β-Globin (17 Taxa × 144 Codons)</option>
+          <option value="CD2.nex">TARGET 02 // Mammalian CD2 Receptor (10 Taxa × 187 Codons — Fast ~11s)</option>
+          <option value="mammalian_ifitm3_unaligned.fa">TARGET 03 // Unaligned Mammalian IFITM3 CDS (De Novo Pair-HMM + SPR)</option>
+          <option value="adh.nex">TARGET 04 // Drosophila Adh (23 Taxa × 254 Codons — 3-Regime Drift)</option>
+        </select>
+      </div>
+
+      <div id="target-brief" class="target-brief">
+        Classic vertebrate β-globin alignment (17 tetrapods × 144 codons). Demonstrates pervasive &amp; episodic diversifying selection alongside 3-regime AT/GC compositional drift.
+      </div>
+
+      <div class="field-group">
+        <label class="field-label" for="code-select">Genetic Code Table</label>
+        <select id="code-select" class="tactical-select">
+          <option value="Universal">Universal (Standard Nuclear)</option>
+          <option value="Vertebrate-mtDNA">Vertebrate-mtDNA</option>
+          <option value="Invertebrate-mtDNA">Invertebrate-mtDNA</option>
+          <option value="Yeast-mtDNA">Yeast-mtDNA</option>
+          <option value="Mold-Protozoan-mtDNA">Mold-Protozoan-mtDNA</option>
+          <option value="Ciliate-Nuclear">Ciliate-Nuclear</option>
+          <option value="Echinoderm-mtDNA">Echinoderm-mtDNA</option>
+          <option value="Euplotid-Nuclear">Euplotid-Nuclear</option>
+          <option value="Alt-Yeast-Nuclear">Alt-Yeast-Nuclear</option>
+          <option value="Ascidian-mtDNA">Ascidian-mtDNA</option>
+          <option value="Flatworm-mtDNA">Flatworm-mtDNA</option>
+          <option value="Blepharisma-Nuclear">Blepharisma-Nuclear</option>
+        </select>
+      </div>
+
+      <label class="sonar-hatch" id="drop-hatch" for="file-input">
+        <input type="file" id="file-input" accept=".fa,.fas,.fasta,.fna,.nex,.nexus,.phy,.phylip,.gz,.json,.txt" />
+        <div class="hatch-title" id="hatch-title">⚓ DROP CUSTOM FASTA / NEXUS / .GZ / .JSON HERE</div>
+        <div class="hatch-sub" id="hatch-sub">Aligned or unaligned coding sequences (or click hatch to load local file)</div>
+      </label>
+    </div>
+
+    <!-- BAY 2: THE ONE BUTTON ONLY -->
+    <div class="console-bay fire-control-bay">
+      <div class="bay-header" style="width:100%;">
+        <span>02 // SONAR FIRE CONTROL</span>
+        <span class="sub">SINGLE-ACTUATION CONSOLE</span>
+      </div>
+
+      <div class="ping-housing">
+        <div class="ping-bezel">
+          <button id="one-ping-button" type="button" disabled title="Give me a ping, Vasily. One ping only, please.">
+            <span class="btn-kicker">CONN // SONAR</span>
+            <span class="btn-main-label" id="ping-btn-title">ONE PING<br/>ONLY</span>
+            <span class="btn-sub-label" id="ping-btn-sub">ARMING WASM…</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="sonar-Order" id="ping-timer-readout">
+        READY FOR SINGLE-PING FULL PHYLOGENOMIC CHARACTERIZATION
+      </div>
+    </div>
+
+    <!-- BAY 3: POLAR SONAR RADAR & REAL-TIME C++20 TELEMETRY -->
+    <div class="console-bay">
+      <div class="bay-header">
+        <span>03 // HYDROPHONE TELEMETRY &amp; RADAR</span>
+        <span class="sub" id="telemetry-stage-tag">PASSIVE LISTEN</span>
+      </div>
+
+      <div class="sonar-telemetry-wrap">
+        <div class="scope-box">
+          <canvas id="sonar-scope" width="296" height="296"></canvas>
+          <div class="scope-caption" id="scope-bearing">BRG 000° // RANGE IDLE</div>
+        </div>
+        <div class="telemetry-log" id="telemetry-log">[CONN] Initializing HyPhy-3 C++20 WebAssembly module (hyphy3_walrus.wasm)...
+</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- INTERACTIVE 4-TAB WALRUS REPORT VIEWPORT -->
+  <section class="report-deck" id="report-deck">
+    <div class="report-deck-bar">
+      <div class="report-deck-title">
+        <span>04 // WALRUS INTERACTIVE DOSSIER</span>
+        <span id="report-meta-tag" style="color:#64748b;font-weight:400;">— Awaiting acoustic return</span>
+      </div>
+      <div class="export-links">
+        <a id="download-html-link" class="hidden" href="#" download="walrus_report.html">⬇ Download .WALRUS.html</a>
+        <a id="download-json-link" class="hidden" href="#" download="walrus_report.CHARACTERIZE.json">⬇ Download .CHARACTERIZE.json</a>
+      </div>
+    </div>
+
+    <div class="report-viewport-wrap">
+      <div class="standby-overlay" id="standby-overlay">
+        <div class="sonar-crest">SONAR SCOPE STANDING BY FOR FIRST PING</div>
+        <p>
+          Select one of the pre-loaded empirical targets (or drop your own aligned/unaligned FASTA, NEXUS, <code>.gz</code>, or <code>.CHARACTERIZE.json</code> file into the hatch) and press the crimson <strong>ONE PING ONLY</strong> button.
+        </p>
+        <p style="color:#64748b;">
+          All calculations execute 100% locally inside a WebAssembly worker thread running the native C++20 <code>CharacterizeEngine</code> (de novo Pair-HMM progressive alignment, coupled Ohmic SPR + boundary indel refinement, 3-regime directional Softmax, BUSTED-E, MEME, FEL, and amino-acid toggle forensics).
+        </p>
+      </div>
+      <iframe id="walrus-report-frame" title="WALRUS Interactive HTML Report"></iframe>
+    </div>
+  </section>
+</main>
+
+<script src="samples.js"></script>
+<script>
+(() => {
+  // ─── Verify Strictly ONE Button in DOM ─────────────────────────────
+  const allButtons = document.querySelectorAll('button');
+  console.assert(allButtons.length === 1, 'Red October protocol violation: expected strictly 1 button, found', allButtons.length);
+
+  const pingBtn = document.getElementById('one-ping-button');
+  const pingBtnTitle = document.getElementById('ping-btn-title');
+  const pingBtnSub = document.getElementById('ping-btn-sub');
+  const statusPill = document.getElementById('wasm-status-pill');
+  const statusText = document.getElementById('wasm-status-text');
+  const sampleSelect = document.getElementById('sample-select');
+  const codeSelect = document.getElementById('code-select');
+  const targetBrief = document.getElementById('target-brief');
+  const activeTargetBadge = document.getElementById('active-target-badge');
+  const dropHatch = document.getElementById('drop-hatch');
+  const fileInput = document.getElementById('file-input');
+  const hatchTitle = document.getElementById('hatch-title');
+  const hatchSub = document.getElementById('hatch-sub');
+  const telemetryLog = document.getElementById('telemetry-log');
+  const telemetryStageTag = document.getElementById('telemetry-stage-tag');
+  const timerReadout = document.getElementById('ping-timer-readout');
+  const reportFrame = document.getElementById('walrus-report-frame');
+  const standbyOverlay = document.getElementById('standby-overlay');
+  const reportMetaTag = document.getElementById('report-meta-tag');
+  const downloadHtmlLink = document.getElementById('download-html-link');
+  const downloadJsonLink = document.getElementById('download-json-link');
+  const scopeCanvas = document.getElementById('sonar-scope');
+  const scopeBearing = document.getElementById('scope-bearing');
+
+  // ─── Current Target Payload State ──────────────────────────────────
+  let activePayload = {
+    label: 'bglobin.nex',
+    mode: 'sequence', // 'sequence' | 'json'
+    content: (window.WALRUS_SAMPLES && window.WALRUS_SAMPLES['bglobin.nex'])
+      ? window.WALRUS_SAMPLES['bglobin.nex'].content
+      : ''
+  };
+  let workerReady = false;
+  let isRunning = false;
+  let pingStartTime = 0;
+  let timerInterval = null;
+  let htmlBlobUrl = null;
+  let jsonBlobUrl = null;
+
+  // ─── Submarine Sonar Synthesizer (Web Audio API) ───────────────────
+  let audioCtx = null;
+  function playSubmarinePing(isReturnEcho = false) {
+    try {
+      if (!audioCtx) {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) return;
+        audioCtx = new AudioContextClass();
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      const now = audioCtx.currentTime;
+      const baseFreq = isReturnEcho ? 1320 : 1180; // Classic Red October ~1.18 kHz sonar ping
+
+      // Primary CW acoustic pulse
+      const osc1 = audioCtx.createOscillator();
+      const osc2 = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      const filter = audioCtx.createBiquadFilter();
+
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(baseFreq, now);
+      osc1.frequency.exponentialRampToValueAtTime(baseFreq * 0.985, now + 1.8);
+
+      osc2.type = 'triangle';
+      osc2.frequency.setValueAtTime(baseFreq * 2.0, now);
+
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(baseFreq, now);
+      filter.Q.setValueAtTime(12, now);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(isReturnEcho ? 0.18 : 0.28, now + 0.018);
+      gain.gain.exponentialRampToValueAtTime(0.04, now + 0.35);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 2.1);
+
+      osc1.connect(filter);
+      osc2.connect(filter);
+      filter.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc1.start(now);
+      osc2.start(now);
+      osc1.stop(now + 2.15);
+      osc2.stop(now + 2.15);
+    } catch (_) {
+      // Ignore audio errors if browser blocks autoplay
+    }
+  }
+
+  // ─── Polar Sonar Scope Animation ───────────────────────────────────
+  const ctx = scopeCanvas.getContext('2d');
+  let sweepAngle = 0;
+  const blips = [];
+
+  function addSonarBlip(label) {
+    const r = 24 + Math.random() * 96;
+    const theta = sweepAngle + (Math.random() - 0.5) * 0.35;
+    blips.push({
+      x: 148 + r * Math.cos(theta),
+      y: 148 + r * Math.sin(theta),
+      alpha: 1.0,
+      label: label || ''
+    });
+    if (blips.length > 14) blips.shift();
+  }
+
+  function renderSonarScope() {
+    const W = scopeCanvas.width;
+    const H = scopeCanvas.height;
+    const cx = W / 2;
+    const cy = H / 2;
+    const R = cx - 8;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // Abyssal background disc
+    const bgGrad = ctx.createRadialGradient(cx, cy, 4, cx, cy, R);
+    bgGrad.addColorStop(0, '#072238');
+    bgGrad.addColorStop(1, '#020810');
+    ctx.fillStyle = bgGrad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Range rings
+    ctx.strokeStyle = 'rgba(34, 211, 238, 0.22)';
+    ctx.lineWidth = 1;
+    for (let frac of [0.28, 0.56, 0.82, 1.0]) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, R * frac, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // Crosshairs
+    ctx.beginPath();
+    ctx.moveTo(cx - R, cy);
+    ctx.lineTo(cx + R, cy);
+    ctx.moveTo(cx, cy - R);
+    ctx.lineTo(cx, cy + R);
+    ctx.stroke();
+
+    // Sweeping phosphor cone
+    const speed = isRunning ? 0.055 : 0.014;
+    sweepAngle = (sweepAngle + speed) % (Math.PI * 2);
+
+    for (let i = 0; i < 28; i++) {
+      const a0 = sweepAngle - i * 0.022;
+      const a1 = a0 + 0.025;
+      const alpha = (1 - i / 28) * (isRunning ? 0.34 : 0.14);
+      ctx.fillStyle = isRunning
+        ? `rgba(248, 113, 113, ${alpha})`
+        : `rgba(34, 211, 238, ${alpha})`;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, R, a0, a1);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Leading sweep line
+    ctx.strokeStyle = isRunning ? '#f87171' : '#22d3ee';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + R * Math.cos(sweepAngle), cy + R * Math.sin(sweepAngle));
+    ctx.stroke();
+
+    // Acoustic contact blips
+    for (let i = blips.length - 1; i >= 0; i--) {
+      const b = blips[i];
+      ctx.fillStyle = `rgba(52, 211, 153, ${b.alpha})`;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = `rgba(52, 211, 153, ${b.alpha * 0.6})`;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, 9 * (1.2 - b.alpha * 0.5), 0, Math.PI * 2);
+      ctx.stroke();
+
+      b.alpha -= isRunning ? 0.004 : 0.008;
+      if (b.alpha <= 0.02) blips.splice(i, 1);
+    }
+
+    const deg = Math.round(((sweepAngle * 180) / Math.PI + 360) % 360)
+      .toString()
+      .padStart(3, '0');
+    scopeBearing.textContent = isRunning
+      ? `BRG ${deg}° // ACTIVE PING`
+      : `BRG ${deg}° // PASSIVE`;
+
+    requestAnimationFrame(renderSonarScope);
+  }
+  requestAnimationFrame(renderSonarScope);
+
+  // ─── Telemetry Log Helper ──────────────────────────────────────────
+  function appendTelemetry(line, cls = '') {
+    const div = document.createElement('div');
+    if (cls) {
+      div.className = cls;
+    } else if (line.trim().startsWith('◆')) {
+      div.className = 'log-stage';
+      addSonarBlip(line);
+      const m = line.match(/\[(\d+\/\d+)\]/);
+      if (m) telemetryStageTag.textContent = `STAGE ${m[1]}`;
+    } else {
+      div.className = 'log-metric';
+    }
+    div.textContent = line;
+    telemetryLog.appendChild(div);
+    telemetryLog.scrollTop = telemetryLog.scrollHeight;
+  }
+
+  // ─── Sample & File Selection ───────────────────────────────────────
+  sampleSelect.addEventListener('change', () => {
+    const key = sampleSelect.value;
+    const sample = window.WALRUS_SAMPLES && window.WALRUS_SAMPLES[key];
+    if (!sample) return;
+    activePayload = {
+      label: sample.id,
+      mode: 'sequence',
+      content: sample.content
+    };
+    codeSelect.value = sample.code || 'Universal';
+    targetBrief.textContent = sample.subtitle;
+    activeTargetBadge.textContent = sample.id;
+    hatchTitle.textContent = '⚓ DROP CUSTOM FASTA / NEXUS / .GZ / .JSON HERE';
+    hatchSub.textContent = `Pre-loaded target armed: ${sample.id} (${(sample.content.length / 1024).toFixed(1)} KB)`;
+    appendTelemetry(`[CONN] Target tube loaded: ${sample.id} (${(sample.content.length / 1024).toFixed(1)} KB)`);
+  });
+
+  async function readUploadedFile(file) {
+    if (!file) return;
+    let text = '';
+    if (file.name.endsWith('.gz')) {
+      if (typeof DecompressionStream === 'undefined') {
+        appendTelemetry('[ERROR] Browser does not support DecompressionStream for .gz files.', 'log-err');
+        return;
+      }
+      const ds = new DecompressionStream('gzip');
+      const decompressedStream = file.stream().pipeThrough(ds);
+      text = await new Response(decompressedStream).text();
+    } else {
+      text = await file.text();
+    }
+
+    const cleanName = file.name.replace(/\.gz$/i, '');
+    const isJson = cleanName.endsWith('.json') || text.trimStart().startsWith('{');
+    activePayload = {
+      label: cleanName,
+      mode: isJson ? 'json' : 'sequence',
+      content: text
+    };
+    activeTargetBadge.textContent = cleanName;
+    hatchTitle.textContent = `✔ ARMED CUSTOM TARGET: ${file.name}`;
+    hatchSub.textContent = `${(text.length / 1024).toFixed(1)} KB (${isJson ? 'WALRUS JSON Dossier' : 'Sequence Alignment / Unaligned CDS'}) — Press ONE PING ONLY`;
+    targetBrief.textContent = `Custom file "${file.name}" (${(text.length / 1024).toFixed(1)} KB) loaded into torpedo tube. Press ONE PING ONLY to execute.`;
+    appendTelemetry(`[CONN] Custom target loaded from hatch: ${file.name} (${(text.length / 1024).toFixed(1)} KB, mode=${activePayload.mode})`);
+  }
+
+  fileInput.addEventListener('change', (e) => {
+    if (e.target.files && e.target.files[0]) {
+      readUploadedFile(e.target.files[0]);
+    }
+  });
+
+  ['dragenter', 'dragover'].forEach((evt) => {
+    dropHatch.addEventListener(evt, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropHatch.classList.add('dragover');
+    });
+  });
+
+  ['dragleave', 'drop'].forEach((evt) => {
+    dropHatch.addEventListener(evt, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropHatch.classList.remove('dragover');
+    });
+  });
+
+  dropHatch.addEventListener('drop', (e) => {
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
+      readUploadedFile(e.dataTransfer.files[0]);
+    }
+  });
+
+  // ─── Web Worker Management ─────────────────────────────────────────
+  const worker = new Worker('worker.js');
+
+  worker.onmessage = (e) => {
+    const msg = e.data;
+    if (!msg) return;
+
+    if (msg.type === 'ready') {
+      workerReady = true;
+      pingBtn.disabled = false;
+      pingBtnSub.textContent = 'PRESS TO FIRE';
+      statusPill.className = 'wasm-led';
+      statusText.textContent = 'WASM CORE ARMED';
+      appendTelemetry('[CONN] HyPhy-3 C++20 WebAssembly engine armed. Standing by for ONE PING ONLY.', 'log-ok');
+    } else if (msg.type === 'log') {
+      appendTelemetry(msg.line);
+    } else if (msg.type === 'result') {
+      isRunning = false;
+      clearInterval(timerInterval);
+      pingBtn.disabled = false;
+      pingBtn.classList.remove('pinging');
+      pingBtnTitle.innerHTML = 'ONE PING<br/>ONLY';
+      pingBtnSub.textContent = 'PING COMPLETE';
+      statusPill.className = 'wasm-led';
+      statusText.textContent = `ECHO RECEIVED (${(msg.elapsedMs / 1000).toFixed(1)}s)`;
+      telemetryStageTag.textContent = 'ECHO LOCKED';
+      timerReadout.textContent = `SONAR RETURN LOCKED IN ${(msg.elapsedMs / 1000).toFixed(2)}s — INTERACTIVE DOSSIER BELOW`;
+
+      playSubmarinePing(true);
+      addSonarBlip('ECHO');
+      appendTelemetry(
+        `✔ [ECHO RETURN] ${msg.label} characterized in ${(msg.elapsedMs / 1000).toFixed(2)}s (${(msg.html.length / 1024).toFixed(0)} KB HTML report).`,
+        'log-ok'
+      );
+
+      // Populate iframe and download links
+      standbyOverlay.style.display = 'none';
+      reportFrame.style.display = 'block';
+      reportFrame.srcdoc = msg.html;
+      reportMetaTag.textContent = `Target: ${msg.label} • Completed in ${(msg.elapsedMs / 1000).toFixed(2)}s (C++20 WASM)`;
+
+      if (htmlBlobUrl) URL.revokeObjectURL(htmlBlobUrl);
+      htmlBlobUrl = URL.createObjectURL(new Blob([msg.html], { type: 'text/html' }));
+      downloadHtmlLink.href = htmlBlobUrl;
+      downloadHtmlLink.download = `${msg.label}.WALRUS.html`;
+      downloadHtmlLink.classList.remove('hidden');
+
+      if (msg.json && msg.json.length > 2) {
+        if (jsonBlobUrl) URL.revokeObjectURL(jsonBlobUrl);
+        jsonBlobUrl = URL.createObjectURL(new Blob([msg.json], { type: 'application/json' }));
+        downloadJsonLink.href = jsonBlobUrl;
+        downloadJsonLink.download = `${msg.label}.CHARACTERIZE.json`;
+        downloadJsonLink.classList.remove('hidden');
+      } else {
+        downloadJsonLink.classList.add('hidden');
+      }
+
+      document.getElementById('report-deck').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else if (msg.type === 'error') {
+      isRunning = false;
+      clearInterval(timerInterval);
+      pingBtn.disabled = false;
+      pingBtn.classList.remove('pinging');
+      pingBtnTitle.innerHTML = 'ONE PING<br/>ONLY';
+      pingBtnSub.textContent = 'RETRY PING';
+      statusPill.className = 'wasm-led';
+      statusText.textContent = 'FAULT DETECTED';
+      timerReadout.textContent = `FAULT: ${msg.error}`;
+      appendTelemetry(`[SONAR FAULT] ${msg.error}`, 'log-err');
+    }
+  };
+
+  // ─── THE ONE BUTTON ACTUATION ──────────────────────────────────────
+  pingBtn.addEventListener('click', () => {
+    if (!workerReady || isRunning) return;
+    if (!activePayload.content || !activePayload.content.trim()) {
+      appendTelemetry('[FAULT] No sequence or JSON payload loaded.', 'log-err');
+      return;
+    }
+
+    playSubmarinePing(false);
+    isRunning = true;
+    pingBtn.disabled = true;
+    pingBtn.classList.add('pinging');
+    pingBtnTitle.innerHTML = 'PINGING<br/>TARGET…';
+    pingBtnSub.textContent = 'SONAR ACTIVE';
+    statusPill.className = 'wasm-led busy';
+    statusText.textContent = `PINGING ${activePayload.label.toUpperCase()}…`;
+    telemetryStageTag.textContent = 'PING IN FLIGHT';
+
+    pingStartTime = performance.now();
+    timerReadout.textContent = `ACTIVE SONAR PING IN FLIGHT // ELAPSED: 0.0s`;
+    clearInterval(timerInterval);
+    timerInterval = setInterval(() => {
+      const elapsed = ((performance.now() - pingStartTime) / 1000).toFixed(1);
+      timerReadout.textContent = `ACTIVE SONAR PING IN FLIGHT (${activePayload.label}) // ELAPSED: ${elapsed}s`;
+    }, 100);
+
+    appendTelemetry(`\n>>> [ONE PING ONLY] Firing acoustic characterization on ${activePayload.label} (Code: ${codeSelect.value})...`, 'log-ok');
+    addSonarBlip('PING');
+
+    if (activePayload.mode === 'json') {
+      worker.postMessage({
+        type: 'render_json',
+        label: activePayload.label,
+        jsonContent: activePayload.content
+      });
+    } else {
+      worker.postMessage({
+        type: 'ping',
+        label: activePayload.label,
+        seqContent: activePayload.content,
+        geneticCode: codeSelect.value
+      });
+    }
+  });
+})();
+</script>
+</body>
+</html>

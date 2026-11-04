@@ -274,9 +274,9 @@ struct TempDir {
 // Run `python script args...` without a shell; stdout+stderr go to log_path.
 inline int run_python(const std::string& python, const std::vector<std::string>& args,
                       const std::filesystem::path& log_path) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__EMSCRIPTEN__)
     (void)python; (void)args; (void)log_path;
-    throw std::runtime_error("HyphAeon: subprocess support is not implemented on Windows");
+    throw std::runtime_error("HyphAeon: external Python subprocess is not available in WebAssembly / Windows builds");
 #else
     std::vector<std::string> owned;
     owned.push_back(python);

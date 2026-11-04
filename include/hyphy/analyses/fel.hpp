@@ -362,17 +362,22 @@ public:
 
         if (num_background == 0) {
             // Fast path: All branches tested (2-parameter Alternative vs 1-parameter Null)
+            MG94Matrix mg;
+            Scalar cached_omega = -1.0;
             auto eval_pattern_lnl = [&](Scalar a, Scalar b) -> Scalar {
-                MG94Parameters p = base_params;
-                p.alpha = a;
-                p.beta = b;
-
-                MG94Matrix mg;
-                mg.update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+                Scalar a_safe = std::max<Scalar>(a, 1e-12);
+                Scalar omega = b / a_safe;
+                if (std::abs(omega - cached_omega) > 1e-12) {
+                    MG94Parameters p = base_params;
+                    p.alpha = 1.0;
+                    p.beta = omega;
+                    mg.update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+                    cached_omega = omega;
+                }
 
                 for (const auto& node : tree.nodes) {
                     if (node.id != tree.root_id) {
-                        P_branches[node.id] = mg.transition_matrix(node.branch_length);
+                        P_branches[node.id] = mg.transition_matrix(a_safe * node.branch_length);
                     }
                 }
 

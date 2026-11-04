@@ -648,11 +648,57 @@ public:
             if (tot > 0) leaf_gc[t] = static_cast<Scalar>(gc) / tot;
         }
 
+        // Pre-diagonalize 3 directional anchor matrices (AT: psi=-0.35, Neutral: psi=0.0, GC: psi=+0.35)
+        // once across all candidate roots instead of E * (2N-2) separate 61x61 eigendecompositions!
+        auto build_psi_matrix = [&](Scalar psi_val) -> MG94Matrix {
+            Eigen::Matrix<Scalar, 3, 4> pos_freqs = aln.pos_nuc_frequencies;
+            for (int pos = 0; pos < 3; ++pos) {
+                pos_freqs(pos, 1) *= std::exp(0.5 * psi_val); // C
+                pos_freqs(pos, 2) *= std::exp(0.5 * psi_val); // G
+                pos_freqs(pos, 0) *= std::exp(-0.5 * psi_val); // A
+                pos_freqs(pos, 3) *= std::exp(-0.5 * psi_val); // T
+                Scalar row_sum = pos_freqs.row(pos).sum();
+                if (row_sum > 1e-9) pos_freqs.row(pos) /= row_sum;
+            }
+            Vector codon_f = aln.codon_frequencies_f3x4;
+            for (int c = 0; c < gcode.num_sense_codons; ++c) {
+                const auto& trip = gcode.sense_codons[c];
+                int b0 = (trip[0] == 'C' ? 1 : (trip[0] == 'G' ? 2 : (trip[0] == 'A' ? 0 : 3)));
+                int b1 = (trip[1] == 'C' ? 1 : (trip[1] == 'G' ? 2 : (trip[1] == 'A' ? 0 : 3)));
+                int b2 = (trip[2] == 'C' ? 1 : (trip[2] == 'G' ? 2 : (trip[2] == 'A' ? 0 : 3)));
+                codon_f(c) = pos_freqs(0, b0) * pos_freqs(1, b1) * pos_freqs(2, b2);
+            }
+            Scalar sum_cf = codon_f.sum();
+            if (sum_cf > 1e-9) codon_f /= sum_cf;
+            MG94Matrix m;
+            m.update(base_p, pos_freqs, codon_f, gcode);
+            return m;
+        };
+        MG94Matrix mat_at = build_psi_matrix(-0.35);
+        MG94Matrix mat_gc = build_psi_matrix(0.35);
+
+        auto eval_dir_branch_P = [&](Scalar delta_gc, Scalar bl) -> Matrix {
+            Scalar psi = 2.0 * delta_gc;
+            if (std::abs(psi) <= 1e-3) {
+                return base_matrix.transition_matrix(bl);
+            } else if (psi > 0.0) {
+                Scalar w = std::clamp<Scalar>(psi / 0.35, 0.0, 1.0);
+                if (w >= 0.999) return mat_gc.transition_matrix(bl);
+                return (1.0 - w) * base_matrix.transition_matrix(bl) + w * mat_gc.transition_matrix(bl);
+            } else {
+                Scalar w = std::clamp<Scalar>(-psi / 0.35, 0.0, 1.0);
+                if (w >= 0.999) return mat_at.transition_matrix(bl);
+                return (1.0 - w) * base_matrix.transition_matrix(bl) + w * mat_at.transition_matrix(bl);
+            }
+        };
+
         // Evaluate each candidate edge
         size_t E = unique_edges.size();
         std::vector<RootCandidate> cand_list(E);
 
+        #ifdef _OPENMP
         #pragma omp parallel for schedule(dynamic)
+        #endif
         for (size_t i = 0; i < E; ++i) {
             const auto& ue = unique_edges[i];
             Tree cand_tree = reroot_on_edge(input_tree, ue.u, ue.v, 0.5);
@@ -678,48 +724,21 @@ public:
 
             // Directional transition matrices per branch
             std::vector<Matrix> P_branches(num_nodes);
-            std::vector<MG94Matrix> branch_mgs(num_nodes);
             for (const auto& node : cand_tree.nodes) {
                 if (node.id != cand_tree.root_id) {
                     int32_t p = node.parent_id;
                     Scalar delta_gc = node_gc[node.id] - node_gc[p];
-                    Scalar psi = 2.0 * delta_gc; // Directional drift proxy
-
-                    // Construct directional pos_nuc_freqs
-                    Eigen::Matrix<Scalar, 3, 4> pos_freqs = aln.pos_nuc_frequencies;
-                    for (int pos = 0; pos < 3; ++pos) {
-                        pos_freqs(pos, 1) *= std::exp(0.5 * psi); // C
-                        pos_freqs(pos, 2) *= std::exp(0.5 * psi); // G
-                        pos_freqs(pos, 0) *= std::exp(-0.5 * psi); // A
-                        pos_freqs(pos, 3) *= std::exp(-0.5 * psi); // T
-                        Scalar row_sum = pos_freqs.row(pos).sum();
-                        if (row_sum > 1e-9) pos_freqs.row(pos) /= row_sum;
-                    }
-
-                    Vector codon_f = aln.codon_frequencies_f3x4;
-                    for (int c = 0; c < gcode.num_sense_codons; ++c) {
-                        const auto& trip = gcode.sense_codons[c];
-                        int b0 = (trip[0] == 'C' ? 1 : (trip[0] == 'G' ? 2 : (trip[0] == 'A' ? 0 : 3)));
-                        int b1 = (trip[1] == 'C' ? 1 : (trip[1] == 'G' ? 2 : (trip[1] == 'A' ? 0 : 3)));
-                        int b2 = (trip[2] == 'C' ? 1 : (trip[2] == 'G' ? 2 : (trip[2] == 'A' ? 0 : 3)));
-                        codon_f(c) = pos_freqs(0, b0) * pos_freqs(1, b1) * pos_freqs(2, b2);
-                    }
-                    Scalar sum_cf = codon_f.sum();
-                    if (sum_cf > 1e-9) codon_f /= sum_cf;
-
-                    branch_mgs[node.id].update(base_p, pos_freqs, codon_f, gcode);
-                    P_branches[node.id] = branch_mgs[node.id].transition_matrix(node.branch_length);
+                    P_branches[node.id] = eval_dir_branch_P(delta_gc, node.branch_length);
                 }
             }
             std::vector<std::array<Matrix, 3>> P_bridges(cand_tree.bridges.size());
             for (size_t b = 0; b < cand_tree.bridges.size(); ++b) {
                 const auto& wb = cand_tree.bridges[b];
                 int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
-                const MG94Matrix& m_br = (bid >= 0 && bid != cand_tree.root_id && static_cast<size_t>(bid) < branch_mgs.size())
-                    ? branch_mgs[bid]
-                    : base_matrix;
+                Scalar d_gc = (bid >= 0 && bid != cand_tree.root_id && cand_tree.nodes[bid].parent_id >= 0)
+                    ? (node_gc[bid] - node_gc[cand_tree.nodes[bid].parent_id]) : 0.0;
                 for (int r = 0; r < 3; ++r) {
-                    P_bridges[b][r] = m_br.transition_matrix(wb.branch_lengths[r]);
+                    P_bridges[b][r] = eval_dir_branch_P(d_gc, wb.branch_lengths[r]);
                 }
             }
 
@@ -1248,7 +1267,80 @@ public:
     // 5. Pattern-Level Site Selection Analysis (Phase 2)
     // ========================================================================
 
-    DirectionalSiteResult analyze_pattern(size_t p, const std::vector<size_t>& leaf_to_taxon) {
+    struct PrecomputedGridPoint {
+        Scalar a = 1.0;
+        Scalar b = 1.0;
+        std::vector<Matrix> P_branches;
+        std::vector<std::array<Matrix, 3>> P_bridges;
+    };
+
+    std::vector<PrecomputedGridPoint> build_precomputed_grid() const {
+        const std::vector<std::pair<Scalar, Scalar>> grid_points = {
+            {0.01, 0.01}, {0.1, 0.1}, {0.5, 0.5}, {1.0, 1.0}, {2.0, 2.0},
+            {0.1, 1.0}, {1.0, 0.1}, {0.5, 2.0}, {2.0, 0.5}, {5.0, 1.0}, {1.0, 5.0}
+        };
+        const auto& gcode = *(aln.code ? aln.code : GeneticCode::universal());
+        size_t num_nodes = tree.num_nodes();
+        size_t K = regimes.size();
+
+        std::vector<MG94Matrix> reg_mats(K);
+        Scalar cached_omega = -1.0;
+
+        std::vector<PrecomputedGridPoint> out(grid_points.size());
+        for (size_t gi = 0; gi < grid_points.size(); ++gi) {
+            Scalar a = grid_points[gi].first;
+            Scalar b = grid_points[gi].second;
+            Scalar a_safe = std::max<Scalar>(a, 1e-12);
+            Scalar omega = b / a_safe;
+            if (std::abs(omega - cached_omega) > 1e-12) {
+                MG94Parameters p_curr = base_params;
+                p_curr.alpha = 1.0;
+                p_curr.beta = omega;
+                for (size_t k = 0; k < K; ++k) {
+                    reg_mats[k].update(p_curr, regimes[k].pos_nuc_freqs, regimes[k].codon_freqs, gcode);
+                }
+                cached_omega = omega;
+            }
+            auto eval_branch_P = [&](int32_t nid, Scalar bl) -> Matrix {
+                Scalar eff_bl = a_safe * bl;
+                if (K == 3 && nid >= 0 && static_cast<size_t>(nid) < branch_regime_weights.size()) {
+                    const auto& w = branch_regime_weights[nid];
+                    if (w[1] > 0.99) return reg_mats[1].transition_matrix(eff_bl);
+                    if (w[2] > 0.99) return reg_mats[2].transition_matrix(eff_bl);
+                    if (w[0] > 0.99) return reg_mats[0].transition_matrix(eff_bl);
+                    Matrix P = w[1] * reg_mats[1].transition_matrix(eff_bl);
+                    if (w[2] > 1e-4) P += w[2] * reg_mats[2].transition_matrix(eff_bl);
+                    if (w[0] > 1e-4) P += w[0] * reg_mats[0].transition_matrix(eff_bl);
+                    return P;
+                }
+                return reg_mats[0].transition_matrix(eff_bl);
+            };
+            out[gi].a = a;
+            out[gi].b = b;
+            out[gi].P_branches.resize(num_nodes);
+            for (const auto& node : tree.nodes) {
+                if (node.id != tree.root_id) {
+                    out[gi].P_branches[node.id] = eval_branch_P(node.id, node.branch_length);
+                }
+            }
+            out[gi].P_bridges.resize(tree.bridges.size());
+            for (size_t b_idx = 0; b_idx < tree.bridges.size(); ++b_idx) {
+                const auto& wb = tree.bridges[b_idx];
+                int32_t bid = (wb.bridge_node_id >= 0 && wb.bridge_node_id != wb.hub_node_id) ? wb.bridge_node_id : wb.hub_node_id;
+                for (int r = 0; r < 3; ++r) {
+                    out[gi].P_bridges[b_idx][r] = eval_branch_P(bid, wb.branch_lengths[r]);
+                }
+            }
+        }
+        return out;
+    }
+
+    DirectionalSiteResult analyze_pattern(
+        size_t p,
+        const std::vector<size_t>& leaf_to_taxon,
+        const std::vector<PrecomputedGridPoint>* precomp_grid = nullptr,
+        const std::vector<MG94Matrix>* unit_omega_mats = nullptr
+    ) {
         DirectionalSiteResult res;
         res.site_index = p;
 
@@ -1291,33 +1383,45 @@ public:
         std::vector<double> thread_node_scale(num_nodes, 0.0);
         std::vector<Matrix> P_branches(num_nodes);
         std::vector<MG94Matrix> regime_matrices(K);
+        Scalar cached_omega = -1.0;
 
         auto eval_pattern_lnl = [&](Scalar a, Scalar b) -> Scalar {
-            MG94Parameters p_curr = base_params;
-            p_curr.alpha = a;
-            p_curr.beta = b;
+            Scalar a_safe = std::max<Scalar>(a, 1e-12);
+            Scalar omega = b / a_safe;
+            const std::vector<MG94Matrix>* active_mats = &regime_matrices;
 
-            for (size_t k = 0; k < K; ++k) {
-                regime_matrices[k].update(p_curr, regimes[k].pos_nuc_freqs, regimes[k].codon_freqs, gcode);
+            if (unit_omega_mats && unit_omega_mats->size() == K && std::abs(omega - 1.0) <= 1e-12) {
+                active_mats = unit_omega_mats;
+            } else {
+                if (std::abs(omega - cached_omega) > 1e-12) {
+                    MG94Parameters p_curr = base_params;
+                    p_curr.alpha = 1.0;
+                    p_curr.beta = omega;
+                    for (size_t k = 0; k < K; ++k) {
+                        regime_matrices[k].update(p_curr, regimes[k].pos_nuc_freqs, regimes[k].codon_freqs, gcode);
+                    }
+                    cached_omega = omega;
+                }
             }
 
             auto eval_branch_P = [&](int32_t nid, Scalar bl) -> Matrix {
+                Scalar eff_bl = a_safe * bl;
                 if (K == 3 && nid >= 0 && static_cast<size_t>(nid) < branch_regime_weights.size()) {
                     const auto& w = branch_regime_weights[nid];
                     if (w[1] > 0.99) {
-                        return regime_matrices[1].transition_matrix(bl);
+                        return (*active_mats)[1].transition_matrix(eff_bl);
                     } else if (w[2] > 0.99) {
-                        return regime_matrices[2].transition_matrix(bl);
+                        return (*active_mats)[2].transition_matrix(eff_bl);
                     } else if (w[0] > 0.99) {
-                        return regime_matrices[0].transition_matrix(bl);
+                        return (*active_mats)[0].transition_matrix(eff_bl);
                     } else {
-                        Matrix P = w[1] * regime_matrices[1].transition_matrix(bl);
-                        if (w[2] > 1e-4) P += w[2] * regime_matrices[2].transition_matrix(bl);
-                        if (w[0] > 1e-4) P += w[0] * regime_matrices[0].transition_matrix(bl);
+                        Matrix P = w[1] * (*active_mats)[1].transition_matrix(eff_bl);
+                        if (w[2] > 1e-4) P += w[2] * (*active_mats)[2].transition_matrix(eff_bl);
+                        if (w[0] > 1e-4) P += w[0] * (*active_mats)[0].transition_matrix(eff_bl);
                         return P;
                     }
                 }
-                return regime_matrices[0].transition_matrix(bl);
+                return (*active_mats)[0].transition_matrix(eff_bl);
             };
 
             for (const auto& node : tree.nodes) {
@@ -1334,27 +1438,51 @@ public:
                 }
             }
 
-            const auto& mg_root = (K == 3) ? regime_matrices[1] : regime_matrices[0];
+            const auto& mg_root = (K == 3) ? regimes[1].base_matrix : regimes[0].base_matrix;
             return compute_pattern_log_likelihood(
                 tree, pattern, leaf_to_taxon, mg_root, P_branches, thread_node_L, thread_node_scale,
                 tree.bridges.empty() ? nullptr : &P_bridges
             );
         };
 
-        // Grid search initialization
-        const std::vector<std::pair<Scalar, Scalar>> grid_points = {
-            {0.01, 0.01}, {0.1, 0.1}, {0.5, 0.5}, {1.0, 1.0}, {2.0, 2.0},
-            {0.1, 1.0}, {1.0, 0.1}, {0.5, 2.0}, {2.0, 0.5}, {5.0, 1.0}, {1.0, 5.0}
-        };
-
         Scalar best_grid_lnl = -1e20;
         Scalar best_a = 1.0, best_b = 1.0;
-        for (const auto& pt : grid_points) {
-            Scalar lnl = eval_pattern_lnl(pt.first, pt.second);
-            if (lnl > best_grid_lnl) {
-                best_grid_lnl = lnl;
-                best_a = pt.first;
-                best_b = pt.second;
+        Scalar best_diag_lnl = -1e20;
+        Scalar best_diag_a = 1.0;
+
+        if (precomp_grid && !precomp_grid->empty()) {
+            const auto& mg_root = (K == 3) ? regimes[1].base_matrix : regimes[0].base_matrix;
+            for (const auto& gp : *precomp_grid) {
+                Scalar lnl = compute_pattern_log_likelihood(
+                    tree, pattern, leaf_to_taxon, mg_root, gp.P_branches, thread_node_L, thread_node_scale,
+                    tree.bridges.empty() ? nullptr : &gp.P_bridges
+                );
+                if (lnl > best_grid_lnl) {
+                    best_grid_lnl = lnl;
+                    best_a = gp.a;
+                    best_b = gp.b;
+                }
+                if (std::abs(gp.a - gp.b) <= 1e-12 && lnl > best_diag_lnl) {
+                    best_diag_lnl = lnl;
+                    best_diag_a = gp.a;
+                }
+            }
+        } else {
+            const std::vector<std::pair<Scalar, Scalar>> grid_points = {
+                {0.01, 0.01}, {0.1, 0.1}, {0.5, 0.5}, {1.0, 1.0}, {2.0, 2.0},
+                {0.1, 1.0}, {1.0, 0.1}, {0.5, 2.0}, {2.0, 0.5}, {5.0, 1.0}, {1.0, 5.0}
+            };
+            for (const auto& pt : grid_points) {
+                Scalar lnl = eval_pattern_lnl(pt.first, pt.second);
+                if (lnl > best_grid_lnl) {
+                    best_grid_lnl = lnl;
+                    best_a = pt.first;
+                    best_b = pt.second;
+                }
+                if (std::abs(pt.first - pt.second) <= 1e-12 && lnl > best_diag_lnl) {
+                    best_diag_lnl = lnl;
+                    best_diag_a = pt.first;
+                }
             }
         }
 
@@ -1376,9 +1504,9 @@ public:
             return -eval_pattern_lnl(a, a);
         };
 
-        Scalar best_null_lnl = -obj_null(best_a);
-        Scalar best_null_a = best_a;
-        for (Scalar cand_a : {0.01, 0.1, 0.5, 1.0, 2.0, 5.0}) {
+        Scalar best_null_lnl = best_diag_lnl;
+        Scalar best_null_a = best_diag_a;
+        for (Scalar cand_a : {best_a, Scalar(5.0)}) {
             Scalar lnl = -obj_null(cand_a);
             if (lnl > best_null_lnl) {
                 best_null_lnl = lnl;
@@ -1530,6 +1658,19 @@ public:
     std::vector<DirectionalSiteResult> run(bool show_progress = false, bool force_progress = false) {
         size_t num_patterns = aln.patterns.size();
         auto leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(tree, aln);
+        const auto& gcode = *(aln.code ? aln.code : GeneticCode::universal());
+        size_t K = regimes.size();
+
+        std::vector<MG94Matrix> unit_omega_mats(K);
+        {
+            MG94Parameters p_unit = base_params;
+            p_unit.alpha = 1.0;
+            p_unit.beta = 1.0;
+            for (size_t k = 0; k < K; ++k) {
+                unit_omega_mats[k].update(p_unit, regimes[k].pos_nuc_freqs, regimes[k].codon_freqs, gcode);
+            }
+        }
+        auto precomp_grid = build_precomputed_grid();
 
         std::vector<DirectionalSiteResult> pattern_results(num_patterns);
 
@@ -1544,9 +1685,11 @@ public:
             .enable_chart = true
         });
 
+        #ifdef _OPENMP
         #pragma omp parallel for schedule(dynamic)
+        #endif
         for (size_t p = 0; p < num_patterns; ++p) {
-            pattern_results[p] = analyze_pattern(p, leaf_to_taxon);
+            pattern_results[p] = analyze_pattern(p, leaf_to_taxon, &precomp_grid, &unit_omega_mats);
             pattern_results[p].subs = reconstruct_ancestral_pattern(p, leaf_to_taxon);
 
             const auto& r = pattern_results[p];

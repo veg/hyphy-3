@@ -86,25 +86,34 @@ target_compile_definitions(hyphy3_core INTERFACE
     HYPHY3_BUILD_TYPE="${HYPHY3_BUILD_TYPE_VALUE}"
 )
 
-# OpenMP support
-find_package(OpenMP)
-if(NOT OpenMP_CXX_FOUND AND EXISTS "/opt/homebrew/opt/libomp")
-    set(OpenMP_ROOT "/opt/homebrew/opt/libomp")
+# OpenMP support (skipped under Emscripten WASM cross-compilation)
+if(NOT EMSCRIPTEN)
     find_package(OpenMP)
-endif()
-if(OpenMP_CXX_FOUND)
-    message(STATUS "OpenMP CXX found: ${OpenMP_CXX_VERSION}")
-    target_link_libraries(hyphy3_core INTERFACE OpenMP::OpenMP_CXX)
+    if(NOT OpenMP_CXX_FOUND AND EXISTS "/opt/homebrew/opt/libomp")
+        set(OpenMP_ROOT "/opt/homebrew/opt/libomp")
+        find_package(OpenMP)
+    endif()
+    if(OpenMP_CXX_FOUND)
+        message(STATUS "OpenMP CXX found: ${OpenMP_CXX_VERSION}")
+        target_link_libraries(hyphy3_core INTERFACE OpenMP::OpenMP_CXX)
+    endif()
 endif()
 
 # Apple Accelerate (AMX / vDSP) hardware BLAS backend for batched 61xP GEMM Inside-Outside
-if(APPLE)
+if(APPLE AND NOT EMSCRIPTEN)
     find_library(ACCELERATE_FRAMEWORK Accelerate)
     if(ACCELERATE_FRAMEWORK)
         message(STATUS "Apple Accelerate framework found: ${ACCELERATE_FRAMEWORK}")
         target_link_libraries(hyphy3_core INTERFACE ${ACCELERATE_FRAMEWORK})
         target_compile_definitions(hyphy3_core INTERFACE EIGEN_USE_BLAS ACCELERATE_NEW_LAPACK)
     endif()
+endif()
+
+if(EMSCRIPTEN)
+    message(STATUS "Configuring HyPhy 3 WALRUS for WebAssembly (Emscripten SIMD128)")
+    set(HYPHY3_BUILD_TESTS OFF CACHE BOOL "Disable tests under Emscripten" FORCE)
+    set(HYPHY3_PCH OFF CACHE BOOL "Disable PCH under Emscripten" FORCE)
+    target_compile_options(hyphy3_core INTERFACE -msimd128 -fexceptions)
 endif()
 
 # HTML results viewer (viz/fel-viewer), embedded into the binaries at build time so hyphy3 can
@@ -422,7 +431,26 @@ add_executable(hyphy-joint-align ALIAS hyphy3-joint-align)
 add_executable(hyphy-characterize ALIAS hyphy3-characterize)
 add_executable(hyphy-expcm ALIAS hyphy3-expcm)
 
+# WebAssembly (Emscripten) One-Button WALRUS Engine Target
+if(EMSCRIPTEN)
+    add_executable(hyphy3_wasm src/apps/hyphy_wasm.cpp)
+    target_link_libraries(hyphy3_wasm PRIVATE hyphy3_core hyphy3_emitters)
+    set_target_properties(hyphy3_wasm PROPERTIES
+        OUTPUT_NAME "hyphy3_walrus"
+        SUFFIX ".js"
+        LINK_FLAGS "-O3 -msimd128 -fexceptions -sMODULARIZE=1 -sEXPORT_NAME=createWalrusModule -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=2147483648 -sSTACK_SIZE=8388608 -sENVIRONMENT=web,worker,node -sFILESYSTEM=1 -sEXPORTED_FUNCTIONS=['_walrus_ping_run','_walrus_get_last_json','_walrus_get_last_error','_walrus_render_html_from_json','_malloc','_free'] -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToNewUTF8','FS']"
+    )
+else()
+    add_custom_target(wasm
+        COMMAND /bin/bash "${CMAKE_SOURCE_DIR}/scripts/build_wasm.sh"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Cross-compiling HyPhy-3 WALRUS engine to WebAssembly (hyphy3_walrus.js + hyphy3_walrus.wasm)"
+        USES_TERMINAL
+    )
+endif()
+
 # Python & nanobind bindings
+if(NOT EMSCRIPTEN)
 find_package(Python 3.8 COMPONENTS Interpreter Development.Module)
 if(Python_FOUND)
     execute_process(
@@ -462,6 +490,7 @@ if(Python_FOUND)
             endif()
         endif()
     endif()
+endif()
 endif()
 
 

@@ -75,6 +75,9 @@ public:
         test_f.close();
 
         if (is_gz) {
+#ifdef __EMSCRIPTEN__
+            throw std::runtime_error("Gzipped alignment files (.gz) must be decompressed in the browser via DecompressionStream before passing to the WASM engine: " + filepath);
+#else
             std::string cmd = "gzip -dc \"" + filepath + "\"";
             FILE* pipe = popen(cmd.c_str(), "r");
             if (!pipe) {
@@ -91,6 +94,7 @@ public:
                 throw std::runtime_error("Decompressed gzip alignment is empty: " + filepath);
             }
             return out;
+#endif
         }
 
         std::ifstream file(filepath);

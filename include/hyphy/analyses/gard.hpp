@@ -577,6 +577,7 @@ public:
             return pat_lnl;
         };
 
+#ifdef _OPENMP
         if (omp_in_parallel()) {
             std::vector<Vector4> node_L(num_nodes);
             std::vector<double> node_log_scale(num_nodes, 0.0);
@@ -594,6 +595,15 @@ public:
                 }
             }
         }
+#else
+        {
+            std::vector<Vector4> node_L(num_nodes);
+            std::vector<double> node_log_scale(num_nodes, 0.0);
+            for (size_t p = 0; p < num_patterns; ++p) {
+                pattern_log_l[p] = eval_pattern(p, node_L, node_log_scale);
+            }
+        }
+#endif
 
         Scalar total_comp = 0.0;
         for (size_t p = 0; p < num_patterns; ++p) {

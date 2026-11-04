@@ -1261,7 +1261,11 @@ public:
 
             #pragma omp parallel
             {
+#ifdef _OPENMP
                 std::mt19937_64 rng(settings.random_seed + omp_get_thread_num());
+#else
+                std::mt19937_64 rng(settings.random_seed);
+#endif
 
                 #pragma omp for schedule(dynamic)
                 for (size_t rep = 0; rep < settings.samples; ++rep) {
