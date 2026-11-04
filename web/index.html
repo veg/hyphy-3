@@ -1048,7 +1048,7 @@
   });
 
   // ─── Web Worker Management ─────────────────────────────────────────
-  const worker = new Worker('worker.js');
+  const worker = new Worker('worker.js?v=2');
 
   worker.onmessage = (e) => {
     const msg = e.data;
@@ -1062,7 +1062,7 @@
       statusText.textContent = 'WASM CORE ARMED';
       appendTelemetry('[CONN] HyPhy-3 C++20 WebAssembly engine armed. Standing by for ONE PING ONLY.', 'log-ok');
     } else if (msg.type === 'log') {
-      appendTelemetry(msg.line);
+      appendTelemetry(msg.line || msg.text || '');
     } else if (msg.type === 'result') {
       isRunning = false;
       clearInterval(timerInterval);
@@ -1106,6 +1106,7 @@
 
       document.getElementById('report-deck').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } else if (msg.type === 'error') {
+      const errStr = msg.error || msg.message || 'Unknown WASM worker error';
       isRunning = false;
       clearInterval(timerInterval);
       pingBtn.disabled = false;
@@ -1114,8 +1115,8 @@
       pingBtnSub.textContent = 'RETRY PING';
       statusPill.className = 'wasm-led';
       statusText.textContent = 'FAULT DETECTED';
-      timerReadout.textContent = `FAULT: ${msg.error}`;
-      appendTelemetry(`[SONAR FAULT] ${msg.error}`, 'log-err');
+      timerReadout.textContent = `FAULT: ${errStr}`;
+      appendTelemetry(`[SONAR FAULT] ${errStr}`, 'log-err');
     }
   };
 
