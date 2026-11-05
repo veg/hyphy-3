@@ -105,9 +105,9 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    // Direct One-Button invocation: if the user passes -u/--unaligned or -a/--alignment/--msa directly to hyphy3,
+    // Direct One-Button invocation: if the user passes -u/--unaligned, -a/--alignment/--msa, or -i/--input directly to hyphy3,
     // route straight to the unified CharacterizeEngine!
-    if (cmd == "-u" || cmd == "--unaligned" || cmd == "-a" || cmd == "--alignment" || cmd == "--msa") {
+    if (cmd == "-u" || cmd == "--unaligned" || cmd == "-a" || cmd == "--alignment" || cmd == "--msa" || cmd == "-i" || cmd == "--input") {
         return run_characterize(argc, argv);
     }
 
@@ -152,7 +152,8 @@ int main(int argc, char* argv[]) {
             return run_mss(sub_argc, sub_argv.data());
         } else if (cmd == "ohmic" || cmd == "OHMIC" || cmd == "--ohmic") {
             return run_ohmic(sub_argc, sub_argv.data());
-        } else if (cmd == "tree" || cmd == "TREE" || cmd == "tree-search") {
+        } else if (cmd == "tree" || cmd == "TREE" || cmd == "tree-search" ||
+                   cmd == "label-tree" || cmd == "trim-tree" || cmd == "trim-label-tree") {
             return run_tree(sub_argc, sub_argv.data());
         } else if (cmd == "joint-align" || cmd == "joint_align" || cmd == "align") {
             return run_joint_align(sub_argc, sub_argv.data());

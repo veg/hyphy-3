@@ -214,6 +214,48 @@ int main() {
             assert(j["clade_macro_regime"]["clade_relax_lrt"].get<double>() == 0.0);
         }
         std::cout << "[PASS] Full CharacterizeEngine on adh.nex & JSON v3 Schema Contract Verified\n";
+
+        // 5. Test User-Specified Branch Tag (-b Foreground) with {Foreground} Newick annotations (#33)
+        Tree tagged_tree = adh_tree;
+        size_t expected_fg = 0;
+        for (auto& nd : tagged_tree.nodes) {
+            if (nd.id != tagged_tree.root_id && nd.is_leaf && expected_fg < 4) {
+                nd.model_tag = "Foreground";
+                expected_fg++;
+            }
+        }
+        CharacterizeSettings cs_fg;
+        cs_fg.quiet = true;
+        cs_fg.foreground_tag = "Foreground";
+        CharacterizeEngine c_eng_fg(cs_fg);
+        auto res_fg = c_eng_fg.run_from_alignment(adh, tagged_tree);
+        assert(res_fg.clade_macro_regime.triggered == true);
+        assert(res_fg.clade_macro_regime.partition_source == "User {Foreground} Tags");
+        assert(res_fg.clade_macro_regime.num_test_branches == expected_fg);
+        size_t json_fg_count = 0;
+        for (const auto& bp : res_fg.branch_profiles) {
+            if (bp.macro_regime.rfind("Test", 0) == 0) {
+                assert(bp.model_tag == "Foreground");
+                json_fg_count++;
+            }
+        }
+        assert(json_fg_count == expected_fg);
+        std::cout << "[PASS] User-Specified Branch Tag (-b Foreground) Partition & model_tag Preservation (#33)\n";
+    }
+
+    // 6. Test bglobin.nex BUSTED-E Error-Sink Activation & Gene-Wide Null Calibration (#31)
+    {
+        Alignment bglobin = Alignment::load(std::string(HYPHY3_SOURCE_DIR) + "/benchmarks/data/bglobin.nex");
+        Tree bglobin_tree = Tree::from_newick(bglobin.embedded_tree_newick);
+        CharacterizeSettings cs;
+        cs.quiet = true;
+        CharacterizeEngine c_eng(cs);
+        auto res_bg = c_eng.run_from_alignment(bglobin, bglobin_tree);
+        assert(res_bg.gene_wide.error_sink_weight > 0.0);
+        assert(res_bg.gene_wide.has_gene_wide_positive_selection == false);
+        assert(res_bg.gene_wide.busted_p_value > 0.10);
+        std::cout << "[PASS] bglobin.nex BUSTED-E Error-Sink Activation & Null Calibration (p="
+                  << res_bg.gene_wide.busted_p_value << ", err_w=" << res_bg.gene_wide.error_sink_weight << ") (#31)\n";
     }
 
     return 0;

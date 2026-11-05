@@ -129,6 +129,7 @@ struct CladeMacroRegimeSummary {
 struct BranchEvolutionaryProfile {
     int32_t node_id = -1;
     std::string branch_name;
+    std::string model_tag;
     bool is_leaf = false;
     Scalar branch_length_subs = 0.0;
     std::string compositional_regime = "Neutral";
@@ -575,6 +576,7 @@ public:
         for (const auto& bp : res.branch_profiles) {
             br_arr.push_back({
                 {"branch_name", bp.branch_name},
+                {"model_tag", bp.model_tag},
                 {"is_leaf", bp.is_leaf},
                 {"branch_length_subs", bp.branch_length_subs},
                 {"compositional_regime", bp.compositional_regime},
@@ -3974,10 +3976,12 @@ private:
             for (size_t c = 0; c < C; ++c) {
                 const Vector& U = site_outside[c][bid];
                 const Vector& L = site_inside[c][bid];
-                Eigen::Index i_star = 0, j_star = 0;
-                (U.cwiseProduct(pi_codon)).maxCoeff(&i_star);
-                (L.cwiseProduct(pi_codon)).maxCoeff(&j_star);
-                Scalar sink_val = (codon_dnuc[i_star][j_star] >= 2) ? U.dot(P_mh_jump * L) : 0.0;
+                Scalar pi_dot_L = pi_codon.dot(L);
+                Scalar sink_val = 0.0;
+                for (int i = 0; i < S; ++i) {
+                    Scalar p_sink_L_i = (pi_dot_L - pi_codon(i) * L(i)) * inv_one_minus_pi(i);
+                    sink_val += U(i) * std::max<Scalar>(0.0, p_sink_L_i);
+                }
                 f_sink[c] = std::max<Scalar>(0.0, sink_val);
                 Scalar f_raw = eval_hadamard_at(H_reg, br_w, c, site_g_near[c], site_alpha[c] * raw_bl);
                 if (f_raw >= f_sink[c]) {
@@ -4153,20 +4157,13 @@ private:
                     }
                     c_bl = spr_t.nodes[bid].branch_length * conv;
                 }
+                Scalar eff_site_bl = site_alpha[c] * c_bl;
                 for (size_t g = 0; g < G; ++g) {
-                    W_tensor[c][bi][g] = eval_hadamard_at(H_reg, br_w, c, g, c_bl);
+                    W_tensor[c][bi][g] = eval_hadamard_at(H_reg, br_w, c, g, eff_site_bl);
                 }
-                Scalar ref = std::max<Scalar>(1e-30, W_tensor[c][bi][6]);
+                Scalar ref = std::max<Scalar>(1e-30, W_tensor[c][bi][site_g_near[c]]);
                 for (size_t g = 0; g < G; ++g) {
                     W_tensor[c][bi][g] /= ref;
-                }
-                const Vector& U = site_outside[c][bid];
-                const Vector& L = site_inside[c][bid];
-                Scalar pi_dot_L = pi_codon.dot(L);
-                Scalar sink_val = 0.0;
-                for (int i = 0; i < S; ++i) {
-                    Scalar p_sink_L_i = (pi_dot_L - pi_codon(i) * L(i)) * inv_one_minus_pi(i);
-                    sink_val += U(i) * std::max<Scalar>(0.0, p_sink_L_i);
                 }
                 Scalar g_mkt = markov_sink_gamma[c][bi];
                 if (g_mkt >= 0.50) {
@@ -4174,8 +4171,6 @@ private:
                         W_tensor[c][bi][g] = (1.0 - g_mkt) * W_tensor[c][bi][g] + g_mkt * 1.0;
                     }
                     W_sink[c][bi] = 1.0;
-                } else {
-                    W_sink[c][bi] = std::max<Scalar>(0.0, sink_val / ref);
                 }
             }
         }
@@ -4768,10 +4763,8 @@ private:
                 out_alt_ll = out_null_ll;
                 best_w = out_null_w;
                 best_err_w = out_null_err_w;
-                // Search the full (g1, g2) background grid for the alternative model (matching the null grid, E3)
-                // so minor branch-length perturbations never cause discrete neighborhood jumps.
-                for (size_t g1 : {size_t(0), size_t(1), size_t(2), size_t(3), size_t(4)}) {
-                    for (size_t g2 : {size_t(5), size_t(6), size_t(7), size_t(8)}) {
+                for (size_t g1 : {best_g1 > 0 ? best_g1 - 1 : best_g1, best_g1, std::min<size_t>(4, best_g1 + 1)}) {
+                    for (size_t g2 : {best_g2 > 5 ? best_g2 - 1 : best_g2, best_g2, std::min<size_t>(8, best_g2 + 1)}) {
                         for (size_t g3 = 9; g3 < G; ++g3) {
                             std::array<Scalar, 3> w_tmp;
                             Scalar w_err_tmp = 0.0;
@@ -4808,8 +4801,8 @@ private:
             fit_busted_em_model(true, g1_sk, g2_sk, g3_sk, w_sk, err_sk, ng1_sk, ng2_sk, nw_sk, nerr_sk, null_sk, alt_sk);
 
             Scalar sink_bic_threshold = 0.5 * std::log(static_cast<Scalar>(std::max<size_t>(2, B * C)));
-            bool mh_null_jump = ((null_sk - null_std) > sink_bic_threshold) &&
-                                (w_std[2] < 0.0025 || (alt_sk - alt_std) > 0.75 * sink_bic_threshold);
+            bool mh_null_jump = (((null_sk - null_std) > 1.0) && ((alt_std - null_std) < (null_sk - null_std) + 2.5))
+                             || (((null_sk - null_std) > sink_bic_threshold) && (w_std[2] < 0.0025 || (alt_sk - alt_std) > 0.75 * sink_bic_threshold));
             bool sink_supported = ((((alt_sk - alt_std) > sink_bic_threshold) || mh_null_jump) && (err_sk >= 1e-5 || nerr_sk >= 1e-5))
                                || (total_markov_sink_gamma >= 1.5);
 
@@ -4895,6 +4888,7 @@ private:
             auto& bp = res.branch_profiles[bi];
             bp.node_id = bid;
             bp.branch_name = nd.name.empty() ? ("Node_" + std::to_string(bid)) : nd.name;
+            bp.model_tag = nd.model_tag;
             bp.is_leaf = nd.is_leaf;
             bp.branch_length_subs = nd.branch_length;
             bp.episodic_site_count = branch_epi_counts[bi];

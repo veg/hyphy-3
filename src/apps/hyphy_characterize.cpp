@@ -56,6 +56,9 @@ int main(int argc, char* argv[])
 {
     std::string unaligned_path;
     std::string aln_path;
+    std::string generic_input_path;
+    bool flag_unaligned = false;
+    bool flag_aligned = false;
     std::string tree_path;
     std::string out_json_path;
     std::string out_html_path;
@@ -71,10 +74,18 @@ int main(int argc, char* argv[])
         if (arg == "--help" || arg == "-h") {
             print_characterize_usage(argv[0]);
             return 0;
-        } else if ((arg == "--unaligned" || arg == "-u") && i + 1 < argc) {
-            unaligned_path = argv[++i];
-        } else if ((arg == "--alignment" || arg == "-a" || arg == "--msa") && i + 1 < argc) {
-            aln_path = argv[++i];
+        } else if ((arg == "--input" || arg == "-i") && i + 1 < argc) {
+            generic_input_path = argv[++i];
+        } else if (arg == "--unaligned" || arg == "-u") {
+            flag_unaligned = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                unaligned_path = argv[++i];
+            }
+        } else if (arg == "--alignment" || arg == "-a" || arg == "--msa") {
+            flag_aligned = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                aln_path = argv[++i];
+            }
         } else if ((arg == "--tree" || arg == "-t") && i + 1 < argc) {
             tree_path = argv[++i];
         } else if ((arg == "--output" || arg == "-o") && i + 1 < argc) {
@@ -141,6 +152,14 @@ int main(int argc, char* argv[])
         } else {
             std::cerr << Console::danger("Error: ") << "Unknown or incomplete argument '" << arg << "'. Use --help for usage.\n";
             return 1;
+        }
+    }
+
+    if (!generic_input_path.empty() && unaligned_path.empty() && aln_path.empty()) {
+        if (flag_unaligned && !flag_aligned) {
+            unaligned_path = generic_input_path;
+        } else {
+            aln_path = generic_input_path;
         }
     }
 

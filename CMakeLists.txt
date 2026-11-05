@@ -404,6 +404,9 @@ target_link_libraries(hyphy3-joint-align PRIVATE hyphy3_core)
 add_executable(hyphy3-characterize src/apps/hyphy_characterize.cpp)
 target_link_libraries(hyphy3-characterize PRIVATE hyphy3_core)
 
+add_executable(hyphy3-walrus src/apps/hyphy_characterize.cpp)
+target_link_libraries(hyphy3-walrus PRIVATE hyphy3_core)
+
 add_executable(hyphy3-expcm
     src/apps/hyphy_expcm.cpp
     src/apps/hyphy_expcm_main.cpp
@@ -429,6 +432,7 @@ add_executable(hyphy-ohmic ALIAS hyphy3-ohmic)
 add_executable(hyphy-tree ALIAS hyphy3-tree)
 add_executable(hyphy-joint-align ALIAS hyphy3-joint-align)
 add_executable(hyphy-characterize ALIAS hyphy3-characterize)
+add_executable(hyphy-walrus ALIAS hyphy3-walrus)
 add_executable(hyphy-expcm ALIAS hyphy3-expcm)
 
 # WebAssembly (Emscripten) One-Button WALRUS Engine Target
