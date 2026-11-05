@@ -45,6 +45,7 @@ RUN cmake -S /src -B /build -G Ninja \
         hyphy3-tree \
         hyphy3-joint-align \
         hyphy3-characterize \
+        hyphy3-walrus \
         hyphy3-expcm \
     && strip /build/hyphy3 /build/hyphy3-*
 
