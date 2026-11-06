@@ -1714,13 +1714,15 @@ public:
         mg94.update(mg_params, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
         Scalar conv = (mg94.scale_factor > 1e-12) ? (3.0 / mg94.scale_factor) : 1.0;
 
-        // Compute Foster effective resistance matrix Omega on current alignment
+        // Compute Foster effective resistance network on current alignment
         OhmicSettings ohm_s;
         ohm_s.use_hyphaeon_transformer = false;
         OhmicNetwork net = OhmicNetwork::infer(aln, ohm_s);
-        const Matrix& Omega = net.Omega;
-
         size_t N = aln.num_taxa;
+        const Matrix* omega_ptr = (net.Omega.rows() == static_cast<Eigen::Index>(N) &&
+                                   net.Omega.cols() == static_cast<Eigen::Index>(N))
+                                ? &net.Omega : nullptr;
+
         int S = gcode.num_sense_codons;
 
         // Calibrate empirical affine indel parameters on current alignment (matching Stage 1 Phase 3)
@@ -1887,38 +1889,45 @@ public:
 
         std::vector<std::vector<size_t>> node_leaves = compute_node_leaves();
 
-        std::vector<int32_t> candidate_clades;
-        for (const auto& nd : tree.nodes) {
-            if (nd.id == tree.root_id || nd.parent_id == INVALID_INDEX) continue;
-            const auto& lvs = node_leaves[nd.id];
-            if (lvs.empty() || lvs.size() > N / 2) continue;
+        auto compute_candidate_clades = [&]() {
+            std::vector<int32_t> cands;
+            for (const auto& nd : tree.nodes) {
+                if (nd.id < 0 || static_cast<size_t>(nd.id) >= node_leaves.size()) continue;
+                if (nd.id == tree.root_id || nd.parent_id == INVALID_INDEX) continue;
+                const auto& lvs = node_leaves[nd.id];
+                if (lvs.empty() || lvs.size() > N / 2) continue;
 
-            // Check if any taxon in lvs has internal gaps in any window
-            bool has_indel = false;
-            for (size_t tid : lvs) {
-                for (const auto& w : windows) {
-                    for (size_t c = w.window.start_codon; c < w.window.end_codon; ++c) {
-                        if (aln.sequences[tid].codons[c] < 0) {
-                            has_indel = true;
-                            break;
+                // Check if any taxon in lvs has internal gaps in any window
+                bool has_indel = false;
+                for (size_t tid : lvs) {
+                    if (tid >= aln.sequences.size()) continue;
+                    for (const auto& w : windows) {
+                        for (size_t c = w.window.start_codon; c < w.window.end_codon && c < aln.sequences[tid].codons.size(); ++c) {
+                            if (aln.sequences[tid].codons[c] < 0) {
+                                has_indel = true;
+                                break;
+                            }
                         }
+                        if (has_indel) break;
                     }
                     if (has_indel) break;
                 }
-                if (has_indel) break;
+                if (has_indel || nd.branch_length > 0.01) {
+                    cands.push_back(nd.id);
+                }
             }
-            if (has_indel || nd.branch_length > 0.01) {
-                candidate_clades.push_back(nd.id);
-            }
-        }
+            // Sort candidate clades by branch length descending (highest Ohmic tension first)
+            std::sort(cands.begin(), cands.end(), [&](int32_t a, int32_t b) {
+                return tree.nodes[a].branch_length > tree.nodes[b].branch_length;
+            });
+            return cands;
+        };
 
-        // Sort candidate clades by branch length descending (highest Ohmic tension first)
-        std::sort(candidate_clades.begin(), candidate_clades.end(), [&](int32_t a, int32_t b) {
-            return tree.nodes[a].branch_length > tree.nodes[b].branch_length;
-        });
+        std::vector<int32_t> candidate_clades = compute_candidate_clades();
 
         size_t max_clades_to_probe = std::min<size_t>(candidate_clades.size(), 16);
         for (size_t ci = 0; ci < max_clades_to_probe; ++ci) {
+            if (ci >= candidate_clades.size()) break;
             int32_t u = candidate_clades[ci];
             if (u < 0 || static_cast<size_t>(u) >= tree.nodes.size() || static_cast<size_t>(u) >= node_leaves.size()) continue;
             if (tree.nodes[u].parent_id == INVALID_INDEX || u == tree.root_id) continue;
@@ -1943,7 +1952,7 @@ public:
                 Scalar min_r = 1e9;
                 for (size_t iu = 0; iu < leaves_u.size(); iu += std::max<size_t>(1, leaves_u.size() / 2)) {
                     for (size_t iv = 0; iv < node_leaves[v].size(); iv += std::max<size_t>(1, node_leaves[v].size() / 2)) {
-                        Scalar r = Omega(static_cast<Eigen::Index>(leaves_u[iu]), static_cast<Eigen::Index>(node_leaves[v][iv]));
+                        Scalar r = net.taxon_effective_resistance(leaves_u[iu], node_leaves[v][iv]);
                         if (r < min_r) min_r = r;
                     }
                 }
@@ -1958,10 +1967,14 @@ public:
                 if (!spr_opt.has_value()) continue;
 
                 Tree cand_tree = std::move(spr_opt->tree);
-                std::vector<int32_t> local_brs = {spr_opt->u, spr_opt->v, spr_opt->w};
-                if (spr_opt->s != INVALID_INDEX && spr_opt->s != cand_tree.root_id &&
-                    cand_tree.nodes[spr_opt->s].parent_id != INVALID_INDEX) {
-                    local_brs.push_back(spr_opt->s);
+                std::vector<int32_t> local_brs;
+                for (int32_t bid : {spr_opt->u, spr_opt->v, spr_opt->w, spr_opt->s}) {
+                    if (bid != INVALID_INDEX && bid >= 0 &&
+                        static_cast<size_t>(bid) < cand_tree.nodes.size() &&
+                        bid != cand_tree.root_id &&
+                        cand_tree.nodes[bid].parent_id != INVALID_INDEX) {
+                        local_brs.push_back(bid);
+                    }
                 }
                 TreeEngine::optimize_branches_gtr(cand_tree, nuc_aln, gtr, 3, 1e-2, &local_brs);
 
@@ -1990,9 +2003,10 @@ public:
                             size_t W = w_end - w_start;
 
                             std::vector<std::vector<Vector>> cav;
-                            compute_window_leaf_cavities(cand_tree, cand_aln, mg94, P_br, w_start, w_end, cav, &Omega, conv, &two_stratum);
+                            compute_window_leaf_cavities(cand_tree, cand_aln, mg94, P_br, w_start, w_end, cav, omega_ptr, conv, &two_stratum);
 
                             for (size_t tid : leaves_u) {
+                                if (tid >= cand_aln.sequences.size()) continue;
                                 auto tr = solve_codon_indel_transducer_for_taxon(
                                     cand_aln.sequences[tid], w_start, w_end, tid, cav, settings
                                 );
@@ -2025,6 +2039,8 @@ public:
                             nuc_aln = std::move(cand_nuc_aln);
                         }
                         node_leaves = compute_node_leaves();
+                        candidate_clades = compute_candidate_clades();
+                        max_clades_to_probe = std::min<size_t>(candidate_clades.size(), 16);
                         CoupledMoveEvent ev;
                         ev.move_type = "Coupled_SPR";
                         ev.clade_node_id = u;
@@ -2675,33 +2691,84 @@ public:
             }
         }
 
-        // Validate leaf correspondence when a tree was explicitly supplied or embedded (T1-08 / T5-10)
+        // Validate leaf correspondence when a tree was explicitly supplied or embedded (T1-08 / T5-10 / #34)
         if (user_supplied_tree) {
             std::vector<std::string> unmatched_leaves;
+            std::vector<std::string> matched_tree_leaf_names;
             std::vector<bool> taxon_matched(res.initial_alignment.num_taxa, false);
+            // Pass 1: exact and case-insensitive matches
             for (const auto& nd : res.initial_tree.nodes) {
                 if (!nd.is_leaf) continue;
+                std::string clean_name = nd.name;
+                if (clean_name.size() >= 2 &&
+                    ((clean_name.front() == '\'' && clean_name.back() == '\'') ||
+                     (clean_name.front() == '"' && clean_name.back() == '"'))) {
+                    clean_name = clean_name.substr(1, clean_name.size() - 2);
+                }
+                size_t tid = static_cast<size_t>(INVALID_INDEX);
+                auto it = res.initial_alignment.taxon_to_index.find(clean_name);
+                if (it != res.initial_alignment.taxon_to_index.end()) {
+                    tid = it->second;
+                } else {
+                    std::string lower = clean_name;
+                    std::transform(lower.begin(), lower.end(), lower.begin(),
+                                   [](unsigned char c) { return std::tolower(c); });
+                    auto it_l = res.initial_alignment.lower_taxon_to_index.find(lower);
+                    if (it_l != res.initial_alignment.lower_taxon_to_index.end()) {
+                        tid = it_l->second;
+                    }
+                }
+                if (tid != static_cast<size_t>(INVALID_INDEX) && tid < res.initial_alignment.num_taxa && !taxon_matched[tid]) {
+                    taxon_matched[tid] = true;
+                    matched_tree_leaf_names.push_back(nd.name);
+                }
+            }
+            // Pass 2: unique prefix fallback only for remaining unmatched leaves and unmatched alignment taxa
+            for (const auto& nd : res.initial_tree.nodes) {
+                if (!nd.is_leaf) continue;
+                if (std::find(matched_tree_leaf_names.begin(), matched_tree_leaf_names.end(), nd.name) !=
+                    matched_tree_leaf_names.end()) {
+                    continue;
+                }
                 size_t tid = LikelihoodEngine::find_taxon_index(res.initial_alignment, nd.name);
-                if (tid == static_cast<size_t>(INVALID_INDEX) || tid >= res.initial_alignment.num_taxa) {
+                if (tid == static_cast<size_t>(INVALID_INDEX) || tid >= res.initial_alignment.num_taxa || taxon_matched[tid]) {
                     unmatched_leaves.push_back(nd.name);
                 } else {
                     taxon_matched[tid] = true;
+                    matched_tree_leaf_names.push_back(nd.name);
                 }
             }
             std::vector<std::string> missing_taxa;
             for (size_t t = 0; t < res.initial_alignment.num_taxa; ++t) {
                 if (!taxon_matched[t]) missing_taxa.push_back(res.initial_alignment.sequences[t].name);
             }
-            if (!unmatched_leaves.empty() || !missing_taxa.empty()) {
+            if (!missing_taxa.empty()) {
                 std::ostringstream err;
-                err << "Gate 1 (Tree-Alignment Taxon Mismatch): Supplied phylogenetic tree does not match alignment taxa.";
-                if (!unmatched_leaves.empty()) {
-                    err << " Tree leaves absent from alignment (" << unmatched_leaves.size() << "): " << unmatched_leaves[0];
+                err << "Gate 1 (Tree-Alignment Taxon Mismatch): Supplied phylogenetic tree does not match alignment taxa."
+                    << " Alignment taxa absent from tree (" << missing_taxa.size() << "/"
+                    << res.initial_alignment.num_taxa << "): ";
+                for (size_t i = 0; i < std::min<size_t>(missing_taxa.size(), 10); ++i) {
+                    if (i > 0) err << ", ";
+                    err << missing_taxa[i];
                 }
-                if (!missing_taxa.empty()) {
-                    err << " Alignment taxa absent from tree (" << missing_taxa.size() << "): " << missing_taxa[0];
+                if (missing_taxa.size() > 10) {
+                    err << ", ... (+" << (missing_taxa.size() - 10) << " more)";
+                }
+                err << ".";
+                if (!unmatched_leaves.empty()) {
+                    err << " Tree leaves absent from alignment (" << unmatched_leaves.size() << "): " << unmatched_leaves[0] << ".";
                 }
                 throw std::runtime_error(err.str());
+            }
+            if (!unmatched_leaves.empty()) {
+                if (!settings.quiet) {
+                    std::ostringstream warn;
+                    warn << "      Note: Pruning " << unmatched_leaves.size()
+                         << " extra tree tip(s) absent from the " << res.initial_alignment.num_taxa
+                         << "-taxon alignment (e.g. " << unmatched_leaves[0] << ").\n";
+                    std::cout << Console::warning(warn.str()) << std::flush;
+                }
+                res.initial_tree = res.initial_tree.prune_to_leaves(matched_tree_leaf_names);
             }
         }
 

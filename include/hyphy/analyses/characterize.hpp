@@ -2769,10 +2769,12 @@ private:
                 }
             }
 
-            // Compute pairwise tree path distance between nodes on work_tree
-            const Matrix& Omega_mat = res.joint_align.ohmic_network.Omega;
-            bool has_omega = (Omega_mat.rows() == static_cast<Eigen::Index>(N) &&
-                              Omega_mat.cols() == static_cast<Eigen::Index>(N));
+            // Compute pairwise effective resistance bonus on work_tree (supporting both ExactDense and ScalableWoodbury)
+            const auto& ohm_net = res.joint_align.ohmic_network;
+            bool has_omega = (ohm_net.Omega.rows() == static_cast<Eigen::Index>(N) &&
+                              ohm_net.Omega.cols() == static_cast<Eigen::Index>(N)) ||
+                             (ohm_net.Z_resistance_coords.rows() > 0 &&
+                              ohm_net.taxon_to_super_node.size() == N);
 
             struct BridgeProposal {
                 int32_t u_id;
@@ -2784,11 +2786,12 @@ private:
             // Source A: Sliding-window codon affinity + Ohmic stretch chords between non-sister nodes on work_tree
             const size_t win_w = std::min<size_t>(30, std::max<size_t>(10, C / 6));
             const size_t win_step = std::max<size_t>(5, win_w / 2);
+            const size_t max_u_clade = (N > 128) ? 8 : (N / 2);
 
             for (const auto& u_nd : work_tree.nodes) {
                 int32_t u = u_nd.id;
                 if (u == work_tree.root_id || u_nd.parent_id == INVALID_INDEX) continue;
-                if (wt_leaves[u].empty() || wt_leaves[u].size() > N / 2) continue;
+                if (wt_leaves[u].empty() || wt_leaves[u].size() > max_u_clade) continue;
 
                 // Find sibling leaves of u on work_tree
                 int32_t p_u = u_nd.parent_id;
@@ -2809,6 +2812,7 @@ private:
                     if (v_nd.parent_id == p_u) continue; // already sibling
                     if (TreeEngine::is_in_subtree(work_tree, v, u) || TreeEngine::is_in_subtree(work_tree, u, v)) continue;
                     if (wt_leaves[v].empty()) continue;
+                    if (N > 128 && wt_leaves[v].size() > 16) continue;
 
                     // Find sibling leaves of v on work_tree (to distinguish mobile recipient u from stationary donor v)
                     int32_t p_v = v_nd.parent_id;
@@ -2824,13 +2828,16 @@ private:
                     // Scan windows for clade-average excess codon identity between Cu and Cv vs Cu and Csib(u),
                     // requiring every leaf in Cu to participate so parent clades do not mask a single recombinant leaf.
                     Scalar max_win_gain = 0.0;
+                    const size_t step_v = (N > 128) ? std::max<size_t>(1, wt_leaves[v].size() / 4) : 1;
+                    const size_t step_s = (N > 128) ? std::max<size_t>(1, sib_leaves.size() / 4) : 1;
                     for (size_t ws = 0; ws + win_w <= C; ws += win_step) {
                         Scalar min_leaf_gain = 1e9;
                         Scalar sum_leaf_gain = 0.0;
                         bool all_leaves_valid = true;
                         for (size_t lu : wt_leaves[u]) {
                             Scalar sum_uv = 0.0, cnt_uv = 0.0;
-                            for (size_t lv : wt_leaves[v]) {
+                            for (size_t iv = 0; iv < wt_leaves[v].size(); iv += step_v) {
+                                size_t lv = wt_leaves[v][iv];
                                 for (size_t c = ws; c < ws + win_w; ++c) {
                                     int cu = aln.sequences[lu].codons[c];
                                     int cv = aln.sequences[lv].codons[c];
@@ -2841,7 +2848,8 @@ private:
                                 }
                             }
                             Scalar sum_us = 0.0, cnt_us = 0.0;
-                            for (size_t ls : sib_leaves) {
+                            for (size_t is = 0; is < sib_leaves.size(); is += step_s) {
+                                size_t ls = sib_leaves[is];
                                 for (size_t c = ws; c < ws + win_w; ++c) {
                                     int cu = aln.sequences[lu].codons[c];
                                     int cs = aln.sequences[ls].codons[c];
@@ -2892,8 +2900,8 @@ private:
                         size_t rep_u = wt_leaves[u][0];
                         size_t rep_v = wt_leaves[v][0];
                         size_t rep_sib = sib_leaves[0];
-                        Scalar om_uv = Omega_mat(static_cast<Eigen::Index>(rep_u), static_cast<Eigen::Index>(rep_v));
-                        Scalar om_us = Omega_mat(static_cast<Eigen::Index>(rep_u), static_cast<Eigen::Index>(rep_sib));
+                        Scalar om_uv = ohm_net.taxon_effective_resistance(rep_u, rep_v);
+                        Scalar om_us = ohm_net.taxon_effective_resistance(rep_u, rep_sib);
                         if (om_uv > 1e-6 && om_uv < 1.25 * om_us) {
                             ohm_bonus = 0.10 * (om_us / om_uv);
                         }

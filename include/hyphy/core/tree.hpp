@@ -564,6 +564,66 @@ public:
     }
 
     /**
+     * @brief Prune tree down to the specified leaf names (case-insensitive matching),
+     * collapsing degree-1 internal nodes and accumulating branch lengths.
+     */
+    Tree prune_to_leaves(const std::vector<std::string>& keep_leaf_names, bool unroot = true) const {
+        if (root_id == INVALID_INDEX || nodes.empty()) return *this;
+
+        auto to_lower_str = [](std::string s) {
+            std::transform(s.begin(), s.end(), s.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return s;
+        };
+        std::unordered_set<std::string> keep_lower;
+        keep_lower.reserve(keep_leaf_names.size());
+        for (const auto& name : keep_leaf_names) {
+            keep_lower.insert(to_lower_str(name));
+        }
+
+        auto serialize_pruned = [&](auto& self, int32_t nid) -> std::pair<std::string, Scalar> {
+            const auto& nd = nodes[nid];
+            if (nd.is_leaf) {
+                if (keep_lower.count(to_lower_str(nd.name)) > 0) {
+                    std::string token = nd.name;
+                    if (!nd.model_tag.empty()) token += "{" + nd.model_tag + "}";
+                    return {token, nd.branch_length};
+                }
+                return {"", 0.0};
+            }
+            std::vector<std::pair<std::string, Scalar>> kept_children;
+            for (int32_t cid : nd.children) {
+                auto sub = self(self, cid);
+                if (!sub.first.empty()) {
+                    kept_children.push_back(std::move(sub));
+                }
+            }
+            if (kept_children.empty()) {
+                return {"", 0.0};
+            }
+            if (kept_children.size() == 1) {
+                Scalar merged_bl = kept_children[0].second + ((nid == root_id) ? 0.0 : nd.branch_length);
+                return {kept_children[0].first, merged_bl};
+            }
+            std::ostringstream oss;
+            oss << "(";
+            for (size_t i = 0; i < kept_children.size(); ++i) {
+                if (i > 0) oss << ",";
+                oss << kept_children[i].first << ":" << std::setprecision(10) << kept_children[i].second;
+            }
+            oss << ")" << nd.name;
+            if (!nd.model_tag.empty()) oss << "{" + nd.model_tag + "}";
+            return {oss.str(), (nid == root_id) ? 0.0 : nd.branch_length};
+        };
+
+        auto root_pair = serialize_pruned(serialize_pruned, root_id);
+        if (root_pair.first.empty() || root_pair.first.find('(') == std::string::npos) {
+            throw std::runtime_error("Pruning left fewer than 2 tips in the tree.");
+        }
+        return Tree::from_newick(root_pair.first + ";", unroot);
+    }
+
+    /**
      * @brief Serialize tree/network to Cardona et al. (2008) Extended Newick (eNewick) with NHX annotations.
      *
      * For every active Wheatstone bridge at a 3-child hub u with children {A, B, C} and Ohmic weights

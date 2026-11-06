@@ -554,6 +554,20 @@ public:
         num_taxa = sequences.size();
         num_nucleotides = sequences[0].raw_seq.size();
 
+        if (taxon_to_index.size() != num_taxa || taxon_names.size() != num_taxa) {
+            taxon_names.resize(num_taxa);
+            taxon_to_index.clear();
+            lower_taxon_to_index.clear();
+            for (size_t i = 0; i < num_taxa; ++i) {
+                taxon_names[i] = sequences[i].name;
+                taxon_to_index[sequences[i].name] = i;
+                std::string lower = sequences[i].name;
+                std::transform(lower.begin(), lower.end(), lower.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                lower_taxon_to_index[lower] = i;
+            }
+        }
+
         for (const auto& s : sequences) {
             if (s.raw_seq.size() != num_nucleotides) {
                 throw std::runtime_error("Sequences have unequal lengths in alignment");
@@ -593,6 +607,20 @@ public:
         }
         num_taxa = sequences.size();
         num_nucleotides = sequences[0].raw_seq.size();
+
+        if (taxon_to_index.size() != num_taxa || taxon_names.size() != num_taxa) {
+            taxon_names.resize(num_taxa);
+            taxon_to_index.clear();
+            lower_taxon_to_index.clear();
+            for (size_t i = 0; i < num_taxa; ++i) {
+                taxon_names[i] = sequences[i].name;
+                taxon_to_index[sequences[i].name] = i;
+                std::string lower = sequences[i].name;
+                std::transform(lower.begin(), lower.end(), lower.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                lower_taxon_to_index[lower] = i;
+            }
+        }
 
         for (const auto& s : sequences) {
             if (s.raw_seq.size() != num_nucleotides) {

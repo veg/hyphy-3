@@ -215,7 +215,10 @@ int main() {
             assert(j["clade_macro_regime"]["clade_relax_p_value"].get<double>() == 1.0);
             assert(j["clade_macro_regime"]["clade_relax_lrt"].get<double>() == 0.0);
         }
-        std::cout << "[PASS] Full CharacterizeEngine on adh.nex & JSON v3 Schema Contract Verified\n";
+        assert(res.gene_wide.sink_null_log_l_gain < 5.0);
+        assert(res.gene_wide.busted_p_value < 0.05);
+        std::cout << "[PASS] adh.nex BUSTED-E Error-Sink Keeps Selection Signal (gain="
+                  << res.gene_wide.sink_null_log_l_gain << ", p=" << res.gene_wide.busted_p_value << ") (#31)\n";
 
         // 5. Test User-Specified Branch Tag (-b Foreground) with {Foreground} Newick annotations (#33)
         Tree tagged_tree = adh_tree;
@@ -259,17 +262,134 @@ int main() {
         std::cout << "[PASS] bglobin.nex BUSTED-E Error-Sink Null Gain (gain="
                   << res_bg.gene_wide.sink_null_log_l_gain << ", p=" << res_bg.gene_wide.busted_p_value
                   << ", err_w=" << res_bg.gene_wide.error_sink_weight << ") (#31)\n";
+    }
 
-        Alignment adh = Alignment::load(std::string(HYPHY3_SOURCE_DIR) + "/benchmarks/data/adh.nex");
-        std::ifstream adh_nwk(std::string(HYPHY3_SOURCE_DIR) + "/benchmarks/data/adh.nwk");
-        std::string adh_newick((std::istreambuf_iterator<char>(adh_nwk)), std::istreambuf_iterator<char>());
-        Tree adh_tree = Tree::from_newick(adh_newick);
-        CharacterizeEngine adh_eng(cs);
-        auto res_adh = adh_eng.run_from_alignment(adh, adh_tree);
-        assert(res_adh.gene_wide.sink_null_log_l_gain < 5.0);
-        assert(res_adh.gene_wide.busted_p_value < 0.05);
-        std::cout << "[PASS] adh.nex BUSTED-E Error-Sink Keeps Selection Signal (gain="
-                  << res_adh.gene_wide.sink_null_log_l_gain << ", p=" << res_adh.gene_wide.busted_p_value << ") (#31)\n";
+    // 7. Test Directional Tree-Alignment Taxon Validation on cd2.fna (#34):
+    //    - Missing alignment taxon in supplied tree (9-tip tree missing Rat) -> rejected with Rat named
+    //    - Extra tree tips in supplied superset tree (12-tip tree with ExtraSpeciesA/B) -> auto-pruned and accepted
+    {
+        Alignment cd2 = Alignment::load(std::string(HYPHY3_SOURCE_DIR) + "/benchmarks/data/cd2.fna");
+        assert(cd2.num_taxa == 10);
+
+        // 7a. 9-tip tree omitting 'Rat' must be rejected before model fitting
+        Tree tree_missing_rat = Tree::from_newick(
+            "((((Pig:0.147969,Cow:0.213430):0.085099,Horse:0.165787,Cat:0.264806):0.058611,"
+            "((RhMonkey:0.002015,Baboon:0.003108):0.022733,(Human:0.004349,Chimp:0.000799):0.011873):0.101856):0.340802,"
+            "Mouse:0.097950);"
+        );
+        CharacterizeSettings cs;
+        cs.quiet = true;
+        CharacterizeEngine c_eng(cs);
+        bool caught_missing_rat = false;
+        try {
+            c_eng.run_from_alignment(cd2, tree_missing_rat);
+        } catch (const std::exception& e) {
+            std::string msg = e.what();
+            assert(msg.find("Tree-Alignment Taxon Mismatch") != std::string::npos);
+            assert(msg.find("Rat") != std::string::npos);
+            caught_missing_rat = true;
+        }
+        assert(caught_missing_rat);
+
+        // 7b. 12-tip superset/species tree containing all 10 cd2 taxa + 2 extra tips (ExtraSpeciesA, ExtraSpeciesB)
+        Tree tree_superset = Tree::from_newick(
+            "((((Pig:0.147969,(Cow:0.200000,ExtraSpeciesA:0.050000):0.013430):0.085099,Horse:0.165787,Cat:0.264806):0.058611,"
+            "((RhMonkey:0.002015,Baboon:0.003108):0.022733,((Human{Foreground}:0.004349,ExtraSpeciesB{Foreground}:0.003000):0.001000,Chimp:0.000799):0.011873):0.101856):0.340802,"
+            "Rat:0.050958,Mouse:0.097950);"
+        );
+        CharacterizeSettings cs_sup;
+        cs_sup.quiet = true;
+        cs_sup.foreground_tag = "Foreground";
+        CharacterizeEngine c_eng_sup(cs_sup);
+        auto res_sup = c_eng_sup.run_from_alignment(cd2, tree_superset);
+        size_t leaf_count = 0;
+        bool found_human_fg = false;
+        for (const auto& bp : res_sup.branch_profiles) {
+            assert(bp.branch_name != "ExtraSpeciesA");
+            assert(bp.branch_name != "ExtraSpeciesB");
+            if (bp.is_leaf) leaf_count++;
+            if (bp.branch_name == "Human" && bp.model_tag == "Foreground") {
+                found_human_fg = true;
+            }
+        }
+        assert(leaf_count == 10);
+        assert(found_human_fg);
+        std::cout << "[PASS] Directional Tree-Alignment Validation: Missing Taxon Rejected & Extra Tips Auto-Pruned (#34)\n";
+    }
+
+    // 8. Test Stage 2 Coupled SPR on >1,024-Taxon Alignment in ScalableWoodbury Mode (#36)
+    {
+        const size_t N_large = 1040;
+        const size_t C_short = 15;
+        Alignment large_aln;
+        large_aln.code = GeneticCode::universal();
+        large_aln.num_taxa = N_large;
+        large_aln.num_codons = C_short;
+        large_aln.num_nucleotides = 3 * C_short;
+        large_aln.sequences.resize(N_large);
+        large_aln.taxon_names.resize(N_large);
+
+        const char* cod_pool[8] = {"GCT", "GCC", "GCA", "GCG", "GGT", "GGC", "GGA", "GGG"};
+        std::ostringstream nwk;
+        nwk << "(";
+        for (size_t i = 0; i < N_large; ++i) {
+            std::string name = "T" + std::to_string(i);
+            large_aln.taxon_names[i] = name;
+            std::string raw;
+            for (size_t c = 0; c < C_short; ++c) {
+                if (c == 7 && (i % 5 == 0)) {
+                    raw += "---"; // internal gap window at codon 7
+                } else {
+                    size_t idx = ((i >> (c % 10)) ^ (c * 3 + i)) & 7;
+                    raw += cod_pool[idx];
+                }
+            }
+            large_aln.sequences[i].name = name;
+            large_aln.sequences[i].raw_seq = raw;
+            large_aln.sequences[i].codons.resize(C_short);
+            large_aln.sequences[i].codon_masks.assign(C_short, 0);
+            for (size_t c = 0; c < C_short; ++c) {
+                std::string trip = raw.substr(3 * c, 3);
+                large_aln.sequences[i].codons[c] = (trip == "---")
+                    ? static_cast<int8_t>(-1)
+                    : large_aln.code->triplet_to_sense(trip[0], trip[1], trip[2]);
+            }
+        }
+        large_aln.finalize(large_aln.code);
+
+        // Build balanced binary tree on N_large leaves
+        auto build_sub_nwk = [&](auto& self, size_t lo, size_t hi) -> std::string {
+            if (lo + 1 == hi) {
+                return "T" + std::to_string(lo) + ":" + ((lo % 17 == 0) ? "0.025" : "0.005");
+            }
+            size_t mid = lo + (hi - lo) / 2;
+            return "(" + self(self, lo, mid) + "," + self(self, mid, hi) + "):0.005";
+        };
+        size_t m1 = N_large / 3, m2 = (2 * N_large) / 3;
+        std::string large_nwk = "(" + build_sub_nwk(build_sub_nwk, 0, m1) + ","
+                              + build_sub_nwk(build_sub_nwk, m1, m2) + ","
+                              + build_sub_nwk(build_sub_nwk, m2, N_large) + ");";
+        Tree large_tree = Tree::from_newick(large_nwk);
+
+        OhmicSettings ohm_s;
+        ohm_s.use_hyphaeon_transformer = false;
+        OhmicNetwork check_net = OhmicNetwork::infer(large_aln, ohm_s);
+        assert(check_net.active_mode == OhmicScaleMode::ScalableWoodbury);
+        assert(check_net.Omega.rows() == 0);
+        assert(check_net.taxon_effective_resistance(0, 1039) >= 0.0);
+
+        MG94Parameters mg_p;
+        WindowRealignmentSummary w_sum;
+        w_sum.window.start_codon = 5;
+        w_sum.window.end_codon = 10;
+        std::vector<WindowRealignmentSummary> wins = {w_sum};
+        JointAlignSettings jas;
+        jas.quiet = true;
+        jas.max_coupled_spr_candidates = 2;
+
+        auto moves = JointAlignEngine::run_stage2_coupled_topology_search(large_tree, large_aln, mg_p, wins, jas);
+        (void)moves;
+        std::cout << "[PASS] Stage 2 Coupled SPR on >1,024-Taxon Alignment in ScalableWoodbury Mode (#36)\n";
     }
 
     return 0;

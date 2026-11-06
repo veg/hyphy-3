@@ -73,6 +73,7 @@ struct OhmicNetwork {
     Scalar foster_sum = 0.0;                   // Sum_{i<j} P_edge(i, j) == N - 1
 
     // Populated in ScalableWoodbury mode (M x p coordinates, O(M * p) RAM):
+    std::vector<size_t> taxon_to_super_node;   // Maps alignment taxon index t -> super-node index m in [0, M)
     Vector inv_aug_degrees;                    // \tilde{d}_i^{-1} [M]
     Matrix Z_resistance_coords;                // Explicit p-dim resistance coordinates Z [M x p]
 
@@ -80,12 +81,36 @@ struct OhmicNetwork {
     Scalar effective_resistance(size_t i, size_t j) const {
         if (i == j) return 0.0;
         if (active_mode == OhmicScaleMode::ExactDense) {
-            return Omega(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j));
+            if (static_cast<Eigen::Index>(i) < Omega.rows() && static_cast<Eigen::Index>(j) < Omega.cols()) {
+                return Omega(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j));
+            }
+            return 1.0;
+        }
+        if (static_cast<Eigen::Index>(i) >= inv_aug_degrees.size() ||
+            static_cast<Eigen::Index>(j) >= inv_aug_degrees.size() ||
+            static_cast<Eigen::Index>(i) >= Z_resistance_coords.rows() ||
+            static_cast<Eigen::Index>(j) >= Z_resistance_coords.rows()) {
+            return 1.0;
         }
         return inv_aug_degrees(static_cast<Eigen::Index>(i)) +
                inv_aug_degrees(static_cast<Eigen::Index>(j)) +
                (Z_resistance_coords.row(static_cast<Eigen::Index>(i)) -
                 Z_resistance_coords.row(static_cast<Eigen::Index>(j))).squaredNorm();
+    }
+
+    // Evaluate effective resistance between two alignment taxon indices (t_i, t_j) in [0, N)
+    // across both ExactDense (N x N Omega) and ScalableWoodbury (M x p Z_resistance_coords) modes (#36)
+    Scalar taxon_effective_resistance(size_t t_i, size_t t_j) const {
+        if (t_i == t_j) return 0.0;
+        if (active_mode == OhmicScaleMode::ExactDense &&
+            static_cast<Eigen::Index>(t_i) < Omega.rows() &&
+            static_cast<Eigen::Index>(t_j) < Omega.cols()) {
+            return Omega(static_cast<Eigen::Index>(t_i), static_cast<Eigen::Index>(t_j));
+        }
+        size_t m_i = (t_i < taxon_to_super_node.size()) ? taxon_to_super_node[t_i] : t_i;
+        size_t m_j = (t_j < taxon_to_super_node.size()) ? taxon_to_super_node[t_j] : t_j;
+        if (m_i == m_j) return 0.0;
+        return effective_resistance(m_i, m_j);
     }
 
     // Compute empirical site variability weights w_s = 1 / sqrt(r_s + 0.05)
@@ -782,6 +807,7 @@ struct OhmicNetwork {
 
         size_t M = super_node_reps.size();
         net.num_super_nodes = M;
+        net.taxon_to_super_node = taxon_to_super_node;
 
         std::vector<Scalar> site_weights;
         if (settings.use_site_rate_weights) {
