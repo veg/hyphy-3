@@ -393,6 +393,10 @@ int run_tree(int argc, char* argv[]) {
                     return 1;
                 }
                 ofs << nwk_out << "\n";
+                if (!ofs) {
+                    std::cerr << Console::danger("Error: Failed to write output file: ") << output_nwk_path << "\n";
+                    return 1;
+                }
                 if (!quiet) {
                     size_t n_tips = 0, n_tagged = 0;
                     for (const auto& nd : tree.nodes) {

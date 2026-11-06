@@ -309,6 +309,9 @@ void PersiteOptimizer::write_omegabysite_file(
     }
 
     file.close();
+    if (file.fail()) {
+        throw std::runtime_error("Failed to write output file: " + filename);
+    }
 }
 
 } // namespace hyphy::analyses

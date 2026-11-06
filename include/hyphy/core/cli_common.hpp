@@ -404,15 +404,33 @@ inline bool load_codon_dataset(
 
             if (!opts.out_poa_file.empty()) {
                 std::ofstream pf(opts.out_poa_file);
-                if (pf.is_open()) pf << jres.poa_gfa;
+                if (!pf.is_open()) {
+                    throw std::runtime_error("Could not open output file for writing: " + opts.out_poa_file);
+                }
+                pf << jres.poa_gfa;
+                if (!pf) {
+                    throw std::runtime_error("Failed to write output file: " + opts.out_poa_file);
+                }
             }
             if (!opts.out_stk_file.empty()) {
                 std::ofstream sf(opts.out_stk_file);
-                if (sf.is_open()) sf << jres.stockholm_alignment;
+                if (!sf.is_open()) {
+                    throw std::runtime_error("Could not open output file for writing: " + opts.out_stk_file);
+                }
+                sf << jres.stockholm_alignment;
+                if (!sf) {
+                    throw std::runtime_error("Failed to write output file: " + opts.out_stk_file);
+                }
             }
             if (!opts.out_enewick_file.empty()) {
                 std::ofstream ef(opts.out_enewick_file);
-                if (ef.is_open()) ef << jres.extended_newick << "\n";
+                if (!ef.is_open()) {
+                    throw std::runtime_error("Could not open output file for writing: " + opts.out_enewick_file);
+                }
+                ef << jres.extended_newick << "\n";
+                if (!ef) {
+                    throw std::runtime_error("Failed to write output file: " + opts.out_enewick_file);
+                }
             }
 
             out.aln = std::move(jres.map_alignment);
