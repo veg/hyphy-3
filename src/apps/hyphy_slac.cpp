@@ -81,7 +81,7 @@ int run_slac(int argc, char* argv[]) {
             continue;
         }
         if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-            pvalue_threshold = std::stod(argv[++i]);
+            pvalue_threshold = parse_probability("--pvalue", argv[++i]);
             continue;
         }
         if (arg == "--full-model") {

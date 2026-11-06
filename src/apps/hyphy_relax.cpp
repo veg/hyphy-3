@@ -78,7 +78,7 @@ int run_relax(int argc, char* argv[]) {
             continue;
         }
         if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-            settings.p_value_threshold = std::stod(argv[++i]);
+            settings.p_value_threshold = parse_probability("--pvalue", argv[++i]);
             continue;
         }
 

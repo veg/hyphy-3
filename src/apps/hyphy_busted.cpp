@@ -107,14 +107,14 @@ int run_busted(int argc, char* argv[]) {
         } else if (arg == "--auto" || arg == "--full-auto") {
             settings.full_auto = true;
         } else if (arg == "--rates" && i + 1 < argc) {
-            settings.num_rate_classes = std::stoul(argv[++i]);
+            settings.num_rate_classes = parse_nonneg_ull("--rates", argv[++i]);
         } else if (arg == "--srv") {
             settings.srv = true;
         } else if (arg == "--no-srv") {
             settings.srv = false;
         } else if (arg == "--syn-rates" && i + 1 < argc) {
             settings.srv = true;
-            settings.num_syn_rate_classes = std::stoul(argv[++i]);
+            settings.num_syn_rate_classes = parse_nonneg_ull("--syn-rates", argv[++i]);
         } else if ((arg == "--mss" || arg == "--mss-type" || arg == "--syn-model") && i + 1 < argc) {
             settings.mss_type = argv[++i];
         } else if ((arg == "--mss-neutral" || arg == "--neutral") && i + 1 < argc) {

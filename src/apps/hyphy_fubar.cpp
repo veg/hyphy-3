@@ -73,7 +73,7 @@ int run_fubar(int argc, char* argv[]) {
         // consume into cli.* fields this tool does not read. In particular,
         // -p is FUBAR's posterior cutoff, not the shared p-value option.
         if ((arg == "--posterior" || arg == "-p") && i + 1 < argc) {
-            settings.posterior_threshold = std::stod(argv[++i]);
+            settings.posterior_threshold = parse_probability("--posterior", argv[++i]);
             continue;
         }
 
@@ -82,7 +82,7 @@ int run_fubar(int argc, char* argv[]) {
         if (status == CommonArgParseStatus::Error) return 1;
 
         if ((arg == "--grid" || arg == "-g") && i + 1 < argc) {
-            settings.grid_points = std::stoi(argv[++i]);
+            settings.grid_points = static_cast<int>(parse_nonneg_ull("--grid", argv[++i], std::numeric_limits<int>::max()));
         } else if ((arg == "--method" || arg == "-m") && i + 1 < argc) {
             settings.method = string_to_fubar_method(argv[++i]);
         } else if (arg == "--concentration" && i + 1 < argc) {
@@ -92,13 +92,13 @@ int run_fubar(int argc, char* argv[]) {
         } else if (arg == "--tree-scaling" && i + 1 < argc) {
             settings.tree_scaling = argv[++i];
         } else if (arg == "--chains" && i + 1 < argc) {
-            settings.mcmc_chains = std::stoi(argv[++i]);
+            settings.mcmc_chains = static_cast<int>(parse_nonneg_ull("--chains", argv[++i], std::numeric_limits<int>::max()));
         } else if (arg == "--chain-length" && i + 1 < argc) {
-            settings.mcmc_chain_length = std::stoll(argv[++i]);
+            settings.mcmc_chain_length = parse_nonneg_ull("--chain-length", argv[++i]);
         } else if (arg == "--burn-in" && i + 1 < argc) {
-            settings.mcmc_burn_in = std::stoll(argv[++i]);
+            settings.mcmc_burn_in = parse_nonneg_ull("--burn-in", argv[++i]);
         } else if (arg == "--samples" && i + 1 < argc) {
-            settings.mcmc_samples = std::stoll(argv[++i]);
+            settings.mcmc_samples = parse_nonneg_ull("--samples", argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;

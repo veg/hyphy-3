@@ -1,4 +1,5 @@
 #include "hyphy/analyses/joint_align.hpp"
+#include "hyphy/core/cli_common.hpp"
 #include "hyphy/core/console.hpp"
 #include <iostream>
 #include <fstream>
@@ -100,7 +101,7 @@ int run_joint_align(int argc, char* argv[]) {
         } else if (arg == "--code" && i + 1 < argc) {
             code_name = argv[++i];
         } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-            settings.p_value_threshold = std::stod(argv[++i]);
+            settings.p_value_threshold = parse_probability("--pvalue", argv[++i]);
         } else if (arg == "--gap-open" && i + 1 < argc) {
             settings.gap_open_penalty = std::stod(argv[++i]);
         } else if (arg == "--gap-extend" && i + 1 < argc) {

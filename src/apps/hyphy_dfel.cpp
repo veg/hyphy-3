@@ -94,7 +94,7 @@ int run_dfel(int argc, char* argv[]) {
         // dFEL-specific spellings that the shared parser would otherwise
         // consume into cli.* fields this tool does not read.
         if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-            pvalue_threshold = std::stod(argv[++i]);
+            pvalue_threshold = parse_probability("--pvalue", argv[++i]);
             continue;
         }
         if (arg == "--quick" || arg == "--no-full-model") {
@@ -115,7 +115,7 @@ int run_dfel(int argc, char* argv[]) {
         } else if ((arg == "--regimes" || arg == "-k") && i + 1 < argc) {
             regimes_opt = argv[++i];
         } else if ((arg == "--heterogeneity" || arg == "--heterogeneity-threshold") && i + 1 < argc) {
-            het_threshold = std::stod(argv[++i]);
+            het_threshold = parse_probability("--heterogeneity", argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             print_dfel_usage(argv[0]);
             return 0;

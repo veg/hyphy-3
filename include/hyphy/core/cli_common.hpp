@@ -25,6 +25,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <string>
@@ -162,8 +163,11 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
         try {
             opts.num_threads = std::stoi(val);
         } catch (const std::exception&) {
+            opts.num_threads = 0;
+        }
+        if (opts.num_threads < 1) {
             opts.has_error = true;
-            opts.error_message = "Error: invalid --threads value '" + val + "'. Expected an integer.";
+            opts.error_message = "Error: invalid --threads value '" + val + "'. Expected a positive integer.";
             std::cerr << Console::danger(opts.error_message) << "\n";
             return CommonArgParseStatus::Error;
         }
@@ -186,8 +190,11 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
         try {
             opts.pvalue_threshold = std::stod(val);
         } catch (const std::exception&) {
+            opts.pvalue_threshold = -1.0;
+        }
+        if (!(opts.pvalue_threshold > 0.0 && opts.pvalue_threshold <= 1.0)) {
             opts.has_error = true;
-            opts.error_message = "Error: invalid --pvalue value '" + val + "'. Expected a number.";
+            opts.error_message = "Error: invalid --pvalue value '" + val + "'. Expected a number in (0, 1].";
             std::cerr << Console::danger(opts.error_message) << "\n";
             return CommonArgParseStatus::Error;
         }
@@ -239,6 +246,48 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
         return CommonArgParseStatus::Handled;
     }
     return CommonArgParseStatus::Unhandled;
+}
+
+/**
+ * @brief Parse an unsigned integer option value, rejecting negatives.
+ *
+ * std::stoul/stoull silently wrap negative input (e.g. "-1" -> ~2^64) instead of
+ * throwing, and that wrapped value would otherwise feed allocation sizes and
+ * loop bounds (rate classes, MCMC lengths, breakpoint counts).
+ */
+inline unsigned long long parse_nonneg_ull(
+    const char* flag, const std::string& val,
+    long long max_val = std::numeric_limits<long long>::max())
+{
+    long long v;
+    try {
+        v = std::stoll(val);
+    } catch (const std::exception&) {
+        throw std::runtime_error(std::string("Error: invalid ") + flag + " value '" + val + "'. Expected an integer.");
+    }
+    if (v < 0 || v > max_val) {
+        throw std::runtime_error(std::string("Error: invalid ") + flag + " value '" + val + "'. Expected an integer in [0, " + std::to_string(max_val) + "].");
+    }
+    return static_cast<unsigned long long>(v);
+}
+
+/**
+ * @brief Parse a probability/threshold option value in (0, 1].
+ *
+ * Out-of-range thresholds (e.g. "--pvalue -1") otherwise pass silently and
+ * make every test significant or insignificant — wrong results with exit 0.
+ */
+inline double parse_probability(const char* flag, const std::string& val) {
+    double v;
+    try {
+        v = std::stod(val);
+    } catch (const std::exception&) {
+        v = -1.0;
+    }
+    if (!(v > 0.0 && v <= 1.0)) {
+        throw std::runtime_error(std::string("Error: invalid ") + flag + " value '" + val + "'. Expected a number in (0, 1].");
+    }
+    return v;
 }
 
 /**
@@ -468,6 +517,9 @@ inline bool write_cli_json_and_html(
         out << json_str;
         if (json_str.empty() || json_str.back() != '\n') {
             out << "\n";
+        }
+        if (!out) {
+            throw std::runtime_error("Failed to write output file: " + opts.output_file);
         }
         if (!opts.quiet) {
             std::string fmt_desc = (opts.json_format == JSONFormat::Legacy)

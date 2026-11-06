@@ -62,7 +62,7 @@ int run_absrel(int argc, char* argv[]) {
             continue;
         }
         if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-            settings.p_threshold = std::stod(argv[++i]);
+            settings.p_threshold = parse_probability("--pvalue", argv[++i]);
             continue;
         }
 
@@ -71,7 +71,7 @@ int run_absrel(int argc, char* argv[]) {
         if (status == CommonArgParseStatus::Error) return 1;
 
         if ((arg == "--max-rates" || arg == "--rates") && i + 1 < argc) {
-            settings.max_rate_classes = std::stoi(argv[++i]);
+            settings.max_rate_classes = static_cast<int>(parse_nonneg_ull("--max-rates", argv[++i], std::numeric_limits<int>::max()));
         } else if (arg == "--help" || arg == "-h") {
             print_absrel_usage(argv[0]);
             return 0;

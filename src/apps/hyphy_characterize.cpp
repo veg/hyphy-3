@@ -404,20 +404,32 @@ int main(int argc, char* argv[])
 
     if (!out_json_path.empty()) {
         std::ofstream jf(out_json_path);
-        if (jf.is_open()) {
-            jf << CharacterizeEngine::to_json(res) << "\n";
-            if (!settings.quiet) {
-                std::cout << Console::success("Saved unified JSON characterization to: ") << out_json_path << "\n";
-            }
+        if (!jf.is_open()) {
+            std::cerr << Console::danger("Error: could not open output file: ") << out_json_path << "\n";
+            return 1;
+        }
+        jf << CharacterizeEngine::to_json(res) << "\n";
+        if (!jf) {
+            std::cerr << Console::danger("Error: failed to write output file: ") << out_json_path << "\n";
+            return 1;
+        }
+        if (!settings.quiet) {
+            std::cout << Console::success("Saved unified JSON characterization to: ") << out_json_path << "\n";
         }
     }
     if (!out_html_path.empty()) {
         std::ofstream hf(out_html_path);
-        if (hf.is_open()) {
-            hf << CharacterizeEngine::render_standalone_html(res, short_label);
-            if (!settings.quiet) {
-                std::cout << Console::success("Saved standalone multi-tab SPA HTML report to: ") << out_html_path << "\n";
-            }
+        if (!hf.is_open()) {
+            std::cerr << Console::danger("Error: could not open output file: ") << out_html_path << "\n";
+            return 1;
+        }
+        hf << CharacterizeEngine::render_standalone_html(res, short_label);
+        if (!hf) {
+            std::cerr << Console::danger("Error: failed to write output file: ") << out_html_path << "\n";
+            return 1;
+        }
+        if (!settings.quiet) {
+            std::cout << Console::success("Saved standalone multi-tab SPA HTML report to: ") << out_html_path << "\n";
         }
     }
     if (settings.emit_legacy_jsons) {
@@ -428,31 +440,49 @@ int main(int argc, char* argv[])
     }
     if (!out_msa_path.empty()) {
         std::ofstream mf(out_msa_path);
-        if (mf.is_open()) {
-            for (const auto& s : res.joint_align.map_alignment.sequences) {
-                mf << ">" << s.name << "\n" << s.raw_seq << "\n";
-            }
-            if (!settings.quiet) {
-                std::cout << Console::success("Saved MAP codon alignment to: ") << out_msa_path << "\n";
-            }
+        if (!mf.is_open()) {
+            std::cerr << Console::danger("Error: could not open output file: ") << out_msa_path << "\n";
+            return 1;
+        }
+        for (const auto& s : res.joint_align.map_alignment.sequences) {
+            mf << ">" << s.name << "\n" << s.raw_seq << "\n";
+        }
+        if (!mf) {
+            std::cerr << Console::danger("Error: failed to write output file: ") << out_msa_path << "\n";
+            return 1;
+        }
+        if (!settings.quiet) {
+            std::cout << Console::success("Saved MAP codon alignment to: ") << out_msa_path << "\n";
         }
     }
     if (!out_sto_path.empty()) {
         std::ofstream sf(out_sto_path);
-        if (sf.is_open()) {
-            sf << res.joint_align.stockholm_alignment;
-            if (!settings.quiet) {
-                std::cout << Console::success("Saved Stockholm quality-annotated MSA to: ") << out_sto_path << "\n";
-            }
+        if (!sf.is_open()) {
+            std::cerr << Console::danger("Error: could not open output file: ") << out_sto_path << "\n";
+            return 1;
+        }
+        sf << res.joint_align.stockholm_alignment;
+        if (!sf) {
+            std::cerr << Console::danger("Error: failed to write output file: ") << out_sto_path << "\n";
+            return 1;
+        }
+        if (!settings.quiet) {
+            std::cout << Console::success("Saved Stockholm quality-annotated MSA to: ") << out_sto_path << "\n";
         }
     }
     if (!out_poa_path.empty()) {
         std::ofstream pf(out_poa_path);
-        if (pf.is_open()) {
-            pf << res.joint_align.poa_gfa;
-            if (!settings.quiet) {
-                std::cout << Console::success("Saved POA codon graph (GFAv1) to: ") << out_poa_path << "\n";
-            }
+        if (!pf.is_open()) {
+            std::cerr << Console::danger("Error: could not open output file: ") << out_poa_path << "\n";
+            return 1;
+        }
+        pf << res.joint_align.poa_gfa;
+        if (!pf) {
+            std::cerr << Console::danger("Error: failed to write output file: ") << out_poa_path << "\n";
+            return 1;
+        }
+        if (!settings.quiet) {
+            std::cout << Console::success("Saved POA codon graph (GFAv1) to: ") << out_poa_path << "\n";
         }
     }
 
