@@ -501,7 +501,8 @@ int run_busted(int argc, char* argv[]) {
                       << Console::brand(cli.html_file) << "\n\n";
         }
     } catch (const std::exception& e) {
-        std::cerr << Console::danger("Warning: Failed to write output: ") << e.what() << "\n";
+        std::cerr << Console::danger("Error: Failed to write output: ") << e.what() << "\n";
+        return 1;
     }
 
     if (res.is_failed) {

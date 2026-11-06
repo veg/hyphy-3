@@ -54,15 +54,23 @@ int run_absrel(int argc, char* argv[]) {
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+
+        // aBSREL-specific spellings that the shared parser would otherwise
+        // consume into cli.* fields this tool does not read.
+        if ((arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
+            settings.test_branches = argv[++i];
+            continue;
+        }
+        if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
+            settings.p_threshold = std::stod(argv[++i]);
+            continue;
+        }
+
         auto status = parse_common_cli_arg(i, argc, argv, cli);
         if (status == CommonArgParseStatus::Handled) continue;
         if (status == CommonArgParseStatus::Error) return 1;
 
-        if ((arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
-            settings.test_branches = argv[++i];
-        } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-            settings.p_threshold = std::stod(argv[++i]);
-        } else if ((arg == "--max-rates" || arg == "--rates") && i + 1 < argc) {
+        if ((arg == "--max-rates" || arg == "--rates") && i + 1 < argc) {
             settings.max_rate_classes = std::stoi(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             print_absrel_usage(argv[0]);
@@ -73,6 +81,11 @@ int run_absrel(int argc, char* argv[]) {
             return 1;
         }
     }
+
+    // Keep shared option fields in sync with the effective analysis settings so
+    // build_cli_provenance records what was actually used.
+    cli.branches = settings.test_branches;
+    cli.pvalue_threshold = settings.p_threshold;
 
     if (cli.alignment_file.empty()) {
         std::cerr << "Error: --alignment is required.\n\n";
@@ -216,7 +229,8 @@ int run_absrel(int argc, char* argv[]) {
                       << Console::brand(cli.html_file) << "\n\n";
         }
     } catch (const std::exception& e) {
-        std::cerr << Console::danger("Warning: Failed to write output: ") << e.what() << "\n";
+        std::cerr << Console::danger("Error: Failed to write output: ") << e.what() << "\n";
+        return 1;
     }
 
     return 0;

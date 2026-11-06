@@ -88,6 +88,17 @@ int run_prime(int argc, char* argv[]) {
             continue;
         }
 
+        // PRIME-specific spellings that the shared parser would otherwise
+        // consume into cli.* fields this tool does not read.
+        if ((arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
+            branch_spec = argv[++i];
+            continue;
+        }
+        if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
+            pvalue_threshold = std::stod(argv[++i]);
+            continue;
+        }
+
         auto status = parse_common_cli_arg(i, argc, argv, cli);
         if (status == CommonArgParseStatus::Handled) {
             output_format = (cli.json_format == JSONFormat::Legacy) ? "legacy" : "modern";
@@ -103,10 +114,6 @@ int run_prime(int argc, char* argv[]) {
             shrinkage_lambda = std::stod(argv[++i]);
         } else if (arg == "--no-shrinkage") {
             shrinkage_lambda = 0.0;
-        } else if ((arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
-            branch_spec = argv[++i];
-        } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-            pvalue_threshold = std::stod(argv[++i]);
         } else if (arg == "--pvalue2" && i + 1 < argc) {
             stage2_pvalue = std::stod(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
@@ -118,6 +125,11 @@ int run_prime(int argc, char* argv[]) {
             return 1;
         }
     }
+
+    // Keep shared option fields in sync with the effective analysis settings so
+    // build_cli_provenance records what was actually used.
+    cli.branches = branch_spec;
+    cli.pvalue_threshold = pvalue_threshold;
 
     if (cli.alignment_file.empty()) {
         std::cerr << Console::danger("Error: Missing required --alignment argument.\n\n");

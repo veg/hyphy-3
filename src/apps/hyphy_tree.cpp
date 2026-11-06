@@ -464,13 +464,17 @@ int run_tree(int argc, char* argv[]) {
             output_nwk_path = aln_path + ".nwk";
         }
         std::ofstream nwk_file(output_nwk_path);
-        if (nwk_file.is_open()) {
-            nwk_file << res.optimized_tree.to_newick(true) << "\n";
-            if (!quiet) {
-                std::cout << Console::success("Saved inferred Newick tree to: ") << output_nwk_path << "\n";
-            }
-        } else {
-            std::cerr << Console::danger("Warning: Could not open output file for Newick: ") << output_nwk_path << "\n";
+        if (!nwk_file.is_open()) {
+            std::cerr << Console::danger("Error: Could not open output file for Newick: ") << output_nwk_path << "\n";
+            return 1;
+        }
+        nwk_file << res.optimized_tree.to_newick(true) << "\n";
+        if (!nwk_file) {
+            std::cerr << Console::danger("Error: Failed to write Newick output to: ") << output_nwk_path << "\n";
+            return 1;
+        }
+        if (!quiet) {
+            std::cout << Console::success("Saved inferred Newick tree to: ") << output_nwk_path << "\n";
         }
 
         // Write JSON output if requested
@@ -497,11 +501,17 @@ int run_tree(int argc, char* argv[]) {
             prov.execution.compiler = Provenance::detect_compiler();
 
             std::ofstream json_file(output_json_path);
-            if (json_file.is_open()) {
-                json_file << engine.to_json(res, prov).dump(2) << "\n";
-                if (!quiet) {
-                    std::cout << Console::success("Saved analysis JSON to: ") << output_json_path << "\n";
-                }
+            if (!json_file.is_open()) {
+                std::cerr << Console::danger("Error: Could not open output file for JSON: ") << output_json_path << "\n";
+                return 1;
+            }
+            json_file << engine.to_json(res, prov).dump(2) << "\n";
+            if (!json_file) {
+                std::cerr << Console::danger("Error: Failed to write JSON output to: ") << output_json_path << "\n";
+                return 1;
+            }
+            if (!quiet) {
+                std::cout << Console::success("Saved analysis JSON to: ") << output_json_path << "\n";
             }
         }
 

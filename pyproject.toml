@@ -1,0 +1,19 @@
+[build-system]
+requires = ["scikit-build-core >=0.10", "nanobind >=2.0.0", "cmake >=3.20"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "hyphy3"
+version = "3.0.0"
+description = "Next-generation high-performance molecular evolution and phylogenetics (C++ core with nanobind Python bindings)"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    { name = "HyPhy Development Team" },
+]
+
+[tool.scikit-build]
+# Ship the pure-Python `hyphy3` package; the `_hyphy3` extension module is
+# placed in the wheel by CMake's install() rule (see CMakeLists.txt).
+wheel.packages = ["python/hyphy3"]
+cmake.args = ["-DCMAKE_BUILD_TYPE=Release"]

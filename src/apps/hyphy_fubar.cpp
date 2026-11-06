@@ -68,6 +68,15 @@ int run_fubar(int argc, char* argv[]) {
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+
+        // FUBAR-specific spellings that the shared parser would otherwise
+        // consume into cli.* fields this tool does not read. In particular,
+        // -p is FUBAR's posterior cutoff, not the shared p-value option.
+        if ((arg == "--posterior" || arg == "-p") && i + 1 < argc) {
+            settings.posterior_threshold = std::stod(argv[++i]);
+            continue;
+        }
+
         auto status = parse_common_cli_arg(i, argc, argv, cli);
         if (status == CommonArgParseStatus::Handled) continue;
         if (status == CommonArgParseStatus::Error) return 1;
@@ -78,8 +87,6 @@ int run_fubar(int argc, char* argv[]) {
             settings.method = string_to_fubar_method(argv[++i]);
         } else if (arg == "--concentration" && i + 1 < argc) {
             settings.concentration = std::stod(argv[++i]);
-        } else if ((arg == "--posterior" || arg == "-p") && i + 1 < argc) {
-            settings.posterior_threshold = std::stod(argv[++i]);
         } else if (arg == "--non-zero") {
             settings.non_zero = true;
         } else if (arg == "--tree-scaling" && i + 1 < argc) {
