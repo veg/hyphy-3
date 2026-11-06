@@ -687,6 +687,9 @@ nlohmann::json to_modern_json(const Provenance& prov = {}) const;
             throw std::runtime_error("Failed to open output file: " + filepath);
         }
         out << to_json(format, prov).dump(2);
+        if (!out) {
+            throw std::runtime_error("Failed to write output file: " + filepath);
+        }
     }
 };
 

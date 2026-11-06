@@ -231,6 +231,9 @@ int run_joint_align(int argc, char* argv[]) {
                 if (!settings.quiet) {
                     std::cout << Console::success("Saved objective alignment evaluation JSON to: ") << out_json_path << "\n";
                 }
+            } else {
+                std::cerr << Console::danger("Error: could not open output file: ") << out_json_path << "\n";
+                return 1;
             }
         }
         return 0;
@@ -308,6 +311,9 @@ int run_joint_align(int argc, char* argv[]) {
             if (!settings.quiet) {
                 std::cout << Console::success("Saved MAP codon alignment to: ") << out_msa_path << "\n";
             }
+        } else {
+            std::cerr << Console::danger("Error: could not open output file: ") << out_msa_path << "\n";
+            return 1;
         }
     }
 
@@ -318,6 +324,9 @@ int run_joint_align(int argc, char* argv[]) {
             if (!settings.quiet) {
                 std::cout << Console::success("Saved Stockholm quality-annotated alignment (#=GC PP_cons) to: ") << out_stk_path << "\n";
             }
+        } else {
+            std::cerr << Console::danger("Error: could not open output file: ") << out_stk_path << "\n";
+            return 1;
         }
     }
 
@@ -328,6 +337,9 @@ int run_joint_align(int argc, char* argv[]) {
             if (!settings.quiet) {
                 std::cout << Console::success("Saved Partial Order Alignment (POA) GFAv1 codon graph to: ") << out_poa_path << "\n";
             }
+        } else {
+            std::cerr << Console::danger("Error: could not open output file: ") << out_poa_path << "\n";
+            return 1;
         }
     }
 
@@ -338,6 +350,9 @@ int run_joint_align(int argc, char* argv[]) {
             if (!settings.quiet) {
                 std::cout << Console::success("Saved Codon POA Graphviz DOT DAG to: ") << out_dot_path << "\n";
             }
+        } else {
+            std::cerr << Console::danger("Error: could not open output file: ") << out_dot_path << "\n";
+            return 1;
         }
     }
 
@@ -348,6 +363,9 @@ int run_joint_align(int argc, char* argv[]) {
             if (!settings.quiet) {
                 std::cout << Console::success("Saved co-estimated Newick tree to: ") << out_tree_path << "\n";
             }
+        } else {
+            std::cerr << Console::danger("Error: could not open output file: ") << out_tree_path << "\n";
+            return 1;
         }
     }
 
@@ -358,6 +376,9 @@ int run_joint_align(int argc, char* argv[]) {
             if (!settings.quiet) {
                 std::cout << Console::success("Saved Extended Newick (eNewick) Ohmic network to: ") << out_enewick_path << "\n";
             }
+        } else {
+            std::cerr << Console::danger("Error: could not open output file: ") << out_enewick_path << "\n";
+            return 1;
         }
     }
 
@@ -426,6 +447,9 @@ int run_joint_align(int argc, char* argv[]) {
             if (!settings.quiet) {
                 std::cout << Console::success("Saved JSON summary to: ") << out_json_path << "\n";
             }
+        } else {
+            std::cerr << Console::danger("Error: could not open output file: ") << out_json_path << "\n";
+            return 1;
         }
     }
 
