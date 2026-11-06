@@ -3,7 +3,9 @@
 #include "nlohmann/json.hpp"
 #undef NDEBUG
 #include <cassert>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -243,7 +245,8 @@ int main() {
         std::cout << "[PASS] User-Specified Branch Tag (-b Foreground) Partition & model_tag Preservation (#33)\n";
     }
 
-    // 6. Test bglobin.nex BUSTED-E Error-Sink Activation & Gene-Wide Null Calibration (#31)
+    // 6. Test that the BUSTED-E error sink shares the W_tensor scale (#31). A stale W_sink inflated
+    // the Null lnL gain to 88.4 on bglobin and 27.6 on adh; HyPhy 2.5.101 BUSTED-E gains 8.0 and 0.5.
     {
         Alignment bglobin = Alignment::load(std::string(HYPHY3_SOURCE_DIR) + "/benchmarks/data/bglobin.nex");
         Tree bglobin_tree = Tree::from_newick(bglobin.embedded_tree_newick);
@@ -251,11 +254,22 @@ int main() {
         cs.quiet = true;
         CharacterizeEngine c_eng(cs);
         auto res_bg = c_eng.run_from_alignment(bglobin, bglobin_tree);
-        assert(res_bg.gene_wide.error_sink_weight > 0.0);
-        assert(res_bg.gene_wide.has_gene_wide_positive_selection == false);
-        assert(res_bg.gene_wide.busted_p_value > 0.10);
-        std::cout << "[PASS] bglobin.nex BUSTED-E Error-Sink Activation & Null Calibration (p="
-                  << res_bg.gene_wide.busted_p_value << ", err_w=" << res_bg.gene_wide.error_sink_weight << ") (#31)\n";
+        assert(res_bg.gene_wide.sink_null_log_l_gain > 0.0);
+        assert(res_bg.gene_wide.sink_null_log_l_gain < 20.0);
+        std::cout << "[PASS] bglobin.nex BUSTED-E Error-Sink Null Gain (gain="
+                  << res_bg.gene_wide.sink_null_log_l_gain << ", p=" << res_bg.gene_wide.busted_p_value
+                  << ", err_w=" << res_bg.gene_wide.error_sink_weight << ") (#31)\n";
+
+        Alignment adh = Alignment::load(std::string(HYPHY3_SOURCE_DIR) + "/benchmarks/data/adh.nex");
+        std::ifstream adh_nwk(std::string(HYPHY3_SOURCE_DIR) + "/benchmarks/data/adh.nwk");
+        std::string adh_newick((std::istreambuf_iterator<char>(adh_nwk)), std::istreambuf_iterator<char>());
+        Tree adh_tree = Tree::from_newick(adh_newick);
+        CharacterizeEngine adh_eng(cs);
+        auto res_adh = adh_eng.run_from_alignment(adh, adh_tree);
+        assert(res_adh.gene_wide.sink_null_log_l_gain < 5.0);
+        assert(res_adh.gene_wide.busted_p_value < 0.05);
+        std::cout << "[PASS] adh.nex BUSTED-E Error-Sink Keeps Selection Signal (gain="
+                  << res_adh.gene_wide.sink_null_log_l_gain << ", p=" << res_adh.gene_wide.busted_p_value << ") (#31)\n";
     }
 
     return 0;

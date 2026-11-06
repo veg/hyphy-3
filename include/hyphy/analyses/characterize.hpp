@@ -236,6 +236,7 @@ struct GeneWideSelectionSummary {
     Scalar error_sink_weight = 0.0;
     Scalar unconstrained_log_l = 0.0;
     Scalar null_log_l = 0.0;
+    Scalar sink_null_log_l_gain = 0.0; // Null lnL with the error sink minus without it
     Scalar busted_lrt = 0.0;
     Scalar busted_p_value = 1.0;
     bool has_gene_wide_positive_selection = false;
@@ -3906,6 +3907,18 @@ private:
         for (int i = 0; i < S; ++i) {
             inv_one_minus_pi(i) = 1.0 / std::max<Scalar>(1e-12, 1.0 - pi_codon(i));
         }
+        // Off-diagonal random-jump kernel likelihood of site c on branch bid, from its current cavities
+        auto site_sink_likelihood = [&](size_t c, int32_t bid) -> Scalar {
+            const Vector& U = site_outside[c][bid];
+            const Vector& L = site_inside[c][bid];
+            Scalar pi_dot_L = pi_codon.dot(L);
+            Scalar sink_val = 0.0;
+            for (int i = 0; i < S; ++i) {
+                Scalar p_sink_L_i = (pi_dot_L - pi_codon(i) * L(i)) * inv_one_minus_pi(i);
+                sink_val += U(i) * std::max<Scalar>(0.0, p_sink_L_i);
+            }
+            return std::max<Scalar>(0.0, sink_val);
+        };
         Matrix P_mh_jump = Matrix::Zero(S, S);
         std::vector<std::vector<uint8_t>> codon_dnuc(S, std::vector<uint8_t>(S, 0));
         for (int i = 0; i < S; ++i) {
@@ -3974,15 +3987,7 @@ private:
             std::vector<bool> is_homologous_site(C, true);
             size_t n_homologous = 0;
             for (size_t c = 0; c < C; ++c) {
-                const Vector& U = site_outside[c][bid];
-                const Vector& L = site_inside[c][bid];
-                Scalar pi_dot_L = pi_codon.dot(L);
-                Scalar sink_val = 0.0;
-                for (int i = 0; i < S; ++i) {
-                    Scalar p_sink_L_i = (pi_dot_L - pi_codon(i) * L(i)) * inv_one_minus_pi(i);
-                    sink_val += U(i) * std::max<Scalar>(0.0, p_sink_L_i);
-                }
-                f_sink[c] = std::max<Scalar>(0.0, sink_val);
+                f_sink[c] = site_sink_likelihood(c, bid);
                 Scalar f_raw = eval_hadamard_at(H_reg, br_w, c, site_g_near[c], site_alpha[c] * raw_bl);
                 if (f_raw >= f_sink[c]) {
                     is_homologous_site[c] = true;
@@ -4153,6 +4158,7 @@ private:
                     if (bid >= static_cast<int32_t>(spr_t.num_nodes()) ||
                         (bid != spr_t.root_id && spr_t.nodes[bid].parent_id == INVALID_INDEX)) {
                         for (size_t g = 0; g < G; ++g) W_tensor[c][bi][g] = 1.0;
+                        W_sink[c][bi] = 1.0;
                         continue;
                     }
                     c_bl = spr_t.nodes[bid].branch_length * conv;
@@ -4171,6 +4177,9 @@ private:
                         W_tensor[c][bi][g] = (1.0 - g_mkt) * W_tensor[c][bi][g] + g_mkt * 1.0;
                     }
                     W_sink[c][bi] = 1.0;
+                } else {
+                    // The BUSTED-E mixture adds W_sink to W_tensor, so both need the same cavities and ref
+                    W_sink[c][bi] = site_sink_likelihood(c, bid) / ref;
                 }
             }
         }
@@ -4866,6 +4875,7 @@ private:
             res.gene_wide.error_sink_omega = 100.0;
             res.gene_wide.error_sink_weight = best_err_w;
             res.gene_wide.null_log_l = base_sum + best_null;
+            res.gene_wide.sink_null_log_l_gain = null_sk - null_std;
             res.gene_wide.unconstrained_log_l = base_sum + best_alt;
             res.gene_wide.busted_lrt = std::max<Scalar>(0.0, 2.0 * (best_alt - best_null));
             res.gene_wide.busted_p_value = (res.gene_wide.busted_lrt <= 1e-6)
