@@ -158,7 +158,15 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
         return CommonArgParseStatus::Handled;
     }
     if ((arg == "--threads" || arg == "-T") && i + 1 < argc) {
-        opts.num_threads = std::stoi(argv[++i]);
+        std::string val = argv[++i];
+        try {
+            opts.num_threads = std::stoi(val);
+        } catch (const std::exception&) {
+            opts.has_error = true;
+            opts.error_message = "Error: invalid --threads value '" + val + "'. Expected an integer.";
+            std::cerr << Console::danger(opts.error_message) << "\n";
+            return CommonArgParseStatus::Error;
+        }
         return CommonArgParseStatus::Handled;
     }
     if ((arg == "--output" || arg == "-o") && i + 1 < argc) {
@@ -174,7 +182,15 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
         return CommonArgParseStatus::Handled;
     }
     if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-        opts.pvalue_threshold = std::stod(argv[++i]);
+        std::string val = argv[++i];
+        try {
+            opts.pvalue_threshold = std::stod(val);
+        } catch (const std::exception&) {
+            opts.has_error = true;
+            opts.error_message = "Error: invalid --pvalue value '" + val + "'. Expected a number.";
+            std::cerr << Console::danger(opts.error_message) << "\n";
+            return CommonArgParseStatus::Error;
+        }
         return CommonArgParseStatus::Handled;
     }
     if ((arg == "--json-format" || arg == "--format") && i + 1 < argc) {

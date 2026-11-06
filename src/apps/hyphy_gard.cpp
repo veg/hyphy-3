@@ -234,6 +234,10 @@ int run_gard(int argc, char* argv[]) {
         }
         out << json_out.dump(2) << "\n";
         out.close();
+        if (out.fail()) {
+            std::cerr << Console::danger("Failed to write output file: " + output_file) << "\n";
+            return 1;
+        }
 
         if (!html_file.empty()) {
             try {
@@ -399,6 +403,11 @@ int run_gard(int argc, char* argv[]) {
 
 #ifndef HYPHY3_COMBINED_DRIVER
 int main(int argc, char* argv[]) {
-    return run_gard(argc, argv);
+    try {
+        return run_gard(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
 }
 #endif

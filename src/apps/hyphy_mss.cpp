@@ -380,7 +380,8 @@ int run_mss(int argc, char* argv[]) {
         std::cout << Console::success("✔") << " " << Console::bold("Saved MSS JSON report to: ")
                   << Console::brand(cli.output_file) << "\n\n";
     } catch (const std::exception& e) {
-        std::cerr << Console::danger("Warning: Failed to write JSON output: ") << e.what() << "\n";
+        std::cerr << Console::danger("Error: Failed to write JSON output: ") << e.what() << "\n";
+        return 1;
     }
 
     return 0;
@@ -388,6 +389,11 @@ int run_mss(int argc, char* argv[]) {
 
 #ifndef HYPHY3_COMBINED_DRIVER
 int main(int argc, char* argv[]) {
-    return run_mss(argc, argv);
+    try {
+        return run_mss(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
 }
 #endif
