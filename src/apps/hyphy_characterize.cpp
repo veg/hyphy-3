@@ -48,11 +48,7 @@ static void print_characterize_usage(const char* prog) {
               << "  " << Console::brand("--quiet, -q") << "                  Suppress progress output\n";
 }
 
-#ifdef HYPHY3_COMBINED_DRIVER
 int run_characterize(int argc, char* argv[])
-#else
-int main(int argc, char* argv[])
-#endif
 {
     std::string unaligned_path;
     std::string aln_path;
@@ -488,3 +484,14 @@ int main(int argc, char* argv[])
 
     return 0;
 }
+
+#ifndef HYPHY3_COMBINED_DRIVER
+int main(int argc, char* argv[]) {
+    try {
+        return run_characterize(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
+}
+#endif

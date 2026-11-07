@@ -108,7 +108,12 @@ int main(int argc, char* argv[]) {
     // Direct One-Button invocation: if the user passes -u/--unaligned, -a/--alignment/--msa, or -i/--input directly to hyphy3,
     // route straight to the unified CharacterizeEngine!
     if (cmd == "-u" || cmd == "--unaligned" || cmd == "-a" || cmd == "--alignment" || cmd == "--msa" || cmd == "-i" || cmd == "--input") {
-        return run_characterize(argc, argv);
+        try {
+            return run_characterize(argc, argv);
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error: ") << e.what() << "\n";
+            return 1;
+        }
     }
 
     // Shift arguments so the subcommand sees argv[0] as "hyphy3 <subcommand>"

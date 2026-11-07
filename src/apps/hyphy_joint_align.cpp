@@ -229,6 +229,10 @@ int run_joint_align(int argc, char* argv[]) {
                        << "    }" << (i + 1 < evals.size() ? "," : "") << "\n";
                 }
                 jf << "  ]\n}\n";
+                if (!jf) {
+                    std::cerr << Console::danger("Error: failed to write output file: ") << out_json_path << "\n";
+                    return 1;
+                }
                 if (!settings.quiet) {
                     std::cout << Console::success("Saved objective alignment evaluation JSON to: ") << out_json_path << "\n";
                 }
@@ -309,6 +313,10 @@ int run_joint_align(int argc, char* argv[]) {
             for (const auto& s : res.map_alignment.sequences) {
                 mf << ">" << s.name << " [codons=" << res.map_alignment.num_codons << "]\n" << s.raw_seq << "\n";
             }
+            if (!mf) {
+                std::cerr << Console::danger("Error: failed to write output file: ") << out_msa_path << "\n";
+                return 1;
+            }
             if (!settings.quiet) {
                 std::cout << Console::success("Saved MAP codon alignment to: ") << out_msa_path << "\n";
             }
@@ -322,6 +330,10 @@ int run_joint_align(int argc, char* argv[]) {
         std::ofstream sf(out_stk_path);
         if (sf.is_open()) {
             sf << res.stockholm_alignment;
+            if (!sf) {
+                std::cerr << Console::danger("Error: failed to write output file: ") << out_stk_path << "\n";
+                return 1;
+            }
             if (!settings.quiet) {
                 std::cout << Console::success("Saved Stockholm quality-annotated alignment (#=GC PP_cons) to: ") << out_stk_path << "\n";
             }
@@ -335,6 +347,10 @@ int run_joint_align(int argc, char* argv[]) {
         std::ofstream pf(out_poa_path);
         if (pf.is_open()) {
             pf << res.poa_gfa;
+            if (!pf) {
+                std::cerr << Console::danger("Error: failed to write output file: ") << out_poa_path << "\n";
+                return 1;
+            }
             if (!settings.quiet) {
                 std::cout << Console::success("Saved Partial Order Alignment (POA) GFAv1 codon graph to: ") << out_poa_path << "\n";
             }
@@ -348,6 +364,10 @@ int run_joint_align(int argc, char* argv[]) {
         std::ofstream df(out_dot_path);
         if (df.is_open()) {
             df << res.poa_dot;
+            if (!df) {
+                std::cerr << Console::danger("Error: failed to write output file: ") << out_dot_path << "\n";
+                return 1;
+            }
             if (!settings.quiet) {
                 std::cout << Console::success("Saved Codon POA Graphviz DOT DAG to: ") << out_dot_path << "\n";
             }
@@ -361,6 +381,10 @@ int run_joint_align(int argc, char* argv[]) {
         std::ofstream tf(out_tree_path);
         if (tf.is_open()) {
             tf << res.optimized_tree.to_newick(true) << "\n";
+            if (!tf) {
+                std::cerr << Console::danger("Error: failed to write output file: ") << out_tree_path << "\n";
+                return 1;
+            }
             if (!settings.quiet) {
                 std::cout << Console::success("Saved co-estimated Newick tree to: ") << out_tree_path << "\n";
             }
@@ -374,6 +398,10 @@ int run_joint_align(int argc, char* argv[]) {
         std::ofstream ef(out_enewick_path);
         if (ef.is_open()) {
             ef << res.extended_newick << "\n";
+            if (!ef) {
+                std::cerr << Console::danger("Error: failed to write output file: ") << out_enewick_path << "\n";
+                return 1;
+            }
             if (!settings.quiet) {
                 std::cout << Console::success("Saved Extended Newick (eNewick) Ohmic network to: ") << out_enewick_path << "\n";
             }
@@ -445,6 +473,10 @@ int run_joint_align(int argc, char* argv[]) {
                << "  \"optimized_tree_newick\": \"" << res.optimized_tree.to_newick(true) << "\",\n"
                << "  \"extended_newick\": \"" << res.extended_newick << "\"\n"
                << "}\n";
+            if (!jf) {
+                std::cerr << Console::danger("Error: failed to write output file: ") << out_json_path << "\n";
+                return 1;
+            }
             if (!settings.quiet) {
                 std::cout << Console::success("Saved JSON summary to: ") << out_json_path << "\n";
             }

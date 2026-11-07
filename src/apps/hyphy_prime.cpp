@@ -115,7 +115,7 @@ int run_prime(int argc, char* argv[]) {
         } else if (arg == "--no-shrinkage") {
             shrinkage_lambda = 0.0;
         } else if (arg == "--pvalue2" && i + 1 < argc) {
-            stage2_pvalue = parse_probability("--stage2-pvalue", argv[++i]);
+            stage2_pvalue = parse_probability("--pvalue2", argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             print_prime_usage(argv[0]);
             return 0;
