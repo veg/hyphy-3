@@ -4,6 +4,7 @@
 #include "hyphy/core/console.hpp"
 #include "hyphy/core/provenance.hpp"
 #include "hyphy/analyses/gard.hpp"
+#include "hyphy/core/cli_common.hpp"
 #include "hyphy/report/html_report.hpp"
 
 #include <iostream>
@@ -96,15 +97,15 @@ int run_gard(int argc, char* argv[]) {
         } else if ((arg == "--mode" || arg == "-m") && i + 1 < argc) {
             run_mode = argv[++i];
         } else if ((arg == "--max-breakpoints" || arg == "-b") && i + 1 < argc) {
-            max_breakpoints = std::stoull(argv[++i]);
+            max_breakpoints = parse_nonneg_ull("--max-breakpoints", argv[++i]);
         } else if ((arg == "--population-size" || arg == "-p") && i + 1 < argc) {
-            population_size = std::stoull(argv[++i]);
+            population_size = parse_nonneg_ull("--population-size", argv[++i]);
             population_size_set = true;
         } else if (arg == "--max-stagnant" && i + 1 < argc) {
-            max_stagnant = std::stoull(argv[++i]);
+            max_stagnant = parse_nonneg_ull("--max-stagnant", argv[++i]);
             max_stagnant_set = true;
         } else if (arg == "--mutation-rate" && i + 1 < argc) {
-            mutation_rate = std::stod(argv[++i]);
+            mutation_rate = parse_probability("--mutation-rate", argv[++i]);
             mutation_rate_set = true;
         } else if (arg == "--tree-engine" && i + 1 < argc) {
             std::string eng = argv[++i];
@@ -121,7 +122,7 @@ int run_gard(int argc, char* argv[]) {
                 srv_mode = GARDSRVMode::DiscreteGamma;
             }
         } else if (arg == "--gamma-classes" && i + 1 < argc) {
-            gamma_classes = std::stoull(argv[++i]);
+            gamma_classes = parse_nonneg_ull("--gamma-classes", argv[++i]);
         } else if (arg == "--bridges" && i + 1 < argc) {
             std::string br = argv[++i];
             allow_bridges = (br == "yes" || br == "true" || br == "1");
@@ -139,7 +140,7 @@ int run_gard(int argc, char* argv[]) {
                 topology_test_mode = GARDTopologyTestMode::Both;
             }
         } else if (arg == "--test-replicates" && i + 1 < argc) {
-            topology_test_replicates = std::stoull(argv[++i]);
+            topology_test_replicates = parse_nonneg_ull("--test-replicates", argv[++i]);
         } else if ((arg == "--threads" || arg == "-t") && i + 1 < argc) {
             num_threads = std::stoi(argv[++i]);
         } else if ((arg == "--format" || arg == "--json-format") && i + 1 < argc) {
@@ -234,6 +235,10 @@ int run_gard(int argc, char* argv[]) {
         }
         out << json_out.dump(2) << "\n";
         out.close();
+        if (out.fail()) {
+            std::cerr << Console::danger("Failed to write output file: " + output_file) << "\n";
+            return 1;
+        }
 
         if (!html_file.empty()) {
             try {
@@ -399,6 +404,11 @@ int run_gard(int argc, char* argv[]) {
 
 #ifndef HYPHY3_COMBINED_DRIVER
 int main(int argc, char* argv[]) {
-    return run_gard(argc, argv);
+    try {
+        return run_gard(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
 }
 #endif

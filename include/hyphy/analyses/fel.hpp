@@ -858,6 +858,9 @@ nlohmann::json to_modern_json(const std::string& input_filepath = "",
             throw std::runtime_error("Could not open output JSON file: " + output_filepath);
         }
         out << j.dump(2) << std::endl;
+        if (!out) {
+            throw std::runtime_error("Failed to write output JSON file: " + output_filepath);
+        }
     }
 
     struct Summary {

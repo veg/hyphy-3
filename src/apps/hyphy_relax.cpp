@@ -70,16 +70,24 @@ int run_relax(int argc, char* argv[]) {
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+
+        // RELAX-specific spellings that the shared parser would otherwise
+        // consume into cli.* fields this tool does not read.
+        if ((arg == "--test" || arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
+            settings.test_branch_regex = argv[++i];
+            continue;
+        }
+        if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
+            settings.p_value_threshold = parse_probability("--pvalue", argv[++i]);
+            continue;
+        }
+
         auto status = parse_common_cli_arg(i, argc, argv, cli);
         if (status == CommonArgParseStatus::Handled) continue;
         if (status == CommonArgParseStatus::Error) return 1;
 
-        if ((arg == "--test" || arg == "--branches") && i + 1 < argc) {
-            settings.test_branch_regex = argv[++i];
-        } else if (arg == "--reference" && i + 1 < argc) {
+        if (arg == "--reference" && i + 1 < argc) {
             settings.reference_branch_regex = argv[++i];
-        } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-            settings.p_value_threshold = std::stod(argv[++i]);
         } else if (arg == "--no-branch-opt" || arg == "--no-refine-branches") {
             settings.refine_branch_lengths = false;
         } else if (arg == "--joint-cycles" && i + 1 < argc) {
@@ -180,6 +188,11 @@ int run_relax(int argc, char* argv[]) {
             return 1;
         }
     }
+
+    // Keep shared option fields in sync with the effective analysis settings so
+    // build_cli_provenance records what was actually used.
+    cli.branches = settings.test_branch_regex;
+    cli.pvalue_threshold = settings.p_value_threshold;
 
     if (cli.alignment_file.empty()) {
         std::cerr << "Error: --alignment is required.\n\n";
@@ -343,6 +356,11 @@ int run_relax(int argc, char* argv[]) {
 
 #ifndef HYPHY3_COMBINED_DRIVER
 int main(int argc, char* argv[]) {
-    return run_relax(argc, argv);
+    try {
+        return run_relax(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
 }
 #endif

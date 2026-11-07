@@ -6,6 +6,7 @@
 #include "hyphy/core/console.hpp"
 #include "hyphy/core/preferences.hpp"
 #include "hyphy/analyses/expcm_optimizer.hpp"
+#include "hyphy/core/cli_common.hpp"
 #include "hyphy/analyses/persite_optimizer.hpp"
 
 #include <iostream>
@@ -112,15 +113,19 @@ int run_expcm(int argc, char* argv[]) {
         } else if (arg == "--fix-kappa") {
             fix_kappa = true;
         } else if (arg == "--fdr-level" && i + 1 < argc) {
-            fdr_level = std::stod(argv[++i]);
+            fdr_level = parse_probability("--fdr-level", argv[++i]);
         } else if (arg == "--gradient-tol" && i + 1 < argc) {
             gradient_tol = std::stod(argv[++i]);
         } else if (arg == "--relative-tol" && i + 1 < argc) {
             relative_tol = std::stod(argv[++i]);
         } else if (arg == "--max-iterations" && i + 1 < argc) {
-            max_iterations = std::stoi(argv[++i]);
+            max_iterations = std::max(1, std::stoi(argv[++i]));
         } else if (arg == "--threads" && i + 1 < argc) {
             num_threads = std::stoi(argv[++i]);
+            if (num_threads < 1) {
+                std::cerr << Console::danger("Error: --threads must be a positive integer.\n");
+                return 1;
+            }
         } else if (arg == "--verbose") {
             verbose = true;
         } else if (arg == "--help" || arg == "-h") {

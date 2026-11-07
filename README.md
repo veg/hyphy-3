@@ -75,7 +75,7 @@ hyphy3 dfel --alignment data.nex --output results.dFEL.json --threads 8
 Seamlessly integrate HyPhy 3 analyses directly into Python pipelines and Jupyter notebooks:
 
 ```python
-import _hyphy3 as hp
+import hyphy3 as hp
 
 # Load alignment and extract embedded Newick tree
 aln = hp.Alignment.from_nexus("data.nex")
@@ -96,7 +96,7 @@ print(f"Detected {sum(1 for r in results if r.p_value <= 0.1)} sites under selec
 Inspect selection profiles, branch rate partitions, and site evidence plots in an interactive, publication-ready dashboard:
 
 ```bash
-# Write a self-contained HTML report alongside the JSON (FEL and MEME)
+# Write a self-contained HTML report alongside the JSON (FEL, MEME, dFEL, OHMIC)
 hyphy3 fel --alignment data.nex --output results.FEL.json --html results.FEL.html
 
 # ...or create one later from an existing result file (hyphy3 or legacy HyPhy 2.5 / Datamonkey JSON)
@@ -479,7 +479,7 @@ Model weights (~8 MB) are fetched from [huggingface.co/datamonkey/hyphaeon](http
 |:---|:---|:---|:---|
 | **FEL** | `hyphy3 fel` | `--alignment`, `--tree`, `--ohmic`, `--pvalue 0.1`, `--threads N`, `--output` | Site-by-site pervasive selection (supports Wheatstone networks & tree-free FASTA) |
 | **Contrast-FEL** | `hyphy3 contrast-fel` | `--alignment`, `--tree`, `--ohmic`, `--branches <groups>`, `--shrinkage <lambda>`, `--output` | Multi-group selection comparison with Ridge shrinkage |
-| **FUBAR** | `hyphy3 fubar` | `--alignment`, `--tree`, `--ohmic`, `--grid 20`, `--method [VB0|Gibbs|MH]`, `--posterior 0.9`, `--output` | Fast Bayesian rate-grid selection inference |
+| **FUBAR** | `hyphy3 fubar` | `--alignment`, `--tree`, `--ohmic`, `--grid 20`, `--method [Variational-Bayes|Collapsed-Gibbs|Metropolis-Hastings]`, `--posterior 0.9`, `--output` | Fast Bayesian rate-grid selection inference |
 | **PRIME** | `hyphy3 prime` | `--alignment`, `--tree`, `--ohmic`, `--property-set [5PROP|Atchley|3PROP|4PROP|2PROP]`, `--shrinkage 0.5`, `--output` | Biophysical amino acid property selection with Ridge shrinkage |
 | **MEME** | `hyphy3 meme` | `--alignment`, `--tree`, `--ohmic`, `--pvalue 0.1`, `--threads N`, `--output` | Site-by-site episodic selection across lineages |
 | **BUSTED** | `hyphy3 busted` | `--alignment`, `--tree`, `--ohmic`, `--rates 3`, `--threads N`, `--output` | Standard gene-wide episodic selection |
@@ -489,9 +489,9 @@ Model weights (~8 MB) are fetched from [huggingface.co/datamonkey/hyphaeon](http
 | **BUSTED-PH**| `hyphy3 busted-ph` | `--branches <FG>`, `--comparison <BG>`, `--srv`, `--multiple-hits`, `--output` | Phenotype-associated episodic selection (Union-Intersection + $\text{AIC}_c$ BG neutrality) |
 | **BUSTED-Auto**| `hyphy3 busted` | `--auto` (`--full-auto`) | 4-Gate Surprisal & Score Automatic Model Selector (Sink, MH, SRV, K) |
 | **BUSTED Auto-K**| `hyphy3 busted` | `--auto-k` | Automatic selection of rate categories via AICc step-up |
-| **aBSREL** | `hyphy3 absrel`| `--alignment`, `--tree`, `--ohmic`, `--rates 3`, `--threads N`, `--output` | Lineage-specific adaptive selection |
+| **aBSREL** | `hyphy3 absrel`| `--alignment`, `--tree`, `--ohmic`, `--max-rates 3`, `--threads N`, `--output` | Lineage-specific adaptive selection |
 | **RELAX** | `hyphy3 relax` | `--alignment`, `--tree`, `--ohmic`, `--test <tag|names|regex:pattern>`, `--reference`, `--joint-cycles 5`, `--pvalue 0.05`, `--output` | Test for selection relaxation/intensification across branch sets |
-| **GARD** | `hyphy3 gard` | `--alignment`, `--max-breakpoints N`, `--rate-classes 1`, `--threads N`, `--output` | Recombination breakpoint detection via Genetic Algorithm and AICc |
+| **GARD** | `hyphy3 gard` | `--alignment`, `--max-breakpoints N`, `--gamma-classes 1`, `--threads N`, `--output` | Recombination breakpoint detection via Genetic Algorithm and AICc |
 | **SLAC** | `hyphy3 slac` | `--alignment`, `--tree`, `--ohmic`, `--samples N`, `--pvalue 0.1`, `--output` | Counting-based site-by-site selection via Joint ML ancestors |
 | **Directional-FEL** | `hyphy3 dfel` | `--alignment`, `--tree`, `--ohmic`, `--root [auto\|keep\|<name>]`, `--regimes [0=auto\|1\|3]`, `--pvalue 0.1`, `--output` | Non-stationary selection inference with upfront compositional tests & ML auto-rooting |
 | **OHMIC** | `hyphy3 ohmic` | `--alignment`, `--datatype [nucleotide\|codon]`, `--hyphaeon`, `--scale-mode [auto\|dense\|woodbury]`, `--min-stress 0.05`, `--output` | Ohmic electrical network inference, Foster resistance & Wheatstone bridge ML fitting |
@@ -615,12 +615,12 @@ print(f"Omega proportions  : {res.unconstrained.test_distribution.weights}")
 # 4. aBSREL: Adaptive Branch-Site Lineage Selection
 # -------------------------------------------------------------
 abs_settings = hp.ABSRELSettings()
-abs_settings.max_rate_classesK = 3
+abs_settings.max_rate_classes = 3
 absrel = hp.ABSRELAnalyzer.create(tree, aln, abs_settings)
 abs_res = absrel.run()
 
 print(f"Tested branches: {abs_res.tested_branches}, Positive branches: {abs_res.positive_branches}")
-for br in abs_res.branches:
+for br in abs_res.branches.values():
     if br.is_tested and br.corrected_p_value < 0.05:
         print(f"Lineage selection on {br.branch_name}: p_corr = {br.corrected_p_value:.4f}, LRT = {br.lrt:.2f}")
         print(f"  Rate classes: {br.rate_classes}, Omega distribution: {br.rate_distribution.rates}")
@@ -636,20 +636,13 @@ relax_res = relax.run()
 print(f"RELAX LRT = {relax_res.lrt:.2f}, p-value = {relax_res.p_value:.3e}, K = {relax_res.k:.4f}")
 if relax_res.is_significant:
     mode = "Relaxation" if relax_res.is_relaxed else "Intensification"
-    print(f"Significant {mode} detected on Test branches (p <= {relax_res.settings.p_value_threshold})")
+    print(f"Significant {mode} detected on Test branches (p = {relax_res.p_value:.3e})")
 # -------------------------------------------------------------
 # 6. Contrast-FEL: Differential Selection Between Branch Sets
 # -------------------------------------------------------------
-cfel_aln = hp.Alignment.load("benchmarks/data/cd2.fna")
-cfel_tree = hp.Tree.from_newick_file("benchmarks/data/cd2.nwk")
-cfel_settings = hp.ContrastFELSettings()
-cfel_settings.branch_specs = "Internal,Leaves"
-cfel_settings.shrinkage_lambda = 1.0
-
-cfel = hp.ContrastFELAnalyzer.create_and_fit(cfel_tree, cfel_aln, cfel_settings)
-cfel_res = cfel.run()
-sig_sites = [r.site for r in cfel_res if r.p_value <= 0.05]
-print(f"Contrast-FEL significant sites: {sig_sites}")
+# Contrast-FEL is currently CLI-only (no Python bindings yet):
+#   hyphy3 contrast-fel --alignment cd2.fna --tree cd2.nwk \
+#       --branches Internal,Leaves --shrinkage 1.0 --output cd2.CFEL.json
 
 # -------------------------------------------------------------
 # 7. FUBAR: Fast Unconstrained Bayesian AppRoximation
@@ -672,7 +665,7 @@ print(f"Expected false positives: {fubar_res.expected_false_positives:.2f} (95% 
 prime_aln = hp.Alignment.load("benchmarks/data/cd2.fna")
 prime_tree = hp.Tree.from_newick_file("benchmarks/data/cd2.nwk")
 prime_settings = hp.PRIMESettings()
-prime_settings.property_set_name = "5PROP"
+prime_settings.property_set = "5PROP"
 prime_settings.shrinkage_lambda = 0.5
 
 prime = hp.PRIMEAnalyzer.create_and_fit(prime_tree, prime_aln, prime_settings)
@@ -690,11 +683,12 @@ gard_settings.max_breakpoints = 2
 gard = hp.GARDAnalyzer(gard_aln, gard_settings)
 gard_res = gard.run()
 
-print(f"GARD optimal breakpoints: {gard_res.best_breakpoints}")
-print(f"Baseline AICc: {gard_res.baseline_aicc:.2f}, Best AICc: {gard_res.best_aicc:.2f} (Delta = {gard_res.delta_aicc:.2f})")
+print(f"GARD optimal breakpoints: {gard_res.best_model.breakpoints}")
+print(f"Baseline AICc: {gard_res.baseline_aicc:.2f}, Best AICc: {gard_res.best_model.aicc:.2f} "
+      f"(Delta = {gard_res.baseline_aicc - gard_res.best_model.aicc:.2f})")
 print(f"Topological incongruence: {gard_res.topological_incongruence}")
-for p in gard_res.partitions:
-    print(f"  Partition [{p.start_site}, {p.end_site}): length = {p.site_count} bp, tree = {p.tree_newick[:35]}...")
+for p in gard_res.best_model.partitions:
+    print(f"  Partition [{p.start_site}, {p.end_site}): length = {p.end_site - p.start_site} bp, tree = {p.tree[:35]}...")
 
 # -------------------------------------------------------------
 # 10. SLAC: Single-Likelihood Ancestor Counting
@@ -732,7 +726,6 @@ print(f"Significant dFEL sites: {sum(1 for r in dfel_res if r.p_value <= 0.1)}")
 ohmic_aln = hp.Alignment.load("benchmarks/data/cd2.fna")
 ohmic_settings = hp.OhmicAnalysisSettings()
 ohmic_settings.use_codon_model = True
-ohmic_settings.network_settings.use_hyphaeon_transformer = True
 
 ohmic = hp.OhmicAnalyzer(ohmic_aln, ohmic_settings)
 ohmic_res = ohmic.run()
@@ -837,7 +830,7 @@ hyphy3 meme --alignment data.nex --output results.MEME.json --html results.MEME.
 hyphy3 report results.FEL.json --html results.FEL.html
 ```
 
-Reports are currently available for **FEL** and **MEME**; other analyses are refused with a clear message until their viewers are added.
+Reports are currently available for **FEL**, **MEME**, **dFEL**, and **OHMIC**; other analyses are refused with a clear message until their viewers are added.
 
 - **How the viewer gets embedded**: at build time, `cmake/EmbedViewer.cmake` bundles the ES modules under `viz/fel-viewer/src` (following their imports from `index.js`) together with the stylesheet into a generated header. Editing the viewer and re-running the build is all that's needed.
 - **Developing the viewer**: the sources are plain browser ES modules with no build step. Serve `viz/fel-viewer/` with any static file server and open `index.html`.

@@ -90,6 +90,22 @@ int run_dfel(int argc, char* argv[]) {
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+
+        // dFEL-specific spellings that the shared parser would otherwise
+        // consume into cli.* fields this tool does not read.
+        if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
+            pvalue_threshold = parse_probability("--pvalue", argv[++i]);
+            continue;
+        }
+        if (arg == "--quick" || arg == "--no-full-model") {
+            full_model = false;
+            continue;
+        }
+        if (arg == "--full-model") {
+            full_model = true;
+            continue;
+        }
+
         auto status = parse_common_cli_arg(i, argc, argv, cli);
         if (status == CommonArgParseStatus::Handled) continue;
         if (status == CommonArgParseStatus::Error) return 1;
@@ -99,13 +115,7 @@ int run_dfel(int argc, char* argv[]) {
         } else if ((arg == "--regimes" || arg == "-k") && i + 1 < argc) {
             regimes_opt = argv[++i];
         } else if ((arg == "--heterogeneity" || arg == "--heterogeneity-threshold") && i + 1 < argc) {
-            het_threshold = std::stod(argv[++i]);
-        } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-            pvalue_threshold = std::stod(argv[++i]);
-        } else if (arg == "--quick" || arg == "--no-full-model") {
-            full_model = false;
-        } else if (arg == "--full-model") {
-            full_model = true;
+            het_threshold = parse_probability("--heterogeneity", argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             print_dfel_usage(argv[0]);
             return 0;
@@ -115,6 +125,11 @@ int run_dfel(int argc, char* argv[]) {
             return 1;
         }
     }
+
+    // Keep shared option fields in sync with the effective analysis settings so
+    // build_cli_provenance records what was actually used.
+    cli.pvalue_threshold = pvalue_threshold;
+    cli.full_model = full_model;
 
     if (cli.alignment_file.empty()) {
         std::cerr << Console::danger("Error: --alignment is required.\n\n");

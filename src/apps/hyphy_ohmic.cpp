@@ -256,6 +256,10 @@ int run_ohmic(int argc, char* argv[]) {
         }
         out << json_out.dump(2) << "\n";
         out.close();
+        if (out.fail()) {
+            std::cerr << Console::danger("Failed to write output file: " + output_file) << "\n";
+            return 1;
+        }
 
 #ifdef HYPHY3_HAS_HTML_REPORT
         if (!html_file.empty()) {

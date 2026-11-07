@@ -1741,6 +1741,9 @@ nlohmann::json to_legacy_json(const std::string& input_filepath = "", const std:
         } else {
             out << to_modern_json(input_filepath, tree_string).dump(2);
         }
+        if (!out) {
+            throw std::runtime_error("Failed to write output JSON file: " + filepath);
+        }
     }
 
     DirectionalFELSummary get_summary() const {

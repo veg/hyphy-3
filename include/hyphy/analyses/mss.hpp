@@ -1409,13 +1409,17 @@ public:
 
         if (!settings.output_tsv.empty()) {
             std::ofstream out(settings.output_tsv);
-            if (out.is_open()) {
-                out << "AminoAcid\tCODON1\tCODON2\tGROUP\tSUPPORT\tMODEL_AVG_RATE\tPAIR_MLE\n";
-                for (const auto& pe : sel.pair_entries) {
-                    out << pe.aa << "\t" << pe.codon1 << "\t" << pe.codon2 << "\t"
-                        << pe.assigned_label << "\t" << std::fixed << std::setprecision(4) << pe.max_support << "\t"
-                        << pe.model_averaged_rate << "\t" << pe.mle_rate << "\n";
-                }
+            if (!out.is_open()) {
+                throw std::runtime_error("Cannot open TSV output file for writing: " + settings.output_tsv);
+            }
+            out << "AminoAcid\tCODON1\tCODON2\tGROUP\tSUPPORT\tMODEL_AVG_RATE\tPAIR_MLE\n";
+            for (const auto& pe : sel.pair_entries) {
+                out << pe.aa << "\t" << pe.codon1 << "\t" << pe.codon2 << "\t"
+                    << pe.assigned_label << "\t" << std::fixed << std::setprecision(4) << pe.max_support << "\t"
+                    << pe.model_averaged_rate << "\t" << pe.mle_rate << "\n";
+            }
+            if (!out) {
+                throw std::runtime_error("Failed to write TSV output file: " + settings.output_tsv);
             }
         }
 
@@ -1720,6 +1724,9 @@ public:
             throw std::runtime_error("Cannot open output file for writing: " + filepath);
         }
         out << to_json(res).dump(2) << "\n";
+        if (!out) {
+            throw std::runtime_error("Failed to write output file: " + filepath);
+        }
     }
 };
 

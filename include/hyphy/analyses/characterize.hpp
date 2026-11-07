@@ -746,7 +746,13 @@ public:
             }
             jf["MLE"]["content"]["0"] = content;
             std::ofstream out(base_prefix + ".FEL.json");
+            if (!out.is_open()) {
+                throw std::runtime_error("Cannot open output file for writing: " + base_prefix + ".FEL.json");
+            }
             out << jf.dump(2);
+            if (!out) {
+                throw std::runtime_error("Failed to write output file: " + base_prefix + ".FEL.json");
+            }
         }
         // 2. Legacy MEME JSON
         {
@@ -779,7 +785,13 @@ public:
             }
             jm["MLE"]["content"]["0"] = content;
             std::ofstream out(base_prefix + ".MEME.json");
+            if (!out.is_open()) {
+                throw std::runtime_error("Cannot open output file for writing: " + base_prefix + ".MEME.json");
+            }
             out << jm.dump(2);
+            if (!out) {
+                throw std::runtime_error("Failed to write output file: " + base_prefix + ".MEME.json");
+            }
         }
         // 3. Legacy BUSTED JSON
         {
@@ -809,7 +821,13 @@ public:
                 {"Log Likelihood", res.gene_wide.null_log_l}
             };
             std::ofstream out(base_prefix + ".BUSTED.json");
+            if (!out.is_open()) {
+                throw std::runtime_error("Cannot open output file for writing: " + base_prefix + ".BUSTED.json");
+            }
             out << jb.dump(2);
+            if (!out) {
+                throw std::runtime_error("Failed to write output file: " + base_prefix + ".BUSTED.json");
+            }
         }
     }
 

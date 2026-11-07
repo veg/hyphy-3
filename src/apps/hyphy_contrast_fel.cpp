@@ -75,10 +75,10 @@ int run_contrast_fel(int argc, char* argv[]) {
             shrinkage_lambda = 0.0;
             continue;
         } else if ((arg == "--pvalue" || arg == "--p-value" || arg == "-p") && i + 1 < argc) {
-            pvalue_threshold = std::stod(argv[++i]);
+            pvalue_threshold = parse_probability("--pvalue", argv[++i]);
             continue;
         } else if ((arg == "--qvalue" || arg == "--q-value" || arg == "-q") && i + 1 < argc) {
-            qvalue_threshold = std::stod(argv[++i]);
+            qvalue_threshold = parse_probability("--qvalue", argv[++i]);
             continue;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);

@@ -107,14 +107,14 @@ int run_busted(int argc, char* argv[]) {
         } else if (arg == "--auto" || arg == "--full-auto") {
             settings.full_auto = true;
         } else if (arg == "--rates" && i + 1 < argc) {
-            settings.num_rate_classes = std::stoul(argv[++i]);
+            settings.num_rate_classes = parse_nonneg_ull("--rates", argv[++i]);
         } else if (arg == "--srv") {
             settings.srv = true;
         } else if (arg == "--no-srv") {
             settings.srv = false;
         } else if (arg == "--syn-rates" && i + 1 < argc) {
             settings.srv = true;
-            settings.num_syn_rate_classes = std::stoul(argv[++i]);
+            settings.num_syn_rate_classes = parse_nonneg_ull("--syn-rates", argv[++i]);
         } else if ((arg == "--mss" || arg == "--mss-type" || arg == "--syn-model") && i + 1 < argc) {
             settings.mss_type = argv[++i];
         } else if ((arg == "--mss-neutral" || arg == "--neutral") && i + 1 < argc) {
@@ -501,7 +501,8 @@ int run_busted(int argc, char* argv[]) {
                       << Console::brand(cli.html_file) << "\n\n";
         }
     } catch (const std::exception& e) {
-        std::cerr << Console::danger("Warning: Failed to write output: ") << e.what() << "\n";
+        std::cerr << Console::danger("Error: Failed to write output: ") << e.what() << "\n";
+        return 1;
     }
 
     if (res.is_failed) {
@@ -527,6 +528,11 @@ int run_busted_ph(int argc, char* argv[]) {
 
 #ifndef HYPHY3_COMBINED_DRIVER
 int main(int argc, char* argv[]) {
-    return run_busted(argc, argv);
+    try {
+        return run_busted(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
 }
 #endif

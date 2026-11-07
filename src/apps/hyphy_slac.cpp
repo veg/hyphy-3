@@ -69,22 +69,36 @@ int run_slac(int argc, char* argv[]) {
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+
+        // SLAC-specific spellings that the shared parser would otherwise
+        // consume into cli.* fields this tool does not read.
+        if ((arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
+            test_branches = argv[++i];
+            continue;
+        }
+        if ((arg == "--branch-regex" || arg == "--test-branch-regex") && i + 1 < argc) {
+            test_branch_regex = argv[++i];
+            continue;
+        }
+        if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
+            pvalue_threshold = parse_probability("--pvalue", argv[++i]);
+            continue;
+        }
+        if (arg == "--full-model") {
+            full_model = true;
+            continue;
+        }
+        if (arg == "--quick" || arg == "--no-full-model") {
+            full_model = false;
+            continue;
+        }
+
         auto status = parse_common_cli_arg(i, argc, argv, cli);
         if (status == CommonArgParseStatus::Handled) continue;
         if (status == CommonArgParseStatus::Error) return 1;
 
-        if ((arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
-            test_branches = argv[++i];
-        } else if ((arg == "--branch-regex" || arg == "--test-branch-regex") && i + 1 < argc) {
-            test_branch_regex = argv[++i];
-        } else if (arg == "--samples" && i + 1 < argc) {
+        if (arg == "--samples" && i + 1 < argc) {
             samples = static_cast<size_t>(std::stoul(argv[++i]));
-        } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-            pvalue_threshold = std::stod(argv[++i]);
-        } else if (arg == "--full-model") {
-            full_model = true;
-        } else if (arg == "--quick" || arg == "--no-full-model") {
-            full_model = false;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
@@ -94,6 +108,13 @@ int run_slac(int argc, char* argv[]) {
             return 1;
         }
     }
+
+    // Keep shared option fields in sync with the effective analysis settings so
+    // build_cli_provenance records what was actually used.
+    cli.branches = test_branches;
+    cli.branch_regex = test_branch_regex;
+    cli.pvalue_threshold = pvalue_threshold;
+    cli.full_model = full_model;
 
     if (cli.alignment_file.empty()) {
         std::cerr << "Error: --alignment argument is required.\n\n";
@@ -327,6 +348,11 @@ int run_slac(int argc, char* argv[]) {
 
 #ifndef HYPHY3_COMBINED_DRIVER
 int main(int argc, char* argv[]) {
-    return run_slac(argc, argv);
+    try {
+        return run_slac(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
 }
 #endif
