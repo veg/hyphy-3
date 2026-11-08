@@ -9,6 +9,7 @@
 #include "hyphy/core/stats.hpp"
 #include "hyphy/opt/optimizer.hpp"
 #include "hyphy/opt/nelder_mead.hpp"
+#include "hyphy/core/json_output.hpp"
 #include "nlohmann/json.hpp"
 
 #include <string>
