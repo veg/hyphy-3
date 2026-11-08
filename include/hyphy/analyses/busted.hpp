@@ -6586,9 +6586,7 @@ public:
         for (const auto& seq : filtered.sequences) {
             out << ">" << seq.name << "\n" << seq.raw_seq << "\n";
         }
-        if (!out) {
-            throw std::runtime_error("Failed to write filtered alignment file: " + filepath);
-        }
+        core::close_or_throw(out, filepath);
     }
 
 nlohmann::json to_legacy_json(const BUSTEDResult& res) const;
@@ -6617,9 +6615,7 @@ nlohmann::json to_modern_json(const BUSTEDResult& res, const Provenance& prov = 
         }
         nlohmann::json j = to_json(res, format, prov);
         out << j.dump(2) << "\n";
-        if (!out) {
-            throw std::runtime_error("Failed to write file: " + filepath);
-        }
+        core::close_or_throw(out, filepath);
     }
 
 };

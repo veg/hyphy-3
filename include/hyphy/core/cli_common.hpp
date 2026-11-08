@@ -9,6 +9,7 @@
 #include "hyphy/core/console.hpp"
 #include "hyphy/core/progress_bar.hpp"
 #include "hyphy/core/provenance.hpp"
+#include "hyphy/core/json_output.hpp"
 #include "hyphy/analyses/tree_engine.hpp"
 #include "hyphy/analyses/joint_align.hpp"
 #if __has_include("hyphy/report/viewer_assets.hpp")
@@ -91,6 +92,79 @@ struct CommonArgParseStatus {
 };
 
 /**
+ * @brief Parse a signed integer option value, requiring the whole string to be
+ *        consumed. std::stoll/std::stod accept leading numeric prefixes
+ *        ("2e6" -> 2, "0x14" -> 0), which silently misreads user input.
+ */
+inline long long parse_ll_full(const char* flag, const std::string& val) {
+    size_t pos = 0;
+    long long v = 0;
+    try {
+        v = std::stoll(val, &pos);
+    } catch (const std::exception&) {
+        pos = 0;
+    }
+    if (val.empty() || pos != val.size()) {
+        throw std::runtime_error(std::string("Error: invalid ") + flag + " value '" + val + "'. Expected an integer.");
+    }
+    return v;
+}
+
+/**
+ * @brief Parse a floating-point option value, requiring the whole string to be
+ *        consumed (see parse_ll_full).
+ */
+inline double parse_double_full(const char* flag, const std::string& val) {
+    size_t pos = 0;
+    double v = 0.0;
+    try {
+        v = std::stod(val, &pos);
+    } catch (const std::exception&) {
+        pos = 0;
+    }
+    if (val.empty() || pos != val.size()) {
+        throw std::runtime_error(std::string("Error: invalid ") + flag + " value '" + val + "'. Expected a number.");
+    }
+    return v;
+}
+
+/**
+ * @brief Parse an unsigned integer option value, rejecting negatives.
+ *
+ * std::stoul/stoull silently wrap negative input (e.g. "-1" -> ~2^64) instead of
+ * throwing, and that wrapped value would otherwise feed allocation sizes and
+ * loop bounds (rate classes, MCMC lengths, breakpoint counts).
+ */
+inline unsigned long long parse_nonneg_ull(
+    const char* flag, const std::string& val,
+    long long max_val = std::numeric_limits<long long>::max(),
+    long long min_val = 0)
+{
+    long long v = parse_ll_full(flag, val);
+    if (v < min_val || v > max_val) {
+        throw std::runtime_error(std::string("Error: invalid ") + flag + " value '" + val + "'. Expected an integer in [" + std::to_string(min_val) + ", " + std::to_string(max_val) + "].");
+    }
+    return static_cast<unsigned long long>(v);
+}
+
+/**
+ * @brief Parse a probability/threshold option value in [0, 1].
+ *
+ * 0 is meaningful for several flags (--pvalue 0 marks nothing significant,
+ * --mutation-rate 0 disables cataclysmic mutation in GARD, --heterogeneity 0
+ * disables the directional trigger in dFEL), so it is accepted; out-of-range
+ * values otherwise pass silently and make every test significant or
+ * insignificant — wrong results with exit 0.
+ */
+inline double parse_probability(const char* flag, const std::string& val) {
+    double v = parse_double_full(flag, val);
+    if (!(v >= 0.0 && v <= 1.0)) {
+        throw std::runtime_error(std::string("Error: invalid ") + flag + " value '" + val + "'. Expected a number in [0, 1].");
+    }
+    return v;
+}
+
+/**
  * @brief Try to consume a shared CLI flag at index `i`.
  *
  * Returns `CommonArgParseStatus::Handled` if `argv[i]` was recognized and valid,
@@ -161,13 +235,14 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
     if ((arg == "--threads" || arg == "-T") && i + 1 < argc) {
         std::string val = argv[++i];
         try {
-            opts.num_threads = std::stoi(val);
-        } catch (const std::exception&) {
-            opts.num_threads = 0;
-        }
-        if (opts.num_threads < 1) {
+            // 0 (the default) means "auto": use the OMP_NUM_THREADS env var or
+            // the machine default. Negative values and partial parses like
+            // "1e9" are rejected.
+            opts.num_threads = static_cast<int>(
+                parse_nonneg_ull("--threads", val, std::numeric_limits<int>::max()));
+        } catch (const std::exception& e) {
             opts.has_error = true;
-            opts.error_message = "Error: invalid --threads value '" + val + "'. Expected a positive integer.";
+            opts.error_message = e.what();
             std::cerr << Console::danger(opts.error_message) << "\n";
             return CommonArgParseStatus::Error;
         }
@@ -188,13 +263,10 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
     if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
         std::string val = argv[++i];
         try {
-            opts.pvalue_threshold = std::stod(val);
-        } catch (const std::exception&) {
-            opts.pvalue_threshold = -1.0;
-        }
-        if (!(opts.pvalue_threshold > 0.0 && opts.pvalue_threshold <= 1.0)) {
+            opts.pvalue_threshold = parse_probability("--pvalue", val);
+        } catch (const std::exception& e) {
             opts.has_error = true;
-            opts.error_message = "Error: invalid --pvalue value '" + val + "'. Expected a number in (0, 1].";
+            opts.error_message = e.what();
             std::cerr << Console::danger(opts.error_message) << "\n";
             return CommonArgParseStatus::Error;
         }
@@ -246,48 +318,6 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
         return CommonArgParseStatus::Handled;
     }
     return CommonArgParseStatus::Unhandled;
-}
-
-/**
- * @brief Parse an unsigned integer option value, rejecting negatives.
- *
- * std::stoul/stoull silently wrap negative input (e.g. "-1" -> ~2^64) instead of
- * throwing, and that wrapped value would otherwise feed allocation sizes and
- * loop bounds (rate classes, MCMC lengths, breakpoint counts).
- */
-inline unsigned long long parse_nonneg_ull(
-    const char* flag, const std::string& val,
-    long long max_val = std::numeric_limits<long long>::max())
-{
-    long long v;
-    try {
-        v = std::stoll(val);
-    } catch (const std::exception&) {
-        throw std::runtime_error(std::string("Error: invalid ") + flag + " value '" + val + "'. Expected an integer.");
-    }
-    if (v < 0 || v > max_val) {
-        throw std::runtime_error(std::string("Error: invalid ") + flag + " value '" + val + "'. Expected an integer in [0, " + std::to_string(max_val) + "].");
-    }
-    return static_cast<unsigned long long>(v);
-}
-
-/**
- * @brief Parse a probability/threshold option value in (0, 1].
- *
- * Out-of-range thresholds (e.g. "--pvalue -1") otherwise pass silently and
- * make every test significant or insignificant — wrong results with exit 0.
- */
-inline double parse_probability(const char* flag, const std::string& val) {
-    double v;
-    try {
-        v = std::stod(val);
-    } catch (const std::exception&) {
-        v = -1.0;
-    }
-    if (!(v > 0.0 && v <= 1.0)) {
-        throw std::runtime_error(std::string("Error: invalid ") + flag + " value '" + val + "'. Expected a number in (0, 1].");
-    }
-    return v;
 }
 
 /**
@@ -403,34 +433,13 @@ inline bool load_codon_dataset(
             auto jres = jengine.run(dn_aln, dn_tree);
 
             if (!opts.out_poa_file.empty()) {
-                std::ofstream pf(opts.out_poa_file);
-                if (!pf.is_open()) {
-                    throw std::runtime_error("Could not open output file for writing: " + opts.out_poa_file);
-                }
-                pf << jres.poa_gfa;
-                if (!pf) {
-                    throw std::runtime_error("Failed to write output file: " + opts.out_poa_file);
-                }
+                write_file_or_throw(opts.out_poa_file, jres.poa_gfa);
             }
             if (!opts.out_stk_file.empty()) {
-                std::ofstream sf(opts.out_stk_file);
-                if (!sf.is_open()) {
-                    throw std::runtime_error("Could not open output file for writing: " + opts.out_stk_file);
-                }
-                sf << jres.stockholm_alignment;
-                if (!sf) {
-                    throw std::runtime_error("Failed to write output file: " + opts.out_stk_file);
-                }
+                write_file_or_throw(opts.out_stk_file, jres.stockholm_alignment);
             }
             if (!opts.out_enewick_file.empty()) {
-                std::ofstream ef(opts.out_enewick_file);
-                if (!ef.is_open()) {
-                    throw std::runtime_error("Could not open output file for writing: " + opts.out_enewick_file);
-                }
-                ef << jres.extended_newick << "\n";
-                if (!ef) {
-                    throw std::runtime_error("Failed to write output file: " + opts.out_enewick_file);
-                }
+                write_file_or_throw(opts.out_enewick_file, jres.extended_newick + "\n");
             }
 
             out.aln = std::move(jres.map_alignment);
@@ -528,17 +537,10 @@ inline bool write_cli_json_and_html(
     const std::string& json_str
 ) {
     try {
-        std::ofstream out(opts.output_file);
-        if (!out.is_open()) {
-            throw std::runtime_error("Cannot open output file for writing: " + opts.output_file);
-        }
-        out << json_str;
-        if (json_str.empty() || json_str.back() != '\n') {
-            out << "\n";
-        }
-        if (!out) {
-            throw std::runtime_error("Failed to write output file: " + opts.output_file);
-        }
+        write_file_or_throw(
+            opts.output_file,
+            json_str + ((json_str.empty() || json_str.back() != '\n') ? "\n" : "")
+        );
         if (!opts.quiet) {
             std::string fmt_desc = (opts.json_format == JSONFormat::Legacy)
                 ? "Legacy Datamonkey JSON" : "Modern HyPhy v3.0 JSON";

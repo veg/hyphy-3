@@ -1418,9 +1418,7 @@ public:
                     << pe.assigned_label << "\t" << std::fixed << std::setprecision(4) << pe.max_support << "\t"
                     << pe.model_averaged_rate << "\t" << pe.mle_rate << "\n";
             }
-            if (!out) {
-                throw std::runtime_error("Failed to write TSV output file: " + settings.output_tsv);
-            }
+            core::close_or_throw(out, settings.output_tsv);
         }
 
         return sel;
@@ -1724,9 +1722,7 @@ public:
             throw std::runtime_error("Cannot open output file for writing: " + filepath);
         }
         out << to_json(res).dump(2) << "\n";
-        if (!out) {
-            throw std::runtime_error("Failed to write output file: " + filepath);
-        }
+        core::close_or_throw(out, filepath);
     }
 };
 

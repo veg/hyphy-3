@@ -38,7 +38,7 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--code") << " <name>        Genetic code (default: Universal; e.g. Vertebrate-mtDNA)\n"
               << "  " << Console::brand("--branches") << " <spec>    Branch sets to contrast: 'auto' (default, uses tree tags), 'Internal,Leaves', or tag names\n"
               << "  " << Console::brand("--shrinkage") << " <val>    Empirical Bayes Ridge shrinkage lambda (default: 1.0; 0 to disable)\n"
-              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.CONTRAST-FEL.json)\n"
               << "  " << Console::brand("--html") << " <file>        Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--json-format") << " <fmt>  JSON schema format: modern (default) or legacy (HyPhy 2.5)\n"
@@ -69,7 +69,7 @@ int run_contrast_fel(int argc, char* argv[]) {
             branch_specs = argv[++i];
             continue;
         } else if (arg == "--shrinkage" && i + 1 < argc) {
-            shrinkage_lambda = std::stod(argv[++i]);
+            shrinkage_lambda = parse_double_full("--shrinkage", argv[++i]);
             continue;
         } else if (arg == "--no-shrinkage") {
             shrinkage_lambda = 0.0;

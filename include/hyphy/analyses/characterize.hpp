@@ -5,6 +5,7 @@
 #include "hyphy/analyses/prime.hpp"
 #include "hyphy/core/console.hpp"
 #include "hyphy/core/stats.hpp"
+#include "hyphy/core/json_output.hpp"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
@@ -750,9 +751,7 @@ public:
                 throw std::runtime_error("Cannot open output file for writing: " + base_prefix + ".FEL.json");
             }
             out << jf.dump(2);
-            if (!out) {
-                throw std::runtime_error("Failed to write output file: " + base_prefix + ".FEL.json");
-            }
+            core::close_or_throw(out, base_prefix + ".FEL.json");
         }
         // 2. Legacy MEME JSON
         {
@@ -789,9 +788,7 @@ public:
                 throw std::runtime_error("Cannot open output file for writing: " + base_prefix + ".MEME.json");
             }
             out << jm.dump(2);
-            if (!out) {
-                throw std::runtime_error("Failed to write output file: " + base_prefix + ".MEME.json");
-            }
+            core::close_or_throw(out, base_prefix + ".MEME.json");
         }
         // 3. Legacy BUSTED JSON
         {
@@ -825,9 +822,7 @@ public:
                 throw std::runtime_error("Cannot open output file for writing: " + base_prefix + ".BUSTED.json");
             }
             out << jb.dump(2);
-            if (!out) {
-                throw std::runtime_error("Failed to write output file: " + base_prefix + ".BUSTED.json");
-            }
+            core::close_or_throw(out, base_prefix + ".BUSTED.json");
         }
     }
 

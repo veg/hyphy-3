@@ -36,7 +36,7 @@ static void print_absrel_usage(const char* prog) {
               << "  " << Console::brand("--branches") << " <set>     Branches to test: All, Internal, Leaves (default: All)\n"
               << "  " << Console::brand("--pvalue") << " <threshold> Holm-Bonferroni p-value threshold (default: 0.05)\n"
               << "  " << Console::brand("--max-rates, --rates") << " <N> Maximum rate classes per branch (default: 3)\n"
-              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.ABSREL.json)\n"
               << "  " << Console::brand("--html") << " <file>        Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--progress") << "           Force interactive progress bar\n"

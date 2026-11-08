@@ -43,7 +43,7 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--full-model") << "         Perform branch length re-optimization under full codon model (default)\n"
               << "  " << Console::brand("--quick") << "              Disable full branch re-optimization (proportional branch scaling)\n"
               << "  " << Console::brand("--all-sites") << "          Display all codon sites in console table (default: significant only)\n"
-              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.SLAC.json)\n"
               << "  " << Console::brand("--html") << " <file>        Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--json-format") << " <type> Output JSON schema format: 'modern' (v3.0, default) or 'legacy' (Datamonkey 2.5)\n"
@@ -98,7 +98,7 @@ int run_slac(int argc, char* argv[]) {
         if (status == CommonArgParseStatus::Error) return 1;
 
         if (arg == "--samples" && i + 1 < argc) {
-            samples = static_cast<size_t>(std::stoul(argv[++i]));
+            samples = static_cast<size_t>(parse_nonneg_ull("--samples", argv[++i]));
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;

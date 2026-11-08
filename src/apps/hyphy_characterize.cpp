@@ -1,5 +1,7 @@
 #include "hyphy/analyses/characterize.hpp"
+#include "hyphy/core/cli_common.hpp"
 #include "hyphy/core/console.hpp"
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -33,6 +35,7 @@ static void print_characterize_usage(const char* prog) {
               << Console::bold("Output:") << "\n"
               << "  " << Console::brand("--output, -o") << " <file>          Path for unified JSON characterization report\n"
               << "  " << Console::brand("--html") << " <file>                Path for standalone interactive multi-tab SPA HTML report\n"
+              << "  " << Console::brand("--no-html") << "                    Disable the auto-generated HTML report\n"
               << "  " << Console::brand("--emit-legacy-jsons") << "          Also emit legacy .FEL.json, .MEME.json & .BUSTED.json files\n"
               << "  " << Console::brand("--out-msa") << " <file>             Path to write co-estimated MAP codon alignment (FASTA)\n"
               << "  " << Console::brand("--out-stockholm") << " <file>       Path to write Stockholm 1.0 quality-annotated alignment\n"
@@ -44,7 +47,7 @@ static void print_characterize_usage(const char* prog) {
               << "  " << Console::brand("--branches, -b") << " <tag>         Optional foreground branch tag for RELAX/Contrast-FEL (default: BIC-gated auto)\n"
               << "  " << Console::brand("--coevolution") << "                Opt-in Tier 3 screen for epistatic co-substituting site pairs\n"
               << "  " << Console::brand("--no-spr") << "                     Disable coupled SPR + indel search\n"
-              << "  " << Console::brand("--threads") << " <int>              Number of OpenMP threads\n"
+              << "  " << Console::brand("--threads") << " <int>              Number of OpenMP threads (0 = auto)\n"
               << "  " << Console::brand("--quiet, -q") << "                  Suppress progress output\n";
 }
 
@@ -64,6 +67,8 @@ int run_characterize(int argc, char* argv[])
     std::string code_name = "Universal";
     CharacterizeSettings settings;
     int num_threads = 0;
+    bool no_html = false;
+    bool html_explicit = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -88,6 +93,9 @@ int run_characterize(int argc, char* argv[])
             out_json_path = argv[++i];
         } else if (arg == "--html" && i + 1 < argc) {
             out_html_path = argv[++i];
+            html_explicit = true;
+        } else if (arg == "--no-html") {
+            no_html = true;
         } else if (arg == "--emit-legacy-jsons") {
             settings.emit_legacy_jsons = true;
         } else if (arg == "--out-msa" && i + 1 < argc) {
@@ -101,27 +109,17 @@ int run_characterize(int argc, char* argv[])
         } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
             std::string val_str = argv[++i];
             try {
-                size_t pos = 0;
-                double v = std::stod(val_str, &pos);
-                if (pos != val_str.size() || !(v > 0.0 && v <= 1.0)) {
-                    throw std::invalid_argument("out of range");
-                }
-                settings.p_value_threshold = v;
-            } catch (const std::exception&) {
-                std::cerr << Console::danger("Error: ") << "Invalid --pvalue '" << val_str << "' (must be a number in (0, 1]).\n";
+                settings.p_value_threshold = parse_probability("--pvalue", val_str);
+            } catch (const std::exception& e) {
+                std::cerr << Console::danger("Error: ") << e.what() << "\n";
                 return 1;
             }
         } else if (arg == "--fdr" && i + 1 < argc) {
             std::string val_str = argv[++i];
             try {
-                size_t pos = 0;
-                double v = std::stod(val_str, &pos);
-                if (pos != val_str.size() || !(v > 0.0 && v <= 1.0)) {
-                    throw std::invalid_argument("out of range");
-                }
-                settings.fdr_threshold = v;
-            } catch (const std::exception&) {
-                std::cerr << Console::danger("Error: ") << "Invalid --fdr '" << val_str << "' (must be a number in (0, 1]).\n";
+                settings.fdr_threshold = parse_probability("--fdr", val_str);
+            } catch (const std::exception& e) {
+                std::cerr << Console::danger("Error: ") << e.what() << "\n";
                 return 1;
             }
         } else if ((arg == "--branches" || arg == "-b") && i + 1 < argc) {
@@ -133,14 +131,11 @@ int run_characterize(int argc, char* argv[])
         } else if (arg == "--threads" && i + 1 < argc) {
             std::string val_str = argv[++i];
             try {
-                size_t pos = 0;
-                int v = std::stoi(val_str, &pos);
-                if (pos != val_str.size() || v < 1) {
-                    throw std::invalid_argument("out of range");
-                }
-                num_threads = v;
-            } catch (const std::exception&) {
-                std::cerr << Console::danger("Error: ") << "Invalid --threads '" << val_str << "' (must be a positive integer).\n";
+                // 0 (the default) means "auto"; negatives and partial parses are rejected.
+                num_threads = static_cast<int>(
+                    parse_nonneg_ull("--threads", val_str, std::numeric_limits<int>::max()));
+            } catch (const std::exception& e) {
+                std::cerr << Console::danger("Error: ") << e.what() << "\n";
                 return 1;
             }
         } else if (arg == "--quiet" || arg == "-q") {
@@ -196,8 +191,17 @@ int run_characterize(int argc, char* argv[])
     if (out_json_path.empty()) {
         out_json_path = input_label + ".CHARACTERIZE.json";
     }
-    if (out_html_path.empty()) {
-        out_html_path = output_stem + ".CHARACTERIZE.html";
+    if (no_html) {
+        out_html_path.clear();
+    } else if (out_html_path.empty() && !html_explicit) {
+        // Derive the HTML path only when -o is (or will be) a regular file.
+        // `-o /dev/null` / `-o /dev/stdout` are legitimate JSON targets but a
+        // derived sibling path (/dev/null.CHARACTERIZE.html) is nonsense.
+        bool json_is_special = std::filesystem::exists(out_json_path) &&
+                               !std::filesystem::is_regular_file(out_json_path);
+        if (!json_is_special) {
+            out_html_path = output_stem + ".CHARACTERIZE.html";
+        }
     }
 
     if (!settings.quiet) {
@@ -398,34 +402,17 @@ int run_characterize(int argc, char* argv[])
         );
     }
 
+    // Requested outputs are written first so that a failure in the derived
+    // HTML report cannot suppress an explicitly requested file.
     if (!out_json_path.empty()) {
-        std::ofstream jf(out_json_path);
-        if (!jf.is_open()) {
-            std::cerr << Console::danger("Error: could not open output file: ") << out_json_path << "\n";
-            return 1;
-        }
-        jf << CharacterizeEngine::to_json(res) << "\n";
-        if (!jf) {
-            std::cerr << Console::danger("Error: failed to write output file: ") << out_json_path << "\n";
+        try {
+            write_file_or_throw(out_json_path, CharacterizeEngine::to_json(res) + "\n");
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error: ") << e.what() << "\n";
             return 1;
         }
         if (!settings.quiet) {
             std::cout << Console::success("Saved unified JSON characterization to: ") << out_json_path << "\n";
-        }
-    }
-    if (!out_html_path.empty()) {
-        std::ofstream hf(out_html_path);
-        if (!hf.is_open()) {
-            std::cerr << Console::danger("Error: could not open output file: ") << out_html_path << "\n";
-            return 1;
-        }
-        hf << CharacterizeEngine::render_standalone_html(res, short_label);
-        if (!hf) {
-            std::cerr << Console::danger("Error: failed to write output file: ") << out_html_path << "\n";
-            return 1;
-        }
-        if (!settings.quiet) {
-            std::cout << Console::success("Saved standalone multi-tab SPA HTML report to: ") << out_html_path << "\n";
         }
     }
     if (settings.emit_legacy_jsons) {
@@ -443,8 +430,10 @@ int run_characterize(int argc, char* argv[])
         for (const auto& s : res.joint_align.map_alignment.sequences) {
             mf << ">" << s.name << "\n" << s.raw_seq << "\n";
         }
-        if (!mf) {
-            std::cerr << Console::danger("Error: failed to write output file: ") << out_msa_path << "\n";
+        try {
+            close_or_throw(mf, out_msa_path);
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error: ") << e.what() << "\n";
             return 1;
         }
         if (!settings.quiet) {
@@ -452,14 +441,10 @@ int run_characterize(int argc, char* argv[])
         }
     }
     if (!out_sto_path.empty()) {
-        std::ofstream sf(out_sto_path);
-        if (!sf.is_open()) {
-            std::cerr << Console::danger("Error: could not open output file: ") << out_sto_path << "\n";
-            return 1;
-        }
-        sf << res.joint_align.stockholm_alignment;
-        if (!sf) {
-            std::cerr << Console::danger("Error: failed to write output file: ") << out_sto_path << "\n";
+        try {
+            write_file_or_throw(out_sto_path, res.joint_align.stockholm_alignment);
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error: ") << e.what() << "\n";
             return 1;
         }
         if (!settings.quiet) {
@@ -467,18 +452,25 @@ int run_characterize(int argc, char* argv[])
         }
     }
     if (!out_poa_path.empty()) {
-        std::ofstream pf(out_poa_path);
-        if (!pf.is_open()) {
-            std::cerr << Console::danger("Error: could not open output file: ") << out_poa_path << "\n";
-            return 1;
-        }
-        pf << res.joint_align.poa_gfa;
-        if (!pf) {
-            std::cerr << Console::danger("Error: failed to write output file: ") << out_poa_path << "\n";
+        try {
+            write_file_or_throw(out_poa_path, res.joint_align.poa_gfa);
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error: ") << e.what() << "\n";
             return 1;
         }
         if (!settings.quiet) {
             std::cout << Console::success("Saved POA codon graph (GFAv1) to: ") << out_poa_path << "\n";
+        }
+    }
+    if (!out_html_path.empty()) {
+        try {
+            write_file_or_throw(out_html_path, CharacterizeEngine::render_standalone_html(res, short_label));
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error: ") << e.what() << "\n";
+            return 1;
+        }
+        if (!settings.quiet) {
+            std::cout << Console::success("Saved standalone multi-tab SPA HTML report to: ") << out_html_path << "\n";
         }
     }
 

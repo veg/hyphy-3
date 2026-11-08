@@ -1259,9 +1259,7 @@ nlohmann::json to_legacy_json(
             throw std::runtime_error("Could not open output JSON file: " + output_filepath);
         }
         out << j.dump(2) << std::endl;
-        if (!out) {
-            throw std::runtime_error("Failed to write output JSON file: " + output_filepath);
-        }
+        core::close_or_throw(out, output_filepath);
     }
 };
 

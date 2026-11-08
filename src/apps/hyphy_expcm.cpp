@@ -56,7 +56,7 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--gradient-tol VALUE") << "  Gradient tolerance [default: 1e-6]\n"
               << "  " << Console::brand("--relative-tol VALUE") << "  Relative tolerance [default: 1e-10]\n"
               << "  " << Console::brand("--max-iterations N") << "    Maximum iterations [default: 1000]\n"
-              << "  " << Console::brand("--threads N") << "           Number of OpenMP threads\n"
+              << "  " << Console::brand("--threads N") << "           Number of OpenMP threads (0 = auto)\n"
               << "  " << Console::brand("--verbose") << "            Verbose output\n"
               << "  " << Console::brand("--help, -h") << "           Show this help message\n\n"
               << Console::bold("Examples:") << "\n"
@@ -101,11 +101,11 @@ int run_expcm(int argc, char* argv[]) {
         } else if (arg == "--omegabysite" && i + 1 < argc) {
             omegabysite_file = argv[++i];
         } else if (arg == "--beta" && i + 1 < argc) {
-            beta_val = std::stod(argv[++i]);
+            beta_val = parse_double_full("--beta", argv[++i]);
         } else if (arg == "--omega" && i + 1 < argc) {
-            omega_val = std::stod(argv[++i]);
+            omega_val = parse_double_full("--omega", argv[++i]);
         } else if (arg == "--kappa" && i + 1 < argc) {
-            kappa_val = std::stod(argv[++i]);
+            kappa_val = parse_double_full("--kappa", argv[++i]);
         } else if (arg == "--fix-beta") {
             fix_beta = true;
         } else if (arg == "--fix-omega") {
@@ -115,22 +115,27 @@ int run_expcm(int argc, char* argv[]) {
         } else if (arg == "--fdr-level" && i + 1 < argc) {
             fdr_level = parse_probability("--fdr-level", argv[++i]);
         } else if (arg == "--gradient-tol" && i + 1 < argc) {
-            gradient_tol = std::stod(argv[++i]);
+            gradient_tol = parse_double_full("--gradient-tol", argv[++i]);
         } else if (arg == "--relative-tol" && i + 1 < argc) {
-            relative_tol = std::stod(argv[++i]);
+            relative_tol = parse_double_full("--relative-tol", argv[++i]);
         } else if (arg == "--max-iterations" && i + 1 < argc) {
-            max_iterations = std::max(1, std::stoi(argv[++i]));
+            // Must be >= 1: silently clamping "-5" -> 1 iteration would run an
+            // unoptimized fit and report success (worse than rejecting it).
+            max_iterations = static_cast<int>(parse_nonneg_ull(
+                "--max-iterations", argv[++i], std::numeric_limits<int>::max(), 1));
         } else if (arg == "--threads" && i + 1 < argc) {
-            num_threads = std::stoi(argv[++i]);
-            if (num_threads < 1) {
-                std::cerr << Console::danger("Error: --threads must be a positive integer.\n");
-                return 1;
-            }
+            // 0 means "auto"; negatives and partial parses are rejected.
+            num_threads = static_cast<int>(
+                parse_nonneg_ull("--threads", argv[++i], std::numeric_limits<int>::max()));
         } else if (arg == "--verbose") {
             verbose = true;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
+        } else {
+            std::cerr << Console::danger("Error: unknown or incomplete argument '") << arg
+                      << "'. Use --help for usage.\n";
+            return 1;
         }
     }
 

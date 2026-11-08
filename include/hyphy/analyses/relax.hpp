@@ -170,9 +170,7 @@ nlohmann::json to_modern_json(const Tree& tree, const Alignment& aln, const Prov
         }
         nlohmann::json j = to_json(tree, aln, format, prov);
         out << j.dump(2) << "\n";
-        if (!out) {
-            throw std::runtime_error("Failed to write file: " + filepath);
-        }
+        core::close_or_throw(out, filepath);
     }
 
 };

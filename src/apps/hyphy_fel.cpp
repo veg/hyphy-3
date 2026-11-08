@@ -39,7 +39,7 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--code") << " <name>        Genetic code (default: Universal; e.g. Vertebrate-mtDNA)\n"
               << "  " << Console::brand("--branches") << " <set>     Branches to test: 'All' (default), 'Internal', 'Leaves', 'Unlabeled', tag name, or comma-separated names\n"
               << "  " << Console::brand("--branch-regex") << " <reg> Regular expression to match branch names to test\n"
-              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.FEL.json)\n"
               << "  " << Console::brand("--html") << " <file>        Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--pvalue") << " <float>     P-value significance threshold (default: 0.1)\n"

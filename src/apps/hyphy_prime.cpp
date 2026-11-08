@@ -41,7 +41,7 @@ static void print_prime_usage(const char* prog) {
               << "  " << Console::brand("--property-file") << " <file>   Custom amino acid properties JSON file\n"
               << "  " << Console::brand("--shrinkage") << " <val>        Empirical Bayes Ridge shrinkage lambda (default: 0.5; 0 to disable)\n"
               << "  " << Console::brand("--branches") << " <spec>        Branches to test: 'All' (default), 'Internal', 'Leaves', or regex\n"
-              << "  " << Console::brand("--threads") << " <N>            Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--threads") << " <N>            Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--output") << " <file>          Path to output JSON file (default: <alignment>.PRIME.json)\n"
               << "  " << Console::brand("--html") << " <file>            Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--pvalue") << " <float>         Omnibus FDR threshold for site reporting (default: 0.10)\n"
@@ -111,7 +111,7 @@ int run_prime(int argc, char* argv[]) {
         } else if (arg == "--property-file" && i + 1 < argc) {
             property_file = argv[++i];
         } else if (arg == "--shrinkage" && i + 1 < argc) {
-            shrinkage_lambda = std::stod(argv[++i]);
+            shrinkage_lambda = parse_double_full("--shrinkage", argv[++i]);
         } else if (arg == "--no-shrinkage") {
             shrinkage_lambda = 0.0;
         } else if (arg == "--pvalue2" && i + 1 < argc) {

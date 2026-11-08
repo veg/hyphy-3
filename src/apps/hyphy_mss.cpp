@@ -59,7 +59,7 @@ static void print_mss_usage(const char* prog) {
               << Console::bold("Inference & Output Options:") << "\n"
               << "  " << Console::brand("--no-ci") << "              Skip 95% profile-likelihood confidence intervals\n"
               << "  " << Console::brand("--no-lrt") << "             Skip per-class LRTs (alpha_k == 1) and Holm-Bonferroni p-values\n"
-              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.MSS.json)\n"
               << "  " << Console::brand("--help, -h") << "           Show this help message\n\n"
               << Console::bold("Examples:") << "\n"
@@ -112,7 +112,7 @@ int run_mss(int argc, char* argv[]) {
         } else if (arg == "--select" || arg == "--selector" || arg == "--partition-select") {
             settings.select_partition = true;
         } else if ((arg == "--classes" || arg == "--rates" || arg == "-K") && i + 1 < argc) {
-            settings.select_classes = std::stoul(argv[++i]);
+            settings.select_classes = parse_nonneg_ull("--classes", argv[++i], 12);
         } else if (arg == "--auto-k") {
             settings.select_auto_k = true;
         } else if (arg == "--fixed-k" || arg == "--no-auto-k") {

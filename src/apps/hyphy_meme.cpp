@@ -38,7 +38,7 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--embeddings") << " <file>  Path to precomputed [N x 384] HyphAeon embeddings (.bin/.csv/.tsv)\n"
               << "  " << Console::brand("--code") << " <name>        Genetic code (default: Universal; e.g. Vertebrate-mtDNA)\n"
               << "  " << Console::brand("--branches") << " <spec>    Branches to test: All (default), Internal, Leaves, Unlabeled, {TAG}, or names\n"
-              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.MEME.json)\n"
               << "  " << Console::brand("--html") << " <file>        Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--pvalue") << " <float>     P-value significance threshold (default: 0.1)\n"
@@ -75,7 +75,8 @@ int run_meme(int argc, char* argv[]) {
         } else if (arg == "--test" && i + 1 < argc) {
             opts.branches = argv[++i];
         } else if (arg == "--rates" && i + 1 < argc) {
-            int r = std::stoi(argv[++i]);
+            int r = static_cast<int>(
+                parse_nonneg_ull("--rates", argv[++i], std::numeric_limits<int>::max()));
             if (r != 2) {
                 std::cerr << Console::danger("Error: ") << "hyphy_meme implements the canonical 2-rate MEME mixture (--rates 2); got --rates " << r << ".\n";
                 return 1;
@@ -88,7 +89,8 @@ int run_meme(int argc, char* argv[]) {
                 return 1;
             }
         } else if (arg == "--resample" && i + 1 < argc) {
-            int n_res = std::stoi(argv[++i]);
+            int n_res = static_cast<int>(
+                parse_nonneg_ull("--resample", argv[++i], std::numeric_limits<int>::max()));
             if (n_res > 0) {
                 std::cerr << Console::danger("Error: ") << "Parametric bootstrap (--resample > 0) is not supported in hyphy_meme.\n";
                 return 1;

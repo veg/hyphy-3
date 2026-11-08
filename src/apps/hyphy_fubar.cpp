@@ -46,7 +46,7 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--chain-length") << " <N>       MCMC chain length (default: 2000000)\n"
               << "  " << Console::brand("--burn-in") << " <N>            MCMC burn-in steps (default: 1000000)\n"
               << "  " << Console::brand("--samples") << " <N>            MCMC samples to draw (default: 100)\n"
-              << "  " << Console::brand("--threads, -T") << " <N>        Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--threads, -T") << " <N>        Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--output, -o") << " <file>      Path to output JSON file (default: <alignment>.FUBAR.json)\n"
               << "  " << Console::brand("--html") << " <file>            Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--json-format") << " <fmt>      JSON schema format: modern (default) or legacy (HyPhy 2.5)\n"
@@ -86,7 +86,7 @@ int run_fubar(int argc, char* argv[]) {
         } else if ((arg == "--method" || arg == "-m") && i + 1 < argc) {
             settings.method = string_to_fubar_method(argv[++i]);
         } else if (arg == "--concentration" && i + 1 < argc) {
-            settings.concentration = std::stod(argv[++i]);
+            settings.concentration = parse_double_full("--concentration", argv[++i]);
         } else if (arg == "--non-zero") {
             settings.non_zero = true;
         } else if (arg == "--tree-scaling" && i + 1 < argc) {
