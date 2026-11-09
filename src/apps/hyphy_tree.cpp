@@ -3,6 +3,7 @@
 #include "hyphy/core/tree.hpp"
 #include "hyphy/core/console.hpp"
 #include "hyphy/analyses/tree_engine.hpp"
+#include "hyphy/core/cli_common.hpp"
 
 #include <iostream>
 #include <fstream>
@@ -53,7 +54,7 @@ static void print_usage(const char* prog) {
               << Console::bold("General Output & Runtime:") << "\n"
               << "  " << Console::brand("--output, -o") << " <file>          Path to output Newick tree file (use '-' for stdout)\n"
               << "  " << Console::brand("--json") << " <file>               Path to output JSON summary file\n"
-              << "  " << Console::brand("--threads, -t") << " <N>            Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--threads, -t") << " <N>            Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--quiet, -q") << "                  Suppress console progress panels\n"
               << "  " << Console::brand("--help, -h") << "                   Show this help message\n\n"
               << Console::bold("Examples:") << "\n"
@@ -321,20 +322,38 @@ int run_tree(int argc, char* argv[]) {
             model_str = argv[++i];
         } else if (arg == "--dnc" && i + 1 < argc) {
             std::string val = argv[++i];
-            enable_dnc = (val == "yes" || val == "true" || val == "1");
+            if (val == "yes" || val == "true" || val == "1") {
+                enable_dnc = true;
+            } else if (val == "no" || val == "false" || val == "0") {
+                enable_dnc = false;
+            } else {
+                std::cerr << Console::danger("Error: unknown --dnc '") << val
+                          << "'. Expected 'yes' or 'no'.\n";
+                return 1;
+            }
         } else if (arg == "--dnc-min-taxa" && i + 1 < argc) {
-            dnc_min_taxa = std::stoul(argv[++i]);
+            dnc_min_taxa = parse_nonneg_ull("--dnc-min-taxa", argv[++i]);
         } else if (arg == "--dnc-island-size" && i + 1 < argc) {
-            dnc_island_size = std::stoul(argv[++i]);
+            dnc_island_size = parse_nonneg_ull("--dnc-island-size", argv[++i]);
         } else if (arg == "--spr-rounds" && i + 1 < argc) {
-            spr_max_rounds = std::stoul(argv[++i]);
+            spr_max_rounds = parse_nonneg_ull("--spr-rounds", argv[++i]);
         } else if (arg == "--spr-candidates" && i + 1 < argc) {
-            spr_max_candidates = std::stoul(argv[++i]);
+            spr_max_candidates = parse_nonneg_ull("--spr-candidates", argv[++i]);
         } else if (arg == "--polytomies" && i + 1 < argc) {
             std::string val = argv[++i];
-            allow_polytomies = (val == "yes" || val == "true" || val == "1");
+            if (val == "yes" || val == "true" || val == "1") {
+                allow_polytomies = true;
+            } else if (val == "no" || val == "false" || val == "0") {
+                allow_polytomies = false;
+            } else {
+                std::cerr << Console::danger("Error: unknown --polytomies '") << val
+                          << "'. Expected 'yes' or 'no'.\n";
+                return 1;
+            }
         } else if ((arg == "--threads" || arg == "-t") && i + 1 < argc) {
-            num_threads = std::stoi(argv[++i]);
+            // 0 means "auto"; negatives and partial parses are rejected.
+            num_threads = static_cast<int>(
+                parse_nonneg_ull("--threads", argv[++i], std::numeric_limits<int>::max()));
         } else if (arg == "--quiet" || arg == "-q") {
             quiet = true;
         } else {
@@ -387,12 +406,12 @@ int run_tree(int argc, char* argv[]) {
                 if (output_nwk_path.empty()) {
                     output_nwk_path = in_tree_path + (label_requested ? ".labeled.nwk" : ".trimmed.nwk");
                 }
-                std::ofstream ofs(output_nwk_path);
-                if (!ofs.is_open()) {
-                    std::cerr << Console::danger("Error: Could not open output file: ") << output_nwk_path << "\n";
+                try {
+                    write_file_or_throw(output_nwk_path, nwk_out + "\n");
+                } catch (const std::exception& e) {
+                    std::cerr << Console::danger("Error: ") << e.what() << "\n";
                     return 1;
                 }
-                ofs << nwk_out << "\n";
                 if (!quiet) {
                     size_t n_tips = 0, n_tagged = 0;
                     for (const auto& nd : tree.nodes) {
@@ -463,14 +482,14 @@ int run_tree(int argc, char* argv[]) {
         if (output_nwk_path.empty()) {
             output_nwk_path = aln_path + ".nwk";
         }
-        std::ofstream nwk_file(output_nwk_path);
-        if (nwk_file.is_open()) {
-            nwk_file << res.optimized_tree.to_newick(true) << "\n";
-            if (!quiet) {
-                std::cout << Console::success("Saved inferred Newick tree to: ") << output_nwk_path << "\n";
-            }
-        } else {
-            std::cerr << Console::danger("Warning: Could not open output file for Newick: ") << output_nwk_path << "\n";
+        try {
+            write_file_or_throw(output_nwk_path, res.optimized_tree.to_newick(true) + "\n");
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error: ") << e.what() << "\n";
+            return 1;
+        }
+        if (!quiet) {
+            std::cout << Console::success("Saved inferred Newick tree to: ") << output_nwk_path << "\n";
         }
 
         // Write JSON output if requested
@@ -496,12 +515,14 @@ int run_tree(int argc, char* argv[]) {
             prov.execution.os = Provenance::detect_os();
             prov.execution.compiler = Provenance::detect_compiler();
 
-            std::ofstream json_file(output_json_path);
-            if (json_file.is_open()) {
-                json_file << engine.to_json(res, prov).dump(2) << "\n";
-                if (!quiet) {
-                    std::cout << Console::success("Saved analysis JSON to: ") << output_json_path << "\n";
-                }
+            try {
+                write_file_or_throw(output_json_path, engine.to_json(res, prov).dump(2) + "\n");
+            } catch (const std::exception& e) {
+                std::cerr << Console::danger("Error: ") << e.what() << "\n";
+                return 1;
+            }
+            if (!quiet) {
+                std::cout << Console::success("Saved analysis JSON to: ") << output_json_path << "\n";
             }
         }
 
@@ -514,6 +535,11 @@ int run_tree(int argc, char* argv[]) {
 
 #ifndef HYPHY3_COMBINED_DRIVER
 int main(int argc, char* argv[]) {
-    return run_tree(argc, argv);
+    try {
+        return run_tree(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
 }
 #endif

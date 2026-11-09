@@ -474,6 +474,9 @@ if(Python_FOUND)
             set_target_properties(_hyphy3 PROPERTIES
                 LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python"
             )
+            # Wheel/sdist installs (scikit-build-core): extension lands at the
+            # wheel root so `import _hyphy3` works after `pip install .`.
+            install(TARGETS _hyphy3 LIBRARY DESTINATION .)
 
             if(HYPHY3_BUILD_TESTS)
                 add_test(NAME PythonAutogradTest

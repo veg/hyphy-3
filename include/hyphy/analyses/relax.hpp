@@ -170,6 +170,7 @@ nlohmann::json to_modern_json(const Tree& tree, const Alignment& aln, const Prov
         }
         nlohmann::json j = to_json(tree, aln, format, prov);
         out << j.dump(2) << "\n";
+        core::close_or_throw(out, filepath);
     }
 
 };

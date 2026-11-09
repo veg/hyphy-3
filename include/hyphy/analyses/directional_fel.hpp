@@ -1741,6 +1741,7 @@ nlohmann::json to_legacy_json(const std::string& input_filepath = "", const std:
         } else {
             out << to_modern_json(input_filepath, tree_string).dump(2);
         }
+        core::close_or_throw(out, filepath);
     }
 
     DirectionalFELSummary get_summary() const {

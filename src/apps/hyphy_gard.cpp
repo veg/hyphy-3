@@ -4,6 +4,7 @@
 #include "hyphy/core/console.hpp"
 #include "hyphy/core/provenance.hpp"
 #include "hyphy/analyses/gard.hpp"
+#include "hyphy/core/cli_common.hpp"
 #include "hyphy/report/html_report.hpp"
 
 #include <iostream>
@@ -45,7 +46,7 @@ static void print_gard_usage(const char* prog) {
               << "  " << Console::brand("--bridges") << " <yes|no>               Screen for Wheatstone bridges & seed breakpoints (default: yes)\n"
               << "  " << Console::brand("--topology-test") << " <both|sh|kh|none> Topological incongruence test (default: both)\n"
               << "  " << Console::brand("--test-replicates") << " <N>             Bootstrap replicates for KH/SH tests (default: 1000)\n"
-              << "  " << Console::brand("--threads, -t") << " <N>             Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--threads, -t") << " <N>             Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--output, -o") << " <file>           Path to output JSON file (default: <alignment>.GARD.json)\n"
               << "  " << Console::brand("--format") << " <fmt>                Output format: 'modern' (default) or 'legacy'\n"
               << "  " << Console::brand("--legacy-json") << "                  Output HyPhy 2.5 compatible JSON\n"
@@ -95,36 +96,57 @@ int run_gard(int argc, char* argv[]) {
             html_file = argv[++i];
         } else if ((arg == "--mode" || arg == "-m") && i + 1 < argc) {
             run_mode = argv[++i];
+            if (run_mode != "Normal" && run_mode != "Faster") {
+                std::cerr << Console::danger("Error: unknown --mode '") << run_mode
+                          << "'. Expected 'Normal' or 'Faster'.\n";
+                return 1;
+            }
         } else if ((arg == "--max-breakpoints" || arg == "-b") && i + 1 < argc) {
-            max_breakpoints = std::stoull(argv[++i]);
+            max_breakpoints = parse_nonneg_ull("--max-breakpoints", argv[++i]);
         } else if ((arg == "--population-size" || arg == "-p") && i + 1 < argc) {
-            population_size = std::stoull(argv[++i]);
+            population_size = parse_nonneg_ull("--population-size", argv[++i]);
             population_size_set = true;
         } else if (arg == "--max-stagnant" && i + 1 < argc) {
-            max_stagnant = std::stoull(argv[++i]);
+            max_stagnant = parse_nonneg_ull("--max-stagnant", argv[++i]);
             max_stagnant_set = true;
         } else if (arg == "--mutation-rate" && i + 1 < argc) {
-            mutation_rate = std::stod(argv[++i]);
+            mutation_rate = parse_probability("--mutation-rate", argv[++i]);
             mutation_rate_set = true;
         } else if (arg == "--tree-engine" && i + 1 < argc) {
             std::string eng = argv[++i];
             if (eng == "nj" || eng == "neighbor_joining") {
                 tree_method = GARDTreeMethod::NeighborJoining;
-            } else {
+            } else if (eng == "ohmic") {
                 tree_method = GARDTreeMethod::Ohmic;
+            } else {
+                std::cerr << Console::danger("Error: unknown --tree-engine '") << eng
+                          << "'. Expected 'ohmic' or 'nj'.\n";
+                return 1;
             }
         } else if (arg == "--srv" && i + 1 < argc) {
             std::string s = argv[++i];
             if (s == "none" || s == "no" || s == "const") {
                 srv_mode = GARDSRVMode::None;
-            } else {
+            } else if (s == "gamma" || s == "yes") {
                 srv_mode = GARDSRVMode::DiscreteGamma;
+            } else {
+                std::cerr << Console::danger("Error: unknown --srv '") << s
+                          << "'. Expected 'gamma' or 'none'.\n";
+                return 1;
             }
         } else if (arg == "--gamma-classes" && i + 1 < argc) {
-            gamma_classes = std::stoull(argv[++i]);
+            gamma_classes = parse_nonneg_ull("--gamma-classes", argv[++i]);
         } else if (arg == "--bridges" && i + 1 < argc) {
             std::string br = argv[++i];
-            allow_bridges = (br == "yes" || br == "true" || br == "1");
+            if (br == "yes" || br == "true" || br == "1") {
+                allow_bridges = true;
+            } else if (br == "no" || br == "false" || br == "0") {
+                allow_bridges = false;
+            } else {
+                std::cerr << Console::danger("Error: unknown --bridges '") << br
+                          << "'. Expected 'yes' or 'no'.\n";
+                return 1;
+            }
         } else if (arg == "--no-bridges") {
             allow_bridges = false;
         } else if (arg == "--topology-test" && i + 1 < argc) {
@@ -135,13 +157,19 @@ int run_gard(int argc, char* argv[]) {
                 topology_test_mode = GARDTopologyTestMode::KH;
             } else if (t == "none" || t == "no" || t == "off") {
                 topology_test_mode = GARDTopologyTestMode::None;
-            } else {
+            } else if (t == "both" || t == "yes") {
                 topology_test_mode = GARDTopologyTestMode::Both;
+            } else {
+                std::cerr << Console::danger("Error: unknown --topology-test '") << t
+                          << "'. Expected 'both', 'sh', 'kh', or 'none'.\n";
+                return 1;
             }
         } else if (arg == "--test-replicates" && i + 1 < argc) {
-            topology_test_replicates = std::stoull(argv[++i]);
+            topology_test_replicates = parse_nonneg_ull("--test-replicates", argv[++i]);
         } else if ((arg == "--threads" || arg == "-t") && i + 1 < argc) {
-            num_threads = std::stoi(argv[++i]);
+            // 0 means "auto"; negatives and partial parses are rejected.
+            num_threads = static_cast<int>(
+                parse_nonneg_ull("--threads", argv[++i], std::numeric_limits<int>::max()));
         } else if ((arg == "--format" || arg == "--json-format") && i + 1 < argc) {
             std::string fmt = argv[++i];
             JSONFormat jf;
@@ -166,6 +194,10 @@ int run_gard(int argc, char* argv[]) {
         } else if (arg == "--help" || arg == "-h") {
             print_gard_usage(argv[0]);
             return 0;
+        } else {
+            std::cerr << Console::danger("Error: unknown or incomplete argument '") << arg
+                      << "'. Use --help for usage.\n";
+            return 1;
         }
     }
 
@@ -234,6 +266,10 @@ int run_gard(int argc, char* argv[]) {
         }
         out << json_out.dump(2) << "\n";
         out.close();
+        if (out.fail()) {
+            std::cerr << Console::danger("Failed to write output file: " + output_file) << "\n";
+            return 1;
+        }
 
         if (!html_file.empty()) {
             try {
@@ -399,6 +435,11 @@ int run_gard(int argc, char* argv[]) {
 
 #ifndef HYPHY3_COMBINED_DRIVER
 int main(int argc, char* argv[]) {
-    return run_gard(argc, argv);
+    try {
+        return run_gard(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
 }
 #endif

@@ -34,6 +34,7 @@
 #include <unordered_map>
 #include <functional>
 #include <cmath>
+#include <fstream>
 #include <stdexcept>
 
 // Build-time metadata injected by CMake. Defaults keep non-CMake builds working.
@@ -462,6 +463,32 @@ inline nlohmann::json new_analysis_json(const AnalysisMetadata& meta,
     j["software"] = software_block();
     j["provenance"] = provenance_block(prov, input_filepath);
     return j;
+}
+
+/**
+ * @brief close() an output stream and throw if the close/flush reported an error.
+ *
+ * Buffered writers defer errors (e.g. ENOSPC on /dev/full) until flush or
+ * close, so checking `if (!out)` right after `out << data` misses small
+ * writes — the failure only surfaces in the destructor, where it is swallowed.
+ */
+inline void close_or_throw(std::ofstream& out, const std::string& path) {
+    out.close();
+    if (out.fail()) {
+        throw std::runtime_error("Failed to write output file: " + path);
+    }
+}
+
+/**
+ * @brief Open `path`, write `contents`, close, and verify the stream state.
+ */
+inline void write_file_or_throw(const std::string& path, const std::string& contents) {
+    std::ofstream out(path, std::ios::binary);
+    if (!out.is_open()) {
+        throw std::runtime_error("Cannot open output file for writing: " + path);
+    }
+    out << contents;
+    close_or_throw(out, path);
 }
 
 } // namespace hyphy::core

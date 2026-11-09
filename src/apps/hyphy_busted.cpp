@@ -65,7 +65,7 @@ static void print_usage(const char* prog, bool ph_mode = false) {
               << "  " << Console::brand("--error-sink-bf") << " <BF>  Empirical Bayes Factor threshold to flag artifact branch-sites (default: 100)\n"
               << "  " << Console::brand("--output-filtered-alignment") << " <file> Write FASTA with BUSTED-E artifact branch-sites masked as ---\n"
               << "  " << Console::brand("--no-branch-opt") << "      Disable individual branch length refinement (use proportional scaling)\n"
-              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.BUSTED[-PH].json)\n"
               << "  " << Console::brand("--html") << " <file>        Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--progress") << "           Force interactive progress bar\n"
@@ -88,6 +88,12 @@ int run_busted(int argc, char* argv[]) {
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+        // --pvalue is handled here (before the shared parser) so it reaches
+        // settings.p_value_threshold; cli.pvalue_threshold is synced below.
+        if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
+            settings.p_value_threshold = parse_probability("--pvalue", argv[++i]);
+            continue;
+        }
         auto status = parse_common_cli_arg(i, argc, argv, cli);
         if (status == CommonArgParseStatus::Handled) continue;
         if (status == CommonArgParseStatus::Error) return 1;
@@ -107,14 +113,16 @@ int run_busted(int argc, char* argv[]) {
         } else if (arg == "--auto" || arg == "--full-auto") {
             settings.full_auto = true;
         } else if (arg == "--rates" && i + 1 < argc) {
-            settings.num_rate_classes = std::stoul(argv[++i]);
+            settings.num_rate_classes = parse_nonneg_ull(
+                "--rates", argv[++i], std::numeric_limits<long long>::max(), 1);
         } else if (arg == "--srv") {
             settings.srv = true;
         } else if (arg == "--no-srv") {
             settings.srv = false;
         } else if (arg == "--syn-rates" && i + 1 < argc) {
             settings.srv = true;
-            settings.num_syn_rate_classes = std::stoul(argv[++i]);
+            settings.num_syn_rate_classes = parse_nonneg_ull(
+                "--syn-rates", argv[++i], std::numeric_limits<long long>::max(), 1);
         } else if ((arg == "--mss" || arg == "--mss-type" || arg == "--syn-model") && i + 1 < argc) {
             settings.mss_type = argv[++i];
         } else if ((arg == "--mss-neutral" || arg == "--neutral") && i + 1 < argc) {
@@ -129,10 +137,10 @@ int run_busted(int argc, char* argv[]) {
             settings.error_sink = true;
         } else if (arg == "--error-sink-weight" && i + 1 < argc) {
             settings.error_sink = true;
-            settings.error_sink_max_weight = std::stod(argv[++i]);
+            settings.error_sink_max_weight = parse_probability("--error-sink-weight", argv[++i]);
         } else if (arg == "--error-sink-bf" && i + 1 < argc) {
             settings.error_sink = true;
-            settings.error_sink_bf_threshold = std::stod(argv[++i]);
+            settings.error_sink_bf_threshold = parse_double_full("--error-sink-bf", argv[++i]);
         } else if ((arg == "--output-filtered-alignment" || arg == "--error-filter" || arg == "--filtered-alignment") && i + 1 < argc) {
             settings.error_sink = true;
             settings.output_filtered_alignment = argv[++i];
@@ -151,6 +159,8 @@ int run_busted(int argc, char* argv[]) {
     if (settings.test_branches == "All" && cli.branches != "All") {
         settings.test_branches = cli.branches;
     }
+    // Record the effective threshold in shared opts so provenance is accurate.
+    cli.pvalue_threshold = settings.p_value_threshold;
 
     if (cli.alignment_file.empty()) {
         std::cerr << "Error: --alignment is required.\n\n";
@@ -436,18 +446,21 @@ int run_busted(int argc, char* argv[]) {
     } else {
         std::string conclusion;
         bool is_sig = false;
+        std::ostringstream thr_ss;
+        thr_ss << res.settings.p_value_threshold;
+        const std::string thr_str = thr_ss.str();
         if (res.is_failed) {
             conclusion = "FAILED: " + res.error_message;
-        } else if (res.p_value < 0.05) {
+        } else if (res.p_value < res.settings.p_value_threshold) {
             is_sig = true;
-            conclusion = "STATISTICALLY SIGNIFICANT evidence of episodic diversifying selection (LRT = " + lrt_ss.str() + ", p = " + p_ss.str() + " < 0.05)!";
+            conclusion = "STATISTICALLY SIGNIFICANT evidence of episodic diversifying selection (LRT = " + lrt_ss.str() + ", p = " + p_ss.str() + " < " + thr_str + ")!";
         } else {
-            conclusion = "No statistically significant evidence of episodic diversifying selection (p = " + p_ss.str() + " >= 0.05).";
+            conclusion = "No statistically significant evidence of episodic diversifying selection (p = " + p_ss.str() + " >= " + thr_str + ").";
         }
 
         std::vector<std::pair<std::string, std::string>> sum_items = {
             {"Likelihood Ratio Test (LRT)", lrt_ss.str()},
-            {"p-value (mixture distribution)", p_ss.str() + " [threshold: 0.05]"},
+            {"p-value (mixture distribution)", p_ss.str() + " [threshold: " + thr_str + "]"},
             {"Unconstrained Model Fit", u_ss.str()},
             {"Constrained Null Model Fit", c_ss.str()},
             {"Optimal Model Selection", "K = " + std::to_string(res.optimal_k) + " rate classes"}
@@ -501,7 +514,8 @@ int run_busted(int argc, char* argv[]) {
                       << Console::brand(cli.html_file) << "\n\n";
         }
     } catch (const std::exception& e) {
-        std::cerr << Console::danger("Warning: Failed to write output: ") << e.what() << "\n";
+        std::cerr << Console::danger("Error: Failed to write output: ") << e.what() << "\n";
+        return 1;
     }
 
     if (res.is_failed) {
@@ -527,6 +541,11 @@ int run_busted_ph(int argc, char* argv[]) {
 
 #ifndef HYPHY3_COMBINED_DRIVER
 int main(int argc, char* argv[]) {
-    return run_busted(argc, argv);
+    try {
+        return run_busted(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
 }
 #endif

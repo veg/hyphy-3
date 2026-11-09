@@ -38,7 +38,7 @@ static void print_relax_usage(const char* prog) {
               << "  " << Console::brand("--test-regex") << " <re>    Test set by case-insensitive regex on branch names/tags\n"
               << "  " << Console::brand("--reference-regex") << " <re> Reference set by case-insensitive regex on branch names/tags\n"
               << "  " << Console::brand("--pvalue") << " <threshold> Significance threshold for LRT (default: 0.05)\n"
-              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.RELAX.json)\n"
               << "  " << Console::brand("--html") << " <file>        Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--no-branch-opt") << "      Disable individual branch length refinement (use proportional scaling)\n"
@@ -70,20 +70,31 @@ int run_relax(int argc, char* argv[]) {
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+
+        // RELAX-specific spellings that the shared parser would otherwise
+        // consume into cli.* fields this tool does not read.
+        if ((arg == "--test" || arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
+            settings.test_branch_regex = argv[++i];
+            continue;
+        }
+        if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
+            settings.p_value_threshold = parse_probability("--pvalue", argv[++i]);
+            continue;
+        }
+
         auto status = parse_common_cli_arg(i, argc, argv, cli);
         if (status == CommonArgParseStatus::Handled) continue;
         if (status == CommonArgParseStatus::Error) return 1;
 
-        if ((arg == "--test" || arg == "--branches") && i + 1 < argc) {
-            settings.test_branch_regex = argv[++i];
-        } else if (arg == "--reference" && i + 1 < argc) {
+        if (arg == "--reference" && i + 1 < argc) {
             settings.reference_branch_regex = argv[++i];
-        } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-            settings.p_value_threshold = std::stod(argv[++i]);
         } else if (arg == "--no-branch-opt" || arg == "--no-refine-branches") {
             settings.refine_branch_lengths = false;
         } else if (arg == "--joint-cycles" && i + 1 < argc) {
-            settings.max_joint_cycles = std::max(1, std::stoi(argv[++i]));
+            // Must be >= 1: silently clamping "-5" -> 1 cycle would run an
+            // unoptimized fit and report success (worse than rejecting it).
+            settings.max_joint_cycles = static_cast<int>(parse_nonneg_ull(
+                "--joint-cycles", argv[++i], std::numeric_limits<int>::max(), 1));
         } else if (arg == "--test-regex" && i + 1 < argc) {
             settings.test_branch_regex = argv[++i];
             settings.test_is_regex = true;
@@ -117,7 +128,8 @@ int run_relax(int argc, char* argv[]) {
                 return 1;
             }
         } else if (arg == "--rates" && i + 1 < argc) {
-            int r = std::stoi(argv[++i]);
+            int r = static_cast<int>(
+                parse_nonneg_ull("--rates", argv[++i], std::numeric_limits<int>::max()));
             if (r != 3) {
                 std::cerr << "Error: Standalone hyphy_relax implements 3 omega classes (--rates 3); got --rates " << r
                           << ". Use 'hyphy_busted --phenotype --relax --rates " << r << "' for arbitrary K.\n";
@@ -134,7 +146,8 @@ int run_relax(int argc, char* argv[]) {
                 return 1;
             }
         } else if (arg == "--syn-rates" && i + 1 < argc) {
-            int sr = std::stoi(argv[++i]);
+            int sr = static_cast<int>(
+                parse_nonneg_ull("--syn-rates", argv[++i], std::numeric_limits<int>::max()));
             if (sr > 1) {
                 std::cerr << "Error: --syn-rates > 1 is not supported in standalone hyphy_relax. "
                           << "Use 'hyphy_busted --phenotype --relax --srv --syn-rates " << sr << "' instead.\n";
@@ -158,19 +171,11 @@ int run_relax(int argc, char* argv[]) {
                 return 1;
             }
         } else if (arg == "--grid-size" && i + 1 < argc) {
-            int n_val = std::stoi(argv[++i]);
-            if (n_val <= 0) {
-                std::cerr << "Error: --grid-size must be positive.\n";
-                return 1;
-            }
-            settings.grid_size = n_val;
+            settings.grid_size = static_cast<int>(parse_nonneg_ull(
+                "--grid-size", argv[++i], std::numeric_limits<int>::max(), 1));
         } else if (arg == "--starting-points" && i + 1 < argc) {
-            int n_val = std::stoi(argv[++i]);
-            if (n_val <= 0) {
-                std::cerr << "Error: --starting-points must be positive.\n";
-                return 1;
-            }
-            settings.starting_points = n_val;
+            settings.starting_points = static_cast<int>(parse_nonneg_ull(
+                "--starting-points", argv[++i], std::numeric_limits<int>::max(), 1));
         } else if (arg == "--help" || arg == "-h") {
             print_relax_usage(argv[0]);
             return 0;
@@ -180,6 +185,11 @@ int run_relax(int argc, char* argv[]) {
             return 1;
         }
     }
+
+    // Keep shared option fields in sync with the effective analysis settings so
+    // build_cli_provenance records what was actually used.
+    cli.branches = settings.test_branch_regex;
+    cli.pvalue_threshold = settings.p_value_threshold;
 
     if (cli.alignment_file.empty()) {
         std::cerr << "Error: --alignment is required.\n\n";
@@ -343,6 +353,11 @@ int run_relax(int argc, char* argv[]) {
 
 #ifndef HYPHY3_COMBINED_DRIVER
 int main(int argc, char* argv[]) {
-    return run_relax(argc, argv);
+    try {
+        return run_relax(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
 }
 #endif

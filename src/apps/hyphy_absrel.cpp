@@ -36,7 +36,7 @@ static void print_absrel_usage(const char* prog) {
               << "  " << Console::brand("--branches") << " <set>     Branches to test: All, Internal, Leaves (default: All)\n"
               << "  " << Console::brand("--pvalue") << " <threshold> Holm-Bonferroni p-value threshold (default: 0.05)\n"
               << "  " << Console::brand("--max-rates, --rates") << " <N> Maximum rate classes per branch (default: 3)\n"
-              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--threads") << " <N>        Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--output") << " <file>      Path to output JSON file (default: <alignment>.ABSREL.json)\n"
               << "  " << Console::brand("--html") << " <file>        Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--progress") << "           Force interactive progress bar\n"
@@ -54,16 +54,24 @@ int run_absrel(int argc, char* argv[]) {
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+
+        // aBSREL-specific spellings that the shared parser would otherwise
+        // consume into cli.* fields this tool does not read.
+        if ((arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
+            settings.test_branches = argv[++i];
+            continue;
+        }
+        if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
+            settings.p_threshold = parse_probability("--pvalue", argv[++i]);
+            continue;
+        }
+
         auto status = parse_common_cli_arg(i, argc, argv, cli);
         if (status == CommonArgParseStatus::Handled) continue;
         if (status == CommonArgParseStatus::Error) return 1;
 
-        if ((arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
-            settings.test_branches = argv[++i];
-        } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-            settings.p_threshold = std::stod(argv[++i]);
-        } else if ((arg == "--max-rates" || arg == "--rates") && i + 1 < argc) {
-            settings.max_rate_classes = std::stoi(argv[++i]);
+        if ((arg == "--max-rates" || arg == "--rates") && i + 1 < argc) {
+            settings.max_rate_classes = static_cast<int>(parse_nonneg_ull("--max-rates", argv[++i], std::numeric_limits<int>::max()));
         } else if (arg == "--help" || arg == "-h") {
             print_absrel_usage(argv[0]);
             return 0;
@@ -73,6 +81,11 @@ int run_absrel(int argc, char* argv[]) {
             return 1;
         }
     }
+
+    // Keep shared option fields in sync with the effective analysis settings so
+    // build_cli_provenance records what was actually used.
+    cli.branches = settings.test_branches;
+    cli.pvalue_threshold = settings.p_threshold;
 
     if (cli.alignment_file.empty()) {
         std::cerr << "Error: --alignment is required.\n\n";
@@ -216,7 +229,8 @@ int run_absrel(int argc, char* argv[]) {
                       << Console::brand(cli.html_file) << "\n\n";
         }
     } catch (const std::exception& e) {
-        std::cerr << Console::danger("Warning: Failed to write output: ") << e.what() << "\n";
+        std::cerr << Console::danger("Error: Failed to write output: ") << e.what() << "\n";
+        return 1;
     }
 
     return 0;
@@ -224,6 +238,11 @@ int run_absrel(int argc, char* argv[]) {
 
 #ifndef HYPHY3_COMBINED_DRIVER
 int main(int argc, char* argv[]) {
-    return run_absrel(argc, argv);
+    try {
+        return run_absrel(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
 }
 #endif

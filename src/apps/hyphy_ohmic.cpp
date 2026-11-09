@@ -3,6 +3,7 @@
 #include "hyphy/core/tree.hpp"
 #include "hyphy/core/console.hpp"
 #include "hyphy/core/provenance.hpp"
+#include "hyphy/core/cli_common.hpp"
 #include "hyphy/analyses/ohmic.hpp"
 #if __has_include("hyphy/report/html_report.hpp")
 #include "hyphy/report/html_report.hpp"
@@ -50,7 +51,7 @@ static void print_ohmic_usage(const char* prog) {
               << "  " << Console::brand("--min-stress") << " <tau>             Minimum shunt stress tau_Ohm to promote a bridge (default: 0.05)\n"
               << "  " << Console::brand("--max-bridges") << " <K>              Maximum disjoint Wheatstone bridges (default: 64)\n"
               << "  " << Console::brand("--woodbury-rank") << " <p>            Rank p for ScalableWoodbury landmarks (default: 256)\n"
-              << "  " << Console::brand("--threads, -t") << " <N>              Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--threads, -t") << " <N>              Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--output, -o") << " <file>            Path to output JSON file (default: <alignment>.OHMIC.json)\n"
               << "  " << Console::brand("--html") << " <file>                  Also write a self-contained interactive HTML report\n"
               << "  " << Console::brand("--format") << " <fmt>                 Output format: 'modern' (default) or 'legacy'\n"
@@ -114,15 +115,17 @@ int run_ohmic(int argc, char* argv[]) {
         } else if ((arg == "--scalable-method" || arg == "--backbone") && i + 1 < argc) {
             scalable_method_str = argv[++i];
         } else if (arg == "--foster-threshold" && i + 1 < argc) {
-            foster_threshold = std::stoull(argv[++i]);
+            foster_threshold = parse_nonneg_ull("--foster-threshold", argv[++i]);
         } else if (arg == "--min-stress" && i + 1 < argc) {
-            min_stress = std::stod(argv[++i]);
+            min_stress = parse_double_full("--min-stress", argv[++i]);
         } else if (arg == "--max-bridges" && i + 1 < argc) {
-            max_bridges = std::stoull(argv[++i]);
+            max_bridges = parse_nonneg_ull("--max-bridges", argv[++i]);
         } else if (arg == "--woodbury-rank" && i + 1 < argc) {
-            woodbury_rank = std::stoull(argv[++i]);
+            woodbury_rank = parse_nonneg_ull("--woodbury-rank", argv[++i]);
         } else if ((arg == "--threads" || arg == "-t") && i + 1 < argc) {
-            num_threads = std::stoi(argv[++i]);
+            // 0 means "auto"; negatives and partial parses are rejected.
+            num_threads = static_cast<int>(
+                parse_nonneg_ull("--threads", argv[++i], std::numeric_limits<int>::max()));
         } else if ((arg == "--format" || arg == "--json-format") && i + 1 < argc) {
             std::string fmt = argv[++i];
             JSONFormat jf;
@@ -141,6 +144,10 @@ int run_ohmic(int argc, char* argv[]) {
         } else if (arg == "--help" || arg == "-h") {
             print_ohmic_usage(argv[0]);
             return 0;
+        } else {
+            std::cerr << Console::danger("Error: unknown or incomplete argument '") << arg
+                      << "'. Use --help for usage.\n";
+            return 1;
         }
     }
 
@@ -256,6 +263,10 @@ int run_ohmic(int argc, char* argv[]) {
         }
         out << json_out.dump(2) << "\n";
         out.close();
+        if (out.fail()) {
+            std::cerr << Console::danger("Failed to write output file: " + output_file) << "\n";
+            return 1;
+        }
 
 #ifdef HYPHY3_HAS_HTML_REPORT
         if (!html_file.empty()) {

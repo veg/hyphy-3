@@ -1,4 +1,5 @@
 #include "hyphy/analyses/joint_align.hpp"
+#include "hyphy/core/cli_common.hpp"
 #include "hyphy/core/console.hpp"
 #include <iostream>
 #include <fstream>
@@ -42,7 +43,7 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--out-tree") << " <file>       Write co-estimated Newick phylogeny to file\n"
               << "  " << Console::brand("--out-enewick") << " <file>    Write Extended Newick (eNewick) network with #H<k> Wheatstone bridges & NHX support\n"
               << "  " << Console::brand("--output, -o") << " <file>     Write JSON summary results (including column posteriors, bridges & eNewick) to file\n"
-              << "  " << Console::brand("--threads, -t") << " <N>       Number of OpenMP worker threads\n"
+              << "  " << Console::brand("--threads, -t") << " <N>       Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--quiet, -q") << "             Suppress console progress panels\n"
               << "  " << Console::brand("--help, -h") << "              Show this help message\n\n"
               << Console::bold("Examples:") << "\n"
@@ -100,11 +101,11 @@ int run_joint_align(int argc, char* argv[]) {
         } else if (arg == "--code" && i + 1 < argc) {
             code_name = argv[++i];
         } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
-            settings.p_value_threshold = std::stod(argv[++i]);
+            settings.p_value_threshold = parse_probability("--pvalue", argv[++i]);
         } else if (arg == "--gap-open" && i + 1 < argc) {
-            settings.gap_open_penalty = std::stod(argv[++i]);
+            settings.gap_open_penalty = parse_double_full("--gap-open", argv[++i]);
         } else if (arg == "--gap-extend" && i + 1 < argc) {
-            settings.gap_extend_penalty = std::stod(argv[++i]);
+            settings.gap_extend_penalty = parse_double_full("--gap-extend", argv[++i]);
         } else if (arg == "--out-msa" && i + 1 < argc) {
             out_msa_path = argv[++i];
         } else if ((arg == "--out-stk" || arg == "--out-stockholm") && i + 1 < argc) {
@@ -120,7 +121,9 @@ int run_joint_align(int argc, char* argv[]) {
         } else if ((arg == "--output" || arg == "-o" || arg == "--json") && i + 1 < argc) {
             out_json_path = argv[++i];
         } else if ((arg == "--threads" || arg == "-t") && i + 1 < argc) {
-            num_threads = std::stoi(argv[++i]);
+            // 0 means "auto"; negatives and partial parses are rejected.
+            num_threads = static_cast<int>(
+                parse_nonneg_ull("--threads", argv[++i], std::numeric_limits<int>::max()));
         } else if (arg == "--quiet" || arg == "-q") {
             settings.quiet = true;
         } else {
@@ -228,9 +231,18 @@ int run_joint_align(int argc, char* argv[]) {
                        << "    }" << (i + 1 < evals.size() ? "," : "") << "\n";
                 }
                 jf << "  ]\n}\n";
+                try {
+                    close_or_throw(jf, out_json_path);
+                } catch (const std::exception& e) {
+                    std::cerr << Console::danger("Error: ") << e.what() << "\n";
+                    return 1;
+                }
                 if (!settings.quiet) {
                     std::cout << Console::success("Saved objective alignment evaluation JSON to: ") << out_json_path << "\n";
                 }
+            } else {
+                std::cerr << Console::danger("Error: could not open output file: ") << out_json_path << "\n";
+                return 1;
             }
         }
         return 0;
@@ -305,59 +317,78 @@ int run_joint_align(int argc, char* argv[]) {
             for (const auto& s : res.map_alignment.sequences) {
                 mf << ">" << s.name << " [codons=" << res.map_alignment.num_codons << "]\n" << s.raw_seq << "\n";
             }
+            try {
+                close_or_throw(mf, out_msa_path);
+            } catch (const std::exception& e) {
+                std::cerr << Console::danger("Error: ") << e.what() << "\n";
+                return 1;
+            }
             if (!settings.quiet) {
                 std::cout << Console::success("Saved MAP codon alignment to: ") << out_msa_path << "\n";
             }
+        } else {
+            std::cerr << Console::danger("Error: could not open output file: ") << out_msa_path << "\n";
+            return 1;
         }
     }
 
     if (!out_stk_path.empty()) {
-        std::ofstream sf(out_stk_path);
-        if (sf.is_open()) {
-            sf << res.stockholm_alignment;
-            if (!settings.quiet) {
-                std::cout << Console::success("Saved Stockholm quality-annotated alignment (#=GC PP_cons) to: ") << out_stk_path << "\n";
-            }
+        try {
+            write_file_or_throw(out_stk_path, res.stockholm_alignment);
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error: ") << e.what() << "\n";
+            return 1;
+        }
+        if (!settings.quiet) {
+            std::cout << Console::success("Saved Stockholm quality-annotated alignment (#=GC PP_cons) to: ") << out_stk_path << "\n";
         }
     }
 
     if (!out_poa_path.empty()) {
-        std::ofstream pf(out_poa_path);
-        if (pf.is_open()) {
-            pf << res.poa_gfa;
-            if (!settings.quiet) {
-                std::cout << Console::success("Saved Partial Order Alignment (POA) GFAv1 codon graph to: ") << out_poa_path << "\n";
-            }
+        try {
+            write_file_or_throw(out_poa_path, res.poa_gfa);
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error: ") << e.what() << "\n";
+            return 1;
+        }
+        if (!settings.quiet) {
+            std::cout << Console::success("Saved Partial Order Alignment (POA) GFAv1 codon graph to: ") << out_poa_path << "\n";
         }
     }
 
     if (!out_dot_path.empty()) {
-        std::ofstream df(out_dot_path);
-        if (df.is_open()) {
-            df << res.poa_dot;
-            if (!settings.quiet) {
-                std::cout << Console::success("Saved Codon POA Graphviz DOT DAG to: ") << out_dot_path << "\n";
-            }
+        try {
+            write_file_or_throw(out_dot_path, res.poa_dot);
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error: ") << e.what() << "\n";
+            return 1;
+        }
+        if (!settings.quiet) {
+            std::cout << Console::success("Saved Codon POA Graphviz DOT DAG to: ") << out_dot_path << "\n";
         }
     }
 
     if (!out_tree_path.empty()) {
-        std::ofstream tf(out_tree_path);
-        if (tf.is_open()) {
-            tf << res.optimized_tree.to_newick(true) << "\n";
-            if (!settings.quiet) {
-                std::cout << Console::success("Saved co-estimated Newick tree to: ") << out_tree_path << "\n";
-            }
+        try {
+            write_file_or_throw(out_tree_path, res.optimized_tree.to_newick(true) + "\n");
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error: ") << e.what() << "\n";
+            return 1;
+        }
+        if (!settings.quiet) {
+            std::cout << Console::success("Saved co-estimated Newick tree to: ") << out_tree_path << "\n";
         }
     }
 
     if (!out_enewick_path.empty()) {
-        std::ofstream ef(out_enewick_path);
-        if (ef.is_open()) {
-            ef << res.extended_newick << "\n";
-            if (!settings.quiet) {
-                std::cout << Console::success("Saved Extended Newick (eNewick) Ohmic network to: ") << out_enewick_path << "\n";
-            }
+        try {
+            write_file_or_throw(out_enewick_path, res.extended_newick + "\n");
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error: ") << e.what() << "\n";
+            return 1;
+        }
+        if (!settings.quiet) {
+            std::cout << Console::success("Saved Extended Newick (eNewick) Ohmic network to: ") << out_enewick_path << "\n";
         }
     }
 
@@ -423,9 +454,18 @@ int run_joint_align(int argc, char* argv[]) {
                << "  \"optimized_tree_newick\": \"" << res.optimized_tree.to_newick(true) << "\",\n"
                << "  \"extended_newick\": \"" << res.extended_newick << "\"\n"
                << "}\n";
+            try {
+                close_or_throw(jf, out_json_path);
+            } catch (const std::exception& e) {
+                std::cerr << Console::danger("Error: ") << e.what() << "\n";
+                return 1;
+            }
             if (!settings.quiet) {
                 std::cout << Console::success("Saved JSON summary to: ") << out_json_path << "\n";
             }
+        } else {
+            std::cerr << Console::danger("Error: could not open output file: ") << out_json_path << "\n";
+            return 1;
         }
     }
 
@@ -434,6 +474,11 @@ int run_joint_align(int argc, char* argv[]) {
 
 #ifndef HYPHY3_COMBINED_DRIVER
 int main(int argc, char* argv[]) {
-    return run_joint_align(argc, argv);
+    try {
+        return run_joint_align(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
 }
 #endif
