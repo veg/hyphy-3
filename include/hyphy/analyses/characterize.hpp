@@ -270,6 +270,7 @@ struct CharacterizeResult {
     std::vector<CoevolutionSitePair> coevolution_pairs;
     std::vector<BranchEvolutionaryProfile> branch_profiles;
     std::vector<UnifiedSiteAtlasEntry> site_atlas;
+    std::vector<int> node_ancestral_codons; // Empirical Bayes MAP sense codon [nid * C + c]
 
     // Counts
     size_t sites_pervasive_diversifying = 0;
@@ -378,6 +379,9 @@ public:
         JointAlignSettings jas;
         jas.p_value_threshold = settings.p_value_threshold;
         jas.enable_coupled_topology_search = settings.enable_coupled_spr;
+        if (input_tree.has_value() && !settings.enable_coupled_spr) {
+            jas.em_iterations = 1;
+        }
         jas.run_marginalized_fel = true;
         jas.quiet = settings.quiet;
 
@@ -5319,12 +5323,15 @@ private:
 
         // Store branch-by-site expected nonsynonymous substitutions u_{c, bi} for LoF & Coevolution
         std::vector<std::vector<Scalar>> site_branch_nonsyn(C, std::vector<Scalar>(B, 0.0));
+        std::vector<std::vector<Scalar>> site_branch_aa_diff(C, std::vector<Scalar>(B, 0.0));
+        res.node_ancestral_codons.assign(work_tree.num_nodes() * C, -1);
         const char aa_letters[20] = {
             'A','C','D','E','F','G','H','I','K','L','M','N','P','Q','R','S','T','V','W','Y'
         };
 
         // 4A. Model-Free Amino-Acid Exchangeability, Toggle & Convergence Classifier
         {
+            const size_t num_tree_nodes = work_tree.num_nodes();
             for (size_t c = 0; c < C; ++c) {
                 auto& entry = res.site_atlas[c];
 
@@ -5349,10 +5356,21 @@ private:
                     if (d < best_d) { best_d = d; g_near = g; }
                 }
 
-                Eigen::Matrix<Scalar, 20, 20> aa_trans = Eigen::Matrix<Scalar, 20, 20>::Zero();
-                std::array<size_t, 20> conv_branch_arrivals{};
-                conv_branch_arrivals.fill(0);
-                Scalar total_nonsyn_c = 0.0;
+                // Compute node-consistent Empirical Bayes marginal codon & amino-acid posteriors
+                std::vector<Vector> node_post_codon(num_tree_nodes, Vector::Zero(S));
+                std::vector<std::array<Scalar, 20>> node_aa_prob(num_tree_nodes);
+                std::vector<int> node_map_aa(num_tree_nodes, -1);
+                std::vector<Scalar> node_max_aa_prob(num_tree_nodes, 0.0);
+                for (auto& arr : node_aa_prob) arr.fill(0.0);
+
+                if (work_tree.root_id >= 0 && static_cast<size_t>(work_tree.root_id) < num_tree_nodes) {
+                    int32_t rid = work_tree.root_id;
+                    Vector r_post = pi_codon.array() * site_inside[c][rid].array();
+                    Scalar r_sum = r_post.sum();
+                    if (r_sum > 1e-30) {
+                        node_post_codon[rid] = r_post / r_sum;
+                    }
+                }
 
                 for (size_t bi = 0; bi < B; ++bi) {
                     int32_t bid = active_branches[bi];
@@ -5362,33 +5380,105 @@ private:
                     Vector Pb_L = branch_grid_apply_P(bid, g_near, eff_t, L);
                     Vector PTb_U = branch_grid_apply_PT(bid, g_near, eff_t, U);
                     Scalar Z_b = std::max<Scalar>(1e-30, U.dot(Pb_L));
+                    node_post_codon[bid] = (PTb_U.array() * L.array()) / Z_b;
+                    int32_t pid = work_tree.nodes[bid].parent_id;
+                    if (pid == work_tree.root_id && pid >= 0 && static_cast<size_t>(pid) < num_tree_nodes) {
+                        node_post_codon[pid] = (U.array() * Pb_L.array()) / Z_b;
+                    }
+                }
 
-                    // Posterior parent and child state distributions on branch bi
-                    Vector post_parent = (U.array() * Pb_L.array()) / Z_b;
-                    Vector post_child = (PTb_U.array() * L.array()) / Z_b;
-
-                    int map_parent_aa = -1, map_child_aa = -1;
-                    Scalar max_p_prob = -1.0, max_c_prob = -1.0;
-                    std::array<Scalar, 20> p_aa_prob{}, c_aa_prob{};
-                    p_aa_prob.fill(0.0);
-                    c_aa_prob.fill(0.0);
-                    for (int i = 0; i < S; ++i) {
-                        int ai = aa_char_to_index(gcode.sense_codon_aa[i]);
-                        if (ai >= 0 && ai < 20) {
-                            p_aa_prob[ai] += post_parent(i);
-                            c_aa_prob[ai] += post_child(i);
+                for (size_t nid = 0; nid < num_tree_nodes; ++nid) {
+                    if (work_tree.nodes[nid].is_leaf) {
+                        size_t tid = (nid < leaf_to_taxon.size()) ? leaf_to_taxon[nid] : N;
+                        int8_t sc = (tid < N && c < aln.sequences[tid].codons.size()) ? aln.sequences[tid].codons[c] : -1;
+                        if (sc >= 0 && sc < S) {
+                            int ai = aa_char_to_index(gcode.sense_codon_aa[sc]);
+                            node_post_codon[nid].setZero();
+                            node_post_codon[nid](sc) = 1.0;
+                            if (ai >= 0 && ai < 20) {
+                                node_aa_prob[nid][ai] = 1.0;
+                                node_map_aa[nid] = ai;
+                                node_max_aa_prob[nid] = 1.0;
+                            }
+                            res.node_ancestral_codons[nid * C + c] = sc;
+                            continue;
                         }
                     }
+                    Scalar p_sum = node_post_codon[nid].sum();
+                    if (p_sum <= 1e-30) continue;
+                    node_post_codon[nid] /= p_sum;
+                    for (int s = 0; s < S; ++s) {
+                        int ai = aa_char_to_index(gcode.sense_codon_aa[s]);
+                        if (ai >= 0 && ai < 20) {
+                            node_aa_prob[nid][ai] += node_post_codon[nid](s);
+                        }
+                    }
+                    int best_a = -1;
+                    Scalar best_ap = -1.0;
                     for (int a = 0; a < 20; ++a) {
-                        if (p_aa_prob[a] > max_p_prob) { max_p_prob = p_aa_prob[a]; map_parent_aa = a; }
-                        if (c_aa_prob[a] > max_c_prob) { max_c_prob = c_aa_prob[a]; map_child_aa = a; }
+                        if (node_aa_prob[nid][a] > best_ap) {
+                            best_ap = node_aa_prob[nid][a];
+                            best_a = a;
+                        }
+                    }
+                    node_map_aa[nid] = best_a;
+                    node_max_aa_prob[nid] = std::max<Scalar>(0.0, best_ap);
+                }
+
+                // Top-down pass to pick MAP sense codon within node_map_aa[nid] (preserving parent codon on ties)
+                for (int32_t idx = static_cast<int32_t>(work_tree.post_order.size()) - 1; idx >= 0; --idx) {
+                    int32_t nid = work_tree.post_order[idx];
+                    if (nid < 0 || static_cast<size_t>(nid) >= num_tree_nodes) continue;
+                    if (res.node_ancestral_codons[nid * C + c] >= 0) continue;
+                    int target_aa = node_map_aa[nid];
+                    if (target_aa < 0) continue;
+                    int32_t pid = work_tree.nodes[nid].parent_id;
+                    int p_cod = (pid >= 0 && static_cast<size_t>(pid) < num_tree_nodes)
+                                ? res.node_ancestral_codons[pid * C + c] : -1;
+                    int best_cod = -1;
+                    Scalar best_sc = -1.0;
+                    for (int s = 0; s < S; ++s) {
+                        if (aa_char_to_index(gcode.sense_codon_aa[s]) != target_aa) continue;
+                        Scalar sc = node_post_codon[nid](s) + ((s == p_cod) ? 1e-3 : 0.0);
+                        if (sc > best_sc) {
+                            best_sc = sc;
+                            best_cod = s;
+                        }
+                    }
+                    res.node_ancestral_codons[nid * C + c] = best_cod;
+                }
+
+                Eigen::Matrix<Scalar, 20, 20> aa_trans = Eigen::Matrix<Scalar, 20, 20>::Zero();
+                std::array<size_t, 20> conv_branch_arrivals{};
+                conv_branch_arrivals.fill(0);
+                Scalar total_nonsyn_c = 0.0;
+
+                for (size_t bi = 0; bi < B; ++bi) {
+                    int32_t bid = active_branches[bi];
+                    int32_t pid = work_tree.nodes[bid].parent_id;
+                    Scalar eff_t = std::max<Scalar>(1e-4, entry.alpha * work_tree.nodes[bid].branch_length * conv);
+                    const Vector& U = site_outside[c][bid];
+                    const Vector& L = site_inside[c][bid];
+                    Vector Pb_L = branch_grid_apply_P(bid, g_near, eff_t, L);
+                    Scalar Z_b = std::max<Scalar>(1e-30, U.dot(Pb_L));
+
+                    int map_parent_aa = (pid >= 0 && static_cast<size_t>(pid) < num_tree_nodes) ? node_map_aa[pid] : -1;
+                    int map_child_aa = (bid >= 0 && static_cast<size_t>(bid) < num_tree_nodes) ? node_map_aa[bid] : -1;
+                    Scalar max_p_prob = (pid >= 0 && static_cast<size_t>(pid) < num_tree_nodes) ? node_max_aa_prob[pid] : 0.0;
+                    Scalar max_c_prob = (bid >= 0 && static_cast<size_t>(bid) < num_tree_nodes) ? node_max_aa_prob[bid] : 0.0;
+
+                    if (map_parent_aa >= 0 && map_child_aa >= 0 && map_parent_aa != map_child_aa) {
+                        Scalar p_diff_aa = std::clamp<Scalar>(std::sqrt(max_p_prob * max_c_prob), 0.55, 1.0);
+                        site_branch_aa_diff[c][bi] = p_diff_aa * entry.column_homology_posterior;
+                    } else {
+                        site_branch_aa_diff[c][bi] = 0.0;
                     }
 
                     Scalar br_nonsyn = 0.0;
                     std::array<Scalar, 20> br_target_inflow{};
                     br_target_inflow.fill(0.0);
 
-                    if (entry.beta_pervasive > 1e-4) {
+                    if (entry.beta_pervasive > 1e-4 && map_parent_aa != map_child_aa) {
                         Scalar raw_br_nonsyn = 0.0;
                         std::array<std::array<Scalar, 20>, 20> raw_aa_t{};
                         for (auto& r : raw_aa_t) r.fill(0.0);
@@ -5401,7 +5491,6 @@ private:
                                 if (i == j || Q_non(i, j) <= 0.0 || L(j) < 1e-6) continue;
                                 int aa_j = aa_char_to_index(gcode.sense_codon_aa[j]);
                                 if (aa_j < 0 || aa_j >= 20 || aa_i == aa_j) continue;
-                                // Expected substitution rate along branch of length bl_b
                                 Scalar bl_b = std::min<Scalar>(2.0, work_tree.nodes[bid].branch_length * conv);
                                 Scalar q_ij = std::min<Scalar>(10.0, entry.beta_pervasive) * Q_non(i, j);
                                 Scalar obs_ij = (U(i) * (bl_b * q_ij * L(j))) / Z_b;
@@ -5411,8 +5500,7 @@ private:
                                 }
                             }
                         }
-                        // Physically bound per-branch nonsynonymous count at a single codon to <= 2.5
-                        Scalar scale_br = (raw_br_nonsyn > 2.5) ? (2.5 / raw_br_nonsyn) : 1.0;
+                        Scalar scale_br = (raw_br_nonsyn > 2.0) ? (2.0 / raw_br_nonsyn) : 1.0;
                         for (int a1 = 0; a1 < 20; ++a1) {
                             for (int a2 = 0; a2 < 20; ++a2) {
                                 if (raw_aa_t[a1][a2] > 0.0) {
@@ -5425,10 +5513,10 @@ private:
                         }
                     }
 
-                    // Also ensure MAP parent->child amino-acid changes on branches are captured
+                    // Ensure MAP parent->child amino-acid changes on branches are captured
                     if (map_parent_aa >= 0 && map_child_aa >= 0 && map_parent_aa != map_child_aa &&
-                        max_p_prob >= 0.45 && max_c_prob >= 0.45) {
-                        Scalar map_w = max_p_prob * max_c_prob;
+                        max_p_prob >= 0.40 && max_c_prob >= 0.40) {
+                        Scalar map_w = std::clamp<Scalar>(std::sqrt(max_p_prob * max_c_prob), 0.55, 1.0);
                         if (br_nonsyn < map_w) {
                             Scalar add_w = map_w - br_nonsyn;
                             aa_trans(map_parent_aa, map_child_aa) += add_w;
@@ -5436,12 +5524,6 @@ private:
                             br_target_inflow[map_child_aa] += add_w;
                         }
                         conv_branch_arrivals[map_child_aa]++;
-                    } else {
-                        for (int a = 0; a < 20; ++a) {
-                            if (br_target_inflow[a] >= 0.45 && a != map_parent_aa) {
-                                conv_branch_arrivals[a]++;
-                            }
-                        }
                     }
 
                     site_branch_nonsyn[c][bi] = br_nonsyn * entry.column_homology_posterior;
@@ -5866,6 +5948,11 @@ private:
                     res.sites_simes_fdr_significant++;
                 }
 
+                // Require exchangeability_p_value <= 0.05 and exchangeability_bh_q <= fdr_threshold for Toggle/Convergent calls
+                if (entry.exchangeability_p_value > 0.05 || entry.exchangeability_bh_q > settings.fdr_threshold) {
+                    entry.key_property_driver.clear();
+                }
+
                 Scalar perv_p = res.directional_drift_active ? entry.dfel_p_value : entry.fel_p_value;
                 bool is_perv_pos = (perv_p <= settings.p_value_threshold && entry.beta_pervasive > entry.alpha);
                 bool is_perv_neg = (perv_p <= settings.p_value_threshold && entry.beta_pervasive < entry.alpha);
@@ -5899,6 +5986,10 @@ private:
                     res.sites_pervasive_purifying++;
                 } else if (is_exch) {
                     entry.classification = "Toggle / Convergent";
+                    // For a pure Toggle/Convergent site where rate tests (FEL/MEME) are neutral,
+                    // reflect the exchangeability significance in simes_omnibus_p / simes_omnibus_q
+                    entry.simes_omnibus_p = std::min(entry.simes_omnibus_p, entry.exchangeability_p_value);
+                    entry.simes_omnibus_q = std::min(entry.simes_omnibus_q, entry.exchangeability_bh_q);
                 } else if (entry.beta_pervasive <= 1e-4 && entry.alpha <= 1e-4) {
                     entry.classification = "Invariant";
                 } else {
@@ -5990,79 +6081,158 @@ private:
 
             // Tier 3 (Opt-In via --coevolution): Epistatic Co-Substitution Pairs
             if (settings.enable_coevolution && C >= 2 && B >= 6) {
+                // Empirical branch amino-acid substitution load w_b across all C codons
+                Vector br_load(B);
+                for (size_t bi = 0; bi < B; ++bi) {
+                    Scalar s_b = 0.25 * std::max<Scalar>(1e-4, res.branch_profiles[bi].branch_length_subs);
+                    for (size_t c = 0; c < C; ++c) {
+                        s_b += site_branch_aa_diff[c][bi];
+                    }
+                    br_load(bi) = std::max<Scalar>(1e-4, s_b);
+                }
+                Scalar total_load = std::max<Scalar>(1e-9, br_load.sum());
+                Vector w_br = br_load / total_load;
+                Scalar bl_norm2 = std::max<Scalar>(1e-12, br_load.squaredNorm());
+                Scalar b_simpson = 1.0 / std::max<Scalar>(1e-6, w_br.squaredNorm());
+
                 std::vector<size_t> active_sites;
+                std::vector<Scalar> site_m_subs;
+                std::vector<size_t> site_n_br;
                 for (size_t c = 0; c < C; ++c) {
-                    if (res.site_atlas[c].expected_nonsyn_subs >= 1.5 && res.site_atlas[c].gap_fraction <= 0.30) {
+                    if (res.site_atlas[c].gap_fraction > 0.30) continue;
+                    Scalar m_c = 0.0;
+                    size_t n_br_c = 0;
+                    for (size_t bi = 0; bi < B; ++bi) {
+                        m_c += site_branch_aa_diff[c][bi];
+                        if (site_branch_aa_diff[c][bi] >= 0.45) n_br_c++;
+                    }
+                    if (n_br_c >= 2 && m_c >= 1.1) {
                         active_sites.push_back(c);
+                        site_m_subs.push_back(m_c);
+                        site_n_br.push_back(n_br_c);
                     }
                 }
-                Vector bl_vec(B);
-                for (size_t bi = 0; bi < B; ++bi) bl_vec(bi) = std::max<Scalar>(1e-5, res.branch_profiles[bi].branch_length_subs);
-                Scalar bl_norm2 = std::max<Scalar>(1e-12, bl_vec.squaredNorm());
 
                 std::vector<Vector> centered_u(active_sites.size(), Vector::Zero(B));
                 std::vector<Scalar> u_norms(active_sites.size(), 0.0);
                 for (size_t idx = 0; idx < active_sites.size(); ++idx) {
                     size_t c = active_sites[idx];
                     Vector u(B);
-                    for (size_t bi = 0; bi < B; ++bi) u(bi) = site_branch_nonsyn[c][bi];
-                    Vector u_proj = u - (u.dot(bl_vec) / bl_norm2) * bl_vec;
+                    for (size_t bi = 0; bi < B; ++bi) u(bi) = site_branch_aa_diff[c][bi];
+                    Vector u_proj = u - (u.dot(br_load) / bl_norm2) * br_load;
                     u_proj.array() -= u_proj.mean();
                     centered_u[idx] = u_proj;
                     u_norms[idx] = u_proj.norm();
                 }
 
+                auto log_choose = [](int n_val, int k_val) -> Scalar {
+                    if (k_val < 0 || k_val > n_val) return -1e30;
+                    return static_cast<Scalar>(
+                        std::lgamma(n_val + 1.0) - std::lgamma(k_val + 1.0) - std::lgamma(n_val - k_val + 1.0)
+                    );
+                };
+
                 std::vector<CoevolutionSitePair> raw_pairs;
-                std::vector<Scalar> pair_p_vals;
+                size_t candidate_pairs_tested = 0;
                 for (size_t i = 0; i < active_sites.size(); ++i) {
                     if (u_norms[i] <= 1e-6) continue;
                     for (size_t j = i + 1; j < active_sites.size(); ++j) {
                         if (u_norms[j] <= 1e-6) continue;
                         size_t c1 = active_sites[i], c2 = active_sites[j];
                         if (c2 <= c1 + 2) continue; // Skip immediate neighbor MNMs
-                        Scalar r_cos = centered_u[i].dot(centered_u[j]) / (u_norms[i] * u_norms[j]);
-                        if (r_cos <= 0.45) continue;
 
+                        Scalar r_cos = centered_u[i].dot(centered_u[j]) / (u_norms[i] * u_norms[j]);
                         Scalar shared_br = 0.0;
+                        Scalar sum_w_co = 0.0;
+                        size_t n_co_branches = 0;
                         std::string top_br_str;
                         for (size_t bi = 0; bi < B; ++bi) {
-                            if (site_branch_nonsyn[c1][bi] >= 0.40 && site_branch_nonsyn[c2][bi] >= 0.40) {
-                                shared_br += std::min(site_branch_nonsyn[c1][bi], site_branch_nonsyn[c2][bi]);
-                                if (top_br_str.size() < 40) {
+                            Scalar p1 = site_branch_aa_diff[c1][bi];
+                            Scalar p2 = site_branch_aa_diff[c2][bi];
+                            if (p1 >= 0.45 && p2 >= 0.45) {
+                                n_co_branches++;
+                                shared_br += std::min<Scalar>(1.0, std::min(p1, p2));
+                                sum_w_co += w_br(bi);
+                                if (top_br_str.size() < 48) {
                                     if (!top_br_str.empty()) top_br_str += ",";
                                     top_br_str += res.branch_profiles[bi].branch_name;
                                 }
                             }
                         }
-                        if (shared_br < 1.5) continue;
+                        if (n_co_branches >= 1 && r_cos > 0.15) {
+                            candidate_pairs_tested++;
+                        }
+                        // Require co-substitution on at least 2 independent branches
+                        if (n_co_branches < 2 || shared_br < 1.10 || r_cos <= 0.45) continue;
 
-                        Scalar df_b = std::max<Scalar>(2.0, static_cast<Scalar>(B) - 3.0);
-                        Scalar t_stat = r_cos * std::sqrt(df_b / std::max<Scalar>(1e-6, 1.0 - r_cos * r_cos));
-                        Scalar p_val = stats::chi2_p_value(t_stat * t_stat, 1.0);
-                        if (p_val <= 0.05) {
+                        int n1 = static_cast<int>(site_n_br[i]);
+                        int n2 = static_cast<int>(site_n_br[j]);
+                        int k_co = static_cast<int>(n_co_branches);
+                        Scalar exp_shared = 0.0;
+                        for (size_t bi = 0; bi < B; ++bi) {
+                            Scalar pi1 = std::min<Scalar>(1.0, static_cast<Scalar>(n1) * w_br(bi));
+                            Scalar pi2 = std::min<Scalar>(1.0, static_cast<Scalar>(n2) * w_br(bi));
+                            exp_shared += pi1 * pi2;
+                        }
+                        exp_shared = std::max<Scalar>(0.02, exp_shared);
+                        if (static_cast<Scalar>(k_co) <= 1.5 * exp_shared) continue;
+
+                        // 1. Finite-population branch-load-weighted hypergeometric upper-tail test (sampling without replacement)
+                        Scalar mean_w_co = sum_w_co / static_cast<Scalar>(k_co);
+                        Scalar eff_pool_f = 0.5 * (1.0 / std::max<Scalar>(1e-4, mean_w_co)) + 0.5 * b_simpson;
+                        int b_pool = std::clamp<int>(
+                            static_cast<int>(std::round(eff_pool_f)),
+                            std::max(n1, n2) + (n1 + n2 - k_co > static_cast<int>(B) ? 0 : 2),
+                            static_cast<int>(B) + 4
+                        );
+                        b_pool = std::max(b_pool, n1 + n2 - k_co);
+                        Scalar denom_lc = log_choose(b_pool, n2);
+                        Scalar p_hyper = 0.0;
+                        for (int x = k_co; x <= std::min(n1, n2); ++x) {
+                            if (b_pool - n1 < n2 - x) continue;
+                            Scalar lp = log_choose(n1, x) + log_choose(b_pool - n1, n2 - x) - denom_lc;
+                            p_hyper += std::exp(std::clamp<Scalar>(lp, -80.0, 0.0));
+                        }
+                        p_hyper = std::clamp<Scalar>(p_hyper, 1e-15, 1.0);
+
+                        // 2. Branch-load-orthogonalized cosine correlation test with shrinkage
+                        Scalar df_eff = std::clamp<Scalar>(b_simpson - 2.0, 4.0, std::max<Scalar>(4.0, static_cast<Scalar>(B) - 3.0));
+                        Scalar r_eff = std::min<Scalar>(0.95, r_cos * (shared_br / (shared_br + 0.35)));
+                        Scalar t_stat = r_eff * std::sqrt(df_eff / std::max<Scalar>(1e-4, 1.0 - r_eff * r_eff));
+                        Scalar p_corr = std::clamp<Scalar>(stats::chi2_p_value(t_stat * t_stat, 1.0), 1e-15, 1.0);
+
+                        Scalar p_val = std::clamp<Scalar>(std::sqrt(p_hyper * p_corr), 1e-15, 1.0);
+                        if (p_val <= 0.02) {
                             CoevolutionSitePair cp;
                             cp.site_i = c1;
                             cp.site_j = c2;
-                            cp.shared_branches = shared_br;
-                            cp.expected_shared = (res.site_atlas[c1].expected_nonsyn_subs * res.site_atlas[c2].expected_nonsyn_subs) / static_cast<Scalar>(B);
+                            cp.shared_branches = static_cast<Scalar>(n_co_branches);
+                            cp.expected_shared = exp_shared;
                             cp.cosine_similarity = r_cos;
                             cp.p_value = p_val;
                             cp.top_co_mutating_branches = top_br_str;
                             raw_pairs.push_back(cp);
-                            pair_p_vals.push_back(p_val);
                         }
                     }
                 }
                 if (!raw_pairs.empty()) {
-                    auto q_pairs = compute_bh_q_values(pair_p_vals);
-                    for (size_t k = 0; k < raw_pairs.size(); ++k) {
-                        raw_pairs[k].bh_q_value = q_pairs[k];
-                    }
                     std::sort(raw_pairs.begin(), raw_pairs.end(), [](const auto& a, const auto& b) {
                         return a.p_value < b.p_value;
                     });
+                    const Scalar m_tot = static_cast<Scalar>(std::max<size_t>(candidate_pairs_tested, raw_pairs.size()));
+                    for (size_t k = 0; k < raw_pairs.size(); ++k) {
+                        raw_pairs[k].bh_q_value = std::min<Scalar>(
+                            1.0,
+                            (raw_pairs[k].p_value * m_tot) / static_cast<Scalar>(k + 1)
+                        );
+                    }
+                    for (size_t k = raw_pairs.size() - 1; k > 0; --k) {
+                        raw_pairs[k - 1].bh_q_value = std::min(raw_pairs[k - 1].bh_q_value, raw_pairs[k].bh_q_value);
+                    }
                     for (size_t k = 0; k < std::min<size_t>(25, raw_pairs.size()); ++k) {
-                        res.coevolution_pairs.push_back(raw_pairs[k]);
+                        if (raw_pairs[k].bh_q_value <= 0.20 && raw_pairs[k].p_value <= 0.01) {
+                            res.coevolution_pairs.push_back(raw_pairs[k]);
+                        }
                     }
                 }
             }

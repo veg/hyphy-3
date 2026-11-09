@@ -442,7 +442,7 @@ if(EMSCRIPTEN)
     set_target_properties(hyphy3_wasm PROPERTIES
         OUTPUT_NAME "hyphy3_walrus"
         SUFFIX ".js"
-        LINK_FLAGS "-O3 -msimd128 -fexceptions -sMODULARIZE=1 -sEXPORT_NAME=createWalrusModule -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=2147483648 -sSTACK_SIZE=8388608 -sENVIRONMENT=web,worker,node -sFILESYSTEM=1 -sEXPORTED_FUNCTIONS=['_walrus_ping_run','_walrus_get_last_json','_walrus_get_last_error','_walrus_render_html_from_json','_malloc','_free'] -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToNewUTF8','FS']"
+        LINK_FLAGS "-O3 -msimd128 -fexceptions -sMODULARIZE=1 -sEXPORT_NAME=createWalrusModule -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=2147483648 -sSTACK_SIZE=8388608 -sENVIRONMENT=web,worker,node -sFILESYSTEM=1 -sEXPORTED_FUNCTIONS=['_walrus_stage0_run','_walrus_stage1_run','_walrus_stage2_run','_walrus_stage3_run','_walrus_ping_run','_walrus_get_last_json','_walrus_get_last_html','_walrus_get_last_error','_walrus_render_html_from_json','_malloc','_free'] -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToNewUTF8','FS']"
     )
 else()
     add_custom_target(wasm

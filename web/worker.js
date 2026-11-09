@@ -38,7 +38,167 @@ initModule()
 
 self.onmessage = async function(e) {
   const data = e.data || {};
-  if (data.type === 'ping') {
+  if (data.type === 'stage0') {
+    const t0 = performance.now();
+    try {
+      const mod = await initModule();
+      const seq = data.seqContent || data.sequence || '';
+      const label = data.label || 'STAGE0_INPUT';
+      const code = data.geneticCode || data.code || 'Universal';
+      const minCodons = (typeof data.minSenseCodons === 'number') ? data.minSenseCodons : 15;
+      const minZ = (typeof data.minHomologyZ === 'number') ? data.minHomologyZ : 3.5;
+      const stripGaps = data.stripGapsRealign ? 1 : 0;
+
+      const jsonStr = mod.ccall(
+        'walrus_stage0_run',
+        'string',
+        ['string', 'string', 'string', 'number', 'number', 'number'],
+        [seq, label, code, minCodons, minZ, stripGaps]
+      );
+      const err = mod.ccall('walrus_get_last_error', 'string', [], []);
+      if (!jsonStr || err) {
+        throw new Error(err || 'Empty Stage 0 JSON returned from WALRUS WASM engine.');
+      }
+      const parsed = JSON.parse(jsonStr);
+      const elapsedMs = performance.now() - t0;
+
+      self.postMessage({
+        type: 'stage0_result',
+        stage0: parsed,
+        json: jsonStr,
+        label: label,
+        elapsedMs: elapsedMs
+      });
+    } catch (err) {
+      const errMsg = err && err.message ? err.message : String(err);
+      self.postMessage({
+        type: 'error',
+        stage: 0,
+        error: errMsg,
+        message: errMsg
+      });
+    }
+  } else if (data.type === 'stage1') {
+    const t0 = performance.now();
+    try {
+      const mod = await initModule();
+      const seq = data.seqContent || data.sequence || '';
+      const label = data.label || 'STAGE1_COHORT';
+      const code = data.geneticCode || data.code || 'Universal';
+      const refineWindows = (data.refineIndelWindows === false) ? 0 : 1;
+      const forceDeNovo = data.forceDeNovoRealign ? 1 : 0;
+
+      const jsonStr = mod.ccall(
+        'walrus_stage1_run',
+        'string',
+        ['string', 'string', 'string', 'number', 'number'],
+        [seq, label, code, refineWindows, forceDeNovo]
+      );
+      const err = mod.ccall('walrus_get_last_error', 'string', [], []);
+      if (!jsonStr || err) {
+        throw new Error(err || 'Empty Stage 1 JSON returned from WALRUS WASM engine.');
+      }
+      const parsed = JSON.parse(jsonStr);
+      const elapsedMs = performance.now() - t0;
+
+      self.postMessage({
+        type: 'stage1_result',
+        stage1: parsed,
+        json: jsonStr,
+        label: label,
+        elapsedMs: elapsedMs
+      });
+    } catch (err) {
+      const errMsg = err && err.message ? err.message : String(err);
+      self.postMessage({
+        type: 'error',
+        stage: 1,
+        error: errMsg,
+        message: errMsg
+      });
+    }
+  } else if (data.type === 'stage2') {
+    const t0 = performance.now();
+    try {
+      const mod = await initModule();
+      const seq = data.seqContent || data.sequence || '';
+      const treeNewick = data.treeNewick || '';
+      const label = data.label || 'STAGE2_COHORT';
+      const code = data.geneticCode || data.code || 'Universal';
+      const enableSpr = (data.enableCoupledSpr === false) ? 0 : 1;
+      const enableRecomb = (data.enableRecombScan === false) ? 0 : 1;
+
+      const jsonStr = mod.ccall(
+        'walrus_stage2_run',
+        'string',
+        ['string', 'string', 'string', 'string', 'number', 'number'],
+        [seq, treeNewick, label, code, enableSpr, enableRecomb]
+      );
+      const err = mod.ccall('walrus_get_last_error', 'string', [], []);
+      if (!jsonStr || err) {
+        throw new Error(err || 'Empty Stage 2 JSON returned from WALRUS WASM engine.');
+      }
+      const parsed = JSON.parse(jsonStr);
+      const elapsedMs = performance.now() - t0;
+
+      self.postMessage({
+        type: 'stage2_result',
+        stage2: parsed,
+        json: jsonStr,
+        label: label,
+        elapsedMs: elapsedMs
+      });
+    } catch (err) {
+      const errMsg = err && err.message ? err.message : String(err);
+      self.postMessage({
+        type: 'error',
+        stage: 2,
+        error: errMsg,
+        message: errMsg
+      });
+    }
+  } else if (data.type === 'stage3') {
+    const t0 = performance.now();
+    try {
+      const mod = await initModule();
+      const seq = data.seqContent || data.sequence || '';
+      const treeNewick = data.treeNewick || '';
+      const label = data.label || 'STAGE3_COHORT';
+      const code = data.geneticCode || data.code || 'Universal';
+
+      const jsonStr = mod.ccall(
+        'walrus_stage3_run',
+        'string',
+        ['string', 'string', 'string', 'string'],
+        [seq, treeNewick, label, code]
+      );
+      const err = mod.ccall('walrus_get_last_error', 'string', [], []);
+      if (!jsonStr || err) {
+        throw new Error(err || 'Empty Stage 3 JSON returned from WALRUS WASM engine.');
+      }
+      const parsed = JSON.parse(jsonStr);
+      const fullJson = mod.ccall('walrus_get_last_json', 'string', [], []);
+      const fullHtml = mod.ccall('walrus_get_last_html', 'string', [], []);
+      const elapsedMs = performance.now() - t0;
+
+      self.postMessage({
+        type: 'stage3_result',
+        stage3: parsed,
+        json: fullJson || jsonStr,
+        html: fullHtml || '',
+        label: label,
+        elapsedMs: elapsedMs
+      });
+    } catch (err) {
+      const errMsg = err && err.message ? err.message : String(err);
+      self.postMessage({
+        type: 'error',
+        stage: 3,
+        error: errMsg,
+        message: errMsg
+      });
+    }
+  } else if (data.type === 'ping') {
     const t0 = performance.now();
     try {
       const mod = await initModule();
