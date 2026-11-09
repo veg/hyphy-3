@@ -75,14 +75,15 @@ struct CommonCLIOptions {
 
 /**
  * @brief Result status from `parse_common_cli_arg`.
- * Implicitly converts to `true` when `Handled` or `Error` so both
+ * Implicitly converts to `true` when `Handled`, `Error`, or `HelpShown` so both
  * `if (parse_common_cli_arg(...))` and `status == CommonArgParseStatus::...` idioms work.
  */
 struct CommonArgParseStatus {
     enum Value {
         Unhandled = 0,
         Handled = 1,
-        Error = 2
+        Error = 2,
+        HelpShown = 3
     } value;
 
     constexpr CommonArgParseStatus(Value v) : value(v) {}
@@ -90,6 +91,7 @@ struct CommonArgParseStatus {
     constexpr bool operator==(Value v) const { return value == v; }
     constexpr bool operator!=(Value v) const { return value != v; }
 };
+using CommonArgResult = CommonArgParseStatus;
 
 /**
  * @brief Parse a signed integer option value, requiring the whole string to be
@@ -168,16 +170,33 @@ inline double parse_probability(const char* flag, const std::string& val) {
  * @brief Try to consume a shared CLI flag at index `i`.
  *
  * Returns `CommonArgParseStatus::Handled` if `argv[i]` was recognized and valid,
+ * `CommonArgParseStatus::HelpShown` if `--version`/`-v` was printed,
  * `CommonArgParseStatus::Error` if recognized but invalid (printing an error to `std::cerr`
  * and populating `opts.has_error`), or `CommonArgParseStatus::Unhandled` otherwise.
  */
 inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[], CommonCLIOptions& opts) {
     std::string arg = argv[i];
-    if ((arg == "--alignment" || arg == "-a" || arg == "--msa") && i + 1 < argc) {
+    auto require_value = [&]() -> bool {
+        if (i + 1 >= argc) {
+            opts.has_error = true;
+            opts.error_message = "Error: " + arg + " requires a value.";
+            std::cerr << Console::danger(opts.error_message) << "\n";
+            return false;
+        }
+        return true;
+    };
+
+    if (arg == "--version" || arg == "-v") {
+        std::cout << "HyPhy 3 v" HYPHY3_VERSION " (commit: " HYPHY3_GIT_COMMIT ", build: " HYPHY3_BUILD_TYPE ")\n";
+        return CommonArgResult::HelpShown;
+    }
+    if (arg == "--alignment" || arg == "-a" || arg == "--msa") {
+        if (!require_value()) return CommonArgResult::Error;
         opts.alignment_file = argv[++i];
         return CommonArgParseStatus::Handled;
     }
-    if ((arg == "--unaligned" || arg == "-u" || arg == "--sequences") && i + 1 < argc) {
+    if (arg == "--unaligned" || arg == "-u" || arg == "--sequences") {
+        if (!require_value()) return CommonArgResult::Error;
         opts.alignment_file = argv[++i];
         opts.force_unaligned = true;
         return CommonArgParseStatus::Handled;
@@ -186,19 +205,23 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
         opts.auto_align = true;
         return CommonArgParseStatus::Handled;
     }
-    if ((arg == "--out-poa" || arg == "--out-gfa") && i + 1 < argc) {
+    if (arg == "--out-poa" || arg == "--out-gfa") {
+        if (!require_value()) return CommonArgResult::Error;
         opts.out_poa_file = argv[++i];
         return CommonArgParseStatus::Handled;
     }
-    if ((arg == "--out-stk" || arg == "--out-stockholm") && i + 1 < argc) {
+    if (arg == "--out-stk" || arg == "--out-stockholm") {
+        if (!require_value()) return CommonArgResult::Error;
         opts.out_stk_file = argv[++i];
         return CommonArgParseStatus::Handled;
     }
-    if ((arg == "--out-enewick" || arg == "--out-enwk") && i + 1 < argc) {
+    if (arg == "--out-enewick" || arg == "--out-enwk") {
+        if (!require_value()) return CommonArgResult::Error;
         opts.out_enewick_file = argv[++i];
         return CommonArgParseStatus::Handled;
     }
-    if ((arg == "--tree" || arg == "-t") && i + 1 < argc) {
+    if (arg == "--tree" || arg == "-t") {
+        if (!require_value()) return CommonArgResult::Error;
         opts.tree_file = argv[++i];
         return CommonArgParseStatus::Handled;
     }
@@ -215,24 +238,29 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
         opts.use_hyphaeon = false;
         return CommonArgParseStatus::Handled;
     }
-    if (arg == "--embeddings" && i + 1 < argc) {
+    if (arg == "--embeddings") {
+        if (!require_value()) return CommonArgResult::Error;
         opts.use_ohmic = true;
         opts.embeddings_file = argv[++i];
         return CommonArgParseStatus::Handled;
     }
-    if ((arg == "--code" || arg == "-c") && i + 1 < argc) {
+    if (arg == "--code" || arg == "-c") {
+        if (!require_value()) return CommonArgResult::Error;
         opts.code_name = argv[++i];
         return CommonArgParseStatus::Handled;
     }
-    if ((arg == "--branches" || arg == "--test-branches") && i + 1 < argc) {
+    if (arg == "--branches" || arg == "--test-branches") {
+        if (!require_value()) return CommonArgResult::Error;
         opts.branches = argv[++i];
         return CommonArgParseStatus::Handled;
     }
-    if ((arg == "--branch-regex" || arg == "--test-branch-regex") && i + 1 < argc) {
+    if (arg == "--branch-regex" || arg == "--test-branch-regex") {
+        if (!require_value()) return CommonArgResult::Error;
         opts.branch_regex = argv[++i];
         return CommonArgParseStatus::Handled;
     }
-    if ((arg == "--threads" || arg == "-T") && i + 1 < argc) {
+    if (arg == "--threads" || arg == "-T") {
+        if (!require_value()) return CommonArgResult::Error;
         std::string val = argv[++i];
         try {
             // 0 (the default) means "auto": use the OMP_NUM_THREADS env var or
@@ -248,7 +276,8 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
         }
         return CommonArgParseStatus::Handled;
     }
-    if ((arg == "--output" || arg == "-o") && i + 1 < argc) {
+    if (arg == "--output" || arg == "-o") {
+        if (!require_value()) return CommonArgResult::Error;
         opts.output_file = argv[++i];
         return CommonArgParseStatus::Handled;
     }
@@ -260,7 +289,8 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
         }
         return CommonArgParseStatus::Handled;
     }
-    if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
+    if (arg == "--pvalue" || arg == "-p") {
+        if (!require_value()) return CommonArgResult::Error;
         std::string val = argv[++i];
         try {
             opts.pvalue_threshold = parse_probability("--pvalue", val);
@@ -272,7 +302,8 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
         }
         return CommonArgParseStatus::Handled;
     }
-    if ((arg == "--json-format" || arg == "--format") && i + 1 < argc) {
+    if (arg == "--json-format" || arg == "--format") {
+        if (!require_value()) return CommonArgResult::Error;
         std::string fmt = argv[++i];
         if (!parse_json_format(fmt, opts.json_format)) {
             opts.has_error = true;
@@ -281,6 +312,9 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
             return CommonArgParseStatus::Error;
         }
         return CommonArgParseStatus::Handled;
+    }
+    if (arg == "--seed" && i + 1 >= argc) {
+        if (!require_value()) return CommonArgResult::Error;
     }
     if (arg == "--legacy-json" || arg == "--legacy") {
         opts.json_format = JSONFormat::Legacy;

@@ -21,7 +21,7 @@ nlohmann::json MEMEAnalyzer::to_legacy_json() const {
             {"contact", "spond@temple.edu"},
             {"info", "MEME (Mixed Effects Model of Evolution) estimates a site-wise synonymous (alpha) and a two-category mixture of non-synonymous (beta1 with p1, and beta+ with p+) rates, and uses a likelihood ratio test to determine if beta+ > alpha at a site."},
             {"requirements", "in-frame codon alignment and a phylogenetic tree"},
-            {"settings", {{"p-value", p_value_threshold}, {"code", aln.code ? aln.code->name : "Universal"}}},
+            {"settings", {{"p-value", finite_or_null(p_value_threshold)}, {"code", aln.code ? aln.code->name : "Universal"}}},
             {"version", "4.1 (Modern C++ hyphy-next)"}
         };
 
@@ -39,32 +39,32 @@ nlohmann::json MEMEAnalyzer::to_legacy_json() const {
         nlohmann::json fits_json;
         if (has_gtr_fit) {
             fits_json["Nucleotide GTR"] = {
-                {"AIC-c", gtr_aicc},
-                {"Log Likelihood", gtr_log_l},
+                {"AIC-c", finite_or_null(gtr_aicc)},
+                {"Log Likelihood", finite_or_null(gtr_log_l)},
                 {"Equilibrium frequencies", {
-                    aln.nuc_frequencies(0),
-                    aln.nuc_frequencies(1),
-                    aln.nuc_frequencies(2),
-                    aln.nuc_frequencies(3)
+                    finite_or_null(aln.nuc_frequencies(0)),
+                    finite_or_null(aln.nuc_frequencies(1)),
+                    finite_or_null(aln.nuc_frequencies(2)),
+                    finite_or_null(aln.nuc_frequencies(3))
                 }},
                 {"Rate Distributions", {
-                    {"Substitution rate from nucleotide A to nucleotide C", gtr_rates.theta_AC},
+                    {"Substitution rate from nucleotide A to nucleotide C", finite_or_null(gtr_rates.theta_AC)},
                     {"Substitution rate from nucleotide A to nucleotide G", 1.0},
-                    {"Substitution rate from nucleotide A to nucleotide T", gtr_rates.theta_AT},
-                    {"Substitution rate from nucleotide C to nucleotide G", gtr_rates.theta_CG},
-                    {"Substitution rate from nucleotide C to nucleotide T", gtr_rates.theta_CT},
-                    {"Substitution rate from nucleotide G to nucleotide T", gtr_rates.theta_GT}
+                    {"Substitution rate from nucleotide A to nucleotide T", finite_or_null(gtr_rates.theta_AT)},
+                    {"Substitution rate from nucleotide C to nucleotide G", finite_or_null(gtr_rates.theta_CG)},
+                    {"Substitution rate from nucleotide C to nucleotide T", finite_or_null(gtr_rates.theta_CT)},
+                    {"Substitution rate from nucleotide G to nucleotide T", finite_or_null(gtr_rates.theta_GT)}
                 }}
             };
         }
 
         std::vector<Scalar> eq_freqs(aln.codon_frequencies_f3x4.data(), aln.codon_frequencies_f3x4.data() + aln.codon_frequencies_f3x4.size());
         fits_json["Global MG94xREV"] = {
-            {"AIC-c", global_aicc},
-            {"Log Likelihood", global_log_l},
-            {"Equilibrium frequencies", eq_freqs},
+            {"AIC-c", finite_or_null(global_aicc)},
+            {"Log Likelihood", finite_or_null(global_log_l)},
+            {"Equilibrium frequencies", sanitized_doubles(eq_freqs)},
             {"Rate Distributions", {
-                {"non-synonymous/synonymous rate ratio", base_params.beta / std::max(base_params.alpha, 1e-12)}
+                {"non-synonymous/synonymous rate ratio", finite_or_null(base_params.beta / std::max(base_params.alpha, 1e-12))}
             }}
         };
         j["fits"] = fits_json;
@@ -75,10 +75,10 @@ nlohmann::json MEMEAnalyzer::to_legacy_json() const {
         for (const auto& node : tree.nodes) {
             if (node.id != tree.root_id) {
                 nlohmann::json b_info;
-                b_info["Global MG94xREV"] = node.branch_length / conversion_factor;
+                b_info["Global MG94xREV"] = finite_or_null((conversion_factor > 0.0) ? (node.branch_length / conversion_factor) : node.branch_length);
                 auto it = gtr_branch_lengths.find(node.name);
                 if (it != gtr_branch_lengths.end()) {
-                    b_info["Nucleotide GTR"] = it->second;
+                    b_info["Nucleotide GTR"] = finite_or_null(it->second);
                 }
                 branch_dict[node.name] = b_info;
             }
@@ -104,10 +104,10 @@ nlohmann::json MEMEAnalyzer::to_legacy_json() const {
             nlohmann::json::array({"FEL &beta;", "Non-synonymous substitution rate at a site under the FEL model"})
         });
 
-        std::vector<std::vector<Scalar>> content(site_results.size());
+        nlohmann::json content = nlohmann::json::array();
         for (size_t s = 0; s < site_results.size(); ++s) {
             const auto& r = site_results[s];
-            content[s] = {
+            content.push_back(sanitized_doubles({
                 r.alpha,
                 r.beta1,
                 r.p1,
@@ -122,7 +122,7 @@ nlohmann::json MEMEAnalyzer::to_legacy_json() const {
                 r.p_value_meme_vs_fel,
                 r.fel_alpha,
                 r.fel_beta
-            };
+            }));
         }
         j["MLE"]["content"]["0"] = content;
 
@@ -149,7 +149,7 @@ nlohmann::json MEMEAnalyzer::to_modern_json(const Provenance& prov) const {
             {citation("Murrell B, Wertheim JO, Moola S, Weighill T, Scheffler K, Kosakovsky Pond SL (2012). Detecting Individual Sites Subject to Episodic Diversifying Selection. PLoS Genet 8(7): e1002764.",
                       "10.1371/journal.pgen.1002764", "22844254")},
             {
-                {"pvalue_threshold", p_value_threshold},
+                {"pvalue_threshold", finite_or_null(p_value_threshold)},
                 {"code", aln.code ? aln.code->name : "Universal"},
                 {"test_branches", test_branches}
             }
@@ -184,7 +184,7 @@ nlohmann::json MEMEAnalyzer::to_modern_json(const Provenance& prov) const {
             global_log_l, global_aicc,
             6 + static_cast<int>(tree.nodes.size()) - 1);
         j["model_fits"]["codon_mg94"]["global_parameters"] = {
-            {"omega", (base_params.alpha > 0.0) ? (base_params.beta / base_params.alpha) : 1.0},
+            {"omega", finite_or_null((base_params.alpha > 0.0) ? (base_params.beta / base_params.alpha) : 1.0)},
             {"tree_scale", 1.0}
         };
 
@@ -200,7 +200,7 @@ nlohmann::json MEMEAnalyzer::to_modern_json(const Provenance& prov) const {
             {"degrees_of_freedom", 2},
             {"null_hypothesis", "beta+ <= alpha or p+ = 0 (No episodic positive selection)"},
             {"alternative_hypothesis", "beta+ > alpha and p+ > 0 (Episodic positive selection on a subset of branches)"},
-            {"threshold", p_value_threshold},
+            {"threshold", finite_or_null(p_value_threshold)},
             {"total_sites", static_cast<int>(site_results.size())},
             {"diversifying_count", diversifying_sites}
         };
@@ -300,9 +300,9 @@ nlohmann::json MEMEAnalyzer::to_modern_json(const Provenance& prov) const {
                 ev_j["child_aa"] = std::string(1, ev.child_aa);
                 ev_j["is_synonymous"] = ev.is_synonymous;
                 ev_j["nucleotide_differences"] = ev.nt_distance;
-                ev_j["transition_probability"] = ev.transition_prob;
-                ev_j["surprise_bits"] = ev.surprise_bits;
-                ev_j["branch_length"] = ev.branch_length;
+                ev_j["transition_probability"] = finite_or_null(ev.transition_prob);
+                ev_j["surprise_bits"] = finite_or_null(ev.surprise_bits);
+                ev_j["branch_length"] = finite_or_null(ev.branch_length);
                 ev_j["is_tested"] = ev.is_tested;
                 ev_list.push_back(ev_j);
             }

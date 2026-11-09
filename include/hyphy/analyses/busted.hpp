@@ -2455,7 +2455,7 @@ public:
         size_t num_mh_params = (allow_double ? 1 : 0) + (allow_triple ? 1 : 0);
         // 5 GTR exchangeabilities + 9 CF3x4 empirical frequency parameters (matching HyPhy's +9 AICc offset, F-054)
         size_t K_params = 14 + (refine_branches ? num_branches : 1) + num_mixture_params + num_syn_params + num_mh_params + num_mss_free_params;
-        fit.aicc = -2.0 * fit.log_likelihood + 2.0 * K_params * N_codons / std::max(1.0, static_cast<double>(N_codons) - static_cast<double>(K_params) - 1.0);
+        fit.aicc = hyphy::core::stats::compute_aicc(fit.log_likelihood, K_params, N_codons * aln.num_taxa);
 
         return fit;
     }
@@ -4915,7 +4915,7 @@ public:
         size_t num_syn_params = srv ? 2 * (M - 1) : 0;
         size_t num_mh_params = (allow_double ? 1 : 0) + (allow_triple ? 1 : 0);
         size_t K_params = 14 + (refine_branches ? num_branches : 1) + num_mixture_params + num_syn_params + num_mh_params + num_mss_free_params;
-        fit.aicc = -2.0 * fit.log_likelihood + 2.0 * K_params * N_codons / std::max(1.0, static_cast<double>(N_codons) - static_cast<double>(K_params) - 1.0);
+        fit.aicc = hyphy::core::stats::compute_aicc(fit.log_likelihood, K_params, N_codons * aln.num_taxa);
 
         return fit;
     }
@@ -5455,7 +5455,7 @@ public:
         size_t num_syn_params = srv ? 2 * (M - 1) : 0;
         size_t num_mh_params = (allow_double ? 1 : 0) + (allow_triple ? 1 : 0);
         size_t K_params = 14 + (refine_branches ? num_branches : 1) + num_mixture_params + num_syn_params + num_mh_params + num_mss_free_params;
-        fit.aicc = -2.0 * fit.log_likelihood + 2.0 * K_params * N_codons / std::max(1.0, static_cast<double>(N_codons) - static_cast<double>(K_params) - 1.0);
+        fit.aicc = hyphy::core::stats::compute_aicc(fit.log_likelihood, K_params, N_codons * aln.num_taxa);
 
         return fit;
     }

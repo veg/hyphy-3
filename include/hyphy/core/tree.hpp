@@ -130,7 +130,11 @@ public:
                 out_L.noalias() += wb.weights[2] * D3;
             }
         } else {
-            out_L.setOnes();
+            if (!nodes[nid].children.empty()) {
+                out_L.setOnes(P_branches[nodes[nid].children[0]].rows());
+            } else {
+                out_L.setOnes();
+            }
             out_child_scale_sum = 0.0;
             for (int32_t cid : nodes[nid].children) {
                 out_L.array() *= (P_branches[cid] * node_L[cid]).array();
@@ -220,7 +224,11 @@ public:
                 out_L.noalias() += wb.weights[2] * D3;
             }
         } else {
-            out_L.setOnes();
+            if (!nodes[nid].children.empty()) {
+                out_L.setOnes(P_branches[nodes[nid].children[0]].rows());
+            } else {
+                out_L.setOnes();
+            }
             out_child_scale_sum = 0.0;
             for (int32_t cid : nodes[nid].children) {
                 out_L.array() *= (P_branches[cid] * node_L[cid]).array();
@@ -266,17 +274,42 @@ public:
         std::string newick(newick_sv);
 
         // Strip trailing semicolon and whitespace
-        while (!newick.empty() && (newick.back() == ';' || newick.back() == ' ' || newick.back() == '\n' || newick.back() == '\r')) {
+        while (!newick.empty() && (newick.back() == ';' || newick.back() == ' ' || newick.back() == '\t' || newick.back() == '\n' || newick.back() == '\r')) {
             newick.pop_back();
         }
 
-        // Clean comments [comment], keep model tags {Tag}
+        // Clean comments [comment] outside quotes, keep model tags {Tag}, preserve characters inside quotes
         std::string clean;
+        clean.reserve(newick.size());
         bool in_comment = false;
-        for (char c : newick) {
-            if (c == '[') { in_comment = true; continue; }
-            if (c == ']') { in_comment = false; continue; }
-            if (!in_comment && c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+        char quote_char = '\0';
+        for (size_t k = 0; k < newick.size(); ++k) {
+            char c = newick[k];
+            if (quote_char != '\0') {
+                clean += c;
+                if (c == quote_char) {
+                    if (quote_char == '\'' && k + 1 < newick.size() && newick[k + 1] == '\'') {
+                        clean += newick[++k];
+                    } else {
+                        quote_char = '\0';
+                    }
+                }
+                continue;
+            }
+            if (in_comment) {
+                if (c == ']') in_comment = false;
+                continue;
+            }
+            if (c == '[') {
+                in_comment = true;
+                continue;
+            }
+            if (c == '\'' || c == '"') {
+                quote_char = c;
+                clean += c;
+                continue;
+            }
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
                 clean += c;
             }
         }
@@ -297,13 +330,65 @@ public:
         auto process_token = [&](int32_t target_node, std::string str) {
             if (str.empty()) return;
             std::string tag;
-            auto open_brace = str.find('{');
-            auto close_brace = str.find('}');
+            size_t open_brace = std::string::npos;
+            size_t close_brace = std::string::npos;
+            {
+                char q = '\0';
+                for (size_t k = 0; k < str.size(); ++k) {
+                    char ch = str[k];
+                    if (q != '\0') {
+                        if (ch == q) {
+                            if (q == '\'' && k + 1 < str.size() && str[k + 1] == '\'') {
+                                ++k;
+                            } else {
+                                q = '\0';
+                            }
+                        }
+                        continue;
+                    }
+                    if (ch == '\'' || ch == '"') {
+                        q = ch;
+                        continue;
+                    }
+                    if (ch == '{' && open_brace == std::string::npos) {
+                        open_brace = k;
+                    } else if (ch == '}' && open_brace != std::string::npos && close_brace == std::string::npos) {
+                        close_brace = k;
+                        break;
+                    }
+                }
+            }
             if (open_brace != std::string::npos && close_brace != std::string::npos && close_brace > open_brace) {
                 tag = str.substr(open_brace + 1, close_brace - open_brace - 1);
                 str.erase(open_brace, close_brace - open_brace + 1);
             }
-            auto colon = str.find(':');
+
+            size_t colon = std::string::npos;
+            {
+                char q = '\0';
+                for (size_t k = 0; k < str.size(); ++k) {
+                    char ch = str[k];
+                    if (q != '\0') {
+                        if (ch == q) {
+                            if (q == '\'' && k + 1 < str.size() && str[k + 1] == '\'') {
+                                ++k;
+                            } else {
+                                q = '\0';
+                            }
+                        }
+                        continue;
+                    }
+                    if (ch == '\'' || ch == '"') {
+                        q = ch;
+                        continue;
+                    }
+                    if (ch == ':') {
+                        colon = k;
+                        break;
+                    }
+                }
+            }
+
             std::string name;
             Scalar length = 0.0;
             if (colon != std::string::npos) {
@@ -317,15 +402,51 @@ public:
                 name = str;
             }
             if (name.size() >= 2 && ((name.front() == '\'' && name.back() == '\'') || (name.front() == '"' && name.back() == '"'))) {
-                name = name.substr(1, name.size() - 2);
+                char q = name.front();
+                std::string inner = name.substr(1, name.size() - 2);
+                if (q == '\'') {
+                    std::string unescaped;
+                    unescaped.reserve(inner.size());
+                    for (size_t k = 0; k < inner.size(); ++k) {
+                        if (inner[k] == '\'' && k + 1 < inner.size() && inner[k + 1] == '\'') {
+                            unescaped += '\'';
+                            ++k;
+                        } else {
+                            unescaped += inner[k];
+                        }
+                    }
+                    name = std::move(unescaped);
+                } else {
+                    name = std::move(inner);
+                }
             }
             tree.nodes[target_node].name = name;
             tree.nodes[target_node].branch_length = length;
             tree.nodes[target_node].model_tag = tag;
         };
 
+        char quote = '\0';
         for (size_t i = 0; i < clean.size(); ++i) {
             char c = clean[i];
+            if (quote != '\0') {
+                token += c;
+                if (c == quote) {
+                    if (quote == '\'' && i + 1 < clean.size() && clean[i + 1] == '\'') {
+                        token += clean[++i];
+                    } else {
+                        quote = '\0';
+                    }
+                }
+                continue;
+            }
+            if (c == '\'' || c == '"') {
+                quote = c;
+                token += c;
+                continue;
+            }
+            if (c == ';') {
+                break;
+            }
             if (c == '(') {
                 int32_t internal_id = create_node();
                 if (!parent_stack.empty()) {
@@ -347,20 +468,47 @@ public:
                     }
                 }
                 if (c == ')') {
-                    if (!parent_stack.empty()) {
-                        current_id = parent_stack.top();
-                        parent_stack.pop();
-                        // Peek forward for internal node name or branch length
-                        size_t j = i + 1;
-                        std::string int_token;
-                        while (j < clean.size() && clean[j] != ',' && clean[j] != ')' && clean[j] != ';') {
-                            int_token += clean[j];
+                    if (parent_stack.empty()) {
+                        throw std::runtime_error("Invalid Newick tree: unbalanced parentheses");
+                    }
+                    current_id = parent_stack.top();
+                    parent_stack.pop();
+                    // Peek forward for internal node name or branch length (respecting quotes)
+                    size_t j = i + 1;
+                    std::string int_token;
+                    char int_quote = '\0';
+                    while (j < clean.size()) {
+                        char cj = clean[j];
+                        if (int_quote != '\0') {
+                            int_token += cj;
+                            if (cj == int_quote) {
+                                if (int_quote == '\'' && j + 1 < clean.size() && clean[j + 1] == '\'') {
+                                    int_token += clean[++j];
+                                } else {
+                                    int_quote = '\0';
+                                }
+                            }
                             ++j;
+                            continue;
                         }
-                        if (!int_token.empty()) {
-                            process_token(current_id, int_token);
-                            i = j - 1; // Advance loop
+                        if (cj == '\'' || cj == '"') {
+                            int_quote = cj;
+                            int_token += cj;
+                            ++j;
+                            continue;
                         }
+                        if (cj == ',' || cj == ')' || cj == '(' || cj == ';') {
+                            break;
+                        }
+                        int_token += cj;
+                        ++j;
+                    }
+                    if (int_quote != '\0') {
+                        throw std::runtime_error("Invalid Newick tree: unterminated quoted label");
+                    }
+                    if (!int_token.empty()) {
+                        process_token(current_id, int_token);
+                        i = j - 1; // Advance loop
                     }
                 }
             } else {
@@ -368,6 +516,12 @@ public:
             }
         }
 
+        if (quote != '\0') {
+            throw std::runtime_error("Invalid Newick tree: unterminated quoted label");
+        }
+        if (!parent_stack.empty()) {
+            throw std::runtime_error("Invalid Newick tree: unbalanced parentheses");
+        }
         if (tree.nodes.empty()) {
             throw std::runtime_error("Failed to parse Newick tree: empty tree");
         }

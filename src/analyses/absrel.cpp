@@ -33,21 +33,21 @@ nlohmann::json ABSRELResult::to_legacy_json(const Tree& tree, const Alignment& a
         // Fits
         j["fits"] = {
             {"Nucleotide GTR", {
-                {"Log Likelihood", gtr_fit.log_likelihood},
+                {"Log Likelihood", finite_or_null(gtr_fit.log_likelihood)},
                 {"estimated parameters", gtr_fit.parameters},
-                {"AIC-c", gtr_fit.aicc},
+                {"AIC-c", finite_or_null(gtr_fit.aicc)},
                 {"display order", 0}
             }},
             {"Baseline MG94xREV", {
-                {"Log Likelihood", baseline_fit.log_likelihood},
+                {"Log Likelihood", finite_or_null(baseline_fit.log_likelihood)},
                 {"estimated parameters", baseline_fit.parameters},
-                {"AIC-c", baseline_fit.aicc},
+                {"AIC-c", finite_or_null(baseline_fit.aicc)},
                 {"display order", 1}
             }},
             {"Full adaptive model", {
-                {"Log Likelihood", full_adaptive_fit.log_likelihood},
+                {"Log Likelihood", finite_or_null(full_adaptive_fit.log_likelihood)},
                 {"estimated parameters", full_adaptive_fit.parameters},
-                {"AIC-c", full_adaptive_fit.aicc},
+                {"AIC-c", finite_or_null(full_adaptive_fit.aicc)},
                 {"display order", 2}
             }}
         };
@@ -56,24 +56,24 @@ nlohmann::json ABSRELResult::to_legacy_json(const Tree& tree, const Alignment& a
         nlohmann::json ba = nlohmann::json::object();
         for (const auto& [name, bres] : branches) {
             nlohmann::json b_dict;
-            b_dict["Baseline MG94xREV"] = bres.baseline_branch_length;
-            b_dict["Baseline MG94xREV omega ratio"] = bres.baseline_omega;
+            b_dict["Baseline MG94xREV"] = finite_or_null(bres.baseline_branch_length);
+            b_dict["Baseline MG94xREV omega ratio"] = finite_or_null(bres.baseline_omega);
             b_dict["Rate classes"] = bres.rate_classes;
-            b_dict["Full adaptive model"] = bres.full_branch_length;
-            b_dict["Full adaptive model (synonymous subs/site)"] = bres.full_es;
-            b_dict["Full adaptive model (non-synonymous subs/site)"] = bres.full_en;
+            b_dict["Full adaptive model"] = finite_or_null(bres.full_branch_length);
+            b_dict["Full adaptive model (synonymous subs/site)"] = finite_or_null(bres.full_es);
+            b_dict["Full adaptive model (non-synonymous subs/site)"] = finite_or_null(bres.full_en);
 
             // Rate distributions: [[omega, weight], ...]
             nlohmann::json rdist = nlohmann::json::array();
             for (size_t k = 0; k < bres.rate_distribution.rates.size(); ++k) {
-                rdist.push_back({bres.rate_distribution.rates[k], bres.rate_distribution.weights[k]});
+                rdist.push_back(sanitized_doubles({bres.rate_distribution.rates[k], bres.rate_distribution.weights[k]}));
             }
             b_dict["Rate Distributions"] = rdist;
 
             if (bres.is_tested) {
-                b_dict["LRT"] = bres.lrt;
-                b_dict["Uncorrected P-value"] = bres.uncorrected_p_value;
-                b_dict["Corrected P-value"] = bres.corrected_p_value;
+                b_dict["LRT"] = finite_or_null(bres.lrt);
+                b_dict["Uncorrected P-value"] = finite_or_null(bres.uncorrected_p_value);
+                b_dict["Corrected P-value"] = finite_or_null(bres.corrected_p_value);
                 b_dict["Sites @ EBF>=100"] = bres.sites_ebf_100;
             }
             ba[name] = b_dict;
@@ -82,7 +82,7 @@ nlohmann::json ABSRELResult::to_legacy_json(const Tree& tree, const Alignment& a
 
         // Test Results
         j["test results"] = {
-            {"P-value threshold", p_threshold},
+            {"P-value threshold", finite_or_null(p_threshold)},
             {"tested", tested_branches.size()},
             {"positive test results", positive_branches.size()}
         };
@@ -96,7 +96,7 @@ nlohmann::json ABSRELResult::to_legacy_json(const Tree& tree, const Alignment& a
 
         // Timers
         j["timers"] = {
-            {"Overall", {{"timer", static_cast<int>(runtime_seconds)}, {"order", 0}}}
+            {"Overall", {{"timer", static_cast<int>(std::isfinite(runtime_seconds) ? runtime_seconds : 0.0)}, {"order", 0}}}
         };
 
         return j;
@@ -112,7 +112,7 @@ nlohmann::json ABSRELResult::to_modern_json(const Tree& tree, const Alignment& a
             {citation("Smith MD, Wertheim JO, Weaver S, Murrell B, Scheffler K, Kosakovsky Pond SL (2015). Less Is More: An Adaptive Branch-Site Random Effects Model for Efficient Detection of Episodic Diversifying Selection. Mol Biol Evol 32(5): 1342-1353.",
                       "10.1093/molbev/msv022", "25697341")},
             {
-                {"p_threshold", p_threshold},
+                {"p_threshold", finite_or_null(p_threshold)},
                 {"tested_branches", tested_branches.size()}
             }
         };
@@ -121,7 +121,7 @@ nlohmann::json ABSRELResult::to_modern_json(const Tree& tree, const Alignment& a
         // Preserve measured runtime when the caller supplied no real provenance.
         if (prov.invocation.cli_command.empty() && prov.inputs.empty() &&
             j["provenance"].contains("execution")) {
-            j["provenance"]["execution"]["wall_time_seconds"] = runtime_seconds;
+            j["provenance"]["execution"]["wall_time_seconds"] = finite_or_null(runtime_seconds);
         }
         j["dataset"] = dataset_block(aln);
         j["phylogeny"] = phylogeny_block(
@@ -189,7 +189,7 @@ nlohmann::json ABSRELResult::to_modern_json(const Tree& tree, const Alignment& a
             {"test_statistic", "Likelihood Ratio Test (LRT)"},
             {"distribution", "Asymptotic mixture distribution"},
             {"multiple_testing_correction", "Holm-Bonferroni step-down procedure"},
-            {"threshold", p_threshold},
+            {"threshold", finite_or_null(p_threshold)},
             {"tested_branches_count", static_cast<int>(tested_branches.size())},
             {"positive_branches_count", static_cast<int>(positive_branches.size())},
             {"positive_branches", positive_branches}

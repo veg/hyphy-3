@@ -22,7 +22,7 @@ nlohmann::json ContrastFELAnalyzer::to_modern_json(
             {"version", "3.0.0"},
             {"description", "Test for differential selective pressures between branch sets using Empirical Bayes Ridge Shrinkage"},
             {"reference", "Mol Biol Evol (2021) 38(3):1184–1198"},
-            {"shrinkage_lambda", shrinkage_lambda}
+            {"shrinkage_lambda", finite_or_null(shrinkage_lambda)}
         };
         j["software"] = software_block();
 
@@ -49,7 +49,7 @@ nlohmann::json ContrastFELAnalyzer::to_modern_json(
                     : (has_background ? "Background" : "Reference");
                 nodes_json[node.name] = {
                     {"type", node.is_leaf ? "leaf" : "internal"},
-                    {"branch_length", (conversion_factor > 0.0) ? (node.branch_length / conversion_factor) : node.branch_length},
+                    {"branch_length", finite_or_null((conversion_factor > 0.0) ? (node.branch_length / conversion_factor) : node.branch_length)},
                     {"group", grp_name},
                     {"is_testable", (gid >= 0)}
                 };
@@ -80,11 +80,11 @@ nlohmann::json ContrastFELAnalyzer::to_modern_json(
         j["statistical_tests"]["summary"] = {
             {"total_sites", static_cast<int>(sum.total_sites)},
             {"degrees_of_freedom", static_cast<int>(testable_groups.size() > 1 ? testable_groups.size() - 1 : 1)},
-            {"significant_p_threshold", p_value_threshold},
+            {"significant_p_threshold", finite_or_null(p_value_threshold)},
             {"significant_p_sites", static_cast<int>(sum.significant_p_sites)},
-            {"significant_q_threshold", q_value_threshold},
+            {"significant_q_threshold", finite_or_null(q_value_threshold)},
             {"significant_q_sites", static_cast<int>(sum.significant_q_sites)},
-            {"shrinkage_lambda", shrinkage_lambda}
+            {"shrinkage_lambda", finite_or_null(shrinkage_lambda)}
         };
 
         // Pairwise summary if K >= 2
@@ -205,8 +205,8 @@ nlohmann::json ContrastFELAnalyzer::to_legacy_json(
             {"requirements", "in-frame codon alignment and a phylogenetic tree with branch sets"},
             {"version", "3.0.0"},
             {"settings", {
-                {"pvalue", p_value_threshold},
-                {"qvalue", q_value_threshold},
+                {"pvalue", finite_or_null(p_value_threshold)},
+                {"qvalue", finite_or_null(q_value_threshold)},
                 {"srv", 1},
                 {"permutation", 0}
             }}
@@ -232,9 +232,9 @@ nlohmann::json ContrastFELAnalyzer::to_legacy_json(
                 tested_map[node.name] = grp_name;
 
                 Scalar orig_bl = (conversion_factor > 0.0) ? (node.branch_length / conversion_factor) : node.branch_length;
-                branch_attr[node.name]["Global MG94xREV"] = orig_bl;
+                branch_attr[node.name]["Global MG94xREV"] = finite_or_null(orig_bl);
                 if (has_gtr_fit) {
-                    branch_attr[node.name]["Nucleotide GTR"] = gtr_branch_lengths.count(node.name) ? gtr_branch_lengths.at(node.name) : orig_bl;
+                    branch_attr[node.name]["Nucleotide GTR"] = finite_or_null(gtr_branch_lengths.count(node.name) ? gtr_branch_lengths.at(node.name) : orig_bl);
                 }
                 branch_attr[node.name]["original name"] = node.name;
             }
@@ -249,36 +249,36 @@ nlohmann::json ContrastFELAnalyzer::to_legacy_json(
         // Fits
         if (has_gtr_fit) {
             nlohmann::json gtr_ef = nlohmann::json::array();
-            for (int i = 0; i < 4; ++i) gtr_ef.push_back({aln.nuc_frequencies(i)});
+            for (int i = 0; i < 4; ++i) gtr_ef.push_back({finite_or_null(aln.nuc_frequencies(i))});
             j["fits"]["Nucleotide GTR"] = {
-                {"Log Likelihood", gtr_log_l},
-                {"AIC-c", gtr_aicc},
+                {"Log Likelihood", finite_or_null(gtr_log_l)},
+                {"AIC-c", finite_or_null(gtr_aicc)},
                 {"display order", 0},
                 {"Equilibrium frequencies", gtr_ef},
                 {"Rate Distributions", {
-                    {"Substitution rate from nucleotide A to nucleotide C", gtr_rates.theta_AC},
+                    {"Substitution rate from nucleotide A to nucleotide C", finite_or_null(gtr_rates.theta_AC)},
                     {"Substitution rate from nucleotide A to nucleotide G", 1.0},
-                    {"Substitution rate from nucleotide A to nucleotide T", gtr_rates.theta_AT},
-                    {"Substitution rate from nucleotide C to nucleotide G", gtr_rates.theta_CG},
-                    {"Substitution rate from nucleotide C to nucleotide T", gtr_rates.theta_CT},
-                    {"Substitution rate from nucleotide G to nucleotide T", gtr_rates.theta_GT}
+                    {"Substitution rate from nucleotide A to nucleotide T", finite_or_null(gtr_rates.theta_AT)},
+                    {"Substitution rate from nucleotide C to nucleotide G", finite_or_null(gtr_rates.theta_CG)},
+                    {"Substitution rate from nucleotide C to nucleotide T", finite_or_null(gtr_rates.theta_CT)},
+                    {"Substitution rate from nucleotide G to nucleotide T", finite_or_null(gtr_rates.theta_GT)}
                 }}
             };
         }
 
         nlohmann::json mg_ef = nlohmann::json::array();
-        for (int i = 0; i < aln.codon_frequencies_f3x4.size(); ++i) mg_ef.push_back({aln.codon_frequencies_f3x4(i)});
+        for (int i = 0; i < aln.codon_frequencies_f3x4.size(); ++i) mg_ef.push_back({finite_or_null(aln.codon_frequencies_f3x4(i))});
         Scalar omega_mle = (base_params.alpha > 0.0) ? (base_params.beta / base_params.alpha) : 1.0;
         nlohmann::json mg_rates = nlohmann::json::object();
         for (const auto& grp : testable_groups) {
-            mg_rates["non-synonymous/synonymous rate ratio for *" + grp.name + "*"] = nlohmann::json::array({nlohmann::json::array({omega_mle, 1.0})});
+            mg_rates["non-synonymous/synonymous rate ratio for *" + grp.name + "*"] = nlohmann::json::array({nlohmann::json::array({finite_or_null(omega_mle), 1.0})});
         }
         if (has_background) {
-            mg_rates["non-synonymous/synonymous rate ratio for *background*"] = nlohmann::json::array({nlohmann::json::array({omega_mle, 1.0})});
+            mg_rates["non-synonymous/synonymous rate ratio for *background*"] = nlohmann::json::array({nlohmann::json::array({finite_or_null(omega_mle), 1.0})});
         }
         j["fits"]["Global MG94xREV"] = {
-            {"Log Likelihood", global_log_l},
-            {"AIC-c", global_aicc},
+            {"Log Likelihood", finite_or_null(global_log_l)},
+            {"AIC-c", finite_or_null(global_aicc)},
             {"display order", 1},
             {"Equilibrium frequencies", mg_ef},
             {"Rate Distributions", mg_rates}
@@ -313,21 +313,21 @@ nlohmann::json ContrastFELAnalyzer::to_legacy_json(
         nlohmann::json content = nlohmann::json::array();
         for (const auto& r : site_results) {
             nlohmann::json row = nlohmann::json::array();
-            row.push_back(r.alpha);
+            row.push_back(finite_or_null(r.alpha));
             for (size_t k = 0; k < testable_groups.size(); ++k) {
-                row.push_back(r.beta[k]);
+                row.push_back(finite_or_null(r.beta[k]));
             }
             if (has_background) {
-                row.push_back(r.beta_background);
+                row.push_back(finite_or_null(r.beta_background));
             }
-            row.push_back(r.beta_null);
-            row.push_back(r.p_value);
-            row.push_back(r.q_value);
+            row.push_back(finite_or_null(r.beta_null));
+            row.push_back(finite_or_null(r.p_value));
+            row.push_back(finite_or_null(r.q_value));
             for (size_t pw_idx = 0; pw_idx < num_pairs; ++pw_idx) {
-                row.push_back((pw_idx < r.pairwise.size()) ? r.pairwise[pw_idx].p_value : 1.0);
+                row.push_back(finite_or_null((pw_idx < r.pairwise.size()) ? r.pairwise[pw_idx].p_value : 1.0));
             }
             row.push_back(1.0); // Permutation P-value placeholder when permutation=0
-            row.push_back(r.total_tested_branch_length);
+            row.push_back(finite_or_null(r.total_tested_branch_length));
             content.push_back(row);
         }
         j["MLE"]["content"]["0"] = content;

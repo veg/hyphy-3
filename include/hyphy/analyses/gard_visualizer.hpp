@@ -53,7 +53,7 @@ public:
     std::atomic<size_t> models_evaluated{0};
     size_t total_candidates = 0;
     std::chrono::steady_clock::time_point stage_start_time;
-    std::chrono::steady_clock::time_point last_render_time;
+    std::atomic<int64_t> last_render_ns{0};
     std::chrono::steady_clock::time_point last_log_time;
 
     mutable std::mutex best_mutex;
@@ -99,18 +99,22 @@ public:
 
     void update_best(const std::vector<size_t>& bps, Scalar aicc) {
         bool improved = false;
+        std::vector<size_t> snap_bps;
+        Scalar snap_caic = 0.0;
         {
             std::lock_guard<std::mutex> lock(best_mutex);
             if (aicc < current_best_caic) {
                 current_best_caic = aicc;
                 current_best_bps = bps;
                 std::sort(current_best_bps.begin(), current_best_bps.end());
+                snap_bps = current_best_bps;
+                snap_caic = current_best_caic;
                 improved = true;
             }
         }
         if (improved) {
             if (!is_tty && !quiet) {
-                print_non_tty_improvement();
+                print_non_tty_improvement(snap_bps, snap_caic);
             } else {
                 try_render(true);
             }
@@ -126,13 +130,19 @@ public:
         current_stage = Stage::SingleBP;
         current_B = 1;
         total_candidates = candidates;
-        baseline_caic = base_caic;
-        current_best_caic = std::numeric_limits<Scalar>::infinity();
-        current_best_bps.clear();
+        {
+            std::lock_guard<std::mutex> lock(best_mutex);
+            baseline_caic = base_caic;
+            current_best_caic = std::numeric_limits<Scalar>::infinity();
+            current_best_bps.clear();
+        }
         models_evaluated.store(0);
         reset_density();
         stage_start_time = std::chrono::steady_clock::now();
-        last_render_time = stage_start_time;
+        last_render_ns.store(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(stage_start_time.time_since_epoch()).count(),
+            std::memory_order_relaxed
+        );
         last_log_time = stage_start_time;
         lines_rendered = 0;
 
@@ -183,15 +193,21 @@ public:
         current_stage = Stage::MultiBP_GA;
         current_B = B;
         total_candidates = pop_size;
-        baseline_caic = prev_best_caic;
-        current_best_caic = prev_best_caic;
-        current_best_bps = initial_best_bps;
+        {
+            std::lock_guard<std::mutex> lock(best_mutex);
+            baseline_caic = prev_best_caic;
+            current_best_caic = prev_best_caic;
+            current_best_bps = initial_best_bps;
+            ga_status_details = "Initializing population...";
+            ga_status_compact = "Init pop...";
+        }
         models_evaluated.store(0);
         reset_density();
-        ga_status_details = "Initializing population...";
-        ga_status_compact = "Init pop...";
         stage_start_time = std::chrono::steady_clock::now();
-        last_render_time = stage_start_time;
+        last_render_ns.store(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(stage_start_time.time_since_epoch()).count(),
+            std::memory_order_relaxed
+        );
         last_log_time = stage_start_time;
         lines_rendered = 0;
 
@@ -218,13 +234,17 @@ public:
         ss << "Gen " << generation
            << " • Diversity: " << std::fixed << std::setprecision(3) << diversity
            << " • Stagnant: " << stagnant << "/" << max_stagnant;
-        ga_status_details = ss.str();
 
         std::ostringstream css;
         css << "G" << generation
             << " (stg " << stagnant << "/" << max_stagnant
             << ", div " << std::fixed << std::setprecision(2) << diversity << ")";
-        ga_status_compact = css.str();
+        std::string details_str = ss.str();
+        {
+            std::lock_guard<std::mutex> lock(best_mutex);
+            ga_status_details = details_str;
+            ga_status_compact = css.str();
+        }
 
         update_best(best_bps_for_B, best_caic_for_B);
 
@@ -233,9 +253,15 @@ public:
             auto sec = std::chrono::duration_cast<std::chrono::seconds>(now - last_log_time).count();
             if (sec >= 5 || generation == 1) {
                 last_log_time = now;
-                std::cout << "[GARD B=" << current_B << "] " << ga_status_details
+                Scalar best_caic_snap = 0.0;
+                {
+                    std::lock_guard<std::mutex> lock(best_mutex);
+                    best_caic_snap = current_best_caic;
+                }
+                std::lock_guard<std::mutex> rlock(render_mutex);
+                std::cout << "[GARD B=" << current_B << "] " << details_str
                           << " | Models: " << models_evaluated.load()
-                          << " | Best c-AIC: " << std::fixed << std::setprecision(4) << current_best_caic
+                          << " | Best c-AIC: " << std::fixed << std::setprecision(4) << best_caic_snap
                           << "\n" << std::flush;
             }
         } else {
@@ -278,8 +304,9 @@ public:
         if (quiet || !dynamic_chart || !is_tty) return;
 
         auto now = std::chrono::steady_clock::now();
-        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_render_time).count();
-        if (!force && elapsed_ms < 40) {
+        int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+        int64_t prev_ns = last_render_ns.load(std::memory_order_relaxed);
+        if (!force && (now_ns - prev_ns) < 40000000LL) {
             return;
         }
 
@@ -287,7 +314,7 @@ public:
             return;
         }
 
-        last_render_time = now;
+        last_render_ns.store(now_ns, std::memory_order_relaxed);
         render_in_place();
         render_mutex.unlock();
     }
@@ -501,11 +528,15 @@ public:
         std::vector<size_t> bps;
         Scalar caic = 0.0;
         Scalar base_caic = 0.0;
+        std::string ga_details;
+        std::string ga_compact;
         {
             std::lock_guard<std::mutex> lock(best_mutex);
             bps = current_best_bps;
             caic = current_best_caic;
             base_caic = baseline_caic;
+            ga_details = ga_status_details;
+            ga_compact = ga_status_compact;
         }
 
         size_t eval_count = models_evaluated.load(std::memory_order_relaxed);
@@ -534,8 +565,8 @@ public:
         } else if (current_stage == Stage::MultiBP_GA) {
             status_ss << core::Console::accent("[B=" + std::to_string(current_B) + "] ")
                       << eval_count << " models [" << format_duration(elapsed_sec) << ", " << std::fixed << std::setprecision(0) << speed << " mod/s]";
-            if (!ga_status_details.empty()) {
-                status_ss << " • " << ga_status_details;
+            if (!ga_details.empty()) {
+                status_ss << " • " << ga_details;
             }
             if (!std::isinf(caic)) {
                 Scalar delta = base_caic - caic;
@@ -567,8 +598,8 @@ public:
             } else if (current_stage == Stage::MultiBP_GA) {
                 css << core::Console::accent("[B=" + std::to_string(current_B) + "] ")
                     << eval_count << " mod [" << format_duration(elapsed_sec) << ", " << std::fixed << std::setprecision(0) << speed << "/s]";
-                if (!ga_status_compact.empty()) {
-                    css << " • " << ga_status_compact;
+                if (!ga_compact.empty()) {
+                    css << " • " << ga_compact;
                 }
                 if (!std::isinf(caic)) {
                     Scalar delta = base_caic - caic;
@@ -729,15 +760,16 @@ private:
         lines_rendered = static_cast<int>(lines.size());
     }
 
-    void print_non_tty_improvement() {
+    void print_non_tty_improvement(const std::vector<size_t>& snap_bps, Scalar snap_caic) {
         std::ostringstream ss;
         ss << "  [GARD B=" << current_B << "] Improved c-AIC to "
-           << std::fixed << std::setprecision(4) << current_best_caic
+           << std::fixed << std::setprecision(4) << snap_caic
            << " at site(s): ";
-        for (size_t i = 0; i < current_best_bps.size(); ++i) {
+        for (size_t i = 0; i < snap_bps.size(); ++i) {
             if (i > 0) ss << ", ";
-            ss << (current_best_bps[i] + 1);
+            ss << (snap_bps[i] + 1);
         }
+        std::lock_guard<std::mutex> rlock(render_mutex);
         std::cout << ss.str() << "\n" << std::flush;
     }
 

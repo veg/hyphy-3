@@ -1364,8 +1364,14 @@ public:
         // Phase 1: GTR
         if (progress_cb) progress_cb("Phase 1: Fitting Nucleotide GTR Model", 0.05);
         fit_gtr();
+        size_t num_gtr_branches = 0;
+        for (const auto& node : tree.nodes) {
+            if (is_active_absrel_branch(node.id)) {
+                num_gtr_branches++;
+            }
+        }
         result.gtr_params = gtr_params;
-        result.gtr_fit = {gtr_log_l, 39, gtr_aicc};
+        result.gtr_fit = {gtr_log_l, 5 + 3 + num_gtr_branches, gtr_aicc};
 
         // Phase 2: Baseline MG94xREV
         if (progress_cb) progress_cb("Phase 2: Fitting Baseline MG94xREV Model", 0.20);

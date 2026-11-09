@@ -16,8 +16,9 @@ let package = Package(
                 .unsafeFlags([
                     "-std=c++20",
                     "-O3",
-                    "-I/Users/sergei/Development/hyphy-3/include",
-                    "-I/Users/sergei/Development/hyphy-3/_deps/eigen3-src"
+                    "-I../../include",
+                    "-I../../build/_deps/eigen3-src",
+                    "-I../../_deps/eigen3-src"
                 ])
             ]
         ),

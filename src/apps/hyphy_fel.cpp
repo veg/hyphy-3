@@ -48,6 +48,7 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--modern-json") << "        Emit modern HyPhy 3.0 JSON schema with provenance and columnar data\n"
               << "  " << Console::brand("--full-model") << "         Perform branch length re-optimization under full codon model (default)\n"
               << "  " << Console::brand("--quick") << "              Disable full branch re-optimization (proportional branch scaling)\n"
+              << "  " << Console::brand("--srv") << " [Yes|No]       Enable or disable synonymous rate variation across sites (default: Yes)\n"
               << "  " << Console::brand("--all-sites") << "          Display all codon sites in console table (default: significant only)\n"
               << "  " << Console::brand("--progress") << "           Force interactive progress bar\n"
               << "  " << Console::brand("--no-progress") << "        Disable progress bar\n"
@@ -61,13 +62,34 @@ static void print_usage(const char* prog) {
 
 int run_fel(int argc, char* argv[]) {
     CommonCLIOptions opts;
+    bool srv_enabled = true;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (parse_common_cli_arg(i, argc, argv, opts)) {
+        auto status = parse_common_cli_arg(i, argc, argv, opts);
+        if (status == CommonArgResult::HelpShown) {
+            return 0;
+        }
+        if (status) {
             if (opts.has_error) {
                 return 1;
             }
+        } else if (arg == "--srv") {
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                std::string val = argv[++i];
+                if (val == "Yes" || val == "yes" || val == "YES" || val == "true" || val == "True" || val == "1") {
+                    srv_enabled = true;
+                } else if (val == "No" || val == "no" || val == "NO" || val == "false" || val == "False" || val == "0") {
+                    srv_enabled = false;
+                } else {
+                    std::cerr << Console::danger("Error: invalid --srv value '") << val << "'. Expected 'Yes' or 'No'.\n";
+                    return 1;
+                }
+            } else {
+                srv_enabled = true;
+            }
+        } else if (arg == "--no-srv") {
+            srv_enabled = false;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
@@ -176,6 +198,7 @@ int run_fel(int argc, char* argv[]) {
     Panel::print_step(3, 3, "Testing Codon Sites for Selection", "OpenMP parallel");
     FELSettings fel_settings;
     fel_settings.p_value_threshold = pvalue_threshold;
+    fel_settings.srv = srv_enabled;
     fel_settings.full_model = full_model;
     fel_settings.test_branches = test_branches;
     fel_settings.test_branch_regex = test_branch_regex;

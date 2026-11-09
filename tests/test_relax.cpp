@@ -18,8 +18,7 @@ TEST_CASE("RELAX: Wertheim et al. 2015 Fig 4E Benchmark Parity (33 taxa, 286 cod
     std::vector<std::string> candidates = {
         "tests/data/Fig4E.nex",
         "../tests/data/Fig4E.nex",
-        "/Users/sergei/Development/hyphy-3/tests/data/Fig4E.nex",
-        "/Users/sergei/Development/hyphy/tests/data/Fig4E.nex"
+        HYPHY3_SOURCE_DIR "/tests/data/Fig4E.nex"
     };
     std::string path;
     for (const auto& c : candidates) {
@@ -130,8 +129,7 @@ TEST_CASE("RELAX: User-specified test branch regex") {
     std::vector<std::string> candidates = {
         "tests/data/Fig4E.nex",
         "../tests/data/Fig4E.nex",
-        "/Users/sergei/Development/hyphy-3/tests/data/Fig4E.nex",
-        "/Users/sergei/Development/hyphy/tests/data/Fig4E.nex"
+        HYPHY3_SOURCE_DIR "/tests/data/Fig4E.nex"
     };
     std::string path;
     for (const auto& c : candidates) {
@@ -217,7 +215,7 @@ TEST_CASE("RELAX: Fig4E --test T selects the 17 {T} branches") {
     std::vector<std::string> candidates = {
         "tests/data/Fig4E.nex",
         "../tests/data/Fig4E.nex",
-        "/Users/sergei/Development/hyphy-3/tests/data/Fig4E.nex"
+        HYPHY3_SOURCE_DIR "/tests/data/Fig4E.nex"
     };
     std::string path;
     for (const auto& c : candidates) {

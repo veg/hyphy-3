@@ -191,6 +191,9 @@ int run_gard(int argc, char* argv[]) {
             force_tty = true;
         } else if (arg == "--quiet" || arg == "-q") {
             quiet = true;
+        } else if (arg == "--version" || arg == "-v") {
+            std::cout << "HyPhy 3 v" HYPHY3_VERSION " (commit: " HYPHY3_GIT_COMMIT ", build: " HYPHY3_BUILD_TYPE ")\n";
+            return 0;
         } else if (arg == "--help" || arg == "-h") {
             print_gard_usage(argv[0]);
             return 0;
@@ -207,11 +210,13 @@ int run_gard(int argc, char* argv[]) {
         return 1;
     }
 
-    if (num_threads > 0) {
 #ifdef _OPENMP
+    if (num_threads > 0) {
         omp_set_num_threads(num_threads);
-#endif
+    } else if (!std::getenv("OMP_NUM_THREADS")) {
+        omp_set_num_threads(std::min(omp_get_max_threads(), 8));
     }
+#endif
 
     if (output_file.empty()) {
         output_file = alignment_file + ".GARD.json";

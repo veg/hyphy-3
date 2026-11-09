@@ -57,6 +57,9 @@ public:
         int S,
         VecType& out_L
     ) {
+        if (out_L.size() != S) {
+            out_L.resize(S);
+        }
         if (t_idx == static_cast<size_t>(-1)) {
             out_L.setOnes();
             return;
@@ -1602,10 +1605,11 @@ public:
         Scalar beta,
         const Vector4& phi
     ) {
-        Vector61Codon p = Vector61Codon::Zero();
+        const int N = static_cast<int>(gcode.num_sense_codons);
+        Vector61Codon p = Vector61Codon::Zero(N);
         Scalar Z = 0.0;
 
-        for (int x = 0; x < gcode.num_sense_codons; ++x) {
+        for (int x = 0; x < N; ++x) {
             char aa = gcode.sense_codon_aa[x];
             Scalar pref_beta = std::pow(prefs.at(site, aa), beta);
 
@@ -1637,13 +1641,14 @@ public:
         size_t site,
         const Vector61Codon& pi_site
     ) {
-        Vector61Codon ln_pref = Vector61Codon::Zero();
-        for (int x = 0; x < gcode.num_sense_codons; ++x) {
+        const int N = static_cast<int>(gcode.num_sense_codons);
+        Vector61Codon ln_pref = Vector61Codon::Zero(N);
+        for (int x = 0; x < N; ++x) {
             char aa = gcode.sense_codon_aa[x];
             ln_pref(x) = std::log(prefs.at(site, aa));
         }
         Scalar mean_ln_pref = pi_site.dot(ln_pref);
-        return pi_site.array() * (ln_pref.array() - mean_ln_pref);
+        return (pi_site.array() * (ln_pref.array() - mean_ln_pref)).matrix();
     }
 
     /**
@@ -1660,6 +1665,7 @@ public:
     ) {
         params.validate();
 
+        const int N = static_cast<int>(gcode.num_sense_codons);
         size_t num_nodes = tree.num_nodes();
         size_t num_sites = prefs.num_sites();
         std::vector<size_t> leaf_to_taxon = build_leaf_to_taxon_map(tree, aln);
@@ -1679,7 +1685,7 @@ public:
             F_matrix.build(gcode, prefs, site, params);
 
             Matrix61Codon P = F_matrix.F.cwiseProduct(Q);
-            for (int x = 0; x < 61; ++x) {
+            for (int x = 0; x < N; ++x) {
                 P(x, x) = -P.row(x).sum();
             }
 
@@ -1690,7 +1696,7 @@ public:
             ExpCMSiteEigen site_eigen;
             site_eigen.decompose(P, pi_site);
 
-            std::vector<Matrix61Codon> P_branches(num_nodes);
+            std::vector<Matrix61Codon> P_branches(num_nodes, Matrix61Codon::Zero(N, N));
             for (const auto& node : tree.nodes) {
                 if (node.id != tree.root_id) {
                     Scalar scaled_bl = node.branch_length * branch_scale;
@@ -1698,7 +1704,7 @@ public:
                 }
             }
 
-            std::vector<Vector61Codon> node_L(num_nodes);
+            std::vector<Vector61Codon> node_L(num_nodes, Vector61Codon::Zero(N));
             std::vector<double> node_log_scale(num_nodes, 0.0);
 
             for (int32_t node_id : tree.post_order) {
@@ -1706,7 +1712,7 @@ public:
 
                 if (node.is_leaf) {
                     size_t t_idx = leaf_to_taxon[node_id];
-                    init_leaf_likelihood(pattern, t_idx, 61, node_L[node_id]);
+                    init_leaf_likelihood(pattern, t_idx, N, node_L[node_id]);
                     node_log_scale[node_id] = 0.0;
                 } else {
                     double child_scale_sum = 0.0;
@@ -1745,6 +1751,7 @@ public:
                                    " exceeds num_sites " + std::to_string(prefs.num_sites()));
         }
 
+        const int N = static_cast<int>(gcode.num_sense_codons);
         size_t num_nodes = tree.num_nodes();
         std::vector<size_t> local_map;
         const std::vector<size_t>& leaf_to_taxon = custom_leaf_to_taxon
@@ -1762,7 +1769,7 @@ public:
         F_matrix.build(gcode, prefs, site, params);
 
         Matrix61Codon P = F_matrix.F.cwiseProduct(Q);
-        for (int x = 0; x < 61; ++x) {
+        for (int x = 0; x < N; ++x) {
             P(x, x) = -P.row(x).sum();
         }
 
@@ -1773,7 +1780,7 @@ public:
         ExpCMSiteEigen site_eigen;
         site_eigen.decompose(P, pi_site);
 
-        std::vector<Matrix61Codon> P_branches(num_nodes);
+        std::vector<Matrix61Codon> P_branches(num_nodes, Matrix61Codon::Zero(N, N));
         for (const auto& node : tree.nodes) {
             if (node.id != tree.root_id) {
                 Scalar scaled_bl = node.branch_length * branch_scale;
@@ -1781,7 +1788,7 @@ public:
             }
         }
 
-        std::vector<Vector61Codon> node_L(num_nodes);
+        std::vector<Vector61Codon> node_L(num_nodes, Vector61Codon::Zero(N));
         std::vector<double> node_log_scale(num_nodes, 0.0);
 
         for (int32_t node_id : tree.post_order) {
@@ -1789,7 +1796,7 @@ public:
 
             if (node.is_leaf) {
                 size_t t_idx = leaf_to_taxon[node_id];
-                init_leaf_likelihood(pattern, t_idx, 61, node_L[node_id]);
+                init_leaf_likelihood(pattern, t_idx, N, node_L[node_id]);
                 node_log_scale[node_id] = 0.0;
             } else {
                 double child_scale_sum = 0.0;
@@ -1864,11 +1871,12 @@ public:
         Scalar beta,
         Scalar omega
     ) {
-        Matrix61Codon dF_dbeta = Matrix61Codon::Zero();
+        const int N = static_cast<int>(gcode.num_sense_codons);
+        Matrix61Codon dF_dbeta = Matrix61Codon::Zero(N, N);
         const double EXPCM_ALMOST_ZERO_VAL = 1e-10;
 
-        for (int x = 0; x < gcode.num_sense_codons; ++x) {
-            for (int y = 0; y < gcode.num_sense_codons; ++y) {
+        for (int x = 0; x < N; ++x) {
+            for (int y = 0; y < N; ++y) {
                 if (x == y) continue;
 
                 char aa_x = gcode.sense_codon_aa[x];
@@ -1909,11 +1917,12 @@ public:
         size_t site,
         Scalar beta
     ) {
-        Matrix61Codon dF_domega = Matrix61Codon::Zero();
+        const int N = static_cast<int>(gcode.num_sense_codons);
+        Matrix61Codon dF_domega = Matrix61Codon::Zero(N, N);
         const double EXPCM_ALMOST_ZERO_VAL = 1e-10;
 
-        for (int x = 0; x < gcode.num_sense_codons; ++x) {
-            for (int y = 0; y < gcode.num_sense_codons; ++y) {
+        for (int x = 0; x < N; ++x) {
+            for (int y = 0; y < N; ++y) {
                 if (x == y) continue;
 
                 char aa_x = gcode.sense_codon_aa[x];
@@ -1959,10 +1968,11 @@ public:
         const GeneticCode& gcode,
         const ExpCMParameters& params
     ) {
-        Matrix61Codon dQ_dkappa = Matrix61Codon::Zero();
+        const int N = static_cast<int>(gcode.num_sense_codons);
+        Matrix61Codon dQ_dkappa = Matrix61Codon::Zero(N, N);
 
-        for (int x = 0; x < gcode.num_sense_codons; ++x) {
-            for (int y = 0; y < gcode.num_sense_codons; ++y) {
+        for (int x = 0; x < N; ++x) {
+            for (int y = 0; y < N; ++y) {
                 if (x == y) continue;
 
                 const auto& diff = gcode.diff_matrix[x][y];
@@ -1977,7 +1987,7 @@ public:
             }
         }
 
-        for (int x = 0; x < gcode.num_sense_codons; ++x) {
+        for (int x = 0; x < N; ++x) {
             dQ_dkappa(x, x) = -dQ_dkappa.row(x).sum();
         }
 
@@ -2006,6 +2016,7 @@ public:
     ) {
         params.validate();
 
+        const int N = static_cast<int>(gcode.num_sense_codons);
         size_t num_nodes = tree.num_nodes();
         size_t num_sites = prefs.num_sites();
         std::vector<size_t> leaf_to_taxon = build_leaf_to_taxon_map(tree, aln);
@@ -2023,8 +2034,8 @@ public:
         #pragma omp parallel
         {
             InsideOutsideWorkspace ws;
-            ws.init(num_nodes, 61);
-            std::vector<Matrix> P_branches(num_nodes, Matrix::Zero(61, 61));
+            ws.init(num_nodes, N);
+            std::vector<Matrix> P_branches(num_nodes, Matrix::Zero(N, N));
             std::vector<std::array<Matrix, 3>> P_bridges(tree.bridges.size());
 
             #pragma omp for schedule(dynamic)
@@ -2037,7 +2048,7 @@ public:
                 const Matrix61Codon& F = F_matrix.F;
 
                 Matrix61Codon P = F.cwiseProduct(Q);
-                for (int x = 0; x < 61; ++x) {
+                for (int x = 0; x < N; ++x) {
                     P(x, x) = -P.row(x).sum();
                 }
 
@@ -2063,7 +2074,7 @@ public:
 
                 Vector pi_dyn = pi_site;
                 compute_inside_outside_in_place(
-                    tree, pattern, leaf_to_taxon, P_branches, pi_dyn, 61, ws,
+                    tree, pattern, leaf_to_taxon, P_branches, pi_dyn, N, ws,
                     tree.bridges.empty() ? nullptr : &P_bridges
                 );
 
@@ -2074,7 +2085,7 @@ public:
                 Scalar inv_L = 1.0 / L_r;
 
                 // Accumulate spectral Fréchet sensitivity matrix H_r across all branches and bridges
-                Matrix61Codon H_r = Matrix61Codon::Zero();
+                Matrix61Codon H_r = Matrix61Codon::Zero(N, N);
                 for (const auto& node : tree.nodes) {
                     if (node.id != tree.root_id && node.parent_id != INVALID_INDEX) {
                         int32_t bid = node.id;
@@ -2084,11 +2095,11 @@ public:
                         Vector61Codon v_d = site_eigen.V_pi * ws.D[bid];
                         Matrix61Codon A_tilde = inv_L * (u_v * v_d.transpose());
 
-                        Matrix61Codon E;
-                        for (int i = 0; i < 61; ++i) {
+                        Matrix61Codon E(N, N);
+                        for (int i = 0; i < N; ++i) {
                             Scalar li = site_eigen.eigenvalues(i);
                             Scalar exp_li = std::exp(li * tb);
-                            for (int j = 0; j < 61; ++j) {
+                            for (int j = 0; j < N; ++j) {
                                 Scalar lj = site_eigen.eigenvalues(j);
                                 Scalar diff = li - lj;
                                 if (std::fabs(diff) < 1e-9) {
@@ -2133,11 +2144,11 @@ public:
                         Vector61Codon v_d = site_eigen.V_pi * D_br;
                         Matrix61Codon A_tilde = inv_L * (u_v * v_d.transpose());
 
-                        Matrix61Codon E;
-                        for (int i = 0; i < 61; ++i) {
+                        Matrix61Codon E(N, N);
+                        for (int i = 0; i < N; ++i) {
                             Scalar li = site_eigen.eigenvalues(i);
                             Scalar exp_li = std::exp(li * tb);
-                            for (int j = 0; j < 61; ++j) {
+                            for (int j = 0; j < N; ++j) {
                                 Scalar lj = site_eigen.eigenvalues(j);
                                 Scalar diff = li - lj;
                                 if (std::fabs(diff) < 1e-9) {
@@ -2159,7 +2170,7 @@ public:
                 // 1. Beta gradient: includes branch Fréchet term + root stationary derivative term
                 Matrix61Codon dF_dbeta = compute_dF_dbeta(gcode, prefs, site, params.beta, params.omega);
                 Matrix61Codon dP_dbeta = dF_dbeta.cwiseProduct(Q);
-                for (int x = 0; x < 61; ++x) {
+                for (int x = 0; x < N; ++x) {
                     dP_dbeta(x, x) = -dP_dbeta.row(x).sum();
                 }
                 Vector61Codon dp_dbeta = compute_dp_dbeta(gcode, prefs, site, pi_site);
@@ -2169,14 +2180,14 @@ public:
                 // 2. Omega gradient
                 Matrix61Codon dF_domega = compute_dF_domega(gcode, prefs, site, params.beta);
                 Matrix61Codon dP_domega = dF_domega.cwiseProduct(Q);
-                for (int x = 0; x < 61; ++x) {
+                for (int x = 0; x < N; ++x) {
                     dP_domega(x, x) = -dP_domega.row(x).sum();
                 }
                 site_g_omega[site] = (dP_domega.cwiseProduct(W_r)).sum();
 
                 // 3. Kappa gradient
                 Matrix61Codon dP_dkappa = F.cwiseProduct(dQ_dkappa);
-                for (int x = 0; x < 61; ++x) {
+                for (int x = 0; x < N; ++x) {
                     dP_dkappa(x, x) = -dP_dkappa.row(x).sum();
                 }
                 site_g_kappa[site] = (dP_dkappa.cwiseProduct(W_r)).sum();
@@ -2302,7 +2313,7 @@ public:
         Scalar norm_inf = M.rowwise().lpNorm<1>().maxCoeff();
 
         if (norm_inf < 1e-10) {
-            return Matrix61Codon::Identity() + M;
+            return Matrix61Codon::Identity(M.rows(), M.cols()) + M;
         }
 
         int s = 0;
@@ -2327,7 +2338,7 @@ public:
      * Padé (5,5) approximation for matrix exponential.
      */
     static Matrix61Codon pade_exp(const Matrix61Codon& X) {
-        Matrix61Codon I = Matrix61Codon::Identity();
+        Matrix61Codon I = Matrix61Codon::Identity(X.rows(), X.cols());
         Matrix61Codon X2 = X * X;
         Matrix61Codon X3 = X2 * X;
         Matrix61Codon X4 = X3 * X;

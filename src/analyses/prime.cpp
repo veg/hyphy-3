@@ -52,7 +52,7 @@ nlohmann::json PRIMEResult::to_modern_json(
     }
     auto_prov.execution.start_time = Provenance::current_iso8601();
     auto_prov.execution.end_time = auto_prov.execution.start_time;
-    auto_prov.execution.wall_time_seconds = runtime_seconds;
+    auto_prov.execution.wall_time_seconds = std::isfinite(runtime_seconds) ? runtime_seconds : 0.0;
     auto_prov.execution.cpu_threads = 1;
     auto_prov.execution.hostname = Provenance::get_hostname();
     auto_prov.execution.os = Provenance::detect_os();
@@ -83,8 +83,8 @@ nlohmann::json PRIMEResult::to_modern_json(
         p_entry["index"] = k + 1;
         p_entry["name"] = properties[k].name;
         p_entry["description"] = properties[k].description;
-        p_entry["mean"] = properties[k].mean;
-        p_entry["std_dev"] = properties[k].std_dev;
+        p_entry["mean"] = finite_or_null(properties[k].mean);
+        p_entry["std_dev"] = finite_or_null(properties[k].std_dev);
         prop_meta.push_back(p_entry);
     }
     j["properties"] = prop_meta;
@@ -106,16 +106,16 @@ nlohmann::json PRIMEResult::to_modern_json(
     gpr.erase("parameters_count"); // PRIME's schema does not carry it
     gpr["alpha"] = finite_or_null(global_fit.alpha);
     gpr["beta"] = finite_or_null(global_fit.beta);
-    gpr["lambdas"] = global_fit.lambdas;
+    gpr["lambdas"] = sanitized_doubles(global_fit.lambdas);
     j["model_fits"] = {{"G-PRIME", gpr}};
 
     // Statistical tests summary
     nlohmann::json summary_j = {
         {"method", "Site-Level PRoperty Informed Models of Evolution (S-PRIME)"},
         {"test_statistic", "Likelihood Ratio Test (LRT)"},
-        {"threshold", settings.p_value_threshold},
-        {"stage2_threshold", settings.stage2_p_value},
-        {"shrinkage_lambda", settings.shrinkage_lambda},
+        {"threshold", finite_or_null(settings.p_value_threshold)},
+        {"stage2_threshold", finite_or_null(settings.stage2_p_value)},
+        {"shrinkage_lambda", finite_or_null(settings.shrinkage_lambda)},
         {"total_sites", static_cast<int>(total_sites)},
         {"invariant_sites", static_cast<int>(invariant_sites)},
         {"significant_sites", static_cast<int>(significant_sites)},
@@ -244,23 +244,23 @@ nlohmann::json PRIMEResult::to_legacy_json(
     nlohmann::json content_rows = nlohmann::json::array();
     for (const auto& sr : site_results) {
         nlohmann::json row = nlohmann::json::array();
-        row.push_back(sr.alpha);
-        row.push_back(sr.beta);
-        row.push_back(sr.fel_alpha);
-        row.push_back(sr.fel_beta);
-        row.push_back(sr.total_branch_length);
+        row.push_back(finite_or_null(sr.alpha));
+        row.push_back(finite_or_null(sr.beta));
+        row.push_back(finite_or_null(sr.fel_alpha));
+        row.push_back(finite_or_null(sr.fel_beta));
+        row.push_back(finite_or_null(sr.total_branch_length));
         row.push_back(static_cast<int>(sr.nonsyn_subs));
         row.push_back(static_cast<int>(sr.unique_aa));
-        row.push_back(sr.log_l_alt);
-        row.push_back(sr.log_l_fel);
-        row.push_back(sr.omnibus_p_value);
-        row.push_back(sr.omnibus_q_value);
-        row.push_back(sr.redundancy_ratio);
+        row.push_back(finite_or_null(sr.log_l_alt));
+        row.push_back(finite_or_null(sr.log_l_fel));
+        row.push_back(finite_or_null(sr.omnibus_p_value));
+        row.push_back(finite_or_null(sr.omnibus_q_value));
+        row.push_back(finite_or_null(sr.redundancy_ratio));
 
         for (const auto& p_inf : sr.properties) {
-            row.push_back(p_inf.lambda);
-            row.push_back(p_inf.adjusted_p_value); // Stage 2 adjusted p-value
-            row.push_back(p_inf.log_l_null);
+            row.push_back(finite_or_null(p_inf.lambda));
+            row.push_back(finite_or_null(p_inf.adjusted_p_value)); // Stage 2 adjusted p-value
+            row.push_back(finite_or_null(p_inf.log_l_null));
         }
         content_rows.push_back(row);
     }
@@ -278,12 +278,12 @@ nlohmann::json PRIMEResult::to_legacy_json(
             nlohmann::json site_entry;
             site_entry["codon"] = static_cast<int>(sr.site_index);
             site_entry["partiton"] = 0;
-            site_entry["q-value"] = sr.omnibus_q_value;
+            site_entry["q-value"] = finite_or_null(sr.omnibus_q_value);
 
             nlohmann::json prop_obj = nlohmann::json::object();
             for (const auto& p_inf : sr.properties) {
                 if (p_inf.classification != "Neutral") {
-                    prop_obj[p_inf.property_name] = p_inf.adjusted_p_value;
+                    prop_obj[p_inf.property_name] = finite_or_null(p_inf.adjusted_p_value);
                 }
             }
             site_entry["properties"] = prop_obj;
@@ -292,17 +292,17 @@ nlohmann::json PRIMEResult::to_legacy_json(
     }
 
     j["test results"] = {
-        {"terms.qvalue", settings.p_value_threshold},
+        {"terms.qvalue", finite_or_null(settings.p_value_threshold)},
         {"Global test significant sites", sig_sites_map}
     };
 
     j["fits"] = {
-        {"Global MG94xREV", {{"Log Likelihood", global_fit.log_likelihood}}},
-        {"Nucleotide GTR", {{"Log Likelihood", global_fit.gtr_log_l}}}
+        {"Global MG94xREV", {{"Log Likelihood", finite_or_null(global_fit.log_likelihood)}}},
+        {"Nucleotide GTR", {{"Log Likelihood", finite_or_null(global_fit.gtr_log_l)}}}
     };
 
     j["runtime"] = "3.0.0";
-    j["timers"] = {{"Total time", runtime_seconds}};
+    j["timers"] = {{"Total time", finite_or_null(runtime_seconds)}};
 
     return j;
 }

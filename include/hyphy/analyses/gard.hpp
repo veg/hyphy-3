@@ -1098,8 +1098,9 @@ public:
 
         size_t K_srv = (settings.srv_mode == GARDSRVMode::DiscreteGamma) ? 1 : 0;
         size_t K_base = 5 + result.min_partition_size + K_srv;
+        Scalar base_denom = std::max<Scalar>(1.0, static_cast<Scalar>(result.num_sites) - static_cast<Scalar>(K_base) - 1.0);
         result.baseline_aicc = -2.0 * result.baseline_log_l +
-            (2.0 * result.num_sites * K_base) / (result.num_sites - K_base - 1.0);
+            (2.0 * static_cast<Scalar>(result.num_sites) * static_cast<Scalar>(K_base)) / base_denom;
 
         if (result.ohmic_bridges_detected) {
             result.ohmic_delta_aicc = result.baseline_aicc - result.ohmic_aicc;
@@ -1610,8 +1611,9 @@ public:
 
             size_t K_srv = (settings.srv_mode == GARDSRVMode::DiscreteGamma) ? 1 : 0;
             size_t K = 5 + K_srv + (num_bp + 1) * result.min_partition_size;
+            Scalar st_denom = std::max<Scalar>(1.0, static_cast<Scalar>(result.num_sites) - static_cast<Scalar>(K) - 1.0);
             result.single_tree_aicc = -2.0 * single_tree_log_l +
-                (2.0 * result.num_sites * K) / (result.num_sites - K - 1.0);
+                (2.0 * static_cast<Scalar>(result.num_sites) * static_cast<Scalar>(K)) / st_denom;
 
             result.topological_incongruence = (best_overall_model.aicc < result.single_tree_aicc);
 

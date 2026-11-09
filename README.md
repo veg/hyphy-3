@@ -59,7 +59,7 @@
 3. **`hyphy::analyses` — Unified Selection & Alignment Suite** (`include/hyphy/analyses/`)
    - All 18+ evolutionary analyses implemented as clean, composable C++20 classes emitting standardized Datamonkey-compatible JSON and interactive standalone HTML reports.
 4. **Multi-Target Frontends** (`web/`, `src/apps/`, `src/python/`, `viz/`)
-   - **WebAssembly Workbench** (`web/`): Pure client-side ES module + Web Worker driving `walrus_wasm.js`.
+   - **WebAssembly Workbench** (`web/`): Pure client-side ES module + Web Worker driving `hyphy3_walrus.js`.
    - **Native CLI** (`hyphy3` and standalone binaries `hyphy3-walrus`, `hyphy3-fel`, `hyphy3-meme`, `hyphy3-busted`, etc.).
    - **Python 3 Nanobind Extension** (`_hyphy3`): Zero-copy C++/Python objects for scripting and deep-learning integration.
 
@@ -144,7 +144,7 @@ for r in fel.run():
         print(f"Site {r.site_index + 1}: dN/dS = {r.beta / r.alpha:.2f}, p = {r.p_value:.4g}")
 ```
 
-### 4. Rebuild the WebAssembly Bundle (`web/walrus_wasm.js`)
+### 4. Rebuild the WebAssembly Bundle (`web/hyphy3_walrus.js`)
 
 Requires the [Emscripten SDK (`em++`)](https://emscripten.org):
 
@@ -167,7 +167,7 @@ hyphy-3/
 │   ├── autograd/               # Reverse-mode computational graph & TreeLikelihoodNode
 │   └── analyses/               # WALRUS, BUSTED, MEME, FEL, Contrast-FEL, aBSREL, RELAX, FUBAR, PRIME, GARD, OHMIC...
 ├── src/
-│   ├── apps/                   # Unified `hyphy3` CLI driver, `walrus_cli`, and `walrus_wasm_bindings.cpp`
+│   ├── apps/                   # Unified `hyphy3` CLI driver (`hyphy3.cpp`), `hyphy_characterize.cpp`, `hyphy_wasm.cpp`, etc.
 │   └── python/                 # Nanobind C++/Python bindings (`_hyphy3`)
 ├── viz/fel-viewer/             # Embedded interactive HTML5 Canvas viewer for `hyphy3 --html` reports
 ├── scripts/build_wasm.sh       # Emscripten SIMD128 WebAssembly build script

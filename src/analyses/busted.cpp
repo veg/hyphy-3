@@ -37,55 +37,55 @@ nlohmann::json BUSTEDAnalyzer::to_legacy_json(const BUSTEDResult& res) const {
         if (!res.mss_rates.empty()) {
             nlohmann::json mss_block = nlohmann::json::object();
             for (const auto& r : res.mss_rates) {
-                mss_block[r.class_name] = r.rate;
+                mss_block[r.class_name] = finite_or_null(r.rate);
             }
             j["analysis"]["settings"]["mss_rates"] = mss_block;
             j["analysis"]["settings"]["mss_normalization"] = res.settings.mss_normalization;
         }
 
         j["test results"] = {
-            {"LRT", res.lrt},
-            {"p-value", res.p_value},
+            {"LRT", finite_or_null(res.lrt)},
+            {"p-value", finite_or_null(res.p_value)},
             {"optimal_k", res.optimal_k}
         };
         if (res.has_background_test) {
             j["test results background"] = {
-                {"LRT", res.background_lrt},
-                {"p-value", res.background_p_value},
-                {"delta AIC-c", res.background_delta_aicc}
+                {"LRT", finite_or_null(res.background_lrt)},
+                {"p-value", finite_or_null(res.background_p_value)},
+                {"delta AIC-c", finite_or_null(res.background_delta_aicc)}
             };
             j["test results shared distributions"] = {
-                {"LRT", res.shared_lrt},
-                {"p-value", res.shared_p_value},
+                {"LRT", finite_or_null(res.shared_lrt)},
+                {"p-value", finite_or_null(res.shared_p_value)},
                 {"df", res.shared_df}
             };
             j["BUSTED-PH"] = {
                 {"Uncorrected P-value", {
-                    {"FG", res.p_value},
-                    {"BG", res.background_p_value},
-                    {"Comparative", res.shared_p_value}
+                    {"FG", finite_or_null(res.p_value)},
+                    {"BG", finite_or_null(res.background_p_value)},
+                    {"Comparative", finite_or_null(res.shared_p_value)}
                 }},
-                {"union_intersection_p_value", res.union_intersection_p_value},
-                {"background_delta_aicc", res.background_delta_aicc},
+                {"union_intersection_p_value", finite_or_null(res.union_intersection_p_value)},
+                {"background_delta_aicc", finite_or_null(res.background_delta_aicc)},
                 {"background_neutral_supported", res.background_neutral_supported},
-                {"ranking_score", res.ranking_score},
-                {"Level", res.settings.p_value_threshold},
+                {"ranking_score", finite_or_null(res.ranking_score)},
+                {"Level", finite_or_null(res.settings.p_value_threshold)},
                 {"Summary", res.phenotype_verdict}
             };
             j["phenotype association"] = {
                 {"associated", res.phenotype_associated},
-                {"union_intersection_p_value", res.union_intersection_p_value},
-                {"background_delta_aicc", res.background_delta_aicc},
+                {"union_intersection_p_value", finite_or_null(res.union_intersection_p_value)},
+                {"background_delta_aicc", finite_or_null(res.background_delta_aicc)},
                 {"background_neutral_supported", res.background_neutral_supported},
-                {"ranking_score", res.ranking_score},
+                {"ranking_score", finite_or_null(res.ranking_score)},
                 {"verdict", res.phenotype_verdict}
             };
         }
         if (res.has_relax_test) {
             j["test results relaxation"] = {
-                {"LRT", res.relax_lrt},
-                {"p-value", res.relax_p_value},
-                {"relaxation or intensification parameter", res.relax_k},
+                {"LRT", finite_or_null(res.relax_lrt)},
+                {"p-value", finite_or_null(res.relax_p_value)},
+                {"relaxation or intensification parameter", finite_or_null(res.relax_k)},
                 {"direction", res.relax_direction}
             };
         }
@@ -94,27 +94,27 @@ nlohmann::json BUSTEDAnalyzer::to_legacy_json(const BUSTEDResult& res) const {
         nlohmann::json fits;
         if (has_gtr_fit) {
             fits["Nucleotide GTR"] = {
-                {"AIC-c", gtr_aicc},
-                {"Log Likelihood", gtr_log_l},
+                {"AIC-c", finite_or_null(gtr_aicc)},
+                {"Log Likelihood", finite_or_null(gtr_log_l)},
                 {"Rate Distributions", {
-                    {"Substitution rate from nucleotide A to nucleotide C", gtr_rates.theta_AC},
+                    {"Substitution rate from nucleotide A to nucleotide C", finite_or_null(gtr_rates.theta_AC)},
                     {"Substitution rate from nucleotide A to nucleotide G", 1.0},
-                    {"Substitution rate from nucleotide A to nucleotide T", gtr_rates.theta_AT},
-                    {"Substitution rate from nucleotide C to nucleotide G", gtr_rates.theta_CG},
-                    {"Substitution rate from nucleotide C to nucleotide T", gtr_rates.theta_CT},
-                    {"Substitution rate from nucleotide G to nucleotide T", gtr_rates.theta_GT}
+                    {"Substitution rate from nucleotide A to nucleotide T", finite_or_null(gtr_rates.theta_AT)},
+                    {"Substitution rate from nucleotide C to nucleotide G", finite_or_null(gtr_rates.theta_CG)},
+                    {"Substitution rate from nucleotide C to nucleotide T", finite_or_null(gtr_rates.theta_CT)},
+                    {"Substitution rate from nucleotide G to nucleotide T", finite_or_null(gtr_rates.theta_GT)}
                 }}
             };
         }
 
         nlohmann::json mg94_rates = {
-            {"non-synonymous/synonymous rate ratio for *test*", {{mg94_omega, 1.0}}}
+            {"non-synonymous/synonymous rate ratio for *test*", {{finite_or_null(mg94_omega), 1.0}}}
         };
         if (mg94_background_omega >= 0.0) {
-            mg94_rates["non-synonymous/synonymous rate ratio for *background*"] = {{mg94_background_omega, 1.0}};
+            mg94_rates["non-synonymous/synonymous rate ratio for *background*"] = {{finite_or_null(mg94_background_omega), 1.0}};
         }
         fits["MG94xREV with separate rates for branch sets"] = {
-            {"Log Likelihood", mg94_log_l},
+            {"Log Likelihood", finite_or_null(mg94_log_l)},
             {"Rate Distributions", mg94_rates}
         };
 
@@ -123,8 +123,8 @@ nlohmann::json BUSTEDAnalyzer::to_legacy_json(const BUSTEDResult& res) const {
             Scalar bio_scale = res.settings.error_sink ? (1.0 - d.error_sink_weight) : 1.0;
             for (size_t k = 0; k < d.omegas.size(); ++k) {
                 nlohmann::json entry = {
-                    {"omega", d.omegas[k]},
-                    {"proportion", bio_scale * d.weights[k]}
+                    {"omega", finite_or_null(d.omegas[k])},
+                    {"proportion", finite_or_null(bio_scale * d.weights[k])}
                 };
                 if (k < d.annotations.size() && !d.annotations[k].empty()) {
                     entry["annotation"] = d.annotations[k];
@@ -134,7 +134,7 @@ nlohmann::json BUSTEDAnalyzer::to_legacy_json(const BUSTEDResult& res) const {
             if (res.settings.error_sink) {
                 distro["error_sink"] = {
                     {"type", "saturation_replacement"},
-                    {"proportion", d.error_sink_weight}
+                    {"proportion", finite_or_null(d.error_sink_weight)}
                 };
             }
             return distro;
@@ -144,8 +144,8 @@ nlohmann::json BUSTEDAnalyzer::to_legacy_json(const BUSTEDResult& res) const {
             nlohmann::json distro;
             for (size_t m = 0; m < d.syn_rates.size(); ++m) {
                 distro[std::to_string(m)] = {
-                    {"rate", d.syn_rates[m]},
-                    {"proportion", d.syn_weights[m]}
+                    {"rate", finite_or_null(d.syn_rates[m])},
+                    {"proportion", finite_or_null(d.syn_weights[m])}
                 };
             }
             return distro;
@@ -155,7 +155,7 @@ nlohmann::json BUSTEDAnalyzer::to_legacy_json(const BUSTEDResult& res) const {
             nlohmann::json mss_obj = nlohmann::json::object();
             if (!res.mss_rates.empty() && fit.mss_class_rates.size() == res.mss_rates.size()) {
                 for (size_t c = 0; c < res.mss_rates.size(); ++c) {
-                    mss_obj[res.mss_rates[c].class_name] = fit.mss_class_rates[c];
+                    mss_obj[res.mss_rates[c].class_name] = finite_or_null(fit.mss_class_rates[c]);
                 }
             }
             return mss_obj;
@@ -172,19 +172,19 @@ nlohmann::json BUSTEDAnalyzer::to_legacy_json(const BUSTEDResult& res) const {
             unc_rates["Synonymous site-to-site rates"] = format_srv_distro(res.unconstrained.test_distribution);
         }
         nlohmann::json unc_fit = {
-            {"AIC-c", res.unconstrained.aicc},
-            {"Log Likelihood", res.unconstrained.log_likelihood},
+            {"AIC-c", finite_or_null(res.unconstrained.aicc)},
+            {"Log Likelihood", finite_or_null(res.unconstrained.log_likelihood)},
             {"Rate Distributions", unc_rates}
         };
         if (!res.mss_rates.empty() && res.unconstrained.mss_class_rates.size() == res.mss_rates.size()) {
             unc_fit["MSS Synonymous Rates"] = format_mss_fit_rates(res.unconstrained);
         }
         if (res.settings.multiple_hits != "None") {
-            unc_fit["rate at which 2 nucleotides are changed instantly within a single codon"] = res.unconstrained.delta;
-            unc_fit["Fraction of subs rate at which 2 nucleotides are changed instantly within a single codon"] = res.unconstrained.frac_delta;
+            unc_fit["rate at which 2 nucleotides are changed instantly within a single codon"] = finite_or_null(res.unconstrained.delta);
+            unc_fit["Fraction of subs rate at which 2 nucleotides are changed instantly within a single codon"] = finite_or_null(res.unconstrained.frac_delta);
             if (res.settings.multiple_hits == "Double+Triple") {
-                unc_fit["rate at which 3 nucleotides are changed instantly within a single codon"] = res.unconstrained.psi;
-                unc_fit["Fraction of subs rate at which 3 nucleotides are changed instantly within a single codon"] = res.unconstrained.frac_psi;
+                unc_fit["rate at which 3 nucleotides are changed instantly within a single codon"] = finite_or_null(res.unconstrained.psi);
+                unc_fit["Fraction of subs rate at which 3 nucleotides are changed instantly within a single codon"] = finite_or_null(res.unconstrained.frac_psi);
             }
         }
         fits["Unconstrained model"] = unc_fit;
@@ -200,19 +200,19 @@ nlohmann::json BUSTEDAnalyzer::to_legacy_json(const BUSTEDResult& res) const {
             con_rates["Synonymous site-to-site rates"] = format_srv_distro(res.constrained.test_distribution);
         }
         nlohmann::json con_fit = {
-            {"AIC-c", res.constrained.aicc},
-            {"Log Likelihood", res.constrained.log_likelihood},
+            {"AIC-c", finite_or_null(res.constrained.aicc)},
+            {"Log Likelihood", finite_or_null(res.constrained.log_likelihood)},
             {"Rate Distributions", con_rates}
         };
         if (!res.mss_rates.empty() && res.constrained.mss_class_rates.size() == res.mss_rates.size()) {
             con_fit["MSS Synonymous Rates"] = format_mss_fit_rates(res.constrained);
         }
         if (res.settings.multiple_hits != "None") {
-            con_fit["rate at which 2 nucleotides are changed instantly within a single codon"] = res.constrained.delta;
-            con_fit["Fraction of subs rate at which 2 nucleotides are changed instantly within a single codon"] = res.constrained.frac_delta;
+            con_fit["rate at which 2 nucleotides are changed instantly within a single codon"] = finite_or_null(res.constrained.delta);
+            con_fit["Fraction of subs rate at which 2 nucleotides are changed instantly within a single codon"] = finite_or_null(res.constrained.frac_delta);
             if (res.settings.multiple_hits == "Double+Triple") {
-                con_fit["rate at which 3 nucleotides are changed instantly within a single codon"] = res.constrained.psi;
-                con_fit["Fraction of subs rate at which 3 nucleotides are changed instantly within a single codon"] = res.constrained.frac_psi;
+                con_fit["rate at which 3 nucleotides are changed instantly within a single codon"] = finite_or_null(res.constrained.psi);
+                con_fit["Fraction of subs rate at which 3 nucleotides are changed instantly within a single codon"] = finite_or_null(res.constrained.frac_psi);
             }
         }
         fits["Constrained model"] = con_fit;
@@ -226,8 +226,8 @@ nlohmann::json BUSTEDAnalyzer::to_legacy_json(const BUSTEDResult& res) const {
                 con_bg_rates["Unclassified"] = format_distro(res.constrained_background.unclassified_distribution);
             }
             fits["Constrained model (background)"] = {
-                {"AIC-c", res.constrained_background.aicc},
-                {"Log Likelihood", res.constrained_background.log_likelihood},
+                {"AIC-c", finite_or_null(res.constrained_background.aicc)},
+                {"Log Likelihood", finite_or_null(res.constrained_background.log_likelihood)},
                 {"Rate Distributions", con_bg_rates}
             };
             if (!res.mss_rates.empty() && res.constrained_background.mss_class_rates.size() == res.mss_rates.size()) {
@@ -243,8 +243,8 @@ nlohmann::json BUSTEDAnalyzer::to_legacy_json(const BUSTEDResult& res) const {
                 shared_rates["Unclassified"] = format_distro(res.shared_distributions.unclassified_distribution);
             }
             fits["Unconstrained model with shared distributions"] = {
-                {"AIC-c", res.shared_distributions.aicc},
-                {"Log Likelihood", res.shared_distributions.log_likelihood},
+                {"AIC-c", finite_or_null(res.shared_distributions.aicc)},
+                {"Log Likelihood", finite_or_null(res.shared_distributions.log_likelihood)},
                 {"Rate Distributions", shared_rates}
             };
             if (!res.mss_rates.empty() && res.shared_distributions.mss_class_rates.size() == res.mss_rates.size()) {
@@ -260,9 +260,9 @@ nlohmann::json BUSTEDAnalyzer::to_legacy_json(const BUSTEDResult& res) const {
                 relax_rates["Unclassified"] = format_distro(res.relax_alternative.unclassified_distribution);
             }
             fits["RELAX alternative (coupled-k)"] = {
-                {"AIC-c", res.relax_alternative.aicc},
-                {"Log Likelihood", res.relax_alternative.log_likelihood},
-                {"relaxation or intensification parameter", res.relax_k},
+                {"AIC-c", finite_or_null(res.relax_alternative.aicc)},
+                {"Log Likelihood", finite_or_null(res.relax_alternative.log_likelihood)},
+                {"relaxation or intensification parameter", finite_or_null(res.relax_k)},
                 {"Rate Distributions", relax_rates}
             };
             if (!res.mss_rates.empty() && res.relax_alternative.mss_class_rates.size() == res.mss_rates.size()) {
@@ -279,18 +279,18 @@ nlohmann::json BUSTEDAnalyzer::to_legacy_json(const BUSTEDResult& res) const {
             if (node.id != tree.root_id) {
                 nlohmann::json b_entry;
                 if (!res.unconstrained.branch_lengths.empty() && node.id >= 0 && static_cast<size_t>(node.id) < res.unconstrained.branch_lengths.size()) {
-                    b_entry["unconstrained"] = res.unconstrained.branch_lengths[node.id];
+                    b_entry["unconstrained"] = finite_or_null(res.unconstrained.branch_lengths[node.id]);
                 }
                 if (!res.constrained.branch_lengths.empty() && node.id >= 0 && static_cast<size_t>(node.id) < res.constrained.branch_lengths.size()) {
-                    b_entry["constrained"] = res.constrained.branch_lengths[node.id];
+                    b_entry["constrained"] = finite_or_null(res.constrained.branch_lengths[node.id]);
                 }
                 auto it_post = res.branch_posterior_probabilities.find(node.name);
                 if (it_post != res.branch_posterior_probabilities.end()) {
-                    b_entry["Posterior probability of positive selection"] = {it_post->second};
+                    b_entry["Posterior probability of positive selection"] = {sanitized_doubles(it_post->second)};
                 }
                 auto it_ebf = res.branch_empirical_bayes_factors.find(node.name);
                 if (it_ebf != res.branch_empirical_bayes_factors.end()) {
-                    b_entry["Empirical Bayes Factor for positive selection"] = {it_ebf->second};
+                    b_entry["Empirical Bayes Factor for positive selection"] = {sanitized_doubles(it_ebf->second)};
                 }
                 branch_attr[node.name] = b_entry;
                 int part = (static_cast<size_t>(node.id) < branch_partition.size()) ? branch_partition[node.id] : (is_test_branch[node.id] ? 0 : 1);
@@ -301,32 +301,32 @@ nlohmann::json BUSTEDAnalyzer::to_legacy_json(const BUSTEDResult& res) const {
         j["tested"] = {{"0", tested_map}};
 
         j["Evidence Ratios"] = {
-            {"constrained", {res.constrained_evidence_ratios.empty() ? res.evidence_ratios : res.constrained_evidence_ratios}},
-            {"optimized null", {res.evidence_ratios}}
+            {"constrained", {sanitized_doubles(res.constrained_evidence_ratios.empty() ? res.evidence_ratios : res.constrained_evidence_ratios)}},
+            {"optimized null", {sanitized_doubles(res.evidence_ratios)}}
         };
         if (!res.branch_er_2h.empty()) {
             nlohmann::json er_2h = nlohmann::json::object();
             for (const auto& [bname, vec] : res.branch_er_2h) {
-                er_2h[bname] = vec;
+                er_2h[bname] = sanitized_doubles(vec);
             }
             j["Evidence Ratios"]["2H"] = er_2h;
         }
         if (!res.branch_er_3h.empty()) {
             nlohmann::json er_3h = nlohmann::json::object();
             for (const auto& [bname, vec] : res.branch_er_3h) {
-                er_3h[bname] = vec;
+                er_3h[bname] = sanitized_doubles(vec);
             }
             j["Evidence Ratios"]["3H"] = er_3h;
         }
         if (!res.branch_er_23h.empty()) {
             nlohmann::json er_23h = nlohmann::json::object();
             for (const auto& [bname, vec] : res.branch_er_23h) {
-                er_23h[bname] = vec;
+                er_23h[bname] = sanitized_doubles(vec);
             }
             j["Evidence Ratios"]["2H+3H"] = er_23h;
         }
         if (res.settings.error_sink) {
-            j["Evidence Ratios"]["error_sink_max_bf"] = {res.site_error_bfs};
+            j["Evidence Ratios"]["error_sink_max_bf"] = {sanitized_doubles(res.site_error_bfs)};
         }
 
         // Site Log Likelihood
@@ -337,8 +337,8 @@ nlohmann::json BUSTEDAnalyzer::to_legacy_json(const BUSTEDResult& res) const {
             con_site_ll[s] = res.constrained.site_log_likelihoods[p];
         }
         j["Site Log Likelihood"] = {
-            {"unconstrained", {unc_site_ll}},
-            {"constrained", {con_site_ll}}
+            {"unconstrained", {sanitized_doubles(unc_site_ll)}},
+            {"constrained", {sanitized_doubles(con_site_ll)}}
         };
         if (res.has_background_test &&
             res.constrained_background.site_log_likelihoods.size() == aln.patterns.size() &&
@@ -349,11 +349,11 @@ nlohmann::json BUSTEDAnalyzer::to_legacy_json(const BUSTEDResult& res) const {
                 con_bg_ll[s] = res.constrained_background.site_log_likelihoods[p];
                 shared_ll[s] = res.shared_distributions.site_log_likelihoods[p];
             }
-            j["Site Log Likelihood"]["constrained_background"] = {con_bg_ll};
-            j["Site Log Likelihood"]["shared_distributions"] = {shared_ll};
+            j["Site Log Likelihood"]["constrained_background"] = {sanitized_doubles(con_bg_ll)};
+            j["Site Log Likelihood"]["shared_distributions"] = {sanitized_doubles(shared_ll)};
         }
 
-        j["runtime"] = res.runtime_seconds;
+        j["runtime"] = finite_or_null(res.runtime_seconds);
         return j;
     }
 
@@ -368,7 +368,7 @@ nlohmann::json BUSTEDAnalyzer::to_modern_json(const BUSTEDResult& res, const Pro
             {"phenotype_mode", res.settings.phenotype_mode},
             {"relax_mode", res.has_relax_test},
             {"refine_branch_lengths", res.settings.refine_branch_lengths},
-            {"pvalue_threshold", res.settings.p_value_threshold},
+            {"pvalue_threshold", finite_or_null(res.settings.p_value_threshold)},
             {"optimal_k", res.optimal_k},
             {"test_branches", res.settings.test_branches}
         };
@@ -376,8 +376,8 @@ nlohmann::json BUSTEDAnalyzer::to_modern_json(const BUSTEDResult& res, const Pro
             json_settings["comparison_branches"] = res.settings.comparison_branches;
         }
         if (res.settings.error_sink) {
-            json_settings["error_sink_max_weight"] = res.settings.error_sink_max_weight;
-            json_settings["error_sink_bf_threshold"] = res.settings.error_sink_bf_threshold;
+            json_settings["error_sink_max_weight"] = finite_or_null(res.settings.error_sink_max_weight);
+            json_settings["error_sink_bf_threshold"] = finite_or_null(res.settings.error_sink_bf_threshold);
         }
         if (!res.settings.mss_type.empty()) {
             json_settings["mss_type"] = res.settings.mss_type;
@@ -405,7 +405,7 @@ nlohmann::json BUSTEDAnalyzer::to_modern_json(const BUSTEDResult& res, const Pro
         // the auto block reports the actual wall clock of the analysis.
         if (prov.invocation.cli_command.empty() && prov.inputs.empty() &&
             j["provenance"].contains("execution")) {
-            j["provenance"]["execution"]["wall_time_seconds"] = res.runtime_seconds;
+            j["provenance"]["execution"]["wall_time_seconds"] = finite_or_null(res.runtime_seconds);
         }
         // BUSTED-PH shares the BUSTED schema, so meta.id stays "busted" and the
         // analysis identity is post-fixed here rather than derived from meta.
@@ -483,8 +483,8 @@ nlohmann::json BUSTEDAnalyzer::to_modern_json(const BUSTEDResult& res, const Pro
                 for (size_t k = 0; k < fit.background_distribution.omegas.size(); ++k) {
                     bg_dist.push_back({
                         {"class", static_cast<int>(k + 1)},
-                        {"omega", fit.background_distribution.omegas[k]},
-                        {"proportion", bio_scale_bg * fit.background_distribution.weights[k]}
+                        {"omega", finite_or_null(fit.background_distribution.omegas[k])},
+                        {"proportion", finite_or_null(bio_scale_bg * fit.background_distribution.weights[k])}
                     });
                 }
                 f["rate_distributions"]["background"] = bg_dist;
@@ -507,7 +507,7 @@ nlohmann::json BUSTEDAnalyzer::to_modern_json(const BUSTEDResult& res, const Pro
                     {"type", "saturation_replacement"},
                     {"kernel", "P_sink(i,j) = pi_j / (1 - pi_i) for i != j, 0 for i == j"},
                     {"proportion", finite_or_null(fit.error_sink_weight)},
-                    {"max_weight_bound", res.settings.error_sink_max_weight}
+                    {"max_weight_bound", finite_or_null(res.settings.error_sink_max_weight)}
                 };
             }
 
@@ -557,7 +557,7 @@ nlohmann::json BUSTEDAnalyzer::to_modern_json(const BUSTEDResult& res, const Pro
             auto relax_json = format_fit_modern(
                 res.relax_alternative, "Coupled-k RELAX alternative model (omega_FG,c = (omega_BG,c)^k with shared category weights)"
             );
-            relax_json["relaxation_parameter_k"] = res.relax_k;
+            relax_json["relaxation_parameter_k"] = finite_or_null(res.relax_k);
             j["model_fits"]["relax_alternative"] = relax_json;
         }
 
@@ -590,14 +590,14 @@ nlohmann::json BUSTEDAnalyzer::to_modern_json(const BUSTEDResult& res, const Pro
             j["statistical_tests"]["background_selection"] = {
                 {"method", "AIC-c Lack-of-Evidence Screen & LRT"},
                 {"test_statistic", "LRT"},
-                {"statistic_value", res.background_lrt},
-                {"delta_aicc", res.background_delta_aicc},
+                {"statistic_value", finite_or_null(res.background_lrt)},
+                {"delta_aicc", finite_or_null(res.background_delta_aicc)},
                 {"neutral_supported_by_aicc", res.background_neutral_supported},
                 {"distribution", "0.5 * chi^2_0 + 0.5 * chi^2_2"},
                 {"degrees_of_freedom", 2},
                 {"null_hypothesis", "omega_k <= 1 for all k on background/comparison branches"},
                 {"alternative_hypothesis", "omega_k > 1 for at least one k on background/comparison branches"},
-                {"p_value", res.background_p_value},
+                {"p_value", finite_or_null(res.background_p_value)},
                 {"decision", res.background_neutral_supported
                     ? "Neutral/constrained model for background branches is sufficiently supported by AIC-c"
                     : "Neutral/constrained model for background branches is not supported by AIC-c (evidence of background selection)"}
@@ -605,48 +605,48 @@ nlohmann::json BUSTEDAnalyzer::to_modern_json(const BUSTEDResult& res, const Pro
             j["statistical_tests"]["shared_distributions"] = {
                 {"method", "Likelihood Ratio Test (LRT)"},
                 {"test_statistic", "LRT"},
-                {"statistic_value", res.shared_lrt},
+                {"statistic_value", finite_or_null(res.shared_lrt)},
                 {"distribution", "chi^2_" + std::to_string(res.shared_df)},
                 {"degrees_of_freedom", res.shared_df},
                 {"null_hypothesis", "Identical omega rate distributions on test and background branches (D_T == D_B)"},
                 {"alternative_hypothesis", "Distinct omega rate distributions on test and background branches (D_T != D_B)"},
-                {"p_value", res.shared_p_value},
+                {"p_value", finite_or_null(res.shared_p_value)},
                 {"decision", (res.shared_p_value <= res.settings.p_value_threshold) ? "Selective regimes differ significantly between test and background" : "No significant difference between test and background selective regimes"}
             };
             j["statistical_tests"]["union_intersection"] = {
                 {"method", "Union-Intersection Test (UIT)"},
                 {"null_hypothesis", "(omega_K^(FG) <= 1) U (D_FG == D_BG)"},
                 {"alternative_hypothesis", "(omega_K^(FG) > 1) n (D_FG != D_BG)"},
-                {"p_value_fg", res.p_value},
-                {"p_value_diff", res.shared_p_value},
-                {"p_value", res.union_intersection_p_value},
+                {"p_value_fg", finite_or_null(res.p_value)},
+                {"p_value_diff", finite_or_null(res.shared_p_value)},
+                {"p_value", finite_or_null(res.union_intersection_p_value)},
                 {"rejected", (res.union_intersection_p_value <= res.settings.p_value_threshold)}
             };
             j["statistical_tests"]["phenotype_association"] = {
                 {"associated", res.phenotype_associated},
                 {"verdict", res.phenotype_verdict},
-                {"union_intersection_p_value", res.union_intersection_p_value},
-                {"background_delta_aicc", res.background_delta_aicc},
+                {"union_intersection_p_value", finite_or_null(res.union_intersection_p_value)},
+                {"background_delta_aicc", finite_or_null(res.background_delta_aicc)},
                 {"background_neutral_supported", res.background_neutral_supported},
-                {"ranking_score", res.ranking_score},
-                {"p_value_test", res.p_value},
-                {"p_value_background", res.background_p_value},
-                {"p_value_shared", res.shared_p_value},
-                {"threshold", res.settings.p_value_threshold}
+                {"ranking_score", finite_or_null(res.ranking_score)},
+                {"p_value_test", finite_or_null(res.p_value)},
+                {"p_value_background", finite_or_null(res.background_p_value)},
+                {"p_value_shared", finite_or_null(res.shared_p_value)},
+                {"threshold", finite_or_null(res.settings.p_value_threshold)}
             };
         }
         if (res.has_relax_test) {
             j["statistical_tests"]["relaxation"] = {
                 {"method", "RELAX Coupled-k Likelihood Ratio Test"},
                 {"test_statistic", "LRT"},
-                {"statistic_value", res.relax_lrt},
+                {"statistic_value", finite_or_null(res.relax_lrt)},
                 {"distribution", "chi^2_1"},
                 {"degrees_of_freedom", 1},
-                {"relaxation_parameter_k", res.relax_k},
+                {"relaxation_parameter_k", finite_or_null(res.relax_k)},
                 {"direction", res.relax_direction},
                 {"null_hypothesis", "k = 1 (identical omega distributions on test and background branches)"},
                 {"alternative_hypothesis", "k != 1 (omega_FG,c = (omega_BG,c)^k with shared category weights)"},
-                {"p_value", res.relax_p_value},
+                {"p_value", finite_or_null(res.relax_p_value)},
                 {"decision", (res.relax_p_value <= res.settings.p_value_threshold)
                     ? ((res.relax_k > 1.0) ? "Significant intensification of selection (k > 1)" : "Significant relaxation of selection (k < 1)")
                     : "No significant relaxation or intensification of selection"}
@@ -656,23 +656,23 @@ nlohmann::json BUSTEDAnalyzer::to_modern_json(const BUSTEDResult& res, const Pro
         if (res.auto_diagnostics.enabled) {
             j["auto_model_selection"] = {
                 {"error_sink_gate", {
-                    {"max_surprisal_bits", res.auto_diagnostics.max_sink_surprisal_bits},
-                    {"max_baseline_bf", res.auto_diagnostics.max_sink_bf},
+                    {"max_surprisal_bits", finite_or_null(res.auto_diagnostics.max_sink_surprisal_bits)},
+                    {"max_baseline_bf", finite_or_null(res.auto_diagnostics.max_sink_bf)},
                     {"candidate_sites_gt_8bits", static_cast<int>(res.auto_diagnostics.sink_candidate_sites)},
                     {"adjacent_clusters", static_cast<int>(res.auto_diagnostics.sink_adjacent_clusters)},
-                    {"delta_log_l", res.auto_diagnostics.sink_delta_ll},
+                    {"delta_log_l", finite_or_null(res.auto_diagnostics.sink_delta_ll)},
                     {"activated", res.auto_diagnostics.activated_error_sink}
                 }},
                 {"multiple_hits_gate", {
-                    {"quarantined_double_hit_score", res.auto_diagnostics.double_hit_score},
-                    {"quarantined_triple_hit_score", res.auto_diagnostics.triple_hit_score},
-                    {"double_hit_delta_log_l", res.auto_diagnostics.double_hit_delta_ll},
-                    {"triple_hit_delta_log_l", res.auto_diagnostics.triple_hit_delta_ll},
+                    {"quarantined_double_hit_score", finite_or_null(res.auto_diagnostics.double_hit_score)},
+                    {"quarantined_triple_hit_score", finite_or_null(res.auto_diagnostics.triple_hit_score)},
+                    {"double_hit_delta_log_l", finite_or_null(res.auto_diagnostics.double_hit_delta_ll)},
+                    {"triple_hit_delta_log_l", finite_or_null(res.auto_diagnostics.triple_hit_delta_ll)},
                     {"selected", res.auto_diagnostics.selected_multiple_hits}
                 }},
                 {"srv_gate", {
-                    {"overdispersion_z", res.auto_diagnostics.srv_overdispersion_z},
-                    {"delta_log_l", res.auto_diagnostics.srv_delta_ll},
+                    {"overdispersion_z", finite_or_null(res.auto_diagnostics.srv_overdispersion_z)},
+                    {"delta_log_l", finite_or_null(res.auto_diagnostics.srv_delta_ll)},
                     {"activated", res.auto_diagnostics.activated_srv},
                     {"selected_syn_rates", static_cast<int>(res.auto_diagnostics.selected_syn_rates)}
                 }},
@@ -696,7 +696,7 @@ nlohmann::json BUSTEDAnalyzer::to_modern_json(const BUSTEDResult& res, const Pro
             j["error_sink_diagnostics"] = {
                 {"unconstrained_epsilon", finite_or_null(res.unconstrained.error_sink_weight)},
                 {"constrained_epsilon", finite_or_null(res.constrained.error_sink_weight)},
-                {"bf_threshold", res.settings.error_sink_bf_threshold},
+                {"bf_threshold", finite_or_null(res.settings.error_sink_bf_threshold)},
                 {"flagged_branch_sites_count", static_cast<int>(res.flagged_error_events.size())},
                 {"flagged_branch_sites", flagged}
             };
@@ -755,19 +755,25 @@ nlohmann::json BUSTEDAnalyzer::to_modern_json(const BUSTEDResult& res, const Pro
         if (!res.branch_posterior_probabilities.empty()) {
             nlohmann::json b_post = nlohmann::json::object();
             for (const auto& [bname, vec] : res.branch_posterior_probabilities) {
-                b_post[bname]["posterior_probability"] = vec;
+                b_post[bname]["posterior_probability"] = sanitized_doubles(vec);
                 auto it_ebf = res.branch_empirical_bayes_factors.find(bname);
                 if (it_ebf != res.branch_empirical_bayes_factors.end()) {
-                    b_post[bname]["empirical_bayes_factor"] = it_ebf->second;
+                    b_post[bname]["empirical_bayes_factor"] = sanitized_doubles(it_ebf->second);
                 }
             }
             j["branch_site_posteriors"] = std::move(b_post);
         }
         if (!res.branch_er_2h.empty() || !res.branch_er_3h.empty() || !res.branch_er_23h.empty()) {
             nlohmann::json mh_er = nlohmann::json::object();
-            if (!res.branch_er_2h.empty()) mh_er["2H"] = res.branch_er_2h;
-            if (!res.branch_er_3h.empty()) mh_er["3H"] = res.branch_er_3h;
-            if (!res.branch_er_23h.empty()) mh_er["2H+3H"] = res.branch_er_23h;
+            if (!res.branch_er_2h.empty()) {
+                for (const auto& [bname, vec] : res.branch_er_2h) mh_er["2H"][bname] = sanitized_doubles(vec);
+            }
+            if (!res.branch_er_3h.empty()) {
+                for (const auto& [bname, vec] : res.branch_er_3h) mh_er["3H"][bname] = sanitized_doubles(vec);
+            }
+            if (!res.branch_er_23h.empty()) {
+                for (const auto& [bname, vec] : res.branch_er_23h) mh_er["2H+3H"][bname] = sanitized_doubles(vec);
+            }
             j["multiple_hit_branch_evidence_ratios"] = std::move(mh_er);
         }
 

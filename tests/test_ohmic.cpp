@@ -40,8 +40,9 @@ inline std::string resolve_test_path(const std::string& path) {
         "benchmarks/data/" + base,
         "../benchmarks/data/" + base,
         "../../benchmarks/data/" + base,
-        "/Users/sergei/Development/hyphy-3/benchmarks/data/" + base,
-        "/Users/sergei/Development/hyphy-3/tests/data/" + base
+        "tests/data/" + base,
+        "../tests/data/" + base,
+        "../../tests/data/" + base
 #ifdef HYPHY3_SOURCE_DIR
         , std::string(HYPHY3_SOURCE_DIR) + "/benchmarks/data/" + base
         , std::string(HYPHY3_SOURCE_DIR) + "/tests/data/" + base

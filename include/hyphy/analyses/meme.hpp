@@ -133,7 +133,7 @@ public:
         analyzer.global_log_l = mg_res.log_likelihood;
         size_t K_mg = 5 + ((sel.num_selected > 0 && sel.num_unselected > 0) ? 2 : 1) + (mg_res.tree.num_nodes() - 1);
         size_t N_codons = analyzer.aln.num_codons;
-        analyzer.global_aicc = -2.0 * mg_res.log_likelihood + 2.0 * K_mg * N_codons / (N_codons - K_mg - 1.0);
+        analyzer.global_aicc = hyphy::core::stats::compute_aicc(mg_res.log_likelihood, K_mg, N_codons);
 
         analyzer.has_gtr_fit = true;
         analyzer.gtr_log_l = gtr_res.log_likelihood;
@@ -612,7 +612,31 @@ public:
             res.p_value_meme_vs_fel = 1.0;
         }
 
-        res.total_branch_length = 0.0;
+        MG94Parameters p_1_tbl = base_params;
+        p_1_tbl.alpha = res.alpha;
+        p_1_tbl.beta = res.beta1;
+        MG94Parameters p_p_tbl = base_params;
+        p_p_tbl.alpha = res.alpha;
+        p_p_tbl.beta = res.beta_plus;
+        MG94Matrix mg1_tbl, mg_plus_tbl, mg_bg_tbl;
+        mg1_tbl.update(p_1_tbl, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+        mg_plus_tbl.update(p_p_tbl, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+        if (has_bg) {
+            MG94Parameters p_bg_tbl = base_params;
+            p_bg_tbl.alpha = res.alpha;
+            p_bg_tbl.beta = (res.beta_bg > 0.0) ? res.beta_bg : res.beta1;
+            mg_bg_tbl.update(p_bg_tbl, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, gcode);
+        }
+        Scalar test_rate = (res.p1 * mg1_tbl.scale_factor + res.p_plus * mg_plus_tbl.scale_factor) / 3.0;
+        Scalar bg_rate = has_bg ? (mg_bg_tbl.scale_factor / 3.0) : test_rate;
+        Scalar site_tbl = 0.0;
+        for (const auto& node : tree.nodes) {
+            if (node.id != tree.root_id) {
+                bool is_test = (static_cast<size_t>(node.id) < is_test_branch.size()) ? is_test_branch[node.id] : true;
+                site_tbl += node.branch_length * (is_test ? test_rate : bg_rate);
+            }
+        }
+        res.total_branch_length = site_tbl;
 
         // Ancestral state reconstruction and substitution history
         res.subs = fel_analyzer.reconstruct_ancestral_pattern(p_idx, leaf_to_taxon);

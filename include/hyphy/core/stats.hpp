@@ -13,8 +13,9 @@ namespace hyphy::core::stats {
  * Uses series expansion for z < a + 1 and Lentz's continued fraction for z >= a + 1.
  */
 inline Scalar regularized_gamma_p(Scalar a, Scalar z) {
-    if (z <= 0.0) return 0.0;
-    if (a <= 0.0) return 1.0;
+    if (!std::isfinite(a) || !std::isfinite(z) || z <= 0.0 || a <= 0.0) {
+        return (std::isfinite(a) && std::isfinite(z) && a <= 0.0 && z > 0.0) ? 1.0 : 0.0;
+    }
     if (z < a + 1.0) {
         Scalar sum = 1.0 / a;
         Scalar term = sum;
@@ -23,7 +24,8 @@ inline Scalar regularized_gamma_p(Scalar a, Scalar z) {
             sum += term;
             if (std::abs(term) < std::abs(sum) * 1e-15) break;
         }
-        return std::clamp(sum * std::exp(-z + a * std::log(z) - std::lgamma(a)), 0.0, 1.0);
+        Scalar val = sum * std::exp(-z + a * std::log(z) - std::lgamma(a));
+        return std::isfinite(val) ? std::clamp(val, 0.0, 1.0) : 0.0;
     }
     Scalar tiny = 1e-30;
     Scalar b = z + 1.0 - a;
@@ -43,7 +45,7 @@ inline Scalar regularized_gamma_p(Scalar a, Scalar z) {
         if (std::abs(del - 1.0) < 1e-15) break;
     }
     Scalar q = std::exp(-z + a * std::log(z) - std::lgamma(a)) * h;
-    return std::clamp(1.0 - q, 0.0, 1.0);
+    return std::isfinite(q) ? std::clamp(1.0 - q, 0.0, 1.0) : 1.0;
 }
 
 /**
@@ -51,8 +53,7 @@ inline Scalar regularized_gamma_p(Scalar a, Scalar z) {
  * Uses Lentz's continued fraction directly for z >= a + 1 to avoid catastrophic cancellation in tails.
  */
 inline Scalar regularized_gamma_q(Scalar a, Scalar z) {
-    if (z <= 0.0) return 1.0;
-    if (a <= 0.0) return 0.0;
+    if (!std::isfinite(a) || !std::isfinite(z) || z <= 0.0 || a <= 0.0) return 1.0;
     if (z < a + 1.0) {
         return std::clamp(1.0 - regularized_gamma_p(a, z), 0.0, 1.0);
     }
@@ -74,7 +75,7 @@ inline Scalar regularized_gamma_q(Scalar a, Scalar z) {
         if (std::abs(del - 1.0) < 1e-15) break;
     }
     Scalar q = std::exp(-z + a * std::log(z) - std::lgamma(a)) * h;
-    return std::clamp(q, 0.0, 1.0);
+    return std::isfinite(q) ? std::clamp(q, 0.0, 1.0) : 0.0;
 }
 
 /**
@@ -82,7 +83,7 @@ inline Scalar regularized_gamma_q(Scalar a, Scalar z) {
  * Fast exact paths for df = 1 (erfc) and df = 2 (exp), general incomplete gamma otherwise.
  */
 inline Scalar chi2_p_value(Scalar chi2, Scalar df = 1.0) {
-    if (chi2 <= 0.0 || df <= 0.0) return 1.0;
+    if (!std::isfinite(chi2) || !std::isfinite(df) || chi2 <= 0.0 || df <= 0.0) return 1.0;
     if (df == 1.0) {
         return std::clamp(std::erfc(std::sqrt(chi2 / 2.0)), 0.0, 1.0);
     }
@@ -98,10 +99,11 @@ inline Scalar chi2_p_value(Scalar chi2, Scalar df = 1.0) {
  * Default weights correspond to MEME's mixture: (1/3)*chi2_0 + 0.30*chi2_1 + 0.3667*chi2_2.
  */
 inline Scalar mixture_chi2_p_value(Scalar lrt, Scalar w1, Scalar w2) {
-    if (lrt <= 0.0) return 1.0;
+    if (!std::isfinite(lrt) || !std::isfinite(w1) || !std::isfinite(w2) || lrt <= 0.0) return 1.0;
     Scalar p1 = std::erfc(std::sqrt(lrt / 2.0));
     Scalar p2 = std::exp(-lrt / 2.0);
-    return std::clamp(w1 * p1 + w2 * p2, 0.0, 1.0);
+    Scalar val = w1 * p1 + w2 * p2;
+    return std::isfinite(val) ? std::clamp(val, 0.0, 1.0) : 1.0;
 }
 
 /**
@@ -127,16 +129,21 @@ inline std::vector<Scalar> benjamini_hochberg_fdr(const std::vector<Scalar>& p_v
     std::vector<Scalar> q_values(m, 1.0);
     if (m == 0) return q_values;
 
+    std::vector<Scalar> clean_p(m);
+    for (size_t i = 0; i < m; ++i) {
+        clean_p[i] = std::isfinite(p_values[i]) ? std::clamp(p_values[i], Scalar(0.0), Scalar(1.0)) : Scalar(1.0);
+    }
+
     std::vector<size_t> order(m);
     std::iota(order.begin(), order.end(), 0);
     std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
-        return p_values[a] < p_values[b];
+        return clean_p[a] < clean_p[b];
     });
 
     Scalar running_min_q = 1.0;
     for (int rank = static_cast<int>(m) - 1; rank >= 0; --rank) {
         size_t idx = order[rank];
-        Scalar q = (p_values[idx] * static_cast<Scalar>(m)) / static_cast<Scalar>(rank + 1);
+        Scalar q = (clean_p[idx] * static_cast<Scalar>(m)) / static_cast<Scalar>(rank + 1);
         running_min_q = std::clamp(std::min(running_min_q, q), 0.0, 1.0);
         q_values[idx] = running_min_q;
     }
@@ -152,16 +159,21 @@ inline std::vector<Scalar> holm_bonferroni(const std::vector<Scalar>& p_values) 
     std::vector<Scalar> adj_p(m, 1.0);
     if (m == 0) return adj_p;
 
+    std::vector<Scalar> clean_p(m);
+    for (size_t i = 0; i < m; ++i) {
+        clean_p[i] = std::isfinite(p_values[i]) ? std::clamp(p_values[i], Scalar(0.0), Scalar(1.0)) : Scalar(1.0);
+    }
+
     std::vector<size_t> order(m);
     std::iota(order.begin(), order.end(), 0);
     std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
-        return p_values[a] < p_values[b];
+        return clean_p[a] < clean_p[b];
     });
 
     Scalar running_max = 0.0;
     for (size_t rank = 0; rank < m; ++rank) {
         size_t idx = order[rank];
-        Scalar p = p_values[idx] * static_cast<Scalar>(m - rank);
+        Scalar p = clean_p[idx] * static_cast<Scalar>(m - rank);
         running_max = std::clamp(std::max(running_max, p), 0.0, 1.0);
         adj_p[idx] = running_max;
     }

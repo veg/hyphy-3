@@ -40,6 +40,8 @@ generated/
 !benchmarks/data/*.json
 !benchmarks/ground_truth/*.json
 !tests/data/*.json
+tests/data/*.GARD.json
+tests/data/rbp3.nex
 !schemas/**/*.json
 !viz/**/*.json
 *.html
@@ -55,6 +57,11 @@ generated/
 *.OHMIC.json
 *.TREE.json
 scratch/
+reports/
+slkp/
+ifitm3.nwk
+ifitm3_map.fa
+benchmarks/data/*.nex.nwk
 *.trace/
 *.trace
 
@@ -70,6 +77,10 @@ node_modules/
 dist/
 dist-demo/
 package-lock.json
+viz/fel-viewer/public/
+viz/ohmic-viewer/package.json
+viz/ohmic-viewer/public/
+viz/ohmic-viewer/vite.config.js
 
 # Swift Package Manager & macOS app build
 .build/

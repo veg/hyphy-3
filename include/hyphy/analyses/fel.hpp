@@ -185,7 +185,7 @@ public:
         analyzer.global_log_l = mg_res.log_likelihood;
         size_t K_mg = 5 + ((sel.num_selected > 0 && sel.num_unselected > 0) ? 2 : 1) + (mg_res.tree.num_nodes() - 1);
         size_t N_codons = analyzer.aln.num_codons;
-        analyzer.global_aicc = -2.0 * mg_res.log_likelihood + 2.0 * K_mg * N_codons / (N_codons - K_mg - 1.0);
+        analyzer.global_aicc = hyphy::core::stats::compute_aicc(mg_res.log_likelihood, K_mg, N_codons);
 
         analyzer.has_gtr_fit = true;
         analyzer.gtr_log_l = gtr_res.log_likelihood;

@@ -2453,6 +2453,3 @@ TEST_SUITE("ExpCM: Step 4 - Phase 1B - Spectral Fréchet Derivatives") {
         std::cerr << "  All dF/dβ values finite: YES" << std::endl;
     }
 }
-
-// TODO: Step 4 - Phase 2 - L-BFGS Optimizer
-// TODO: Step 5 - Per-Site ω (omegabysite)

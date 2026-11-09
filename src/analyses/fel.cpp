@@ -22,7 +22,7 @@ nlohmann::json FELAnalyzer::to_legacy_json(const std::string& input_filepath, co
         j["analysis"]["requirements"] = "in-frame codon alignment and a phylogenetic tree";
         j["analysis"]["settings"]["ci"] = 0;
         j["analysis"]["settings"]["multihit"] = "None";
-        j["analysis"]["settings"]["pvalue"] = p_value_threshold;
+        j["analysis"]["settings"]["pvalue"] = finite_or_null(p_value_threshold);
         j["analysis"]["settings"]["resample"] = 0;
         j["analysis"]["settings"]["srv"] = 1;
         j["analysis"]["version"] = "3.0-next";
@@ -39,14 +39,14 @@ nlohmann::json FELAnalyzer::to_legacy_json(const std::string& input_filepath, co
 
         nlohmann::json content = nlohmann::json::array();
         for (const auto& r : site_results) {
-            content.push_back({
+            content.push_back(sanitized_doubles({
                 r.alpha,
                 r.beta,
                 r.alpha_null,
                 r.lrt,
                 r.p_value,
                 r.total_branch_length
-            });
+            }));
         }
         j["MLE"]["content"]["0"] = content;
 
@@ -65,9 +65,9 @@ nlohmann::json FELAnalyzer::to_legacy_json(const std::string& input_filepath, co
         for (const auto& node : tree.nodes) {
             if (node.id != tree.root_id) {
                 Scalar orig_bl = (conversion_factor > 0.0) ? (node.branch_length / conversion_factor) : node.branch_length;
-                branch_attr[node.name]["Global MG94xREV"] = orig_bl;
+                branch_attr[node.name]["Global MG94xREV"] = finite_or_null(orig_bl);
                 if (has_gtr_fit) {
-                    branch_attr[node.name]["Nucleotide GTR"] = gtr_branch_lengths.count(node.name) ? gtr_branch_lengths.at(node.name) : orig_bl;
+                    branch_attr[node.name]["Nucleotide GTR"] = finite_or_null(gtr_branch_lengths.count(node.name) ? gtr_branch_lengths.at(node.name) : orig_bl);
                 }
                 branch_attr[node.name]["original name"] = node.name;
             }
@@ -82,43 +82,43 @@ nlohmann::json FELAnalyzer::to_legacy_json(const std::string& input_filepath, co
 
         // Fits
         if (has_gtr_fit) {
-            j["fits"]["Nucleotide GTR"]["Log Likelihood"] = gtr_log_l;
-            j["fits"]["Nucleotide GTR"]["AIC-c"] = gtr_aicc;
+            j["fits"]["Nucleotide GTR"]["Log Likelihood"] = finite_or_null(gtr_log_l);
+            j["fits"]["Nucleotide GTR"]["AIC-c"] = finite_or_null(gtr_aicc);
             j["fits"]["Nucleotide GTR"]["display order"] = 0;
             nlohmann::json gtr_ef = nlohmann::json::array();
             for (int i = 0; i < 4; ++i) {
-                gtr_ef.push_back({aln.nuc_frequencies(i)});
+                gtr_ef.push_back({finite_or_null(aln.nuc_frequencies(i))});
             }
             j["fits"]["Nucleotide GTR"]["Equilibrium frequencies"] = gtr_ef;
             j["fits"]["Nucleotide GTR"]["Rate Distributions"] = {
-                {"Substitution rate from nucleotide A to nucleotide C", gtr_rates.theta_AC},
+                {"Substitution rate from nucleotide A to nucleotide C", finite_or_null(gtr_rates.theta_AC)},
                 {"Substitution rate from nucleotide A to nucleotide G", 1.0},
-                {"Substitution rate from nucleotide A to nucleotide T", gtr_rates.theta_AT},
-                {"Substitution rate from nucleotide C to nucleotide G", gtr_rates.theta_CG},
-                {"Substitution rate from nucleotide C to nucleotide T", gtr_rates.theta_CT},
-                {"Substitution rate from nucleotide G to nucleotide T", gtr_rates.theta_GT}
+                {"Substitution rate from nucleotide A to nucleotide T", finite_or_null(gtr_rates.theta_AT)},
+                {"Substitution rate from nucleotide C to nucleotide G", finite_or_null(gtr_rates.theta_CG)},
+                {"Substitution rate from nucleotide C to nucleotide T", finite_or_null(gtr_rates.theta_CT)},
+                {"Substitution rate from nucleotide G to nucleotide T", finite_or_null(gtr_rates.theta_GT)}
             };
         }
 
-        j["fits"]["Global MG94xREV"]["Log Likelihood"] = global_log_l;
-        j["fits"]["Global MG94xREV"]["AIC-c"] = global_aicc;
+        j["fits"]["Global MG94xREV"]["Log Likelihood"] = finite_or_null(global_log_l);
+        j["fits"]["Global MG94xREV"]["AIC-c"] = finite_or_null(global_aicc);
         j["fits"]["Global MG94xREV"]["display order"] = 1;
         nlohmann::json mg_ef = nlohmann::json::array();
         for (int i = 0; i < aln.codon_frequencies_f3x4.size(); ++i) {
-            mg_ef.push_back({aln.codon_frequencies_f3x4(i)});
+            mg_ef.push_back({finite_or_null(aln.codon_frequencies_f3x4(i))});
         }
         j["fits"]["Global MG94xREV"]["Equilibrium frequencies"] = mg_ef;
         Scalar omega_mle = (base_params.alpha > 0.0) ? (base_params.beta / base_params.alpha) : 1.0;
         if (num_background > 0) {
             j["fits"]["Global MG94xREV"]["Rate Distributions"]["non-synonymous/synonymous rate ratio for *test*"] = {
-                {omega_mle, 1.0}
+                {finite_or_null(omega_mle), 1.0}
             };
             j["fits"]["Global MG94xREV"]["Rate Distributions"]["non-synonymous/synonymous rate ratio for *background*"] = {
-                {omega_mle, 1.0}
+                {finite_or_null(omega_mle), 1.0}
             };
         } else {
             j["fits"]["Global MG94xREV"]["Rate Distributions"]["non-synonymous/synonymous rate ratio for *test*"] = {
-                {omega_mle, 1.0}
+                {finite_or_null(omega_mle), 1.0}
             };
         }
 
@@ -156,7 +156,7 @@ nlohmann::json FELAnalyzer::to_modern_json(const std::string& input_filepath,
                                   const std::string& tree_string,
                                   const Provenance& prov) const {
         auto json_settings = nlohmann::json{
-            {"pvalue_threshold", p_value_threshold},
+            {"pvalue_threshold", finite_or_null(p_value_threshold)},
             {"srv", true},
             {"ci", false},
             {"full_model", full_model},
@@ -198,7 +198,7 @@ nlohmann::json FELAnalyzer::to_modern_json(const std::string& input_filepath,
             global_log_l, global_aicc,
             6 + static_cast<int>(tree.nodes.size()) - 1);
         j["model_fits"]["codon_mg94"]["global_parameters"] = {
-            {"omega", (base_params.alpha > 0.0) ? (base_params.beta / base_params.alpha) : 1.0},
+            {"omega", finite_or_null((base_params.alpha > 0.0) ? (base_params.beta / base_params.alpha) : 1.0)},
             {"tree_scale", 1.0}
         };
 
@@ -211,14 +211,14 @@ nlohmann::json FELAnalyzer::to_modern_json(const std::string& input_filepath,
             {"degrees_of_freedom", 1},
             {"null_hypothesis", "beta = alpha (Neutral evolution)"},
             {"alternative_hypothesis", "beta != alpha (Positive or negative selection)"},
-            {"threshold", p_value_threshold},
+            {"threshold", finite_or_null(p_value_threshold)},
             {"total_sites", static_cast<int>(summary.tested_sites)},
             {"diversifying_count", static_cast<int>(summary.positively_selected)},
             {"purifying_count", static_cast<int>(summary.negatively_selected)},
             {"neutral_count", static_cast<int>(summary.tested_sites - summary.positively_selected - summary.negatively_selected)},
             {"tested_branches_count", static_cast<int>(num_tested)},
             {"background_branches_count", static_cast<int>(num_background)},
-            {"total_tested_tree_length", (conversion_factor > 0.0) ? (baseline_tested_tree_length / conversion_factor) : baseline_tested_tree_length}
+            {"total_tested_tree_length", finite_or_null((conversion_factor > 0.0) ? (baseline_tested_tree_length / conversion_factor) : baseline_tested_tree_length)}
         };
 
         // Site results (columnar; ColumnarResults enforces equal-length)
@@ -334,15 +334,15 @@ nlohmann::json FELAnalyzer::to_modern_json(const std::string& input_filepath,
                     nlohmann::json ev_json = {
                         {"branch", ev.branch_name},
                         {"tested", ev.is_tested},
-                        {"branch_length", ev.branch_length},
+                        {"branch_length", finite_or_null(ev.branch_length)},
                         {"parent_codon", ev.parent_codon},
                         {"child_codon", ev.child_codon},
                         {"parent_aa", std::string(1, ev.parent_aa)},
                         {"child_aa", std::string(1, ev.child_aa)},
                         {"nt_distance", ev.nt_distance},
                         {"is_synonymous", ev.is_synonymous},
-                        {"transition_probability", ev.transition_prob},
-                        {"surprise_bits", ev.surprise_bits}
+                        {"transition_probability", finite_or_null(ev.transition_prob)},
+                        {"surprise_bits", finite_or_null(ev.surprise_bits)}
                     };
                     ev_arr.push_back(ev_json);
                 }

@@ -23,7 +23,7 @@ nlohmann::json SLACResult::to_legacy_json(
         j["analysis"]["info"] = "SLAC (Single Likelihood Ancestor Counting) uses a maximum likelihood ancestral state reconstruction and minimum path substitution counting to estimate site-level dS and dN, and applies a simple binomial-based test to test if dS differs from dN.";
         j["analysis"]["requirements"] = "in-frame codon alignment and a phylogenetic tree";
         j["analysis"]["settings"]["branches"] = settings.test_branches;
-        j["analysis"]["settings"]["pvalue"] = settings.p_value_threshold;
+        j["analysis"]["settings"]["pvalue"] = finite_or_null(settings.p_value_threshold);
         j["analysis"]["settings"]["samples"] = settings.samples;
         j["analysis"]["version"] = "2.00";
 
@@ -57,40 +57,40 @@ nlohmann::json SLACResult::to_legacy_json(
 
         // Fits
         // GTR
-        j["fits"]["Nucleotide GTR"]["Log Likelihood"] = gtr_log_l;
-        j["fits"]["Nucleotide GTR"]["AIC-c"] = gtr_aicc;
+        j["fits"]["Nucleotide GTR"]["Log Likelihood"] = finite_or_null(gtr_log_l);
+        j["fits"]["Nucleotide GTR"]["AIC-c"] = finite_or_null(gtr_aicc);
         j["fits"]["Nucleotide GTR"]["display order"] = 0;
         nlohmann::json gtr_ef = nlohmann::json::array();
         for (int i = 0; i < 4; ++i) {
-            gtr_ef.push_back({aln.nuc_frequencies(i)});
+            gtr_ef.push_back({finite_or_null(aln.nuc_frequencies(i))});
         }
         j["fits"]["Nucleotide GTR"]["Equilibrium frequencies"] = gtr_ef;
         j["fits"]["Nucleotide GTR"]["Rate Distributions"] = {
-            {"Substitution rate from nucleotide A to nucleotide C", gtr_rates.theta_AC},
+            {"Substitution rate from nucleotide A to nucleotide C", finite_or_null(gtr_rates.theta_AC)},
             {"Substitution rate from nucleotide A to nucleotide G", 1.0},
-            {"Substitution rate from nucleotide A to nucleotide T", gtr_rates.theta_AT},
-            {"Substitution rate from nucleotide C to nucleotide G", gtr_rates.theta_CG},
-            {"Substitution rate from nucleotide C to nucleotide T", gtr_rates.theta_CT},
-            {"Substitution rate from nucleotide G to nucleotide T", gtr_rates.theta_GT}
+            {"Substitution rate from nucleotide A to nucleotide T", finite_or_null(gtr_rates.theta_AT)},
+            {"Substitution rate from nucleotide C to nucleotide G", finite_or_null(gtr_rates.theta_CG)},
+            {"Substitution rate from nucleotide C to nucleotide T", finite_or_null(gtr_rates.theta_CT)},
+            {"Substitution rate from nucleotide G to nucleotide T", finite_or_null(gtr_rates.theta_GT)}
         };
 
         // MG94
-        j["fits"]["Global MG94xREV"]["Log Likelihood"] = baseline_log_l;
-        j["fits"]["Global MG94xREV"]["AIC-c"] = baseline_aicc;
+        j["fits"]["Global MG94xREV"]["Log Likelihood"] = finite_or_null(baseline_log_l);
+        j["fits"]["Global MG94xREV"]["AIC-c"] = finite_or_null(baseline_aicc);
         j["fits"]["Global MG94xREV"]["display order"] = 1;
         nlohmann::json mg_ef = nlohmann::json::array();
         for (int i = 0; i < aln.codon_frequencies_f3x4.size(); ++i) {
-            mg_ef.push_back({aln.codon_frequencies_f3x4(i)});
+            mg_ef.push_back({finite_or_null(aln.codon_frequencies_f3x4(i))});
         }
         j["fits"]["Global MG94xREV"]["Equilibrium frequencies"] = mg_ef;
-        j["fits"]["Global MG94xREV"]["Rate Distributions"]["non-synonymous/synonymous rate ratio for *background*"] = global_omega;
+        j["fits"]["Global MG94xREV"]["Rate Distributions"]["non-synonymous/synonymous rate ratio for *background*"] = finite_or_null(global_omega);
 
         // Branch attributes
         nlohmann::json branch_attr;
         for (const auto& node : tree.nodes) {
             if (node.id != tree.root_id) {
-                branch_attr[node.name]["Global MG94xREV"] = node.branch_length;
-                branch_attr[node.name]["Nucleotide GTR"] = gtr_branch_lengths.count(node.name) ? gtr_branch_lengths.at(node.name) : node.branch_length;
+                branch_attr[node.name]["Global MG94xREV"] = finite_or_null(node.branch_length);
+                branch_attr[node.name]["Nucleotide GTR"] = finite_or_null(gtr_branch_lengths.count(node.name) ? gtr_branch_lengths.at(node.name) : node.branch_length);
                 branch_attr[node.name]["original name"] = node.name;
 
                 if (branch_site_attrs.count(node.name)) {
@@ -164,13 +164,13 @@ nlohmann::json SLACResult::to_legacy_json(
             nlohmann::json ci975_avg = nlohmann::json::array();
 
             for (size_t s = 0; s < total_sites; ++s) {
-                med_res.push_back(resolved_sites[s].quantiles_median);
-                ci25_res.push_back(resolved_sites[s].quantiles_2_5);
-                ci975_res.push_back(resolved_sites[s].quantiles_97_5);
+                med_res.push_back(sanitized_doubles(resolved_sites[s].quantiles_median));
+                ci25_res.push_back(sanitized_doubles(resolved_sites[s].quantiles_2_5));
+                ci975_res.push_back(sanitized_doubles(resolved_sites[s].quantiles_97_5));
 
-                med_avg.push_back(averaged_sites[s].quantiles_median);
-                ci25_avg.push_back(averaged_sites[s].quantiles_2_5);
-                ci975_avg.push_back(averaged_sites[s].quantiles_97_5);
+                med_avg.push_back(sanitized_doubles(averaged_sites[s].quantiles_median));
+                ci25_avg.push_back(sanitized_doubles(averaged_sites[s].quantiles_2_5));
+                ci975_avg.push_back(sanitized_doubles(averaged_sites[s].quantiles_97_5));
             }
 
             j["sample-median"]["0"]["RESOLVED"] = med_res;
@@ -181,7 +181,7 @@ nlohmann::json SLACResult::to_legacy_json(
             j["sample-97.5"]["0"]["AVERAGED"] = ci975_avg;
         }
 
-        j["timers"]["Total time"] = runtime_seconds;
+        j["timers"]["Total time"] = finite_or_null(runtime_seconds);
         j["runtime"] = "3.0.0";
 
         return j;
@@ -200,7 +200,7 @@ nlohmann::json SLACResult::to_modern_json(
             {citation("Kosakovsky Pond SL, Frost SDW (2005). Not So Different After All: A Comparison of Methods for Detecting Amino Acid Sites Under Selection. Mol Biol Evol 22(5): 1208-1222.",
                       "10.1093/molbev/msi105", "15703277")},
             {
-                {"pvalue_threshold", settings.p_value_threshold},
+                {"pvalue_threshold", finite_or_null(settings.p_value_threshold)},
                 {"samples", settings.samples},
                 {"test_branches", settings.test_branches}
             }
@@ -209,7 +209,7 @@ nlohmann::json SLACResult::to_modern_json(
         nlohmann::json j = new_analysis_json(meta, prov, input_filepath);
         if (prov.invocation.cli_command.empty() && prov.inputs.empty() &&
             j["provenance"].contains("execution")) {
-            j["provenance"]["execution"]["wall_time_seconds"] = runtime_seconds;
+            j["provenance"]["execution"]["wall_time_seconds"] = finite_or_null(runtime_seconds);
         }
         j["dataset"] = dataset_block(aln);
         j["phylogeny"] = phylogeny_block(
@@ -245,7 +245,7 @@ nlohmann::json SLACResult::to_modern_json(
         j["statistical_tests"]["site_level_summary"] = {
             {"method", "Single-Likelihood Ancestor Counting (SLAC)"},
             {"test_statistic", "Exact Binomial Distribution"},
-            {"threshold", settings.p_value_threshold},
+            {"threshold", finite_or_null(settings.p_value_threshold)},
             {"total_sites", static_cast<int>(total_sites)},
             {"diversifying_count", static_cast<int>(diversifying_sites)},
             {"purifying_count", static_cast<int>(purifying_sites)},
@@ -274,9 +274,9 @@ nlohmann::json SLACResult::to_modern_json(
             col_S.push_back(r.S);
             col_N.push_back(r.N);
             col_P_S.push_back(r.P_S);
-            col_dS.push_back(r.has_dS ? nlohmann::json(r.dS) : nlohmann::json(nullptr));
-            col_dN.push_back(r.has_dN ? nlohmann::json(r.dN) : nlohmann::json(nullptr));
-            col_diff.push_back(r.has_dN_minus_dS ? nlohmann::json(r.dN_minus_dS) : nlohmann::json(nullptr));
+            col_dS.push_back(r.has_dS ? finite_or_null(r.dS) : nlohmann::json(nullptr));
+            col_dN.push_back(r.has_dN ? finite_or_null(r.dN) : nlohmann::json(nullptr));
+            col_diff.push_back(r.has_dN_minus_dS ? finite_or_null(r.dN_minus_dS) : nlohmann::json(nullptr));
             col_p_pos.push_back(r.p_positive);
             col_p_neg.push_back(r.p_negative);
             col_tbl.push_back(r.total_branch_length);
@@ -318,12 +318,12 @@ nlohmann::json SLACResult::to_modern_json(
                 N_med.push_back(r.quantiles_median[3]);
                 N_lo.push_back(r.quantiles_2_5[3]);
                 N_hi.push_back(r.quantiles_97_5[3]);
-                dS_med.push_back(r.has_dS ? nlohmann::json(r.quantiles_median[5]) : nlohmann::json(nullptr));
-                dS_lo.push_back(r.has_dS ? nlohmann::json(r.quantiles_2_5[5]) : nlohmann::json(nullptr));
-                dS_hi.push_back(r.has_dS ? nlohmann::json(r.quantiles_97_5[5]) : nlohmann::json(nullptr));
-                dN_med.push_back(r.has_dN ? nlohmann::json(r.quantiles_median[6]) : nlohmann::json(nullptr));
-                dN_lo.push_back(r.has_dN ? nlohmann::json(r.quantiles_2_5[6]) : nlohmann::json(nullptr));
-                dN_hi.push_back(r.has_dN ? nlohmann::json(r.quantiles_97_5[6]) : nlohmann::json(nullptr));
+                dS_med.push_back(r.has_dS ? finite_or_null(r.quantiles_median[5]) : nlohmann::json(nullptr));
+                dS_lo.push_back(r.has_dS ? finite_or_null(r.quantiles_2_5[5]) : nlohmann::json(nullptr));
+                dS_hi.push_back(r.has_dS ? finite_or_null(r.quantiles_97_5[5]) : nlohmann::json(nullptr));
+                dN_med.push_back(r.has_dN ? finite_or_null(r.quantiles_median[6]) : nlohmann::json(nullptr));
+                dN_lo.push_back(r.has_dN ? finite_or_null(r.quantiles_2_5[6]) : nlohmann::json(nullptr));
+                dN_hi.push_back(r.has_dN ? finite_or_null(r.quantiles_97_5[6]) : nlohmann::json(nullptr));
             }
 
             table.add_column("S_median", {"number", "Median synonymous substitutions across samples"}, S_med);

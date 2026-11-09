@@ -130,8 +130,7 @@ TEST_CASE("FEL: Branch subset testing on Fig4E.nex with {T} tag auto-detection")
     std::vector<std::string> candidates = {
         "tests/data/Fig4E.nex",
         "../tests/data/Fig4E.nex",
-        "/Users/sergei/Development/hyphy-3/tests/data/Fig4E.nex",
-        "/Users/sergei/Development/hyphy/tests/data/Fig4E.nex"
+        HYPHY3_SOURCE_DIR "/tests/data/Fig4E.nex"
     };
     std::string path;
     for (const auto& c : candidates) {

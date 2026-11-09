@@ -1,6 +1,6 @@
 # HyPhy 3 Technical Specification: Ohmic Phylogenetic Networks & Wheatstone Pruning (`ohmic`)
 
-> **Target Repository**: `/Users/sergei/Development/hyphy-3`  
+> **Target Repository**: `hyphy-3`  
 > **Target Audience**: Gemini 4 / AI Implementation Agent & HyPhy 3 Core Architects  
 > **Status**: Ready for C++20 Implementation  
 > **Mandate**: Zero Synthetic Mockery, Strict Analytical Gradients, Header-Only C++20 + Eigen3 + OpenMP
@@ -24,7 +24,7 @@ Conversely, general reticulate phylogenetic networks (arbitrary DAGs with $K$ re
 
 ## 2. Target File Layout in `hyphy-3`
 
-Create or update the following files in `/Users/sergei/Development/hyphy-3`:
+Create or update the following files in `hyphy-3`:
 
 ```text
 include/hyphy/

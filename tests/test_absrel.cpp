@@ -18,7 +18,6 @@ TEST_CASE("aBSREL: Beta-globin Benchmark Parity (17 taxa, 144 codons)") {
     std::vector<std::string> candidates = {
         "benchmarks/data/bglobin.nex",
         "../benchmarks/data/bglobin.nex",
-        "/Users/sergei/Development/hyphy-3/benchmarks/data/bglobin.nex",
         HYPHY3_SOURCE_DIR "/benchmarks/data/bglobin.nex"
     };
     std::string path;

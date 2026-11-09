@@ -1446,6 +1446,194 @@
         grid-template-columns: 1fr;
       }
     }
+
+    /* =================================================================== */
+    /* INTERACTIVE WALKTHROUGH / GUIDED TUTORIAL                           */
+    /* =================================================================== */
+    .walkthrough-landing-card {
+      background: linear-gradient(180deg, #FFFFFF 0%, #FAF8F3 100%);
+      border: 1.5px solid #D8D3C6;
+      border-radius: 10px;
+      padding: 20px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      box-shadow: 0 2px 10px rgba(22, 22, 21, 0.04);
+    }
+    .walkthrough-landing-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .walkthrough-step-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .walkthrough-step-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .walkthrough-step-kicker {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--orange);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .walkthrough-step-name {
+      font-size: 13.5px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+    .walkthrough-step-text {
+      font-size: 12px;
+      color: var(--ink-secondary);
+      line-height: 1.45;
+    }
+    .walkthrough-cta-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding-top: 12px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .walkthrough-coach-banner {
+      display: none;
+      background: #FFFBF7;
+      border: 1.5px solid rgba(224, 79, 22, 0.38);
+      border-radius: 10px;
+      padding: 14px 18px;
+      margin-bottom: 16px;
+      box-shadow: 0 4px 14px rgba(224, 79, 22, 0.07);
+      flex-direction: column;
+      gap: 10px;
+    }
+    .walkthrough-coach-banner.visible {
+      display: flex;
+    }
+    .walkthrough-coach-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .walkthrough-coach-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      font-weight: 700;
+      color: var(--orange);
+      background: var(--orange-soft);
+      border: 1px solid rgba(224, 79, 22, 0.25);
+      padding: 3px 9px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .walkthrough-dots {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .walkthrough-dot {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--ink-muted);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+    .walkthrough-dot.active {
+      background: var(--orange);
+      border-color: var(--orange);
+      color: #FFFFFF;
+    }
+    .walkthrough-dot.done {
+      background: var(--green-bg);
+      border-color: rgba(24, 121, 78, 0.35);
+      color: var(--green);
+    }
+    .walkthrough-coach-body {
+      font-size: 13.5px;
+      color: var(--ink);
+      line-height: 1.5;
+    }
+    .walkthrough-coach-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding-top: 8px;
+      border-top: 1px solid rgba(224, 79, 22, 0.15);
+    }
+    .walkthrough-try-chips {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .walkthrough-chip-btn {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 5px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--ink);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.12s;
+    }
+    .walkthrough-chip-btn:hover {
+      border-color: var(--orange);
+      color: var(--orange);
+      background: #FFFFFF;
+    }
+    @media (max-width: 860px) {
+      .walkthrough-step-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .walkthrough-landing-card {
+        padding: 16px;
+      }
+    }
+    @media (max-width: 540px) {
+      .walkthrough-step-grid {
+        grid-template-columns: 1fr;
+      }
+      .walkthrough-cta-row > div {
+        width: 100%;
+      }
+      .walkthrough-cta-row .btn {
+        width: 100%;
+        justify-content: center;
+      }
+    }
   </style>
 </head>
 <body>
@@ -1503,6 +1691,8 @@
       <input type="file" id="fileInput" accept=".fa,.fasta,.fna,.cds,.nex,.nexus,.txt,.json" style="display:none" onchange="handleFileUpload(event)" />
       <button class="btn btn-sm" onclick="document.getElementById('fileInput').click()">Upload File</button>
       <button class="btn btn-sm" onclick="openPasteModal()">Paste FASTA</button>
+      <button class="btn btn-sm" onclick="openStreamModal()" title="Stream coding sequences live from NCBI GenBank/RefSeq, ENA, or URL">🌐 Fetch GenBank / URL</button>
+      <button id="btnTopWalkthrough" class="btn btn-sm" onclick="toggleWalkthroughTour()" title="Interactive Step-by-Step Guided Walkthrough">🎓 Walkthrough</button>
       <button class="btn btn-sm" onclick="openHelpDrawer()" title="How WALRUS Works, Metric Glossary &amp; FAQ">? Guide</button>
     </div>
 
@@ -1511,6 +1701,29 @@
 
   <!-- MAIN CONTAINER -->
   <main class="container">
+
+    <!-- =================================================================== -->
+    <!-- CONTEXTUAL INTERACTIVE WALKTHROUGH COACH BANNER (STAGES 0–4)        -->
+    <!-- =================================================================== -->
+    <section id="walkthroughCoachBanner" class="walkthrough-coach-banner" aria-live="polite">
+      <div class="walkthrough-coach-top">
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <span id="wtStepBadge" class="walkthrough-coach-badge">🎓 Guided Walkthrough • Step 1 of 5</span>
+          <strong id="wtStepTitle" style="font-size:14px; color:var(--ink);">Stage 0: 6-Frame QA &amp; Homology Admission</strong>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <div class="walkthrough-dots" id="wtStepDots"></div>
+          <button class="btn btn-sm" style="padding:3px 9px; font-size:12px;" onclick="dismissWalkthroughTour()" title="Close guided walkthrough">✕ Dismiss Tour</button>
+        </div>
+      </div>
+
+      <div id="wtStepBody" class="walkthrough-coach-body"></div>
+
+      <div class="walkthrough-coach-actions">
+        <div class="walkthrough-try-chips" id="wtTryChips"></div>
+        <div style="display:flex; align-items:center; gap:8px;" id="wtNavButtons"></div>
+      </div>
+    </section>
 
     <!-- =================================================================== -->
     <!-- LANDING VIEW: LAUNCHPAD & PRE-LOADED EXAMPLES                       -->
@@ -1566,13 +1779,72 @@
               Unaligned or aligned <code>.fasta</code>, <code>.fa</code>, <code>.fna</code>, <code>.cds</code>, <code>.nex</code>, or <code>.json</code> dossiers
             </div>
           </div>
-          <div style="display:flex; gap:8px; margin-top:4px;" onclick="event.stopPropagation()">
+          <div style="display:flex; gap:8px; margin-top:4px; flex-wrap:wrap; justify-content:center;" onclick="event.stopPropagation()">
             <button class="btn btn-primary btn-sm" onclick="document.getElementById('fileInput').click()">Choose File…</button>
             <button class="btn btn-sm" onclick="openPasteModal()">Paste FASTA / NEXUS</button>
+            <button class="btn btn-sm" onclick="openStreamModal()">🌐 Stream from GenBank / URL</button>
           </div>
           <div style="font-family:var(--font-mono); font-size:11px; color:var(--ink-muted);">
             100% Client-Side • Zero Data Leaves Your Machine
           </div>
+        </div>
+      </section>
+
+      <!-- INTERACTIVE FIRST-TIME WALKTHROUGH CARD -->
+      <section class="walkthrough-landing-card">
+        <div class="walkthrough-landing-header">
+          <div>
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px;">
+              <span class="walkthrough-coach-badge">🎓 First-Time User Walkthrough</span>
+              <span style="font-family:var(--font-mono); font-size:11.5px; color:var(--ink-muted);">~60 sec interactive guided tour • Step-by-step coach</span>
+            </div>
+            <h2 style="font-size:16.5px; font-weight:700; color:var(--ink); letter-spacing:-0.01em;">
+              How WALRUS Works: 4-Stage Interactive Guided Tour
+            </h2>
+            <p style="font-size:13px; color:var(--ink-secondary); margin-top:2px;">
+              New to WALRUS? Launch an interactive guided tour below — a live coach banner will explain each stage and highlight what to click as you move from raw sequences to evolutionary forensics.
+            </p>
+          </div>
+        </div>
+
+        <div class="walkthrough-step-grid">
+          <div class="walkthrough-step-box">
+            <div class="walkthrough-step-kicker">Stage 0 • QA &amp; Admission</div>
+            <div class="walkthrough-step-name">6-Frame Rescue &amp; Triage</div>
+            <div class="walkthrough-step-text">Scans all 6 reading frames, trims 5'/3' UTRs, auto-detects genetic codes, and quarantines pseudogenes or paralog contaminants before alignment.</div>
+          </div>
+          <div class="walkthrough-step-box">
+            <div class="walkthrough-step-kicker">Stage 1 • Codon Alignment</div>
+            <div class="walkthrough-step-name">Codon POA &amp; Frameshift QC</div>
+            <div class="walkthrough-step-text">Aligns coding sequences in 61-codon space, repairs 1-bp/2-bp sequencing indels in-frame, and computes column homology confidence (<code>P_hom</code>).</div>
+          </div>
+          <div class="walkthrough-step-box">
+            <div class="walkthrough-step-kicker">Stage 2 • Phylogeny &amp; SPR</div>
+            <div class="walkthrough-step-name">Tree, Recombination &amp; Clades</div>
+            <div class="walkthrough-step-text">Optimizes MG94 branch lengths, tracks 3rd-position GC3 drift, routes recombinant mosaic blocks via local SPR, and lets you tag <code>{Foreground}</code> clades.</div>
+          </div>
+          <div class="walkthrough-step-box">
+            <div class="walkthrough-step-kicker">Stage 3 • Unified Selection</div>
+            <div class="walkthrough-step-name">Adaptation, Epistasis &amp; Erosion</div>
+            <div class="walkthrough-step-text">Jointly runs BUSTED, FEL, MEME, Contrast-FEL, RELAX (<code>K</code>), aBSREL, Purifying-Core Invasion (<code>LoF_BF</code>), and Epistasis with ancestral codon trees.</div>
+          </div>
+        </div>
+
+        <div class="walkthrough-cta-row">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <button class="btn btn-primary btn-sm" onclick="startWalkthroughTour('stage0_torture_suite.fa', false)">
+              ▶ Start Guided Walkthrough (QA + Frameshift + Selection)
+            </button>
+            <button class="btn btn-sm" style="border-color:var(--orange); color:var(--orange); font-weight:600;" onclick="startWalkthroughTour('cryaa_blind_mammals.fa', false)">
+              ▶ Tour Core Invasion &amp; Pseudogenization (Blind Mammal CRYAA)
+            </button>
+            <button class="btn btn-sm" onclick="startWalkthroughTour('coxi_mtdna.fa', false)">
+              ▶ Tour Genetic Code Auto-Detect (mtDNA COX1)
+            </button>
+          </div>
+          <button class="btn btn-sm" onclick="openHelpDrawer('models')" title="Browse full statistical model reference">
+            Statistical Models &amp; Glossary →
+          </button>
         </div>
       </section>
 
@@ -2063,7 +2335,7 @@
           <button class="btn btn-primary btn-sm" onclick="exportFullPipelineHtml()">Export Standalone HTML</button>
         </div>
       </div>
-      <iframe id="reportIframe" class="report-iframe" sandbox="allow-scripts allow-same-origin allow-downloads"></iframe>
+      <iframe id="reportIframe" class="report-iframe" sandbox="allow-scripts allow-downloads"></iframe>
     </div>
 
   </main>
@@ -2519,6 +2791,122 @@
     </div>
   </div>
 
+  <!-- STREAM / IMPORT FROM PUBLIC DATASOURCES MODAL (NCBI GenBank/RefSeq, ENA, Remote URL) -->
+  <div id="streamModal" class="modal-backdrop" onclick="closeStreamModal()">
+    <div class="modal-card" style="max-width:680px;" onclick="event.stopPropagation()">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+        <div>
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+            <span class="badge admitted">🌐 Live Sequence Streamer</span>
+            <span style="font-family:var(--font-mono); font-size:11.5px; color:var(--ink-muted);">Direct Browser HTTPS • NCBI Entrez / EMBL-EBI ENA / GitHub</span>
+          </div>
+          <strong style="font-size:16.5px; color:var(--ink);">Stream Coding Sequences from Public Repositories</strong>
+        </div>
+        <button class="btn btn-sm" onclick="closeStreamModal()">✕</button>
+      </div>
+
+      <!-- Streamer Mode Tabs -->
+      <div class="pill-group" id="streamTabPills" style="width:fit-content;">
+        <button class="pill active" data-stab="orthologs" onclick="setStreamTab('orthologs')">1. NCBI Gene Orthologs</button>
+        <button class="pill" data-stab="accessions" onclick="setStreamTab('accessions')">2. GenBank / RefSeq / ENA Accessions</button>
+        <button class="pill" data-stab="url" onclick="setStreamTab('url')">3. Remote URL / GitHub / Zenodo</button>
+      </div>
+
+      <!-- TAB 1: NCBI GENE ORTHOLOG COHORT STREAMER -->
+      <div id="streamPanelOrthologs" style="display:flex; flex-direction:column; gap:12px;">
+        <div style="font-size:13px; color:var(--ink-secondary); line-height:1.45;">
+          Query <strong>NCBI Entrez (RefSeq / GenBank)</strong> by gene symbol and taxonomic clade. WALRUS automatically resolves species metadata, deduplicates to <strong>1 coding sequence (CDS) per species</strong>, and passes the cohort into Stage 0 6-frame QA.
+        </div>
+
+        <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+          <span style="font-family:var(--font-mono); font-size:11px; color:var(--ink-muted);">Quick Presets:</span>
+          <button class="walkthrough-chip-btn" onclick="applyOrthologPreset('IFITM3', 'Mammalia', 16)">Mammalian IFITM3</button>
+          <button class="walkthrough-chip-btn" onclick="applyOrthologPreset('BST2', 'Chiroptera', 15)">Bat Tetherin (BST2)</button>
+          <button class="walkthrough-chip-btn" onclick="applyOrthologPreset('APOBEC3G', 'Primates', 14)">Primate APOBEC3G</button>
+          <button class="walkthrough-chip-btn" onclick="applyOrthologPreset('ACE2', 'Mammalia', 18)">Mammalian ACE2</button>
+          <button class="walkthrough-chip-btn" onclick="applyOrthologPreset('RHO', 'Vertebrata', 18)">Vertebrate Rhodopsin (RHO)</button>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1.2fr 110px; gap:10px;">
+          <div style="display:flex; flex-direction:column; gap:4px;">
+            <label style="font-size:12px; font-weight:600; color:var(--ink-secondary);">Gene Symbol</label>
+            <input type="text" id="streamGeneInput" class="clean-input" value="IFITM3" placeholder="e.g. IFITM3, MX1, BRCA1" />
+          </div>
+          <div style="display:flex; flex-direction:column; gap:4px;">
+            <label style="font-size:12px; font-weight:600; color:var(--ink-secondary);">Taxonomic Clade / Organism</label>
+            <select id="streamCladeSelect" class="clean-select" style="height:36px;">
+              <option value="Mammalia">Mammalia (Mammals)</option>
+              <option value="Primates">Primates</option>
+              <option value="Chiroptera">Chiroptera (Bats)</option>
+              <option value="Carnivora">Carnivora (Carnivores)</option>
+              <option value="Rodentia">Rodentia (Rodents)</option>
+              <option value="Cetartiodactyla">Cetartiodactyla (Whales &amp; Ungulates)</option>
+              <option value="Aves">Aves (Birds)</option>
+              <option value="Actinopterygii">Actinopterygii (Bony Fishes)</option>
+              <option value="Vertebrata">Vertebrata (All Vertebrates)</option>
+              <option value="Drosophila">Drosophila (Fruit Flies)</option>
+              <option value="Coronaviridae">Coronaviridae (Coronaviruses)</option>
+            </select>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:4px;">
+            <label style="font-size:12px; font-weight:600; color:var(--ink-secondary);">Max Species</label>
+            <select id="streamMaxTaxaSelect" class="clean-select" style="height:36px;">
+              <option value="10">10 taxa</option>
+              <option value="16" selected>16 taxa</option>
+              <option value="24">24 taxa</option>
+              <option value="35">35 taxa</option>
+              <option value="50">50 taxa</option>
+            </select>
+          </div>
+        </div>
+
+        <label style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--ink-secondary); cursor:pointer;">
+          <input type="checkbox" id="chkStreamRefseqOnly" checked style="width:15px; height:15px;" />
+          <span>Prefer curated NCBI RefSeq transcripts (<code>NM_</code> / <code>XM_</code>) and deduplicate to 1 sequence per species</span>
+        </label>
+      </div>
+
+      <!-- TAB 2: GENBANK / REFSEQ / ENA ACCESSIONS -->
+      <div id="streamPanelAccessions" style="display:none; flex-direction:column; gap:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <label style="font-size:12px; font-weight:600; color:var(--ink-secondary);">Repository:</label>
+            <select id="streamRepoSelect" class="clean-select" style="padding:4px 8px; font-size:12.5px;">
+              <option value="ncbi_cds">NCBI GenBank / RefSeq — Extract Coding Sequence (fasta_cds_na)</option>
+              <option value="ncbi_fasta">NCBI GenBank / RefSeq — Full Nucleotide FASTA</option>
+              <option value="ena_fasta">EMBL-EBI ENA — Nucleotide FASTA</option>
+            </select>
+          </div>
+          <button class="walkthrough-chip-btn" onclick="fillSampleAccessions()">Load 8 Sample RefSeq Accessions</button>
+        </div>
+        <textarea id="streamAccessionsTextarea" class="fasta-box" style="height:130px;" placeholder="Enter comma- or newline-separated GenBank / RefSeq / ENA accessions:&#10;NM_021034.3, NM_001198757.1, NM_025378.2, NM_001136124.3, NM_001201382.2, XM_007465909.1"></textarea>
+      </div>
+
+      <!-- TAB 3: REMOTE URL / GITHUB / ZENODO -->
+      <div id="streamPanelUrl" style="display:none; flex-direction:column; gap:10px;">
+        <div style="font-size:13px; color:var(--ink-secondary); line-height:1.45;">
+          Stream any CORS-enabled <code>.fasta</code>, <code>.fa</code>, <code>.fna</code>, <code>.cds</code>, <code>.nex</code>, or <code>.json</code> file directly via HTTPS (GitHub <code>blob</code> links are automatically converted to <code>raw.githubusercontent.com</code>).
+        </div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+          <span style="font-family:var(--font-mono); font-size:11px; color:var(--ink-muted);">Sample URL:</span>
+          <button class="walkthrough-chip-btn" onclick="document.getElementById('streamRemoteUrlInput').value='https://raw.githubusercontent.com/veg/hyphy-analyses/master/BUSTED-PH/examples/CD2.nex'">veg/hyphy-analyses CD2.nex</button>
+        </div>
+        <input type="url" id="streamRemoteUrlInput" class="clean-input" placeholder="https://raw.githubusercontent.com/.../alignment.fasta" />
+      </div>
+
+      <!-- Live Streaming Status Strip -->
+      <div id="streamStatusBox" style="display:none; font-family:var(--font-mono); font-size:12px; padding:10px 12px; border-radius:6px; background:var(--bg-subtle); border:1px solid var(--border); color:var(--ink-secondary);"></div>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-top:2px;">
+        <span style="font-family:var(--font-mono); font-size:11px; color:var(--ink-muted);">Fetched sequences pass directly into local Stage 0 6-frame QA</span>
+        <div style="display:flex; gap:8px;">
+          <button class="btn" onclick="closeStreamModal()">Cancel</button>
+          <button id="btnExecuteStream" class="btn btn-primary" onclick="executeDatasourceStream()">↓ Stream into WALRUS</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- PRE-FLIGHT RESOURCE & RUNTIME WARNING MODAL (>5 min or high WASM memory) -->
   <div id="preflightModal" class="modal-backdrop" onclick="closePreflightModal()">
     <div class="modal-card" style="max-width:660px;" onclick="event.stopPropagation()">
@@ -2705,6 +3093,9 @@
       if (activeStepBtn && typeof activeStepBtn.scrollIntoView === 'function') {
         activeStepBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
       }
+      if (typeof updateWalkthroughBanner === 'function') {
+        updateWalkthroughBanner();
+      }
     }
 
     const EXAMPLE_META = {
@@ -2755,6 +3146,12 @@
         spec: '12 vertebrates × 663 codons • NEXUS',
         name: 'Vertebrate Myxovirus Resistance Mx (MBE 2023 Tutorial)',
         desc: 'Álvarez-Carretero, Kapli & Yang (2023 MBE msad041) PAML positive-selection tutorial — antiviral Mx GTPase across 10 mammals and 2 birds with the {Avian} clade tagged as foreground.'
+      },
+      'cryaa_blind_mammals.fa': {
+        tag: 'Core Invasion / Pseudogenization',
+        spec: '22 mammals × 173 codons • FASTA+Tree',
+        name: 'Subterranean Mammal Lens αA-Crystallin (CRYAA)',
+        desc: 'Contrasts 5 subterranean/blind mammals (Star-nosed mole, Desmans, Cape golden mole, Solenodon) against 17 sighted mammals — catches purifying-core invasion (LoF_BF) and RELAX relaxation (K < 1) in intact ORFs without stop codons.'
       }
     };
 
@@ -3920,8 +4317,8 @@
           const ch = qSeg[k];
           if (ch === '*') qCol += `<span class="aa-stop">*</span>`;
           else if (ch === '-') qCol += `<span class="aa-gap">-</span>`;
-          else if (mSeg[k] === '|') qCol += `<span class="aa-match">${ch}</span>`;
-          else qCol += `<span class="aa-mismatch">${ch}</span>`;
+          else if (mSeg[k] === '|') qCol += `<span class="aa-match">${escapeHtml(ch)}</span>`;
+          else qCol += `<span class="aa-mismatch">${escapeHtml(ch)}</span>`;
         }
         const pos = String(i + 1).padStart(4, ' ');
         alnHtml += `Query  ${pos}  ${qCol}\n             ${escapeHtml(mSeg)}\nTarget ${pos}  ${escapeHtml(tSeg)}\n\n`;
@@ -3961,7 +4358,7 @@
           svg += `<rect x="4" y="${y}" width="${W - 8}" height="${rowH - 2}" rx="4" fill="rgba(224,79,22,0.08)" stroke="#E04F16" stroke-width="1" />`;
         }
 
-        svg += `<text x="14" y="${y + 21}" font-family="JetBrains Mono" font-size="13" font-weight="600" fill="${isSel ? '#E04F16' : '#161615'}" style="cursor:pointer" onclick="selectFrameInDrawer(${idx})">${f.frame_label}</text>`;
+        svg += `<text x="14" y="${y + 21}" font-family="JetBrains Mono" font-size="13" font-weight="600" fill="${isSel ? '#E04F16' : '#161615'}" style="cursor:pointer" onclick="selectFrameInDrawer(${idx})">${escapeHtml(f.frame_label)}</text>`;
 
         svg += `<rect x="${padL}" y="${y + 8}" width="${fullW}" height="16" rx="3" fill="#E6E4DD" style="cursor:pointer" onclick="selectFrameInDrawer(${idx})" />`;
 
@@ -3971,13 +4368,13 @@
           const fill = (f.internal_stops === 0) ? 'rgba(24,121,78,0.35)' : 'rgba(180,98,0,0.30)';
           const stroke = (f.internal_stops === 0) ? '#18794E' : '#B46200';
           svg += `<rect x="${ox}" y="${y + 8}" width="${ow}" height="16" rx="3" fill="${fill}" stroke="${stroke}" stroke-width="1" style="cursor:pointer" onclick="selectFrameInDrawer(${idx})">
-            <title>Frame ${f.frame_label}: Longest stop-free ORF = ${f.longest_orf_len} codons</title>
+            <title>Frame ${escapeHtml(f.frame_label)}: Longest stop-free ORF = ${f.longest_orf_len} codons</title>
           </rect>`;
         }
 
         (f.stop_positions || []).forEach(posObj => {
           const pos1 = (typeof posObj === 'object' && posObj !== null) ? (posObj.codon || 1) : posObj;
-          const trip = (typeof posObj === 'object' && posObj !== null && posObj.triplet) ? ` (${posObj.triplet})` : '';
+          const trip = (typeof posObj === 'object' && posObj !== null && posObj.triplet) ? ` (${escapeHtml(posObj.triplet)})` : '';
           const tx = xCod(pos1 - 0.5);
           svg += `<line x1="${tx}" y1="${y + 5}" x2="${tx}" y2="${y + 27}" stroke="#C62828" stroke-width="2.2">
             <title>Internal stop at codon #${pos1}${trip}</title>
@@ -5649,11 +6046,11 @@
           const sw = (subType === 'nonsyn') ? 2.8 : (subType === 'syn' ? 2.2 : 1.4);
           const dash = (subType === 'syn') ? 'stroke-dasharray="4,3"' : '';
           svg += `<path d="M ${px} ${py} L ${px} ${y} L ${x} ${y}" fill="none" stroke="${stroke}" stroke-width="${sw}" ${dash}>`;
-          svg += `<title>${escapeHtml(nd.name)}: ${pAA} [${pCod}] → ${aa} [${cod}]</title></path>`;
+          svg += `<title>${escapeHtml(nd.name)}: ${escapeHtml(pAA)} [${escapeHtml(pCod)}] → ${escapeHtml(aa)} [${escapeHtml(cod)}]</title></path>`;
 
           if (subType === 'nonsyn') {
             const mx = 0.5 * (px + x);
-            svg += `<text x="${mx}" y="${y - 4}" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" font-weight="700" fill="#E04F16">${pAA}→${aa}</text>`;
+            svg += `<text x="${mx}" y="${y - 4}" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" font-weight="700" fill="#E04F16">${escapeHtml(pAA)}→${escapeHtml(aa)}</text>`;
           }
         }
 
@@ -5664,7 +6061,7 @@
           const lbl = `${aa} [${cod}]  ${nameTr}`;
           svg += `<text x="${x + 7}" y="${y + 4}" font-family="JetBrains Mono" font-size="${compactMode ? 10.5 : 11.5}" font-weight="${subType === 'nonsyn' ? '700' : '500'}" fill="${subType === 'nonsyn' ? '#E04F16' : '#141413'}">${escapeHtml(lbl)}</text>`;
         } else {
-          svg += `<circle cx="${x}" cy="${y}" r="2.5" fill="#64748B"><title>${escapeHtml(nd.name)} ancestral state: ${aa} [${cod}]</title></circle>`;
+          svg += `<circle cx="${x}" cy="${y}" r="2.5" fill="#64748B"><title>${escapeHtml(nd.name)} ancestral state: ${escapeHtml(aa)} [${escapeHtml(cod)}]</title></circle>`;
         }
       });
 
@@ -5767,12 +6164,12 @@
         let barHtml = `<div style="display:flex; height:12px; border-radius:6px; overflow:hidden; margin-bottom:8px; border:1px solid var(--border);">`;
         sortedAa.forEach(([aa, cnt], idx) => {
           const pct = (cnt / totalLeaves) * 100;
-          barHtml += `<div style="width:${pct.toFixed(1)}%; background:${palette[idx % palette.length]};" title="${aa}: ${cnt}/${totalLeaves} (${pct.toFixed(0)}%)"></div>`;
+          barHtml += `<div style="width:${pct.toFixed(1)}%; background:${palette[idx % palette.length]};" title="${escapeHtml(aa)}: ${cnt}/${totalLeaves} (${pct.toFixed(0)}%)"></div>`;
         });
         barHtml += `</div><div class="hero-chips">`;
         sortedAa.forEach(([aa, cnt], idx) => {
           const pct = ((cnt / totalLeaves) * 100).toFixed(0);
-          barHtml += `<span class="hero-chip" style="border-left:3px solid ${palette[idx % palette.length]};">${aa}: ${cnt} (${pct}%)</span>`;
+          barHtml += `<span class="hero-chip" style="border-left:3px solid ${palette[idx % palette.length]};">${escapeHtml(aa)}: ${cnt} (${pct}%)</span>`;
         });
         barHtml += `</div>`;
         document.getElementById('s3DrawerAaBar').innerHTML = barHtml;
@@ -5930,7 +6327,7 @@
             if (mutCards.length === 0) sampleCodon = c + 1;
             const c1Str = pNd.codon_seq ? pNd.codon_seq.slice(3 * c, 3 * c + 3) : '---';
             const c2Str = nd.codon_seq ? nd.codon_seq.slice(3 * c, 3 * c + 3) : '---';
-            mutCards.push(`<button class="btn btn-sm" style="font-family:var(--font-mono); font-size:12px;" onclick="openStage3SiteDrawer(${c + 1})">Codon ${c + 1}: ${a1}[${c1Str}] → ${a2}[${c2Str}]</button>`);
+            mutCards.push(`<button class="btn btn-sm" style="font-family:var(--font-mono); font-size:12px;" onclick="openStage3SiteDrawer(${c + 1})">Codon ${c + 1}: ${escapeHtml(a1)}[${escapeHtml(c1Str)}] → ${escapeHtml(a2)}[${escapeHtml(c2Str)}]</button>`);
           }
         }
       }
@@ -5966,6 +6363,206 @@
     }
 
     // =========================================================================
+    // INTERACTIVE WALKTHROUGH / GUIDED TUTORIAL ENGINE
+    // =========================================================================
+    let walkthroughActive = false;
+
+    function startWalkthroughTour(sampleKey, runFullAuto) {
+      walkthroughActive = true;
+      const topBtn = document.getElementById('btnTopWalkthrough');
+      if (topBtn) {
+        topBtn.style.borderColor = 'var(--orange)';
+        topBtn.style.color = 'var(--orange)';
+      }
+      launchSampleFromLanding(sampleKey || 'stage0_torture_suite.fa', !!runFullAuto);
+      updateWalkthroughBanner();
+    }
+
+    function toggleWalkthroughTour() {
+      if (walkthroughActive) {
+        dismissWalkthroughTour();
+        return;
+      }
+      walkthroughActive = true;
+      const topBtn = document.getElementById('btnTopWalkthrough');
+      if (topBtn) {
+        topBtn.style.borderColor = 'var(--orange)';
+        topBtn.style.color = 'var(--orange)';
+      }
+      if (activeView === 'landing') {
+        launchSampleFromLanding('stage0_torture_suite.fa', false);
+      } else {
+        updateWalkthroughBanner();
+      }
+    }
+
+    function dismissWalkthroughTour() {
+      walkthroughActive = false;
+      const banner = document.getElementById('walkthroughCoachBanner');
+      if (banner) banner.classList.remove('visible');
+      const topBtn = document.getElementById('btnTopWalkthrough');
+      if (topBtn) {
+        topBtn.style.borderColor = '';
+        topBtn.style.color = '';
+      }
+    }
+
+    function wtInspectStage0Seq() {
+      if (!stage0Data || !stage0Data.taxa || !stage0Data.taxa.length) return;
+      setListFilter('all');
+      const target = stage0Data.taxa.find(t => t.status === 'Rescued')
+        || stage0Data.taxa.find(t => t.status === 'Quarantined')
+        || stage0Data.taxa[0];
+      if (target) openInspectorDrawer(target.index);
+    }
+
+    function wtInspectStage1Event() {
+      if (!stage1Data) return;
+      const evs = stage1Data.events || [];
+      if (evs.length > 0) {
+        setStage1Tab('events');
+        openStage1EventDrawer(0);
+      } else {
+        setStage1Tab('minimap');
+      }
+    }
+
+    function wtInspectStage2Clade() {
+      if (!stage2Data) return;
+      setStage2Tab('tree');
+      const branches = stage2Data.branches || [];
+      const fg = branches.find(b => b.is_foreground || b.is_recombinant) || branches[0];
+      if (fg && typeof openStage2NodeDrawer === 'function') {
+        openStage2NodeDrawer(fg.node_id);
+      }
+    }
+
+    function wtInspectStage3Codon() {
+      if (!stage3Data || !stage3Data.site_atlas || !stage3Data.site_atlas.length) return;
+      const sites = stage3Data.site_atlas;
+      const best = [...sites].sort((a, b) => (a.simes_omnibus_p ?? 1) - (b.simes_omnibus_p ?? 1))[0];
+      if (best) openStage3SiteDrawer(best.site);
+    }
+
+    function wtInspectStage3Lineage() {
+      if (!stage3Data || !stage3Data.branch_profiles || !stage3Data.branch_profiles.length) return;
+      setStage3Tab('lineages');
+      const bps = stage3Data.branch_profiles;
+      let bestIdx = 0;
+      let bestScore = -1;
+      bps.forEach((b, idx) => {
+        const score = (b.lof_flagged ? 1000 : 0) + Number(b.lof_bayes_factor || 0) + (b.absrel_p_value <= 0.05 ? 500 : 0);
+        if (score > bestScore) {
+          bestScore = score;
+          bestIdx = idx;
+        }
+      });
+      openStage3BranchDrawer(bestIdx);
+    }
+
+    function updateWalkthroughBanner() {
+      const banner = document.getElementById('walkthroughCoachBanner');
+      if (!banner) return;
+      if (!walkthroughActive || activeView === 'landing') {
+        banner.classList.remove('visible');
+        return;
+      }
+      banner.classList.add('visible');
+
+      const badgeEl = document.getElementById('wtStepBadge');
+      const titleEl = document.getElementById('wtStepTitle');
+      const dotsEl = document.getElementById('wtStepDots');
+      const bodyEl = document.getElementById('wtStepBody');
+      const chipsEl = document.getElementById('wtTryChips');
+      const navEl = document.getElementById('wtNavButtons');
+
+      const stepOrder = ['stage0', 'stage1', 'stage2', 'stage3', 'full'];
+      const stepIdx = Math.max(0, stepOrder.indexOf(activeView));
+      const doneFlags = [!!stage0Data, !!stage1Data, !!stage2Data, !!stage3Data, !!lastFullReportHtml];
+
+      if (dotsEl) {
+        dotsEl.innerHTML = stepOrder.map((sk, idx) => {
+          const cls = (sk === activeView) ? 'walkthrough-dot active' : (doneFlags[idx] ? 'walkthrough-dot done' : 'walkthrough-dot');
+          const fn = idx === 0 ? "openOrRunStage0()" : (idx === 1 ? "openOrRunStage1()" : (idx === 2 ? "openOrRunStage2()" : (idx === 3 ? "openOrRunStage3()" : "switchView('full')")));
+          return `<button class="${cls}" onclick="${fn}" title="Go to Stage ${idx}">${idx}</button>`;
+        }).join('');
+      }
+
+      const isCryaa = (currentDatasetLabel || '').indexOf('cryaa') !== -1;
+      const isCox1 = (currentDatasetLabel || '').indexOf('coxi') !== -1;
+
+      if (activeView === 'stage0') {
+        badgeEl.textContent = '🎓 Walkthrough • Step 1 of 5';
+        titleEl.textContent = 'Stage 0: 6-Frame QA, Genetic Code & Homology Admission';
+        if (isCryaa) {
+          bodyEl.innerHTML = `<strong>What is happening:</strong> WALRUS scanned all 22 mammalian <em>CRYAA</em> (Lens αA-Crystallin) coding sequences across all 6 reading frames. Even the 5 blind subterranean mammal sequences have <strong>intact open reading frames without premature stop codons</strong> — so traditional stop-codon filters pass all 22 sequences cleanly! Next, click <strong>Run Stage 1: Alignment →</strong> to verify codon homology.`;
+        } else if (isCox1) {
+          bodyEl.innerHTML = `<strong>What is happening:</strong> Under the Universal genetic code, vertebrate mitochondrial <em>COX1</em> sequences show internal <code>TGA</code> stop codons. Notice the yellow <strong>Suggested Genetic Code</strong> banner right below — click <strong>Switch to Vertebrate-mtDNA</strong> to resolve all internal stops in one click!`;
+        } else {
+          bodyEl.innerHTML = `<strong>What is happening:</strong> WALRUS evaluated all 6 reading frames for every input sequence against the cohort consensus. It automatically <strong>rescued</strong> reverse-complemented and frame-shifted cDNAs, trimmed 5'/3' UTR flanks, and <strong>quarantined</strong> pseudogenes, short fragments, and a non-homologous Ubiquitin paralog contaminant.`;
+        }
+        chipsEl.innerHTML = `
+          <span style="font-family:var(--font-mono); font-size:11.5px; color:var(--ink-muted);">Try clicking:</span>
+          <button class="walkthrough-chip-btn" onclick="wtInspectStage0Seq()">🔍 Inspect 6-Frame Barcode</button>
+          <button class="walkthrough-chip-btn" onclick="setListFilter('map')">🗺 View 2D Homology Map</button>
+          <button class="walkthrough-chip-btn" onclick="toggleSettingsDrawer()">⚙ Genetic Code &amp; Z-Score</button>`;
+        navEl.innerHTML = `<button class="btn btn-primary btn-sm" onclick="runStage1Now()">Next Step: Run Stage 1 (Alignment) →</button>`;
+      } else if (activeView === 'stage1') {
+        badgeEl.textContent = '🎓 Walkthrough • Step 2 of 5';
+        titleEl.textContent = 'Stage 1: Codon Pair-HMM + POA Alignment & Frameshift Repair';
+        if (isCryaa) {
+          bodyEl.innerHTML = `<strong>What is happening:</strong> All 22 mammalian <em>CRYAA</em> sequences are aligned in 61-codon space (173 codons) with high column homology confidence (<code>P_hom</code>). Notice that the Star-nosed mole has a C-terminal truncation while Desmans, Solenodon, and Cape golden mole span the full lens crystallin domain.`;
+        } else {
+          bodyEl.innerHTML = `<strong>What is happening:</strong> Admitted sequences were aligned directly in 61-sense-codon space using progressive Pair-HMM + Partial Order Alignment (POA). WALRUS pinpointed and repaired a <strong>1-bp mid-gene sequencing indel frameshift</strong> (restoring reading frame without corrupting downstream codons) and computed posterior homology confidence (<code>P_hom</code>) for every column.`;
+        }
+        chipsEl.innerHTML = `
+          <span style="font-family:var(--font-mono); font-size:11.5px; color:var(--ink-muted);">Try clicking:</span>
+          <button class="walkthrough-chip-btn" onclick="wtInspectStage1Event()">🔧 Inspect Frameshift / Indel</button>
+          <button class="walkthrough-chip-btn" onclick="setStage1Tab('minimap')">🧬 View Codon Minimap &amp; P_hom</button>
+          <button class="walkthrough-chip-btn" onclick="setStage1SeqMode(stage1SeqMode === 'aa' ? 'nt' : 'aa')">🔤 Toggle AA ↔ Codons</button>`;
+        navEl.innerHTML = `<button class="btn btn-primary btn-sm" onclick="runStage2Now()">Next Step: Run Stage 2 (Phylogeny) →</button>`;
+      } else if (activeView === 'stage2') {
+        badgeEl.textContent = '🎓 Walkthrough • Step 3 of 5';
+        titleEl.textContent = 'Stage 2: Codon Phylogeny, Recombination Routing & Clade Tagging';
+        if (isCryaa) {
+          bodyEl.innerHTML = `<strong>What is happening:</strong> WALRUS optimized the 22-mammal <em>CRYAA</em> phylogeny and preserved the embedded <code>{Subterranean}</code> foreground tags on the 5 blind/subterranean mammals (Star-nosed mole, Pyrenean &amp; Russian desmans, Hispaniolan solenodon, Cape golden mole). Notice their elongated terminal branches — now click <strong>Run Stage 3 (Selection) →</strong> to test whether those branches are undergoing adaptive evolution or purifying-core pseudogenization!`;
+        } else {
+          bodyEl.innerHTML = `<strong>What is happening:</strong> WALRUS estimated the MG94 codon phylogeny, screened for compositional GC3 drift, and checked for recombination breakpoints. You can click any node on the interactive tree to tag or untag a custom <code>{Foreground}</code> clade before running Stage 3 selection forensics.`;
+        }
+        chipsEl.innerHTML = `
+          <span style="font-family:var(--font-mono); font-size:11.5px; color:var(--ink-muted);">Try clicking:</span>
+          <button class="walkthrough-chip-btn" onclick="wtInspectStage2Clade()">🌿 Inspect / Tag Clade on Tree</button>
+          <button class="walkthrough-chip-btn" onclick="setStage2Tab('events')">🔀 Recombination &amp; SPR Events</button>
+          <button class="walkthrough-chip-btn" onclick="setStage2Tab('branches')">📊 Branch Diagnostics Table</button>`;
+        navEl.innerHTML = `<button class="btn btn-primary btn-sm" onclick="runStage3Now()">Next Step: Run Stage 3 (Selection) →</button>`;
+      } else if (activeView === 'stage3') {
+        badgeEl.textContent = '🎓 Walkthrough • Step 4 of 5';
+        titleEl.textContent = 'Stage 3: Unified Selection, Epistasis & Purifying-Core Erosion';
+        if (isCryaa) {
+          bodyEl.innerHTML = `<strong>What is happening:</strong> Look at the <strong>Lineage Regimes</strong> and <strong>Key Findings</strong>: WALRUS flags the subterranean blind mammal lineages for <strong>Purifying-Core Invasion / Loss-of-Constraint (<code>LoF_BF</code>)</strong> alongside <strong>RELAX selection relaxation (<code>K &lt; 1</code>)</strong>! Even without premature stop codons, radical amino-acid substitutions are invading universally conserved core residues of lens αA-crystallin.`;
+        } else {
+          bodyEl.innerHTML = `<strong>What is happening:</strong> In a single unified pass, WALRUS executed BUSTED (gene-wide diversification), FEL &amp; MEME (pervasive/episodic site selection), Contrast-FEL &amp; RELAX (clade regimes), aBSREL (branch bursts), Purifying-Core Invasion (<code>LoF_BF</code>), and Phylogenetic Epistasis. Click any spike on the Manhattan plot or any lineage row to inspect reconstructed ancestral codons!`;
+        }
+        chipsEl.innerHTML = `
+          <span style="font-family:var(--font-mono); font-size:11.5px; color:var(--ink-muted);">Try clicking:</span>
+          <button class="walkthrough-chip-btn" onclick="wtInspectStage3Lineage()">🦡 Inspect Core-Eroded / Burst Lineage</button>
+          <button class="walkthrough-chip-btn" onclick="wtInspectStage3Codon()">🧬 Inspect Top Selected Codon Tree</button>
+          <button class="walkthrough-chip-btn" onclick="setStage3Tab('findings')">📋 View Key Evolutionary Findings</button>`;
+        navEl.innerHTML = lastFullReportHtml
+          ? `<button class="btn btn-primary btn-sm" onclick="switchView('full')">Final Step: Open Full Dossier →</button>`
+          : `<button class="btn btn-sm" onclick="dismissWalkthroughTour()">✓ Finish Walkthrough</button>`;
+      } else if (activeView === 'full') {
+        badgeEl.textContent = '🎓 Walkthrough • Step 5 of 5 (Complete!)';
+        titleEl.textContent = 'Stage 4: Standalone Publication Dossier & Reproducible JSON';
+        bodyEl.innerHTML = `<strong>Tour Complete!</strong> This self-contained HTML dossier and full <code>.CHARACTERIZE.json</code> bundle contain all 4 stages of your analysis — ready for publication supplements or reloading into WALRUS anytime.`;
+        chipsEl.innerHTML = `
+          <button class="walkthrough-chip-btn" onclick="exportFullPipelineHtml()">⬇ Download Standalone HTML Report</button>
+          <button class="walkthrough-chip-btn" onclick="exportFullPipelineJson()">⬇ Download Full JSON Bundle</button>`;
+        navEl.innerHTML = `<button class="btn btn-primary btn-sm" onclick="dismissWalkthroughTour()">✓ Finish Guided Tour</button>`;
+      }
+    }
+
+    // =========================================================================
     // VIEW SWITCHER, UPLOAD, PASTE & EXPORTS
     // =========================================================================
     function switchView(v) {
@@ -5978,6 +6575,7 @@
       document.getElementById('fullPipelineView').classList.toggle('active', v === 'full');
 
       updatePipelineStepperUI();
+      updateWalkthroughBanner();
 
       // Context-aware bottom bar (hidden on landing page)
       const bottomBar = document.querySelector('footer.bottom-bar');
@@ -5996,6 +6594,343 @@
 
     function openPasteModal() { document.getElementById('pasteModal').classList.add('open'); }
     function closePasteModal() { document.getElementById('pasteModal').classList.remove('open'); }
+
+    let currentStreamTab = 'orthologs';
+
+    function openStreamModal(initialTab) {
+      const m = document.getElementById('streamModal');
+      if (!m) return;
+      if (initialTab) setStreamTab(initialTab);
+      const statusBox = document.getElementById('streamStatusBox');
+      if (statusBox) { statusBox.style.display = 'none'; statusBox.textContent = ''; }
+      m.classList.add('open');
+    }
+
+    function closeStreamModal() {
+      const m = document.getElementById('streamModal');
+      if (m) m.classList.remove('open');
+    }
+
+    function setStreamTab(tab) {
+      currentStreamTab = tab;
+      document.querySelectorAll('#streamTabPills .pill').forEach(b => {
+        b.classList.toggle('active', b.getAttribute('data-stab') === tab);
+      });
+      const pOrth = document.getElementById('streamPanelOrthologs');
+      const pAcc = document.getElementById('streamPanelAccessions');
+      const pUrl = document.getElementById('streamPanelUrl');
+      if (pOrth) pOrth.style.display = (tab === 'orthologs') ? 'flex' : 'none';
+      if (pAcc) pAcc.style.display = (tab === 'accessions') ? 'flex' : 'none';
+      if (pUrl) pUrl.style.display = (tab === 'url') ? 'flex' : 'none';
+    }
+
+    function applyOrthologPreset(gene, clade, maxTaxa) {
+      const gIn = document.getElementById('streamGeneInput');
+      const cSel = document.getElementById('streamCladeSelect');
+      const mSel = document.getElementById('streamMaxTaxaSelect');
+      if (gIn) gIn.value = gene;
+      if (cSel) cSel.value = clade;
+      if (mSel) mSel.value = String(maxTaxa);
+    }
+
+    function fillSampleAccessions() {
+      const ta = document.getElementById('streamAccessionsTextarea');
+      if (ta) {
+        ta.value = [
+          'NM_021034.3',
+          'NM_001025295.2',
+          'NM_025378.2',
+          'NM_001136124.3',
+          'NM_001075148.1',
+          'NM_001201382.2',
+          'NM_001246216.1',
+          'NM_001003172.1'
+        ].join(', ');
+      }
+    }
+
+    function setStreamStatus(msg, isError) {
+      const box = document.getElementById('streamStatusBox');
+      if (!box) return;
+      box.style.display = 'block';
+      box.style.borderColor = isError ? 'var(--danger-border)' : 'var(--border)';
+      box.style.background = isError ? 'var(--danger-bg)' : 'var(--bg-subtle)';
+      box.style.color = isError ? 'var(--danger)' : 'var(--ink-secondary)';
+      box.textContent = msg;
+    }
+
+    function sanitizeTaxonToken(s) {
+      return String(s || '')
+        .replace(/[^A-Za-z0-9_.]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+    }
+
+    function parseAndFilterNcbiCdsFasta(rawFasta, accessionToSpeciesMap, targetGeneUpper) {
+      const blocks = String(rawFasta || '').split(/^>/m).filter(b => b.trim().length > 0);
+      // Group CDS blocks by accession or organism so records with multiple CDS features pick the best match
+      const grouped = new Map();
+      const orderedKeys = [];
+      for (const blk of blocks) {
+        const nl = blk.indexOf('\n');
+        if (nl === -1) continue;
+        const header = blk.slice(0, nl).trim();
+        const seq = blk.slice(nl + 1).replace(/[^A-Za-z\-]/g, '').toUpperCase();
+        if (seq.length < 60) continue;
+
+        let accMatch = header.match(/lcl\|([A-Za-z0-9_.]+?)_cds_/i) || header.match(/^([A-Za-z0-9_.]+)/);
+        let acc = accMatch ? accMatch[1] : header.split(/\s+/)[0];
+        let baseAcc = acc.replace(/\.\d+$/, '');
+
+        const geneMatch = header.match(/\[gene=([^\]]+)\]/i);
+        const geneTag = geneMatch ? geneMatch[1].trim().toUpperCase() : '';
+
+        let orgName = accessionToSpeciesMap.get(acc) || accessionToSpeciesMap.get(baseAcc) || '';
+        const key = orgName || baseAcc || acc;
+        const matchesTargetGene = targetGeneUpper && geneTag === targetGeneUpper;
+
+        if (!grouped.has(key)) {
+          orderedKeys.push(key);
+          grouped.set(key, { acc, orgName, geneTag, seq, matchesTargetGene });
+        } else {
+          const prev = grouped.get(key);
+          if ((matchesTargetGene && !prev.matchesTargetGene) ||
+              (matchesTargetGene === prev.matchesTargetGene && seq.length > prev.seq.length)) {
+            grouped.set(key, { acc, orgName, geneTag, seq, matchesTargetGene });
+          }
+        }
+      }
+
+      let outFasta = '';
+      let count = 0;
+      const usedNames = new Set();
+      for (const k of orderedKeys) {
+        const item = grouped.get(k);
+        const cleanAcc = sanitizeTaxonToken(item.acc.replace(/\.\d+$/, ''));
+        const cleanOrg = sanitizeTaxonToken(item.orgName);
+        let label = cleanOrg ? `${cleanOrg}_${cleanAcc}` : cleanAcc;
+        if (!label) label = `Seq_${count + 1}`;
+        let uniqueLabel = label;
+        let dup = 2;
+        while (usedNames.has(uniqueLabel)) {
+          uniqueLabel = `${label}_${dup++}`;
+        }
+        usedNames.add(uniqueLabel);
+        outFasta += `>${uniqueLabel}\n${item.seq}\n`;
+        count++;
+      }
+      return { fasta: outFasta, count };
+    }
+
+    async function executeDatasourceStream() {
+      const btn = document.getElementById('btnExecuteStream');
+      if (btn) btn.disabled = true;
+      try {
+        if (currentStreamTab === 'orthologs') {
+          const gene = (document.getElementById('streamGeneInput').value || '').trim();
+          const clade = (document.getElementById('streamCladeSelect').value || 'Mammalia').trim();
+          const maxTaxa = parseInt(document.getElementById('streamMaxTaxaSelect').value || '16', 10) || 16;
+          const refseqOnly = !!(document.getElementById('chkStreamRefseqOnly') && document.getElementById('chkStreamRefseqOnly').checked);
+
+          if (!gene) {
+            setStreamStatus('Please enter a gene symbol (e.g. IFITM3, BST2, APOBEC3G, ACE2).', true);
+            return;
+          }
+
+          setStreamStatus(`1/3 Querying NCBI Entrez nuccore for ${gene} orthologs in ${clade}...`, false);
+          const refseqFilter = refseqOnly ? ' AND srcdb_refseq[PROP]' : '';
+          const term = `${gene}[Gene Name] AND ${clade}[Organism] AND biomol_mrna[PROP]${refseqFilter}`;
+          const searchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=nuccore&term=${encodeURIComponent(term)}&retmax=${Math.min(maxTaxa * 5, 160)}&retmode=json`;
+          const sResp = await fetch(searchUrl);
+          if (!sResp.ok) throw new Error(`NCBI esearch HTTP ${sResp.status}`);
+          const sJson = await sResp.json();
+          let idList = (sJson && sJson.esearchresult && sJson.esearchresult.idlist) ? sJson.esearchresult.idlist : [];
+
+          if (idList.length < 3 && refseqOnly) {
+            // Fallback without strict RefSeq filter if RefSeq has fewer than 3 records
+            const fallbackTerm = `${gene}[Gene Name] AND ${clade}[Organism] AND CDS[Feature key]`;
+            const fbResp = await fetch(`https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=nuccore&term=${encodeURIComponent(fallbackTerm)}&retmax=${Math.min(maxTaxa * 5, 160)}&retmode=json`);
+            if (fbResp.ok) {
+              const fbJson = await fbResp.json();
+              idList = (fbJson && fbJson.esearchresult && fbJson.esearchresult.idlist) ? fbJson.esearchresult.idlist : idList;
+            }
+          }
+
+          if (!idList || idList.length < 3) {
+            setStreamStatus(`Found only ${idList ? idList.length : 0} matching records for ${gene} in ${clade} (at least 3 required). Try broadening the clade or unchecking RefSeq-only.`, true);
+            return;
+          }
+
+          setStreamStatus(`2/3 Resolving species metadata & deduplicating ${idList.length} candidates...`, false);
+          const sumUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=nuccore&id=${idList.join(',')}&retmode=json`;
+          const sumResp = await fetch(sumUrl);
+          if (!sumResp.ok) throw new Error(`NCBI esummary HTTP ${sumResp.status}`);
+          const sumJson = await sumResp.json();
+          const resultObj = (sumJson && sumJson.result) ? sumJson.result : {};
+
+          const selectedUids = [];
+          const seenSpecies = new Set();
+          const accToSpecies = new Map();
+
+          // Prioritize curated NM_ transcripts over predicted XM_ transcripts for the same species
+          const uidCandidates = [];
+          for (const uid of idList) {
+            const rec = resultObj[uid];
+            if (!rec) continue;
+            const accVer = String(rec.accessionversion || rec.caption || uid);
+            const org = String(rec.organism || '').trim();
+            const slen = Number(rec.slen || 0);
+            if (slen > 30000) continue; // skip whole chromosomes/contigs
+            const isNM = /^NM_/i.test(accVer);
+            uidCandidates.push({ uid, accVer, org, isNM });
+          }
+          uidCandidates.sort((a, b) => (b.isNM ? 1 : 0) - (a.isNM ? 1 : 0));
+
+          for (const cand of uidCandidates) {
+            const speciesKey = cand.org ? cand.org.toLowerCase() : cand.uid;
+            if (refseqOnly && seenSpecies.has(speciesKey)) continue;
+            seenSpecies.add(speciesKey);
+            selectedUids.push(cand.uid);
+            accToSpecies.set(cand.accVer, cand.org);
+            accToSpecies.set(cand.accVer.replace(/\.\d+$/, ''), cand.org);
+            if (selectedUids.length >= maxTaxa) break;
+          }
+
+          if (selectedUids.length < 3) {
+            setStreamStatus(`After species deduplication, only ${selectedUids.length} distinct species were found (at least 3 required). Try selecting a broader clade.`, true);
+            return;
+          }
+
+          setStreamStatus(`3/3 Streaming coding sequences (fasta_cds_na) for ${selectedUids.length} species...`, false);
+          const fetchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=${selectedUids.join(',')}&rettype=fasta_cds_na&retmode=text`;
+          const fResp = await fetch(fetchUrl);
+          if (!fResp.ok) throw new Error(`NCBI efetch HTTP ${fResp.status}`);
+          const rawCdsFasta = await fResp.text();
+
+          const parsed = parseAndFilterNcbiCdsFasta(rawCdsFasta, accToSpecies, gene.toUpperCase());
+          if (parsed.count < 3) {
+            setStreamStatus(`Extracted ${parsed.count} valid coding sequences (need at least 3).`, true);
+            return;
+          }
+
+          const label = `ncbi_${sanitizeTaxonToken(gene)}_${sanitizeTaxonToken(clade)}_${parsed.count}sp.fa`;
+          closeStreamModal();
+          preflightAcknowledgedForCurrentDataset = false;
+          const est = estimateCohortResources(parsed.fasta, false);
+          if (est.needsWarning) {
+            openPreflightModal(est, { mode: 'upload', content: parsed.fasta, label, runFullAuto: defaultLaunchFullAuto });
+            return;
+          }
+          launchCustomSequencePayload(parsed.fasta, label, defaultLaunchFullAuto);
+          return;
+        }
+
+        if (currentStreamTab === 'accessions') {
+          const repo = (document.getElementById('streamRepoSelect').value || 'ncbi_cds').trim();
+          const rawAcc = (document.getElementById('streamAccessionsTextarea').value || '').trim();
+          const accList = rawAcc.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean);
+          if (accList.length < 3) {
+            setStreamStatus('Please enter at least 3 GenBank, RefSeq, or ENA accessions.', true);
+            return;
+          }
+
+          if (repo === 'ena_fasta') {
+            setStreamStatus(`Streaming ${accList.length} accessions from EMBL-EBI ENA...`, false);
+            const enaUrl = `https://www.ebi.ac.uk/ena/browser/api/fasta/${encodeURIComponent(accList.join(','))}`;
+            const eResp = await fetch(enaUrl);
+            if (!eResp.ok) throw new Error(`ENA API HTTP ${eResp.status}`);
+            const fastaText = await eResp.text();
+            if (!fastaText || !fastaText.includes('>')) {
+              setStreamStatus('No valid FASTA records returned by ENA for those accessions.', true);
+              return;
+            }
+            const label = `ena_${accList.length}_accessions.fa`;
+            closeStreamModal();
+            launchCustomSequencePayload(fastaText, label, defaultLaunchFullAuto);
+            return;
+          }
+
+          const rettype = (repo === 'ncbi_cds') ? 'fasta_cds_na' : 'fasta';
+          setStreamStatus(`Streaming ${accList.length} accessions from NCBI Entrez (${rettype})...`, false);
+          const fetchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=${encodeURIComponent(accList.join(','))}&rettype=${rettype}&retmode=text`;
+          const fResp = await fetch(fetchUrl);
+          if (!fResp.ok) throw new Error(`NCBI efetch HTTP ${fResp.status}`);
+          let fastaText = await fResp.text();
+
+          if (repo === 'ncbi_cds') {
+            const parsed = parseAndFilterNcbiCdsFasta(fastaText, new Map(), '');
+            if (parsed.count >= 3) {
+              fastaText = parsed.fasta;
+            }
+          }
+
+          if (!fastaText || !fastaText.includes('>')) {
+            setStreamStatus('No FASTA sequences returned for those accessions.', true);
+            return;
+          }
+
+          const label = `ncbi_${accList.length}_accessions.fa`;
+          closeStreamModal();
+          preflightAcknowledgedForCurrentDataset = false;
+          const est = estimateCohortResources(fastaText, false);
+          if (est.needsWarning) {
+            openPreflightModal(est, { mode: 'upload', content: fastaText, label, runFullAuto: defaultLaunchFullAuto });
+            return;
+          }
+          launchCustomSequencePayload(fastaText, label, defaultLaunchFullAuto);
+          return;
+        }
+
+        if (currentStreamTab === 'url') {
+          let url = (document.getElementById('streamRemoteUrlInput').value || '').trim();
+          if (!url) {
+            setStreamStatus('Please enter an HTTPS URL to a sequence file (.fa, .fasta, .nex, .json).', true);
+            return;
+          }
+          // Automatically rewrite GitHub blob URLs to raw.githubusercontent.com for CORS support
+          const ghMatch = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/(.+)$/i);
+          if (ghMatch) {
+            url = `https://raw.githubusercontent.com/${ghMatch[1]}/${ghMatch[2]}/${ghMatch[3]}`;
+          }
+
+          setStreamStatus(`Fetching ${url}...`, false);
+          const uResp = await fetch(url);
+          if (!uResp.ok) throw new Error(`HTTP ${uResp.status} fetching remote URL`);
+          const content = await uResp.text();
+          if (!content || !content.trim()) {
+            setStreamStatus('Remote URL returned an empty response.', true);
+            return;
+          }
+
+          const urlParts = url.split('?')[0].split('/');
+          const label = urlParts[urlParts.length - 1] || 'remote_stream.fa';
+          closeStreamModal();
+
+          if (label.endsWith('.json') || /^\s*\{/.test(content)) {
+            currentRawSeq = '';
+            currentDatasetLabel = label;
+            flushAnalysisResults(0);
+            abortRunningWorkerIfBusy();
+            runningStage = 'full';
+            document.getElementById('wasmLed').className = 'status-dot busy';
+            updatePipelineStepperUI();
+            worker.postMessage({ type: 'render_json', jsonContent: content, label });
+            return;
+          }
+
+          preflightAcknowledgedForCurrentDataset = false;
+          const est = estimateCohortResources(content, false);
+          if (est.needsWarning) {
+            openPreflightModal(est, { mode: 'upload', content, label, runFullAuto: defaultLaunchFullAuto });
+            return;
+          }
+          launchCustomSequencePayload(content, label, defaultLaunchFullAuto);
+        }
+      } catch (err) {
+        setStreamStatus(`Stream error: ${err && err.message ? err.message : String(err)}`, true);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
 
     let preflightAcknowledgedForCurrentDataset = false;
     let pendingPreflightAction = null;
@@ -6364,7 +7299,8 @@
       if (!stage0Data || !stage0Data.taxa) return;
       let csv = 'index,name,admitted,status,frame,codons,internal_stops,homology_z,reason\n';
       stage0Data.taxa.forEach(t => {
-        csv += `${t.index},"${t.name}",${isTaxonEffectivelyAdmitted(t)},"${t.status}","${t.selected_frame_label}",${t.codon_length},${t.internal_stops_selected},${(t.max_homology_z || 0).toFixed(2)},"${(t.diagnostic_title || '').replace(/"/g, '""')}"\n`;
+        const safeName = String(t.name || '').replace(/"/g, '""');
+        csv += `${t.index},"${safeName}",${isTaxonEffectivelyAdmitted(t)},"${t.status}","${t.selected_frame_label}",${t.codon_length},${t.internal_stops_selected},${(t.max_homology_z || 0).toFixed(2)},"${(t.diagnostic_title || '').replace(/"/g, '""')}"\n`;
       });
       const base = (currentDatasetLabel || 'cohort').replace(/\.[^.]+$/, '');
       downloadBlob(`${base}.stage0_ledger.csv`, csv, 'text/csv');
@@ -6486,12 +7422,13 @@
     }
 
     function escapeHtml(s) {
-      return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     window.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape') {
         closePreflightModal();
+        closeStreamModal();
         closeHelpDrawer();
         closeStage3Drawer();
         closeStage2Drawer();

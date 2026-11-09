@@ -1710,9 +1710,9 @@ public:
                 if (cur - start_ll < 1e-3) break;
             }
             gtr_res.log_likelihood = cur;
-            const Scalar Kg = static_cast<Scalar>(5 + tree.num_nodes() - 1);
-            const Scalar Ng = static_cast<Scalar>(nuc.num_nucleotides);
-            gtr_res.aicc = -2.0 * cur + 2.0 * Kg * Ng / (Ng - Kg - 1.0);
+            const size_t Kg = 5 + tree.num_nodes() - 1;
+            const size_t Ng = nuc.num_nucleotides;
+            gtr_res.aicc = hyphy::core::stats::compute_aicc(cur, Kg, Ng);
         }
 
         result.gtr_log_likelihood = gtr_res.log_likelihood;
@@ -1892,10 +1892,7 @@ public:
 
         size_t B = tree.num_nodes() - 1;
         result.mg94_parameters = 5 + B + (has_unclassified ? 3 : 2) + 6; // GTR rates + branches + partition omegas + CF3x4
-        Scalar n_codons = static_cast<Scalar>(aln.num_codons);
-        Scalar k_mg = static_cast<Scalar>(result.mg94_parameters);
-        result.mg94_aicc = 2.0 * k_mg - 2.0 * result.mg94_log_likelihood +
-            (2.0 * k_mg * (k_mg + 1.0)) / std::max(1.0, n_codons - k_mg - 1.0);
+        result.mg94_aicc = hyphy::core::stats::compute_aicc(result.mg94_log_likelihood, result.mg94_parameters, aln.num_codons);
 
         for (const auto& node : gtr_res.tree.nodes) {
             if (node.id != gtr_res.tree.root_id) {
@@ -2124,9 +2121,7 @@ public:
             fit.log_likelihood = loglik_at(d, J.bl, &fit.site_log_likelihoods,
                                            &J.fit_base, &J.omegas_uncl, &J.weights_uncl);
             fit.parameters = n_params;
-            Scalar kp = static_cast<Scalar>(n_params);
-            fit.aicc = 2.0 * kp - 2.0 * fit.log_likelihood +
-                (2.0 * kp * (kp + 1.0)) / std::max(1.0, n_codons - kp - 1.0);
+            fit.aicc = hyphy::core::stats::compute_aicc(fit.log_likelihood, n_params, aln.num_codons);
         };
 
         // GTR rates + branches + 3 omegas + 2 weights (+ 5 uncl if present) (+ k) + CF3x4

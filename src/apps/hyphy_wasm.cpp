@@ -27,6 +27,36 @@ std::string g_last_stage2_json;
 std::string g_last_stage3_json;
 std::string g_last_error;
 
+inline std::shared_ptr<const hyphy::core::GeneticCode> safe_genetic_code(const std::string& cname) {
+    try {
+        auto gc = hyphy::core::GeneticCode::from_name(cname);
+        if (gc) return gc;
+    } catch (...) {}
+    return hyphy::core::GeneticCode::universal();
+}
+
+inline double safe_json_num(double v) {
+    return std::isfinite(v) ? v : 0.0;
+}
+
+inline std::string escape_nexus_single_quotes(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '\'') out += "''";
+        else out += c;
+    }
+    return out;
+}
+
+struct ScopedTempFile {
+    std::string path;
+    explicit ScopedTempFile(std::string p) : path(std::move(p)) {}
+    ~ScopedTempFile() {
+        if (!path.empty()) std::remove(path.c_str());
+    }
+};
+
 struct RawParsedSeq {
     std::string name;
     std::string raw_with_gaps;
@@ -87,6 +117,7 @@ std::vector<RawParsedSeq> parse_raw_sequences_preserving_gaps(const std::string&
     while (p0 < raw_text.size() && std::isspace(static_cast<unsigned char>(raw_text[p0]))) ++p0;
     if (p0 < raw_text.size() && raw_text[p0] == '#') {
         const std::string vpath = "/tmp/walrus_stage0_input.nex";
+        ScopedTempFile tmp_guard(vpath);
         {
             std::ofstream vf(vpath, std::ios::binary | std::ios::trunc);
             vf << raw_text;
@@ -490,14 +521,18 @@ const char* walrus_stage0_run(
     try {
         auto t_start = std::chrono::steady_clock::now();
         g_last_error.clear();
+        g_last_stage1_json.clear();
+        g_last_stage2_json.clear();
+        g_last_stage3_json.clear();
+        g_last_json_report.clear();
+        g_last_html_report.clear();
         std::string raw_seq = seq_content ? seq_content : "";
         if (raw_seq.empty()) {
             throw std::runtime_error("Empty sequence payload supplied to Stage 0 QA & Admission.");
         }
         std::string lbl = (dataset_label && dataset_label[0] != '\0') ? dataset_label : "DATASET";
         std::string cname = (code_name && code_name[0] != '\0') ? code_name : "Universal";
-        auto gcode = hyphy::core::GeneticCode::from_name(cname);
-        if (!gcode) gcode = hyphy::core::GeneticCode::universal();
+        auto gcode = safe_genetic_code(cname);
 
         bool input_is_prealigned = false;
         auto raw_recs = parse_raw_sequences_preserving_gaps(raw_seq, input_is_prealigned);
@@ -913,8 +948,8 @@ const char* walrus_stage0_run(
                 {"internal_stops_selected", chosen_fa.internal_stops},
                 {"utr_5prime_trimmed", chosen_fa.utr_5prime_trimmed},
                 {"utr_3prime_trimmed", chosen_fa.utr_3prime_trimmed},
-                {"max_homology_z", disp_z},
-                {"max_aa_identity", disp_id},
+                {"max_homology_z", safe_json_num(disp_z)},
+                {"max_aa_identity", safe_json_num(disp_id)},
                 {"clean_cds", (ent.status == "Quarantined") ? all_six_frames[t][best_alt_f].clean_cds : chosen_fa.clean_cds},
                 {"raw_with_gaps", r.raw_with_gaps},
                 {"translated_aa", (ent.status == "Quarantined") ? all_six_frames[t][best_alt_f].aa_seq : chosen_fa.aa_seq},
@@ -941,7 +976,7 @@ const char* walrus_stage0_run(
             {"alignment_mode", (input_is_prealigned && strip_gaps_realign == 0) ? "preserve_alignment" : "de_novo_unaligned"},
             {"thresholds", {
                 {"min_sense_codons", jsettings.min_sense_codons},
-                {"min_homology_z", jsettings.min_homology_z},
+                {"min_homology_z", safe_json_num(jsettings.min_homology_z)},
                 {"median_codons", median_codons},
                 {"min_allowed_codons", min_allowed_codons},
                 {"max_allowed_codons", max_allowed_codons}
@@ -951,9 +986,9 @@ const char* walrus_stage0_run(
                 {"admitted_sequences", count_admitted},
                 {"rescued_frame_or_strand", count_rescued},
                 {"quarantined_sequences", count_quarantined},
-                {"median_pairwise_z", adm_report.median_pairwise_z},
-                {"median_aa_identity", adm_report.median_aa_identity},
-                {"aa_only_letter_fraction", aa_only_fraction},
+                {"median_pairwise_z", safe_json_num(adm_report.median_pairwise_z)},
+                {"median_aa_identity", safe_json_num(adm_report.median_aa_identity)},
+                {"aa_only_letter_fraction", safe_json_num(aa_only_fraction)},
                 {"duplicate_names", duplicate_names},
                 {"gate_abort_warning", gate_abort_warning},
                 {"recommended_code", (best_alt_clean > active_code_clean) ? recommended_code : ""},
@@ -969,6 +1004,9 @@ const char* walrus_stage0_run(
         return g_last_stage0_json.c_str();
     } catch (const std::exception& e) {
         g_last_error = e.what();
+        return "";
+    } catch (...) {
+        g_last_error = "Unhandled internal exception in WASM engine.";
         return "";
     }
 }
@@ -990,8 +1028,7 @@ const char* walrus_stage1_run(
         }
         std::string lbl = (dataset_label && dataset_label[0] != '\0') ? dataset_label : "STAGE1_COHORT";
         std::string cname = (code_name && code_name[0] != '\0') ? code_name : "Universal";
-        auto gcode = hyphy::core::GeneticCode::from_name(cname);
-        if (!gcode) gcode = hyphy::core::GeneticCode::universal();
+        auto gcode = safe_genetic_code(cname);
 
         bool input_is_prealigned = false;
         auto raw_recs = parse_raw_sequences_preserving_gaps(raw_seq, input_is_prealigned);
@@ -1102,6 +1139,7 @@ const char* walrus_stage1_run(
 
         if (!used_de_novo) {
             const std::string vpath = "/tmp/walrus_stage1_in.fa";
+            ScopedTempFile tmp_guard(vpath);
             {
                 std::ofstream vf(vpath, std::ios::binary | std::ios::trunc);
                 for (const auto& r : raw_recs) {
@@ -1495,10 +1533,10 @@ const char* walrus_stage1_run(
                 {"frameshifts_repaired_count", fs_repairs.size()},
                 {"taxa_realigned_in_polish", total_taxa_realigned},
                 {"codons_shifted_in_polish", total_codons_shifted},
-                {"initial_mg94_log_l", initial_mg94_log_l},
-                {"stage1_mg94_log_l", stage1_mg94_log_l},
-                {"delta_mg94_log_l", stage1_mg94_log_l - initial_mg94_log_l},
-                {"global_omega", global_omega},
+                {"initial_mg94_log_l", safe_json_num(initial_mg94_log_l)},
+                {"stage1_mg94_log_l", safe_json_num(stage1_mg94_log_l)},
+                {"delta_mg94_log_l", safe_json_num(stage1_mg94_log_l - initial_mg94_log_l)},
+                {"global_omega", safe_json_num(global_omega)},
                 {"tree_newick", tree.to_newick()}
             }},
             {"consensus", {
@@ -1520,6 +1558,9 @@ const char* walrus_stage1_run(
         return g_last_stage1_json.c_str();
     } catch (const std::exception& e) {
         g_last_error = e.what();
+        return "";
+    } catch (...) {
+        g_last_error = "Unhandled internal exception in WASM engine.";
         return "";
     }
 }
@@ -1543,7 +1584,7 @@ const char* walrus_stage2_run(
         std::string nwk_in = tree_newick_in ? tree_newick_in : "";
         std::string lbl = (dataset_label && dataset_label[0] != '\0') ? dataset_label : "STAGE2_COHORT";
         std::string cname = (code_name && code_name[0] != '\0') ? code_name : "Universal";
-        auto gcode = hyphy::core::GeneticCode::from_name(cname);
+        auto gcode = safe_genetic_code(cname);
 
         // 1. Load codon alignment (or build de novo if unaligned input was passed directly)
         hyphy::core::Alignment map_aln;
@@ -1554,6 +1595,7 @@ const char* walrus_stage2_run(
         while (p0 < raw_seq.size() && std::isspace(static_cast<unsigned char>(raw_seq[p0]))) ++p0;
         const bool is_nexus = (p0 < raw_seq.size() && raw_seq[p0] == '#');
         const std::string vpath = is_nexus ? "/tmp/walrus_stage2_in.nex" : "/tmp/walrus_stage2_in.fa";
+        ScopedTempFile tmp_guard(vpath);
         {
             std::ofstream vf(vpath, std::ios::binary | std::ios::trunc);
             vf << raw_seq;
@@ -2361,7 +2403,7 @@ const char* walrus_stage2_run(
         part_nexus << "#NEXUS\nBEGIN DATA;\n  DIMENSIONS NTAX=" << N << " NCHAR=" << (3 * C) << ";\n"
                    << "  FORMAT DATATYPE=DNA GAP=- MISSING=?;\n  MATRIX\n";
         for (size_t t = 0; t < N; ++t) {
-            part_nexus << "    '" << map_aln.sequences[t].name << "'  " << map_aln.sequences[t].raw_seq << "\n";
+            part_nexus << "    '" << escape_nexus_single_quotes(map_aln.sequences[t].name) << "'  " << map_aln.sequences[t].raw_seq << "\n";
         }
         part_nexus << "  ;\nEND;\n\nBEGIN TREES;\n"
                    << "  TREE backbone_tree = " << work_tree.to_newick() << "\n";
@@ -2386,13 +2428,13 @@ const char* walrus_stage2_run(
                 {"num_taxa", N},
                 {"num_codons", C},
                 {"num_branches", num_branches},
-                {"total_tree_length", total_tree_length},
-                {"max_root_to_tip", max_root_to_tip},
-                {"median_branch_length", median_bl},
-                {"global_omega", global_omega},
-                {"initial_mg94_log_l", initial_mg94_log_l},
-                {"final_mg94_log_l", final_mg94_log_l},
-                {"delta_spr_log_l", final_mg94_log_l - initial_mg94_log_l},
+                {"total_tree_length", safe_json_num(total_tree_length)},
+                {"max_root_to_tip", safe_json_num(max_root_to_tip)},
+                {"median_branch_length", safe_json_num(median_bl)},
+                {"global_omega", safe_json_num(global_omega)},
+                {"initial_mg94_log_l", safe_json_num(initial_mg94_log_l)},
+                {"final_mg94_log_l", safe_json_num(final_mg94_log_l)},
+                {"delta_spr_log_l", safe_json_num(final_mg94_log_l - initial_mg94_log_l)},
                 {"coupled_spr_moves_count", coupled_moves.size()},
                 {"recombination_bridges_count", recomb_bridges.size()},
                 {"routed_recombination_count", routed_recomb_count},
@@ -2401,21 +2443,21 @@ const char* walrus_stage2_run(
                 {"embedded_foreground_tag", embedded_foreground_tag},
                 {"auto_clade_node_id", auto_clade_node_id},
                 {"auto_clade_name", auto_clade_name},
-                {"auto_clade_z", auto_clade_z},
-                {"auto_clade_k_est", auto_clade_k_est}
+                {"auto_clade_z", safe_json_num(auto_clade_z)},
+                {"auto_clade_k_est", safe_json_num(auto_clade_k_est)}
             }},
             {"compositional_audit", {
                 {"is_heterogeneous", comp_test.is_heterogeneous},
                 {"directional_drift_active", directional_drift_active},
-                {"chi2_overall", comp_test.chi2_overall},
-                {"p_value_overall", comp_test.p_value_overall},
-                {"chi2_cp3", comp_test.chi2_cp3},
-                {"p_value_cp3", comp_test.p_value_cp3},
-                {"min_gc3", min_gc3},
-                {"max_gc3", max_gc3},
-                {"mean_gc3", mean_gc3},
+                {"chi2_overall", safe_json_num(comp_test.chi2_overall)},
+                {"p_value_overall", safe_json_num(comp_test.p_value_overall)},
+                {"chi2_cp3", safe_json_num(comp_test.chi2_cp3)},
+                {"p_value_cp3", safe_json_num(comp_test.p_value_cp3)},
+                {"min_gc3", safe_json_num(min_gc3)},
+                {"max_gc3", safe_json_num(max_gc3)},
+                {"mean_gc3", safe_json_num(mean_gc3)},
                 {"chosen_root_branch", chosen_root_branch},
-                {"chosen_root_weight", chosen_root_weight}
+                {"chosen_root_weight", safe_json_num(chosen_root_weight)}
             }},
             {"nodes", nodes_json},
             {"events", events_json},
@@ -2429,6 +2471,9 @@ const char* walrus_stage2_run(
         return g_last_stage2_json.c_str();
     } catch (const std::exception& e) {
         g_last_error = e.what();
+        return "";
+    } catch (...) {
+        g_last_error = "Unhandled internal exception in WASM engine.";
         return "";
     }
 }
@@ -2449,6 +2494,9 @@ const char* walrus_render_html_from_json(const char* raw_json, const char* datas
         return g_last_html_report.c_str();
     } catch (const std::exception& e) {
         g_last_error = e.what();
+        return "";
+    } catch (...) {
+        g_last_error = "Unhandled internal exception in WASM engine.";
         return "";
     }
 }
@@ -2482,13 +2530,13 @@ const char* walrus_stage3_run(
 
         const bool is_nexus = (p0 < raw_seq.size() && raw_seq[p0] == '#');
         const std::string vpath = is_nexus ? "/tmp/walrus_stage3_in.nex" : "/tmp/walrus_stage3_in.fa";
+        ScopedTempFile tmp_guard(vpath);
         {
             std::ofstream vf(vpath, std::ios::binary | std::ios::trunc);
             vf << raw_seq;
         }
 
-        auto gcode = hyphy::core::GeneticCode::from_name(cname);
-        if (!gcode) gcode = hyphy::core::GeneticCode::universal();
+        auto gcode = safe_genetic_code(cname);
 
         hyphy::analyses::CharacterizeSettings settings;
         settings.quiet = true;
@@ -2687,6 +2735,9 @@ const char* walrus_stage3_run(
     } catch (const std::exception& e) {
         g_last_error = e.what();
         return "";
+    } catch (...) {
+        g_last_error = "Unhandled internal exception in WASM engine.";
+        return "";
     }
 }
 
@@ -2713,12 +2764,13 @@ const char* walrus_ping_run(const char* seq_content, const char* dataset_label, 
         // Write input payload to Emscripten MEMFS virtual file
         const bool is_nexus = (p0 < raw_seq.size() && raw_seq[p0] == '#');
         const std::string vpath = is_nexus ? "/tmp/walrus_input.nex" : "/tmp/walrus_input.fa";
+        ScopedTempFile tmp_guard(vpath);
         {
             std::ofstream vf(vpath, std::ios::binary | std::ios::trunc);
             vf << raw_seq;
         }
 
-        auto gcode = hyphy::core::GeneticCode::from_name(cname);
+        auto gcode = safe_genetic_code(cname);
         hyphy::analyses::CharacterizeSettings settings;
         settings.quiet = false;
 
@@ -2745,6 +2797,9 @@ const char* walrus_ping_run(const char* seq_content, const char* dataset_label, 
     } catch (const std::exception& e) {
         g_last_error = e.what();
         std::cerr << "[SONAR FAULT] " << g_last_error << "\n";
+        return "";
+    } catch (...) {
+        g_last_error = "Unhandled internal exception in WASM engine.";
         return "";
     }
 }

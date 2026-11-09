@@ -9,6 +9,7 @@
 #include "hyphy/core/progress_bar.hpp"
 #include "hyphy/core/provenance.hpp"
 #include "hyphy/core/json_output.hpp"
+#include "hyphy/core/stats.hpp"
 #include "hyphy/analyses/site_visualizer.hpp"
 #include "hyphy/core/console.hpp"
 #include "hyphy/opt/optimizer.hpp"
@@ -61,6 +62,40 @@ inline double extended_bin_tail(double ebn, double ebp, double ebx) {
     }
 
     double ebr = std::floor(ebx);
+    if (ebn * std::log(1.0 - ebp) < -500.0) {
+        int r_int = static_cast<int>(ebr);
+        double log_p = std::log(ebp);
+        double log_q = std::log(1.0 - ebp);
+        double lg_n1 = std::lgamma(ebn + 1.0);
+        std::vector<double> log_terms(static_cast<size_t>(r_int + 1));
+        double max_log = -std::numeric_limits<double>::infinity();
+        for (int ebk = 0; ebk <= r_int; ++ebk) {
+            double lt = lg_n1 - std::lgamma(ebk + 1.0) - std::lgamma(ebn - ebk + 1.0)
+                        + ebk * log_p + (ebn - ebk) * log_q;
+            log_terms[static_cast<size_t>(ebk)] = lt;
+            if (lt > max_log) max_log = lt;
+        }
+        double sum_exp = 0.0;
+        if (std::isfinite(max_log)) {
+            for (double lt : log_terms) {
+                sum_exp += std::exp(lt - max_log);
+            }
+        }
+        double bin_head = std::isfinite(max_log) ? (std::exp(max_log) * sum_exp) : 0.0;
+        if (ebx <= std::floor(ebn)) {
+            int k_next = r_int + 1;
+            double lt_next = lg_n1 - std::lgamma(k_next + 1.0) - std::lgamma(ebn - k_next + 1.0)
+                             + k_next * log_p + (ebn - k_next) * log_q;
+            bin_head += std::exp(lt_next) * (ebx - ebr);
+        } else {
+            double denom = ebn - std::floor(ebn);
+            if (denom > 1e-12) {
+                bin_head += (1.0 - bin_head) * (ebx - ebr) / denom;
+            }
+        }
+        return std::clamp(bin_head, 0.0, 1.0);
+    }
+
     double current_bin_coeff = std::pow(1.0 - ebp, ebn);
     double bin_head = 0.0;
 
@@ -78,7 +113,7 @@ inline double extended_bin_tail(double ebn, double ebp, double ebx) {
         }
     }
 
-    return std::min(1.0, std::max(0.0, bin_head));
+    return std::clamp(bin_head, 0.0, 1.0);
 }
 
 /**
@@ -357,18 +392,19 @@ struct SLACSiteResult {
     std::vector<Scalar> quantiles_97_5;
 
     std::vector<nlohmann::json> to_legacy_row() const {
+        auto f = [](Scalar v) -> nlohmann::json { return std::isfinite(v) ? nlohmann::json(v) : nlohmann::json(nullptr); };
         std::vector<nlohmann::json> row(11);
-        row[0] = ES;
-        row[1] = EN;
-        row[2] = S;
-        row[3] = N;
-        row[4] = P_S;
-        row[5] = has_dS ? nlohmann::json(dS) : nullptr;
-        row[6] = has_dN ? nlohmann::json(dN) : nullptr;
-        row[7] = has_dN_minus_dS ? nlohmann::json(dN_minus_dS) : nullptr;
-        row[8] = p_positive;
-        row[9] = p_negative;
-        row[10] = total_branch_length;
+        row[0] = f(ES);
+        row[1] = f(EN);
+        row[2] = f(S);
+        row[3] = f(N);
+        row[4] = f(P_S);
+        row[5] = has_dS ? f(dS) : nullptr;
+        row[6] = has_dN ? f(dN) : nullptr;
+        row[7] = has_dN_minus_dS ? f(dN_minus_dS) : nullptr;
+        row[8] = f(p_positive);
+        row[9] = f(p_negative);
+        row[10] = f(total_branch_length);
         return row;
     }
 };
@@ -395,18 +431,19 @@ struct SLACBranchResult {
     bool has_dN_minus_dS = false;
 
     std::vector<nlohmann::json> to_legacy_row() const {
+        auto f = [](Scalar v) -> nlohmann::json { return std::isfinite(v) ? nlohmann::json(v) : nlohmann::json(nullptr); };
         std::vector<nlohmann::json> row(11);
-        row[0] = ES;
-        row[1] = EN;
-        row[2] = S;
-        row[3] = N;
-        row[4] = P_S;
-        row[5] = has_dS ? nlohmann::json(dS) : nullptr;
-        row[6] = has_dN ? nlohmann::json(dN) : nullptr;
-        row[7] = has_dN_minus_dS ? nlohmann::json(dN_minus_dS) : nullptr;
-        row[8] = p_positive;
-        row[9] = p_negative;
-        row[10] = branch_length;
+        row[0] = f(ES);
+        row[1] = f(EN);
+        row[2] = f(S);
+        row[3] = f(N);
+        row[4] = f(P_S);
+        row[5] = has_dS ? f(dS) : nullptr;
+        row[6] = has_dN ? f(dN) : nullptr;
+        row[7] = has_dN_minus_dS ? f(dN_minus_dS) : nullptr;
+        row[8] = f(p_positive);
+        row[9] = f(p_negative);
+        row[10] = f(branch_length);
         return row;
     }
 };
@@ -560,7 +597,7 @@ public:
         analyzer.global_log_l = mg_res.log_likelihood;
         size_t K_mg = 5 + 1 + (mg_res.tree.num_nodes() - 1);
         size_t N_codons = analyzer.aln.num_codons;
-        analyzer.global_aicc = -2.0 * mg_res.log_likelihood + 2.0 * K_mg * N_codons / (N_codons - K_mg - 1.0);
+        analyzer.global_aicc = hyphy::core::stats::compute_aicc(mg_res.log_likelihood, K_mg, N_codons);
 
         analyzer.has_gtr_fit = true;
         analyzer.gtr_log_l = gtr_res.log_likelihood;
@@ -1114,8 +1151,8 @@ public:
             res.resolved_sites[s] = finalize_site_stats(site_acc_res[s], s);
             res.averaged_sites[s] = finalize_site_stats(site_acc_avg[s], s);
 
-            Scalar p_pos = std::min(res.resolved_sites[s].p_positive, res.averaged_sites[s].p_positive);
-            Scalar p_neg = std::min(res.resolved_sites[s].p_negative, res.averaged_sites[s].p_negative);
+            Scalar p_pos = res.resolved_sites[s].p_positive;
+            Scalar p_neg = res.resolved_sites[s].p_negative;
             Scalar p_min = std::min(p_pos, p_neg);
 
             SiteSelectionType type = SiteSelectionType::Neutral;
@@ -1261,14 +1298,9 @@ public:
 
             #pragma omp parallel
             {
-#ifdef _OPENMP
-                std::mt19937_64 rng(settings.random_seed + omp_get_thread_num());
-#else
-                std::mt19937_64 rng(settings.random_seed);
-#endif
-
                 #pragma omp for schedule(dynamic)
                 for (size_t rep = 0; rep < settings.samples; ++rep) {
+                    std::mt19937_64 rng(settings.random_seed + static_cast<uint64_t>(rep) * 1000003ULL + 1ULL);
                     // Sample states for all patterns
                     std::vector<std::vector<int8_t>> sampled_states_pattern(num_patterns, std::vector<int8_t>(num_nodes, -1));
 
@@ -1361,11 +1393,15 @@ public:
                                 } else {
                                     // Ambiguous tip in sample
                                     Scalar eps_avg = 0.0, epn_avg = 0.0, ops_avg = 0.0, opn_avg = 0.0;
+                                    int max_cnt = 0;
                                     for (int8_t c : cand) {
                                         eps_avg += metric.EPS(parent_st, c);
                                         epn_avg += metric.EPN(parent_st, c);
                                         ops_avg += metric.OPS(parent_st, c);
                                         opn_avg += metric.OPN(parent_st, c);
+                                        if (site_codon_counts[s][c] > max_cnt) {
+                                            max_cnt = site_codon_counts[s][c];
+                                        }
                                     }
                                     eps_avg /= cand.size();
                                     epn_avg /= cand.size();
@@ -1377,10 +1413,34 @@ public:
                                     s_acc_avg[s][2] += ops_avg;
                                     s_acc_avg[s][3] += opn_avg;
 
-                                    s_acc_res[s][0] += eps_avg * rel_bl;
-                                    s_acc_res[s][1] += epn_avg * rel_bl;
-                                    s_acc_res[s][2] += ops_avg;
-                                    s_acc_res[s][3] += opn_avg;
+                                    std::vector<int8_t> resolved_cand;
+                                    if (max_cnt > 0) {
+                                        for (int8_t c : cand) {
+                                            if (site_codon_counts[s][c] == max_cnt) {
+                                                resolved_cand.push_back(c);
+                                            }
+                                        }
+                                    } else {
+                                        resolved_cand = cand;
+                                    }
+
+                                    Scalar eps_res = 0.0, epn_res = 0.0, ops_res = 0.0, opn_res = 0.0;
+                                    for (int8_t c : resolved_cand) {
+                                        eps_res += metric.EPS(parent_st, c);
+                                        epn_res += metric.EPN(parent_st, c);
+                                        ops_res += metric.OPS(parent_st, c);
+                                        opn_res += metric.OPN(parent_st, c);
+                                    }
+                                    Scalar k_res = static_cast<Scalar>(resolved_cand.size());
+                                    eps_res /= k_res;
+                                    epn_res /= k_res;
+                                    ops_res /= k_res;
+                                    opn_res /= k_res;
+
+                                    s_acc_res[s][0] += eps_res * rel_bl;
+                                    s_acc_res[s][1] += epn_res * rel_bl;
+                                    s_acc_res[s][2] += ops_res;
+                                    s_acc_res[s][3] += opn_res;
                                 }
                             } else {
                                 if (child_st >= 0 && child_st < S) {

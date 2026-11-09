@@ -82,7 +82,12 @@ int run_busted(int argc, char* argv[]) {
     BUSTEDSettings settings;
 
     std::string prog_str = (argc > 0 && argv[0]) ? argv[0] : "hyphy3 busted";
-    if (prog_str.find("busted-ph") != std::string::npos || prog_str.find("busted_ph") != std::string::npos) {
+    std::string prog_lower = prog_str;
+    std::transform(prog_lower.begin(), prog_lower.end(), prog_lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (prog_lower.find("busted-ph") != std::string::npos ||
+        prog_lower.find("busted_ph") != std::string::npos ||
+        prog_lower.find("--phenotype") != std::string::npos) {
         settings.phenotype_mode = true;
     }
 
@@ -529,10 +534,15 @@ int run_busted(int argc, char* argv[]) {
 int run_busted_ph(int argc, char* argv[]) {
     std::vector<char*> args;
     std::string prog = (argc > 0 && argv[0]) ? std::string(argv[0]) : "hyphy3 busted-ph";
-    if (prog.find("busted-ph") == std::string::npos && prog.find("busted_ph") == std::string::npos) {
-        prog += " --phenotype";
+    std::string prog_lower = prog;
+    std::transform(prog_lower.begin(), prog_lower.end(), prog_lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (prog_lower.find("busted-ph") == std::string::npos && prog_lower.find("busted_ph") == std::string::npos) {
+        prog += " busted-ph";
     }
     args.push_back(const_cast<char*>(prog.c_str()));
+    static char pheno_flag[] = "--phenotype";
+    args.push_back(pheno_flag);
     for (int i = 1; i < argc; ++i) {
         args.push_back(argv[i]);
     }

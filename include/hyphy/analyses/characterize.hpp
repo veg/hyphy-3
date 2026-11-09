@@ -364,6 +364,7 @@ public:
         res.input_mode = "unaligned";
         res.tree_source = input_tree.has_value() ? "user_supplied" : "de_novo_inferred";
         res.genetic_code_name = gcode->name.empty() ? settings.genetic_code_name : gcode->name;
+        settings.genetic_code_name = res.genetic_code_name;
         res.p_value_threshold = settings.p_value_threshold;
         res.fdr_threshold = settings.fdr_threshold;
         auto t1 = std::chrono::steady_clock::now();
@@ -400,6 +401,7 @@ public:
         }
         res.genetic_code_name = (input_aln.code && !input_aln.code->name.empty())
                               ? input_aln.code->name : settings.genetic_code_name;
+        settings.genetic_code_name = res.genetic_code_name;
         res.p_value_threshold = settings.p_value_threshold;
         res.fdr_threshold = settings.fdr_threshold;
         auto t1 = std::chrono::steady_clock::now();
@@ -409,8 +411,18 @@ public:
 
     static std::string to_json(const CharacterizeResult& res) {
         using json = nlohmann::json;
+        auto finite_vec = [](const auto& vec) {
+            json arr = json::array();
+            for (const auto& v : vec) {
+                arr.push_back(finite_or_null(static_cast<double>(v)));
+            }
+            return arr;
+        };
+
         json j;
         j["$schema"] = "https://hyphy.org/schemas/v3/characterize.v3.schema.json";
+        j["schema_version"] = "3.0.0";
+        j["software"] = software_block();
         j["analysis"] = {
             {"id", "characterize"},
             {"name", "HyPhy 3 One-Button Evolutionary Characterization"},
@@ -419,9 +431,9 @@ public:
             {"genetic_code", res.genetic_code_name},
             {"input_mode", res.input_mode},
             {"tree_source", res.tree_source},
-            {"p_value_threshold", res.p_value_threshold},
-            {"fdr_threshold", res.fdr_threshold},
-            {"runtime_seconds", res.runtime_seconds}
+            {"p_value_threshold", finite_or_null(res.p_value_threshold)},
+            {"fdr_threshold", finite_or_null(res.fdr_threshold)},
+            {"runtime_seconds", finite_or_null(res.runtime_seconds)}
         };
 
         const auto& adm = res.joint_align.admission_report;
@@ -436,8 +448,8 @@ public:
                 {"raw_nt_length", e.raw_nt_length},
                 {"codon_length", e.codon_length},
                 {"internal_stops_frame0", e.internal_stops_frame0},
-                {"max_homology_z", e.max_homology_z},
-                {"max_aa_identity", e.max_aa_identity}
+                {"max_homology_z", finite_or_null(e.max_homology_z)},
+                {"max_aa_identity", finite_or_null(e.max_aa_identity)}
             });
         }
         j["input_admission_audit"] = {
@@ -445,8 +457,8 @@ public:
             {"admitted_sequences", adm.admitted_sequences},
             {"rescued_frame_or_strand", adm.rescued_frame_or_strand},
             {"quarantined_sequences", adm.quarantined_sequences},
-            {"median_pairwise_z", adm.median_pairwise_z},
-            {"median_aa_identity", adm.median_aa_identity},
+            {"median_pairwise_z", finite_or_null(adm.median_pairwise_z)},
+            {"median_aa_identity", finite_or_null(adm.median_aa_identity)},
             {"taxa", adm_entries}
         };
 
@@ -454,14 +466,14 @@ public:
             {"num_taxa", res.joint_align.map_alignment.num_taxa},
             {"num_codons", res.joint_align.map_alignment.num_codons},
             {"total_gap_codons", res.alignment_objective.total_gap_codons},
-            {"mg94_sub_log_l", res.alignment_objective.mg94_sub_log_l},
+            {"mg94_sub_log_l", finite_or_null(res.alignment_objective.mg94_sub_log_l)},
             {"branch_indel_events", res.alignment_objective.branch_indel_events},
             {"branch_indel_codons", res.alignment_objective.branch_indel_codons},
-            {"branch_indel_log_l", res.alignment_objective.branch_indel_log_l},
-            {"option1_joint_log_l", res.alignment_objective.joint_log_l},
-            {"option3_loto_cv_log_l", res.alignment_objective.loto_cv_log_l},
-            {"option5_mean_column_posterior", res.alignment_objective.mean_column_posterior},
-            {"option5_min_column_posterior", res.alignment_objective.min_column_posterior},
+            {"branch_indel_log_l", finite_or_null(res.alignment_objective.branch_indel_log_l)},
+            {"option1_joint_log_l", finite_or_null(res.alignment_objective.joint_log_l)},
+            {"option3_loto_cv_log_l", finite_or_null(res.alignment_objective.loto_cv_log_l)},
+            {"option5_mean_column_posterior", finite_or_null(res.alignment_objective.mean_column_posterior)},
+            {"option5_min_column_posterior", finite_or_null(res.alignment_objective.min_column_posterior)},
             {"coupled_spr_moves_accepted", res.joint_align.total_coupled_moves_accepted},
             {"wheatstone_bridges", res.joint_align.ohmic_network.bridges.size()},
             {"polytomy_busbars", res.joint_align.ohmic_network.num_collapsed_polytomies},
@@ -474,11 +486,11 @@ public:
             bridges_arr.push_back({
                 {"clade_u", br.clade_u_name},
                 {"target_v", br.target_v_name},
-                {"conductance", br.bridge_conductance},
+                {"conductance", finite_or_null(br.bridge_conductance)},
                 {"peak_start_codon", br.peak_start_codon + 1},
                 {"peak_end_codon", br.peak_end_codon + 1},
-                {"segment_delta_log_l", br.segment_delta_log_l},
-                {"p_value", br.p_value},
+                {"segment_delta_log_l", finite_or_null(br.segment_delta_log_l)},
+                {"p_value", finite_or_null(br.p_value)},
                 {"routed_to_spr_tree", br.routed_to_spr_tree}
             });
         }
@@ -486,24 +498,24 @@ public:
 
         j["compositional_audit"] = {
             {"is_heterogeneous", res.composition_test.is_heterogeneous},
-            {"chi2_overall", res.composition_test.chi2_overall},
-            {"p_value_overall", res.composition_test.p_value_overall},
-            {"chi2_cp3", res.composition_test.chi2_cp3},
-            {"p_value_cp3", res.composition_test.p_value_cp3},
+            {"chi2_overall", finite_or_null(res.composition_test.chi2_overall)},
+            {"p_value_overall", finite_or_null(res.composition_test.p_value_overall)},
+            {"chi2_cp3", finite_or_null(res.composition_test.chi2_cp3)},
+            {"p_value_cp3", finite_or_null(res.composition_test.p_value_cp3)},
             {"directional_drift_active", res.directional_drift_active},
             {"chosen_root_branch", res.chosen_root_branch},
-            {"chosen_root_weight", res.chosen_root_weight}
+            {"chosen_root_weight", finite_or_null(res.chosen_root_weight)}
         };
 
         j["gene_wide_selection"] = {
-            {"omega_classes", res.gene_wide.omega_classes},
-            {"omega_weights", res.gene_wide.omega_weights},
-            {"error_sink_omega", res.gene_wide.error_sink_omega},
-            {"error_sink_weight", res.gene_wide.error_sink_weight},
-            {"unconstrained_log_l", res.gene_wide.unconstrained_log_l},
-            {"null_log_l", res.gene_wide.null_log_l},
-            {"lrt", res.gene_wide.busted_lrt},
-            {"p_value", res.gene_wide.busted_p_value},
+            {"omega_classes", finite_vec(res.gene_wide.omega_classes)},
+            {"omega_weights", finite_vec(res.gene_wide.omega_weights)},
+            {"error_sink_omega", finite_or_null(res.gene_wide.error_sink_omega)},
+            {"error_sink_weight", finite_or_null(res.gene_wide.error_sink_weight)},
+            {"unconstrained_log_l", finite_or_null(res.gene_wide.unconstrained_log_l)},
+            {"null_log_l", finite_or_null(res.gene_wide.null_log_l)},
+            {"lrt", finite_or_null(res.gene_wide.busted_lrt)},
+            {"p_value", finite_or_null(res.gene_wide.busted_p_value)},
             {"has_positive_selection", res.gene_wide.has_gene_wide_positive_selection}
         };
 
@@ -514,10 +526,10 @@ public:
             {"reference_regime_label", res.clade_macro_regime.reference_regime_label},
             {"num_test_branches", res.clade_macro_regime.num_test_branches},
             {"num_reference_branches", res.clade_macro_regime.num_reference_branches},
-            {"clade_relax_k", res.clade_macro_regime.clade_relax_k},
-            {"clade_relax_lrt", res.clade_macro_regime.clade_relax_lrt},
-            {"clade_relax_delta_bic", res.clade_macro_regime.clade_relax_delta_bic},
-            {"clade_relax_p_value", res.clade_macro_regime.clade_relax_p_value},
+            {"clade_relax_k", finite_or_null(res.clade_macro_regime.clade_relax_k)},
+            {"clade_relax_lrt", finite_or_null(res.clade_macro_regime.clade_relax_lrt)},
+            {"clade_relax_delta_bic", finite_or_null(res.clade_macro_regime.clade_relax_delta_bic)},
+            {"clade_relax_p_value", finite_or_null(res.clade_macro_regime.clade_relax_p_value)},
             {"clade_relax_call", res.clade_macro_regime.clade_relax_call},
             {"contrast_fel_differing_sites", res.clade_macro_regime.contrast_fel_differing_sites}
         };
@@ -528,11 +540,11 @@ public:
                 {"start_codon", d.start_codon + 1},
                 {"end_codon", d.end_codon + 1},
                 {"domain_type", d.domain_type},
-                {"mean_alpha", d.mean_alpha},
-                {"mean_beta", d.mean_beta},
-                {"mean_omega", d.mean_omega},
-                {"mean_gap_fraction", d.mean_gap_fraction},
-                {"mean_n_eff", d.mean_n_eff}
+                {"mean_alpha", finite_or_null(d.mean_alpha)},
+                {"mean_beta", finite_or_null(d.mean_beta)},
+                {"mean_omega", finite_or_null(d.mean_omega)},
+                {"mean_gap_fraction", finite_or_null(d.mean_gap_fraction)},
+                {"mean_n_eff", finite_or_null(d.mean_n_eff)}
             });
         }
         j["spatial_domains"] = dom_arr;
@@ -542,11 +554,11 @@ public:
             isl_arr.push_back({
                 {"start_codon", isl.start_codon + 1},
                 {"end_codon", isl.end_codon + 1},
-                {"mean_alpha", isl.mean_alpha},
-                {"gene_mean_alpha", isl.gene_mean_alpha},
-                {"suppression_ratio", isl.suppression_ratio},
-                {"z_score", isl.z_score},
-                {"p_value", isl.p_value}
+                {"mean_alpha", finite_or_null(isl.mean_alpha)},
+                {"gene_mean_alpha", finite_or_null(isl.gene_mean_alpha)},
+                {"suppression_ratio", finite_or_null(isl.suppression_ratio)},
+                {"z_score", finite_or_null(isl.z_score)},
+                {"p_value", finite_or_null(isl.p_value)}
             });
         }
         j["synonymous_constraint_islands"] = isl_arr;
@@ -556,8 +568,8 @@ public:
             {"num_selected_sites_evaluated", res.mutational_context_alert.num_selected_sites_evaluated},
             {"cpg_driven_selected_sites", res.mutational_context_alert.cpg_driven_selected_sites},
             {"apobec_driven_selected_sites", res.mutational_context_alert.apobec_driven_selected_sites},
-            {"cpg_enrichment_fold", res.mutational_context_alert.cpg_enrichment_fold},
-            {"cpg_fisher_p", res.mutational_context_alert.cpg_fisher_p},
+            {"cpg_enrichment_fold", finite_or_null(res.mutational_context_alert.cpg_enrichment_fold)},
+            {"cpg_fisher_p", finite_or_null(res.mutational_context_alert.cpg_fisher_p)},
             {"flagged_cpg_sites", res.mutational_context_alert.flagged_cpg_sites},
             {"flagged_apobec_sites", res.mutational_context_alert.flagged_apobec_sites},
             {"alert_summary", res.mutational_context_alert.alert_summary}
@@ -568,11 +580,11 @@ public:
             coev_arr.push_back({
                 {"site_i", cp.site_i + 1},
                 {"site_j", cp.site_j + 1},
-                {"shared_branches", cp.shared_branches},
-                {"expected_shared", cp.expected_shared},
-                {"cosine_similarity", cp.cosine_similarity},
-                {"p_value", cp.p_value},
-                {"bh_q_value", cp.bh_q_value},
+                {"shared_branches", finite_or_null(cp.shared_branches)},
+                {"expected_shared", finite_or_null(cp.expected_shared)},
+                {"cosine_similarity", finite_or_null(cp.cosine_similarity)},
+                {"p_value", finite_or_null(cp.p_value)},
+                {"bh_q_value", finite_or_null(cp.bh_q_value)},
                 {"top_co_mutating_branches", cp.top_co_mutating_branches}
             });
         }
@@ -584,27 +596,27 @@ public:
                 {"branch_name", bp.branch_name},
                 {"model_tag", bp.model_tag},
                 {"is_leaf", bp.is_leaf},
-                {"branch_length_subs", bp.branch_length_subs},
+                {"branch_length_subs", finite_or_null(bp.branch_length_subs)},
                 {"compositional_regime", bp.compositional_regime},
-                {"directional_weights", bp.directional_weights},
-                {"gc_cp3", bp.gc_cp3},
+                {"directional_weights", finite_vec(bp.directional_weights)},
+                {"gc_cp3", finite_or_null(bp.gc_cp3)},
                 {"macro_regime", bp.macro_regime},
-                {"omega_bg", bp.omega_bg},
-                {"omega_plus", bp.omega_plus},
-                {"weight_plus", bp.weight_plus},
-                {"absrel_lrt", bp.absrel_lrt},
-                {"absrel_p_value", bp.absrel_p_value},
-                {"absrel_holm_p", bp.absrel_holm_p},
-                {"absrel_bh_q", bp.absrel_bh_q},
-                {"relax_k", bp.relax_k},
-                {"relax_lrt", bp.relax_lrt},
-                {"relax_p_value", bp.relax_p_value},
-                {"relax_bh_q", bp.relax_bh_q},
+                {"omega_bg", finite_or_null(bp.omega_bg)},
+                {"omega_plus", finite_or_null(bp.omega_plus)},
+                {"weight_plus", finite_or_null(bp.weight_plus)},
+                {"absrel_lrt", finite_or_null(bp.absrel_lrt)},
+                {"absrel_p_value", finite_or_null(bp.absrel_p_value)},
+                {"absrel_holm_p", finite_or_null(bp.absrel_holm_p)},
+                {"absrel_bh_q", finite_or_null(bp.absrel_bh_q)},
+                {"relax_k", finite_or_null(bp.relax_k)},
+                {"relax_lrt", finite_or_null(bp.relax_lrt)},
+                {"relax_p_value", finite_or_null(bp.relax_p_value)},
+                {"relax_bh_q", finite_or_null(bp.relax_bh_q)},
                 {"relax_call", bp.relax_call},
-                {"core_nonsyn_expected", bp.core_nonsyn_Expected},
-                {"core_nonsyn_observed", bp.core_nonsyn_Observed},
-                {"lof_bayes_factor", bp.lof_bayes_factor},
-                {"lof_p_value", bp.lof_p_value},
+                {"core_nonsyn_expected", finite_or_null(bp.core_nonsyn_Expected)},
+                {"core_nonsyn_observed", finite_or_null(bp.core_nonsyn_Observed)},
+                {"lof_bayes_factor", finite_or_null(bp.lof_bayes_factor)},
+                {"lof_p_value", finite_or_null(bp.lof_p_value)},
                 {"lof_flagged", bp.lof_flagged},
                 {"core_invaded_sites", bp.core_invaded_sites},
                 {"episodic_site_count", bp.episodic_site_count}
@@ -616,51 +628,51 @@ public:
         for (const auto& s : res.site_atlas) {
             site_arr.push_back({
                 {"site", s.site_index + 1},
-                {"column_homology_posterior", s.column_homology_posterior},
-                {"gap_fraction", s.gap_fraction},
+                {"column_homology_posterior", finite_or_null(s.column_homology_posterior)},
+                {"gap_fraction", finite_or_null(s.gap_fraction)},
                 {"in_indel_window", s.in_indel_window},
                 {"ensemble_paths_evaluated", s.ensemble_paths_evaluated},
                 {"active_topology_label", s.active_topology_label},
                 {"spatial_domain", s.spatial_domain},
                 {"in_synonymous_island", s.in_synonymous_island},
-                {"alpha", s.alpha},
-                {"beta_pervasive", s.beta_pervasive},
-                {"fel_lrt", s.fel_lrt},
-                {"fel_p_value", s.fel_p_value},
-                {"fel_bh_q", s.fel_bh_q},
-                {"dfel_lrt", s.dfel_lrt},
-                {"dfel_p_value", s.dfel_p_value},
-                {"dfel_bh_q", s.dfel_bh_q},
-                {"beta_minus", s.beta_minus},
-                {"beta_plus", s.beta_plus},
-                {"weight_plus", s.weight_plus},
-                {"meme_lrt", s.meme_lrt},
-                {"meme_p_value", s.meme_p_value},
-                {"meme_bh_q", s.meme_bh_q},
+                {"alpha", finite_or_null(s.alpha)},
+                {"beta_pervasive", finite_or_null(s.beta_pervasive)},
+                {"fel_lrt", finite_or_null(s.fel_lrt)},
+                {"fel_p_value", finite_or_null(s.fel_p_value)},
+                {"fel_bh_q", finite_or_null(s.fel_bh_q)},
+                {"dfel_lrt", finite_or_null(s.dfel_lrt)},
+                {"dfel_p_value", finite_or_null(s.dfel_p_value)},
+                {"dfel_bh_q", finite_or_null(s.dfel_bh_q)},
+                {"beta_minus", finite_or_null(s.beta_minus)},
+                {"beta_plus", finite_or_null(s.beta_plus)},
+                {"weight_plus", finite_or_null(s.weight_plus)},
+                {"meme_lrt", finite_or_null(s.meme_lrt)},
+                {"meme_p_value", finite_or_null(s.meme_p_value)},
+                {"meme_bh_q", finite_or_null(s.meme_bh_q)},
                 {"meme_polished", s.meme_polished},
                 {"num_episodic_branches", s.num_episodic_branches},
                 {"top_episodic_branches", s.top_episodic_branches},
-                {"max_branch_ebf", s.max_branch_ebf},
-                {"beta_reference", s.beta_reference},
-                {"beta_test", s.beta_test},
-                {"contrast_fel_lrt", s.contrast_fel_lrt},
-                {"contrast_fel_p_value", s.contrast_fel_p_value},
-                {"contrast_fel_bh_q", s.contrast_fel_bh_q},
-                {"expected_nonsyn_subs", s.expected_nonsyn_subs},
-                {"effective_aa_alphabet", s.effective_aa_alphabet},
-                {"expected_neutral_n_eff", s.expected_neutral_n_eff},
-                {"pair_concentration", s.pair_concentration},
-                {"max_convergent_transitions", s.max_convergent_transitions},
+                {"max_branch_ebf", finite_or_null(s.max_branch_ebf)},
+                {"beta_reference", finite_or_null(s.beta_reference)},
+                {"beta_test", finite_or_null(s.beta_test)},
+                {"contrast_fel_lrt", finite_or_null(s.contrast_fel_lrt)},
+                {"contrast_fel_p_value", finite_or_null(s.contrast_fel_p_value)},
+                {"contrast_fel_bh_q", finite_or_null(s.contrast_fel_bh_q)},
+                {"expected_nonsyn_subs", finite_or_null(s.expected_nonsyn_subs)},
+                {"effective_aa_alphabet", finite_or_null(s.effective_aa_alphabet)},
+                {"expected_neutral_n_eff", finite_or_null(s.expected_neutral_n_eff)},
+                {"pair_concentration", finite_or_null(s.pair_concentration)},
+                {"max_convergent_transitions", finite_or_null(s.max_convergent_transitions)},
                 {"dominant_target_aa", std::string(1, s.dominant_target_aa)},
-                {"exchangeability_stat", s.exchangeability_stat},
-                {"exchangeability_p_value", s.exchangeability_p_value},
-                {"exchangeability_bh_q", s.exchangeability_bh_q},
+                {"exchangeability_stat", finite_or_null(s.exchangeability_stat)},
+                {"exchangeability_p_value", finite_or_null(s.exchangeability_p_value)},
+                {"exchangeability_bh_q", finite_or_null(s.exchangeability_bh_q)},
                 {"exchangeability_mode", s.exchangeability_mode},
                 {"key_property_driver", s.key_property_driver},
                 {"cpg_hypermutable_context", s.cpg_hypermutable_context},
                 {"apobec_motif_context", s.apobec_motif_context},
-                {"simes_omnibus_p", s.simes_omnibus_p},
-                {"simes_omnibus_q", s.simes_omnibus_q},
+                {"simes_omnibus_p", finite_or_null(s.simes_omnibus_p)},
+                {"simes_omnibus_q", finite_or_null(s.simes_omnibus_q)},
                 {"classification", s.classification},
                 {"artifact_eliminated", s.rigid_alignment_artifact_eliminated}
             });
@@ -708,18 +720,18 @@ public:
         for (const auto& bp : res.branch_profiles) {
             tested_map[bp.branch_name] = "test";
             branch_attrs[bp.branch_name] = {
-                {"Global MG94xREV", bp.branch_length_subs},
-                {"Nucleotide GTR", bp.branch_length_subs}
+                {"Global MG94xREV", finite_or_null(bp.branch_length_subs)},
+                {"Nucleotide GTR", finite_or_null(bp.branch_length_subs)}
             };
         }
 
         json common_fits = {
             {"Global MG94xREV", {
-                {"Log Likelihood", res.gene_wide.null_log_l},
+                {"Log Likelihood", finite_or_null(res.gene_wide.null_log_l)},
                 {"estimated parameters", res.branch_profiles.size() + 8}
             }},
             {"Nucleotide GTR", {
-                {"Log Likelihood", res.gene_wide.null_log_l},
+                {"Log Likelihood", finite_or_null(res.gene_wide.null_log_l)},
                 {"estimated parameters", res.branch_profiles.size() + 5}
             }}
         };
@@ -747,7 +759,14 @@ public:
             for (const auto& s : res.site_atlas) {
                 Scalar p = res.directional_drift_active ? s.dfel_p_value : s.fel_p_value;
                 Scalar lrt = res.directional_drift_active ? s.dfel_lrt : s.fel_lrt;
-                content.push_back({s.alpha, s.beta_pervasive, s.alpha, lrt, p, s.column_homology_posterior});
+                content.push_back({
+                    finite_or_null(s.alpha),
+                    finite_or_null(s.beta_pervasive),
+                    finite_or_null(s.alpha),
+                    finite_or_null(lrt),
+                    finite_or_null(p),
+                    finite_or_null(s.column_homology_posterior)
+                });
             }
             jf["MLE"]["content"]["0"] = content;
             std::ofstream out(base_prefix + ".FEL.json");
@@ -781,8 +800,13 @@ public:
             json content = json::array();
             for (const auto& s : res.site_atlas) {
                 content.push_back({
-                    s.alpha, s.beta_minus, 1.0 - s.weight_plus,
-                    s.beta_plus, s.weight_plus, s.meme_lrt, s.meme_p_value,
+                    finite_or_null(s.alpha),
+                    finite_or_null(s.beta_minus),
+                    finite_or_null(1.0 - s.weight_plus),
+                    finite_or_null(s.beta_plus),
+                    finite_or_null(s.weight_plus),
+                    finite_or_null(s.meme_lrt),
+                    finite_or_null(s.meme_p_value),
                     s.num_episodic_branches
                 });
             }
@@ -805,21 +829,21 @@ public:
             jb["tested"] = {{"0", tested_map}};
             jb["branch attributes"] = {{"0", branch_attrs}};
             jb["test results"] = {
-                {"LRT", res.gene_wide.busted_lrt},
-                {"p-value", res.gene_wide.busted_p_value}
+                {"LRT", finite_or_null(res.gene_wide.busted_lrt)},
+                {"p-value", finite_or_null(res.gene_wide.busted_p_value)}
             };
             jb["fits"]["Unconstrained model"] = {
-                {"Log Likelihood", res.gene_wide.unconstrained_log_l},
+                {"Log Likelihood", finite_or_null(res.gene_wide.unconstrained_log_l)},
                 {"Rate Distributions", {
                     {"Test", {
-                        {"0", {{"omega", res.gene_wide.omega_classes[0]}, {"proportion", res.gene_wide.omega_weights[0]}}},
-                        {"1", {{"omega", res.gene_wide.omega_classes[1]}, {"proportion", res.gene_wide.omega_weights[1]}}},
-                        {"2", {{"omega", res.gene_wide.omega_classes[2]}, {"proportion", res.gene_wide.omega_weights[2]}}}
+                        {"0", {{"omega", finite_or_null(res.gene_wide.omega_classes[0])}, {"proportion", finite_or_null(res.gene_wide.omega_weights[0])}}},
+                        {"1", {{"omega", finite_or_null(res.gene_wide.omega_classes[1])}, {"proportion", finite_or_null(res.gene_wide.omega_weights[1])}}},
+                        {"2", {{"omega", finite_or_null(res.gene_wide.omega_classes[2])}, {"proportion", finite_or_null(res.gene_wide.omega_weights[2])}}}
                     }}
                 }}
             };
             jb["fits"]["Constrained model"] = {
-                {"Log Likelihood", res.gene_wide.null_log_l}
+                {"Log Likelihood", finite_or_null(res.gene_wide.null_log_l)}
             };
             std::ofstream out(base_prefix + ".BUSTED.json");
             if (!out.is_open()) {
@@ -2942,10 +2966,70 @@ private:
 
             const Scalar bonf_factor = static_cast<Scalar>(std::max<size_t>(1, proposals.size()));
 
+            auto apply_bijective_spr_move = [](const Tree& src_tree, int32_t u, int32_t v) -> std::optional<TreeEngine::SPRMoveResult> {
+                if (u < 0 || v < 0 || u == v || u == src_tree.root_id || v == src_tree.root_id) {
+                    return std::nullopt;
+                }
+                int32_t p = src_tree.nodes[u].parent_id;
+                if (p == INVALID_INDEX || v == p) return std::nullopt;
+                // If p is not root, or p has >2 children, reuse_collapsed_parent=true preserves active branch IDs
+                if (p != src_tree.root_id || src_tree.nodes[p].children.size() != 2) {
+                    return TreeEngine::apply_spr_move(src_tree, u, v, /*reuse_collapsed_parent=*/true);
+                }
+                // Check if v is in u's subtree
+                std::vector<int32_t> stk = {u};
+                while (!stk.empty()) {
+                    int32_t curr = stk.back();
+                    stk.pop_back();
+                    if (curr == v) return std::nullopt;
+                    for (int32_t ch : src_tree.nodes[curr].children) stk.push_back(ch);
+                }
+                int32_t s = (src_tree.nodes[p].children[0] == u)
+                          ? src_tree.nodes[p].children[1]
+                          : src_tree.nodes[p].children[0];
+                if (s == v || src_tree.nodes[s].children.empty()) {
+                    return std::nullopt;
+                }
+                Tree tree = src_tree;
+                // Unpack internal child s into root p so root_id remains p and s is freed to become regraft split node w
+                Scalar s_bl = tree.nodes[s].branch_length;
+                auto s_children = tree.nodes[s].children;
+                Scalar share = s_bl / static_cast<Scalar>(s_children.size());
+                for (int32_t ch : s_children) {
+                    tree.nodes[ch].parent_id = p;
+                    tree.nodes[ch].branch_length += share;
+                }
+                tree.nodes[p].children = s_children;
+                tree.nodes[s].children.clear();
+                tree.nodes[s].parent_id = INVALID_INDEX;
+                tree.nodes[s].branch_length = 0.0;
+
+                // Now split target branch v using freed node w = s
+                int32_t w = s;
+                int32_t pv = tree.nodes[v].parent_id;
+                if (pv == INVALID_INDEX) return std::nullopt;
+                Scalar old_v_len = std::max<Scalar>(1e-4, tree.nodes[v].branch_length);
+                tree.nodes[w].parent_id = pv;
+                tree.nodes[w].branch_length = 0.5 * old_v_len;
+                tree.nodes[v].parent_id = w;
+                tree.nodes[v].branch_length = 0.5 * old_v_len;
+                tree.nodes[u].parent_id = w;
+                tree.nodes[u].branch_length = std::max<Scalar>(1e-4, tree.nodes[u].branch_length);
+                tree.nodes[w].children = {v, u};
+                for (auto& ch : tree.nodes[pv].children) {
+                    if (ch == v) {
+                        ch = w;
+                        break;
+                    }
+                }
+                tree.compute_post_order();
+                return TreeEngine::SPRMoveResult{std::move(tree), u, v, w, s};
+            };
+
             for (const auto& prop : proposals) {
                 int32_t u_id = prop.u_id;
                 int32_t v_id = prop.v_id;
-                auto spr_opt = TreeEngine::apply_spr_move(work_tree, u_id, v_id, /*reuse_collapsed_parent=*/false);
+                auto spr_opt = apply_bijective_spr_move(work_tree, u_id, v_id);
                 if (!spr_opt.has_value()) continue;
                 Tree br_tree = std::move(spr_opt->tree);
                 int32_t w_id = spr_opt->w;
@@ -3966,6 +4050,16 @@ private:
         auto build_branch_hadamard = [&](int32_t bid, std::array<Scalar, 3>& br_w) -> std::vector<std::vector<Matrix>> {
             Matrix U_mat(S, C), L_mat(S, C);
             for (size_t c = 0; c < C; ++c) {
+                int r_idx = site_routed_tree_idx[c];
+                if (r_idx >= 0) {
+                    const Tree& spr_t = routed_spr_trees[r_idx].spr_tree;
+                    if (bid < 0 || bid >= static_cast<int32_t>(spr_t.num_nodes()) ||
+                        bid == spr_t.root_id || spr_t.nodes[bid].parent_id == INVALID_INDEX) {
+                        U_mat.col(static_cast<Eigen::Index>(c)) = root_pi;
+                        L_mat.col(static_cast<Eigen::Index>(c)) = Vector::Ones(S);
+                        continue;
+                    }
+                }
                 U_mat.col(static_cast<Eigen::Index>(c)) = site_outside[c][bid];
                 L_mat.col(static_cast<Eigen::Index>(c)) = site_inside[c][bid];
             }
@@ -4180,8 +4274,8 @@ private:
                 int r_idx = site_routed_tree_idx[c];
                 if (r_idx >= 0) {
                     const Tree& spr_t = routed_spr_trees[r_idx].spr_tree;
-                    if (bid >= static_cast<int32_t>(spr_t.num_nodes()) ||
-                        (bid != spr_t.root_id && spr_t.nodes[bid].parent_id == INVALID_INDEX)) {
+                    if (bid < 0 || bid >= static_cast<int32_t>(spr_t.num_nodes()) ||
+                        bid == spr_t.root_id || spr_t.nodes[bid].parent_id == INVALID_INDEX) {
                         for (size_t g = 0; g < G; ++g) W_tensor[c][bi][g] = 1.0;
                         W_sink[c][bi] = 1.0;
                         continue;
@@ -5661,13 +5755,23 @@ private:
 
         // 4B. Lineage-Specific Loss-of-Constraint / Pseudogenization (Core-Invasion) Detector (Tier 1)
         {
-            // Identify strongly conserved purifying core sites (FEL/dFEL purifying or ω_c <= 0.12)
+            // Identify strongly conserved purifying core sites (FEL/dFEL purifying or 90%-trimmed invariant core)
             std::vector<size_t> core_sites;
+            const size_t k_trim_site = std::max<size_t>(1, B / 10);
             for (size_t c = 0; c < C; ++c) {
                 const auto& s = res.site_atlas[c];
+                if (s.gap_fraction > 0.25) continue;
                 Scalar perv_p = res.directional_drift_active ? s.dfel_p_value : s.fel_p_value;
                 Scalar w_c = s.beta_pervasive / std::max<Scalar>(0.05, s.alpha);
-                if (s.gap_fraction <= 0.25 && ((perv_p <= 0.10 && w_c <= 0.10) || (s.alpha >= 0.8 && w_c <= 0.05))) {
+                bool is_core = ((perv_p <= 0.10 && w_c <= 0.10) || (s.alpha >= 0.8 && w_c <= 0.05));
+                if (!is_core && B >= 10 && s.effective_aa_alphabet <= 2.2 && w_c <= 0.35 && s.alpha >= 0.25) {
+                    std::vector<Scalar> br_u = site_branch_nonsyn[c];
+                    std::sort(br_u.begin(), br_u.end());
+                    Scalar bg_nonsyn = 0.0;
+                    for (size_t bi = 0; bi + k_trim_site < br_u.size(); ++bi) bg_nonsyn += br_u[bi];
+                    if (bg_nonsyn <= 0.25) is_core = true;
+                }
+                if (is_core) {
                     core_sites.push_back(c);
                 }
             }
@@ -5687,34 +5791,59 @@ private:
                 core_sites.assign(cand_sites.begin(), cand_sites.begin() + std::min<size_t>(cand_sites.size(), std::max<size_t>(5, C / 4)));
             }
 
-            // Compute total tree length to apportion expected core nonsynonymous substitutions per branch
-            Scalar total_tree_subs = 0.0;
-            for (size_t bi = 0; bi < B; ++bi) total_tree_subs += std::max<Scalar>(1e-5, res.branch_profiles[bi].branch_length_subs);
-            Scalar total_core_nonsyn = 0.0;
-            for (size_t c : core_sites) {
-                total_core_nonsyn += res.site_atlas[c].expected_nonsyn_subs;
-            }
-
+            // Precompute per-branch observed core nonsynonymous counts and invaded site lists
+            std::vector<Scalar> branch_obs_core(B, 0.0);
+            std::vector<Scalar> branch_eff_len(B, 1e-5);
+            std::vector<std::vector<std::pair<Scalar, size_t>>> branch_invaded(B);
             for (size_t bi = 0; bi < B; ++bi) {
-                auto& bp = res.branch_profiles[bi];
-                Scalar br_frac = std::max<Scalar>(1e-5, bp.branch_length_subs) / std::max<Scalar>(1e-5, total_tree_subs);
                 Scalar obs_core = 0.0;
-                std::vector<std::pair<Scalar, size_t>> invaded;
                 for (size_t c : core_sites) {
                     Scalar u_cb = site_branch_nonsyn[c][bi];
                     obs_core += u_cb;
                     if (u_cb >= 0.60) {
-                        invaded.push_back({u_cb, c + 1});
+                        branch_invaded[bi].push_back({u_cb, c + 1});
                     }
                 }
-                std::sort(invaded.begin(), invaded.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+                std::sort(branch_invaded[bi].begin(), branch_invaded[bi].end(),
+                          [](const auto& a, const auto& b) { return a.first > b.first; });
+                branch_obs_core[bi] = obs_core;
+                Scalar raw_len = std::max<Scalar>(1e-5, res.branch_profiles[bi].branch_length_subs);
+                Scalar core_len_inflation = (C > 0) ? (std::max<Scalar>(0.0, obs_core - 1.0) / static_cast<Scalar>(C)) : 0.0;
+                branch_eff_len[bi] = std::max<Scalar>(1e-5, raw_len - core_len_inflation);
+            }
+
+            // Rank branches by core substitution density so top outlier pseudogenized lineages
+            // do not self-contaminate the background purifying expectation
+            std::vector<size_t> br_order(B);
+            std::iota(br_order.begin(), br_order.end(), 0);
+            std::sort(br_order.begin(), br_order.end(), [&](size_t a, size_t b) {
+                return (branch_obs_core[a] / branch_eff_len[a]) < (branch_obs_core[b] / branch_eff_len[b]);
+            });
+            const size_t bg_keep = std::max<size_t>(1, (B * 85) / 100);
+            std::vector<bool> in_trimmed_bg(B, false);
+            for (size_t k = 0; k < bg_keep; ++k) in_trimmed_bg[br_order[k]] = true;
+
+            for (size_t bi = 0; bi < B; ++bi) {
+                auto& bp = res.branch_profiles[bi];
+                const auto& invaded = branch_invaded[bi];
                 for (size_t k = 0; k < std::min<size_t>(8, invaded.size()); ++k) {
                     bp.core_invaded_sites.push_back(invaded[k].second);
                 }
 
+                // Leave-one-out background purifying core density across non-outlier branches
+                Scalar bg_core_nonsyn = 0.0;
+                Scalar bg_tree_subs = 0.0;
+                for (size_t bj = 0; bj < B; ++bj) {
+                    if (bj == bi || !in_trimmed_bg[bj]) continue;
+                    bg_core_nonsyn += branch_obs_core[bj];
+                    bg_tree_subs += branch_eff_len[bj];
+                }
+                Scalar obs_core = branch_obs_core[bi];
+                Scalar bg_density = (bg_tree_subs > 1e-5) ? (bg_core_nonsyn / bg_tree_subs) : 0.0;
+
                 // Expected core nonsynonymous substitutions under tree-wide purifying constraint
                 // Floor at 0.25 to account for baseline branch rate heterogeneity and avoid small-expectation inflation
-                Scalar exp_core_pur = std::max<Scalar>(0.25, total_core_nonsyn * br_frac);
+                Scalar exp_core_pur = std::max<Scalar>(0.25, bg_density * branch_eff_len[bi]);
                 Scalar exp_core_neu = std::max<Scalar>(exp_core_pur * 3.0, bp.branch_length_subs * static_cast<Scalar>(core_sites.size()) * 0.75);
 
                 bp.core_nonsyn_Observed = obs_core;
@@ -5933,13 +6062,6 @@ private:
                 p_meme[c] = s.meme_p_value;
                 p_cfel[c] = s.contrast_fel_p_value;
                 p_exch[c] = s.exchangeability_p_value;
-                Scalar active_perv_p = res.directional_drift_active ? s.dfel_p_value : s.fel_p_value;
-                if (res.clade_macro_regime.triggered) {
-                    p_simes[c] = compute_simes_p_value({active_perv_p, s.meme_p_value, s.contrast_fel_p_value});
-                } else {
-                    p_simes[c] = compute_simes_p_value({active_perv_p, s.meme_p_value});
-                }
-                res.site_atlas[c].simes_omnibus_p = p_simes[c];
             }
 
             auto q_fel = compute_bh_q_values(p_fel);
@@ -5947,24 +6069,45 @@ private:
             auto q_meme = compute_bh_q_values(p_meme);
             auto q_cfel = compute_bh_q_values(p_cfel);
             auto q_exch = compute_bh_q_values(p_exch);
+
+            for (size_t c = 0; c < C; ++c) {
+                auto& s = res.site_atlas[c];
+                s.fel_bh_q = q_fel[c];
+                s.dfel_bh_q = q_dfel[c];
+                s.meme_bh_q = q_meme[c];
+                s.contrast_fel_bh_q = q_cfel[c];
+                s.exchangeability_bh_q = q_exch[c];
+
+                // Require exchangeability_p_value <= 0.05 and exchangeability_bh_q <= fdr_threshold for Toggle/Convergent calls
+                if (s.exchangeability_p_value > 0.05 || s.exchangeability_bh_q > settings.fdr_threshold) {
+                    s.key_property_driver.clear();
+                }
+
+                Scalar active_perv_p = res.directional_drift_active ? s.dfel_p_value : s.fel_p_value;
+                if (res.clade_macro_regime.triggered) {
+                    p_simes[c] = compute_simes_p_value({active_perv_p, s.meme_p_value, s.contrast_fel_p_value});
+                } else {
+                    p_simes[c] = compute_simes_p_value({active_perv_p, s.meme_p_value});
+                }
+
+                bool is_perv_pos = (active_perv_p <= settings.p_value_threshold && s.beta_pervasive > s.alpha);
+                bool is_perv_neg = (active_perv_p <= settings.p_value_threshold && s.beta_pervasive < s.alpha);
+                bool is_epi_pos = (s.meme_p_value <= settings.p_value_threshold && s.beta_plus > s.alpha);
+                bool is_cfel = res.clade_macro_regime.triggered && (s.contrast_fel_p_value <= 0.05);
+                bool is_exch = !s.key_property_driver.empty();
+                if (!is_perv_pos && !is_epi_pos && !is_cfel && !is_perv_neg && is_exch) {
+                    // For a pure Toggle/Convergent site where rate tests (FEL/MEME) are neutral,
+                    // include exchangeability significance in simes_omnibus_p before BH FDR adjustment
+                    p_simes[c] = std::min(p_simes[c], s.exchangeability_p_value);
+                }
+                s.simes_omnibus_p = p_simes[c];
+            }
+
             auto q_simes = compute_bh_q_values(p_simes);
 
             for (size_t c = 0; c < C; ++c) {
                 auto& entry = res.site_atlas[c];
-                entry.fel_bh_q = q_fel[c];
-                entry.dfel_bh_q = q_dfel[c];
-                entry.meme_bh_q = q_meme[c];
-                entry.contrast_fel_bh_q = q_cfel[c];
-                entry.exchangeability_bh_q = q_exch[c];
                 entry.simes_omnibus_q = q_simes[c];
-                if (entry.simes_omnibus_q <= settings.fdr_threshold) {
-                    res.sites_simes_fdr_significant++;
-                }
-
-                // Require exchangeability_p_value <= 0.05 and exchangeability_bh_q <= fdr_threshold for Toggle/Convergent calls
-                if (entry.exchangeability_p_value > 0.05 || entry.exchangeability_bh_q > settings.fdr_threshold) {
-                    entry.key_property_driver.clear();
-                }
 
                 Scalar perv_p = res.directional_drift_active ? entry.dfel_p_value : entry.fel_p_value;
                 bool is_perv_pos = (perv_p <= settings.p_value_threshold && entry.beta_pervasive > entry.alpha);
@@ -5972,14 +6115,6 @@ private:
                 bool is_epi_pos = (entry.meme_p_value <= settings.p_value_threshold && entry.beta_plus > entry.alpha);
                 bool is_cfel = res.clade_macro_regime.triggered && (entry.contrast_fel_p_value <= 0.05);
                 bool is_exch = !entry.key_property_driver.empty();
-
-                if (entry.simes_omnibus_q <= settings.fdr_threshold) {
-                    if (is_perv_pos || is_epi_pos) {
-                        res.sites_simes_diversifying++;
-                    } else if (is_perv_neg) {
-                        res.sites_simes_purifying++;
-                    }
-                }
 
                 if (is_perv_pos && is_epi_pos) {
                     entry.classification = "Pervasive + Episodic Diversifying";
@@ -5999,15 +6134,22 @@ private:
                     res.sites_pervasive_purifying++;
                 } else if (is_exch) {
                     entry.classification = "Toggle / Convergent";
-                    // For a pure Toggle/Convergent site where rate tests (FEL/MEME) are neutral,
-                    // reflect the exchangeability significance in simes_omnibus_p / simes_omnibus_q
-                    entry.simes_omnibus_p = std::min(entry.simes_omnibus_p, entry.exchangeability_p_value);
                     entry.simes_omnibus_q = std::min(entry.simes_omnibus_q, entry.exchangeability_bh_q);
                 } else if (entry.beta_pervasive <= 1e-4 && entry.alpha <= 1e-4) {
                     entry.classification = "Invariant";
                 } else {
                     entry.classification = "Neutral";
                 }
+
+                if (entry.simes_omnibus_q <= settings.fdr_threshold) {
+                    res.sites_simes_fdr_significant++;
+                    if (is_perv_pos || is_epi_pos) {
+                        res.sites_simes_diversifying++;
+                    } else if (is_perv_neg) {
+                        res.sites_simes_purifying++;
+                    }
+                }
+
                 if (is_exch) res.sites_property_constrained_or_shifting++;
                 if (is_cfel && entry.classification != "Regime-Specific Shift") {
                     res.sites_regime_differential++;
@@ -6146,13 +6288,14 @@ private:
                 };
 
                 std::vector<CoevolutionSitePair> raw_pairs;
-                size_t candidate_pairs_tested = 0;
+                size_t total_pairs_screened = 0;
                 for (size_t i = 0; i < active_sites.size(); ++i) {
                     if (u_norms[i] <= 1e-6) continue;
                     for (size_t j = i + 1; j < active_sites.size(); ++j) {
                         if (u_norms[j] <= 1e-6) continue;
                         size_t c1 = active_sites[i], c2 = active_sites[j];
                         if (c2 <= c1 + 2) continue; // Skip immediate neighbor MNMs
+                        total_pairs_screened++;
 
                         Scalar r_cos = centered_u[i].dot(centered_u[j]) / (u_norms[i] * u_norms[j]);
                         Scalar shared_br = 0.0;
@@ -6171,9 +6314,6 @@ private:
                                     top_br_str += res.branch_profiles[bi].branch_name;
                                 }
                             }
-                        }
-                        if (n_co_branches >= 1 && r_cos > 0.15) {
-                            candidate_pairs_tested++;
                         }
                         // Require co-substitution on at least 2 independent branches
                         if (n_co_branches < 2 || shared_br < 1.10 || r_cos <= 0.45) continue;
@@ -6232,7 +6372,7 @@ private:
                     std::sort(raw_pairs.begin(), raw_pairs.end(), [](const auto& a, const auto& b) {
                         return a.p_value < b.p_value;
                     });
-                    const Scalar m_tot = static_cast<Scalar>(std::max<size_t>(candidate_pairs_tested, raw_pairs.size()));
+                    const Scalar m_tot = static_cast<Scalar>(std::max<size_t>(total_pairs_screened, raw_pairs.size()));
                     for (size_t k = 0; k < raw_pairs.size(); ++k) {
                         raw_pairs[k].bh_q_value = std::min<Scalar>(
                             1.0,

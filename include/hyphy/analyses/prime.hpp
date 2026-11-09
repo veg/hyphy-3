@@ -761,7 +761,8 @@ public:
         global_fit.alpha = 1.0;
         global_fit.lambdas.assign(pt.x.begin() + 1, pt.x.end());
         global_fit.log_likelihood = -pt.f;
-        global_fit.aicc = -2.0 * global_fit.log_likelihood + 2.0 * dim;
+        size_t total_params = 5 + (num_nodes - 1) + dim;
+        global_fit.aicc = hyphy::core::stats::compute_aicc(global_fit.log_likelihood, total_params, aln.num_codons * aln.num_taxa);
         global_fit.baseline_tree_length = baseline_tree_length;
         for (const auto& p : properties) {
             global_fit.property_names.push_back(p.name);
@@ -1178,32 +1179,6 @@ private:
             }
         }
 
-        // Omnibus LRT & p-value vs FEL (df = K)
-        bool valid_omnibus = (res.log_l_alt > -1e10 && res.log_l_fel > -1e10 &&
-                              std::isfinite(res.log_l_alt) && std::isfinite(res.log_l_fel));
-        Scalar omnibus_lrt = 0.0;
-        if (valid_omnibus) {
-            omnibus_lrt = 2.0 * (res.log_l_alt - res.log_l_fel);
-            if (omnibus_lrt < 0.0) omnibus_lrt = 0.0;
-        }
-        res.omnibus_lrt = omnibus_lrt;
-
-        // Chi-squared p-value for df = K
-        if (!valid_omnibus) {
-            res.omnibus_p_value = 1.0;
-        } else if (K == 1) {
-            res.omnibus_p_value = std::erfc(std::sqrt(omnibus_lrt / 2.0));
-        } else if (K == 2) {
-            res.omnibus_p_value = std::exp(-0.5 * omnibus_lrt);
-        } else {
-            // Wilson-Hilferty transformation for general df
-            Scalar s_df = static_cast<Scalar>(K);
-            Scalar z = std::pow(omnibus_lrt / s_df, 1.0 / 3.0) - (1.0 - 2.0 / (9.0 * s_df));
-            z /= std::sqrt(2.0 / (9.0 * s_df));
-            Scalar p = 0.5 * std::erfc(z / std::sqrt(2.0));
-            res.omnibus_p_value = std::clamp(p, 0.0, 1.0);
-        }
-
         // --------------------------------------------------------------------
         // 2. Fit Constrained Null Model for each Property k (lambda_k = 0)
         // --------------------------------------------------------------------
@@ -1271,7 +1246,23 @@ private:
                 res.log_l_alt = res.properties[k].log_l_null;
                 res.properties[k].lambda = 0.0;
             }
+        }
 
+        // Omnibus LRT & p-value vs FEL (df = K) using finalized log_l_alt
+        bool valid_omnibus = (res.log_l_alt > -1e10 && res.log_l_fel > -1e10 &&
+                              std::isfinite(res.log_l_alt) && std::isfinite(res.log_l_fel));
+        Scalar omnibus_lrt = 0.0;
+        if (valid_omnibus) {
+            omnibus_lrt = 2.0 * (res.log_l_alt - res.log_l_fel);
+            if (omnibus_lrt < 0.0) omnibus_lrt = 0.0;
+        }
+        res.omnibus_lrt = omnibus_lrt;
+        res.omnibus_p_value = valid_omnibus
+            ? hyphy::core::stats::chi2_p_value(omnibus_lrt, static_cast<Scalar>(K))
+            : 1.0;
+
+        // Per-property LRT & p-value using finalized log_l_alt
+        for (size_t k = 0; k < K; ++k) {
             bool valid_prop = (res.log_l_alt > -1e10 && res.properties[k].log_l_null > -1e10 &&
                                std::isfinite(res.log_l_alt) && std::isfinite(res.properties[k].log_l_null));
             Scalar prop_lrt = 0.0;

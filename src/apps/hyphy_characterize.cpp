@@ -106,6 +106,7 @@ int run_characterize(int argc, char* argv[])
             out_poa_path = argv[++i];
         } else if (arg == "--code" && i + 1 < argc) {
             code_name = argv[++i];
+            settings.genetic_code_name = code_name;
         } else if ((arg == "--pvalue" || arg == "-p") && i + 1 < argc) {
             std::string val_str = argv[++i];
             try {
@@ -166,6 +167,11 @@ int run_characterize(int argc, char* argv[])
 #ifdef _OPENMP
     if (num_threads > 0) {
         omp_set_num_threads(num_threads);
+    } else if (std::getenv("OMP_NUM_THREADS") == nullptr) {
+        int max_t = omp_get_max_threads();
+        if (max_t > 8) {
+            omp_set_num_threads(8);
+        }
     }
 #else
     (void)num_threads;

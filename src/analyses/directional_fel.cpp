@@ -20,8 +20,8 @@ nlohmann::json DirectionalFELAnalyzer::to_modern_json(const std::string& input_f
             "Directional FEL detects site-level selection while accounting for lineage-specific compositional heterogeneity and auto-rooting via non-reversible dynamics",
             {},
             {
-                {"p_value_threshold", p_value_threshold},
-                {"heterogeneity_threshold", settings.heterogeneity_threshold},
+                {"p_value_threshold", finite_or_null(p_value_threshold)},
+                {"heterogeneity_threshold", finite_or_null(settings.heterogeneity_threshold)},
                 {"root_strategy", settings.root_strategy},
                 {"num_regimes", regimes.size()}
             }
@@ -78,17 +78,17 @@ nlohmann::json DirectionalFELAnalyzer::to_modern_json(const std::string& input_f
         // Compositional heterogeneity test
         nlohmann::json comp_j;
         comp_j["is_heterogeneous"] = comp_test.is_heterogeneous;
-        comp_j["overall"] = { {"chi2", comp_test.chi2_overall}, {"df", comp_test.df_overall}, {"p_value", comp_test.p_value_overall} };
-        comp_j["codon_position_1"] = { {"chi2", comp_test.chi2_cp1}, {"df", comp_test.df_cp1}, {"p_value", comp_test.p_value_cp1} };
-        comp_j["codon_position_2"] = { {"chi2", comp_test.chi2_cp2}, {"df", comp_test.df_cp2}, {"p_value", comp_test.p_value_cp2} };
-        comp_j["codon_position_3"] = { {"chi2", comp_test.chi2_cp3}, {"df", comp_test.df_cp3}, {"p_value", comp_test.p_value_cp3} };
+        comp_j["overall"] = { {"chi2", finite_or_null(comp_test.chi2_overall)}, {"df", comp_test.df_overall}, {"p_value", finite_or_null(comp_test.p_value_overall)} };
+        comp_j["codon_position_1"] = { {"chi2", finite_or_null(comp_test.chi2_cp1)}, {"df", comp_test.df_cp1}, {"p_value", finite_or_null(comp_test.p_value_cp1)} };
+        comp_j["codon_position_2"] = { {"chi2", finite_or_null(comp_test.chi2_cp2)}, {"df", comp_test.df_cp2}, {"p_value", finite_or_null(comp_test.p_value_cp2)} };
+        comp_j["codon_position_3"] = { {"chi2", finite_or_null(comp_test.chi2_cp3)}, {"df", comp_test.df_cp3}, {"p_value", finite_or_null(comp_test.p_value_cp3)} };
 
         nlohmann::json taxa_arr = nlohmann::json::array();
         for (const auto& tc : comp_test.taxa) {
             taxa_arr.push_back({
                 {"taxon", tc.name},
-                {"gc_overall", tc.gc_overall},
-                {"gc_cp3", tc.gc_cp3}
+                {"gc_overall", finite_or_null(tc.gc_overall)},
+                {"gc_cp3", finite_or_null(tc.gc_cp3)}
             });
         }
         comp_j["taxa"] = taxa_arr;
@@ -101,9 +101,9 @@ nlohmann::json DirectionalFELAnalyzer::to_modern_json(const std::string& input_f
                 {"rank", c.rank},
                 {"branch", c.branch_name},
                 {"is_terminal", c.is_terminal},
-                {"log_likelihood", c.log_l},
-                {"delta_log_l", c.delta_log_l},
-                {"weight", c.weight}
+                {"log_likelihood", finite_or_null(c.log_l)},
+                {"delta_log_l", finite_or_null(c.delta_log_l)},
+                {"weight", finite_or_null(c.weight)}
             });
         }
         j["root_selection"]["candidates"] = root_cands;
@@ -114,8 +114,8 @@ nlohmann::json DirectionalFELAnalyzer::to_modern_json(const std::string& input_f
             reg_arr.push_back({
                 {"id", reg.id},
                 {"name", reg.name},
-                {"psi", reg.psi},
-                {"mean_gc", reg.mean_gc},
+                {"psi", finite_or_null(reg.psi)},
+                {"mean_gc", finite_or_null(reg.mean_gc)},
                 {"branch_count", reg.branch_count}
             });
         }
@@ -127,7 +127,7 @@ nlohmann::json DirectionalFELAnalyzer::to_modern_json(const std::string& input_f
                 const auto& w = branch_regime_weights[node.id];
                 branch_regimes_j[node.name] = {
                     {"regime_id", branch_regime_ids[node.id]},
-                    {"weights", nlohmann::json::array({w[0], w[1], w[2]})}
+                    {"weights", sanitized_doubles({w[0], w[1], w[2]})}
                 };
             }
         }
@@ -195,14 +195,14 @@ nlohmann::json DirectionalFELAnalyzer::to_legacy_json(const std::string& input_f
 
         nlohmann::json content = nlohmann::json::array();
         for (const auto& r : site_results) {
-            content.push_back({
+            content.push_back(sanitized_doubles({
                 r.alpha,
                 r.beta,
                 r.alpha_null,
                 r.lrt,
                 r.p_value,
                 r.total_branch_length
-            });
+            }));
         }
         j["MLE"]["content"]["0"] = content;
 

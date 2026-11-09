@@ -1,6 +1,8 @@
 #include "hyphy/analyses/joint_align.hpp"
 #include "hyphy/core/cli_common.hpp"
 #include "hyphy/core/console.hpp"
+#include "hyphy/core/json_output.hpp"
+#include "nlohmann/json.hpp"
 #include <iostream>
 #include <fstream>
 #include <iomanip>
@@ -141,6 +143,11 @@ int run_joint_align(int argc, char* argv[]) {
 #ifdef _OPENMP
     if (num_threads > 0) {
         omp_set_num_threads(num_threads);
+    } else if (std::getenv("OMP_NUM_THREADS") == nullptr) {
+        int max_t = omp_get_max_threads();
+        if (max_t > 8) {
+            omp_set_num_threads(8);
+        }
     }
 #endif
 
@@ -210,27 +217,30 @@ int run_joint_align(int argc, char* argv[]) {
         if (!out_json_path.empty()) {
             std::ofstream jf(out_json_path);
             if (jf.is_open()) {
-                jf << std::fixed << std::setprecision(6) << "{\n  \"alignment_evaluations\": [\n";
-                for (size_t i = 0; i < evals.size(); ++i) {
-                    const auto& ev = evals[i];
-                    jf << "    {\n"
-                       << "      \"label\": \"" << ev.label << "\",\n"
-                       << "      \"num_taxa\": " << ev.num_taxa << ",\n"
-                       << "      \"num_codons\": " << ev.num_codons << ",\n"
-                       << "      \"total_gap_codons\": " << ev.total_gap_codons << ",\n"
-                       << "      \"mg94_sub_log_l\": " << ev.mg94_sub_log_l << ",\n"
-                       << "      \"branch_indel_events\": " << ev.branch_indel_events << ",\n"
-                       << "      \"branch_indel_codons\": " << ev.branch_indel_codons << ",\n"
-                       << "      \"branch_indel_log_l\": " << ev.branch_indel_log_l << ",\n"
-                       << "      \"option1_joint_log_l\": " << ev.joint_log_l << ",\n"
-                       << "      \"option3_loto_cv_log_l\": " << ev.loto_cv_log_l << ",\n"
-                       << "      \"option5_joint_posterior_weight\": " << ev.joint_posterior_weight << ",\n"
-                       << "      \"option5_loto_posterior_weight\": " << ev.loto_posterior_weight << ",\n"
-                       << "      \"option5_mean_column_posterior\": " << ev.mean_column_posterior << ",\n"
-                       << "      \"option5_min_column_posterior\": " << ev.min_column_posterior << "\n"
-                       << "    }" << (i + 1 < evals.size() ? "," : "") << "\n";
+                nlohmann::json j_out;
+                j_out["schema_version"] = "3.0.0";
+                j_out["software"] = software_block();
+                nlohmann::json eval_arr = nlohmann::json::array();
+                for (const auto& ev : evals) {
+                    eval_arr.push_back({
+                        {"label", ev.label},
+                        {"num_taxa", ev.num_taxa},
+                        {"num_codons", ev.num_codons},
+                        {"total_gap_codons", ev.total_gap_codons},
+                        {"mg94_sub_log_l", finite_or_null(ev.mg94_sub_log_l)},
+                        {"branch_indel_events", ev.branch_indel_events},
+                        {"branch_indel_codons", ev.branch_indel_codons},
+                        {"branch_indel_log_l", finite_or_null(ev.branch_indel_log_l)},
+                        {"option1_joint_log_l", finite_or_null(ev.joint_log_l)},
+                        {"option3_loto_cv_log_l", finite_or_null(ev.loto_cv_log_l)},
+                        {"option5_joint_posterior_weight", finite_or_null(ev.joint_posterior_weight)},
+                        {"option5_loto_posterior_weight", finite_or_null(ev.loto_posterior_weight)},
+                        {"option5_mean_column_posterior", finite_or_null(ev.mean_column_posterior)},
+                        {"option5_min_column_posterior", finite_or_null(ev.min_column_posterior)}
+                    });
                 }
-                jf << "  ]\n}\n";
+                j_out["alignment_evaluations"] = eval_arr;
+                jf << j_out.dump(2) << "\n";
                 try {
                     close_or_throw(jf, out_json_path);
                 } catch (const std::exception& e) {
@@ -406,54 +416,63 @@ int run_joint_align(int argc, char* argv[]) {
             }
 
             std::string pp_cons_str;
+            nlohmann::json pp_arr = nlohmann::json::array();
             for (Scalar p : res.site_homology_posteriors) {
                 pp_cons_str.push_back(JointAlignEngine::posterior_to_pp_char(p));
+                pp_arr.push_back(finite_or_null(p));
             }
 
-            jf << std::fixed << std::setprecision(6);
-            jf << "{\n"
-               << "  \"num_taxa\": " << res.map_alignment.num_taxa << ",\n"
-               << "  \"num_codons\": " << res.map_alignment.num_codons << ",\n"
-               << "  \"num_indel_windows\": " << res.windows.size() << ",\n"
-               << "  \"num_wheatstone_bridges\": " << res.ohmic_network.bridges.size() << ",\n"
-               << "  \"num_collapsed_polytomies\": " << res.ohmic_network.num_collapsed_polytomies << ",\n"
-               << "  \"initial_mg94_log_l\": " << res.initial_mg94_log_l << ",\n"
-               << "  \"stage1_mg94_log_l\": " << res.stage1_mg94_log_l << ",\n"
-               << "  \"stage2_mg94_log_l\": " << res.stage2_mg94_log_l << ",\n"
-               << "  \"total_taxa_realigned\": " << res.total_taxa_realigned << ",\n"
-               << "  \"total_codons_shifted\": " << res.total_codons_shifted << ",\n"
-               << "  \"total_coupled_moves_accepted\": " << res.total_coupled_moves_accepted << ",\n"
-               << "  \"false_positive_sites_eliminated\": " << res.false_positive_sites_eliminated << ",\n"
-               << "  \"true_positive_sites_rescued\": " << res.true_positive_sites_rescued << ",\n"
-               << "  \"runtime_seconds\": " << res.runtime_seconds << ",\n"
-               << "  \"alignment_quality\": {\n"
-               << "    \"mean_column_homology_posterior\": " << mean_pp << ",\n"
-               << "    \"min_column_homology_posterior\": " << min_pp << ",\n"
-               << "    \"pp_consensus_track\": \"" << pp_cons_str << "\",\n"
-               << "    \"column_homology_posteriors\": [";
-            for (size_t i = 0; i < res.site_homology_posteriors.size(); ++i) {
-                if (i > 0) jf << ", ";
-                jf << std::setprecision(4) << res.site_homology_posteriors[i];
-            }
-            jf << "]\n  },\n"
-               << "  \"wheatstone_bridges\": [\n";
+            nlohmann::json wb_arr = nlohmann::json::array();
             for (size_t b = 0; b < res.ohmic_network.bridges.size(); ++b) {
                 const auto& wb = res.ohmic_network.bridges[b];
                 std::string hub_nm = (wb.hub_node_id >= 0 && static_cast<size_t>(wb.hub_node_id) < res.ohmic_network.collapsed_tree.nodes.size())
                     ? res.ohmic_network.collapsed_tree.nodes[wb.hub_node_id].name : "";
-                jf << "    {\n"
-                   << "      \"bridge_index\": " << b << ",\n"
-                   << "      \"hub_node\": \"" << hub_nm << "\",\n"
-                   << "      \"ohmic_support\": " << wb.ohmic_support << ",\n"
-                   << "      \"shunt_stress\": " << wb.shunt_stress << ",\n"
-                   << "      \"weights\": [" << wb.weights[0] << ", " << wb.weights[1] << ", " << wb.weights[2] << "],\n"
-                   << "      \"branch_lengths\": [" << wb.branch_lengths[0] << ", " << wb.branch_lengths[1] << ", " << wb.branch_lengths[2] << "]\n"
-                   << "    }" << (b + 1 < res.ohmic_network.bridges.size() ? "," : "") << "\n";
+                wb_arr.push_back({
+                    {"bridge_index", b},
+                    {"hub_node", hub_nm},
+                    {"ohmic_support", finite_or_null(wb.ohmic_support)},
+                    {"shunt_stress", finite_or_null(wb.shunt_stress)},
+                    {"weights", nlohmann::json::array({
+                        finite_or_null(wb.weights[0]),
+                        finite_or_null(wb.weights[1]),
+                        finite_or_null(wb.weights[2])
+                    })},
+                    {"branch_lengths", nlohmann::json::array({
+                        finite_or_null(wb.branch_lengths[0]),
+                        finite_or_null(wb.branch_lengths[1]),
+                        finite_or_null(wb.branch_lengths[2])
+                    })}
+                });
             }
-            jf << "  ],\n"
-               << "  \"optimized_tree_newick\": \"" << res.optimized_tree.to_newick(true) << "\",\n"
-               << "  \"extended_newick\": \"" << res.extended_newick << "\"\n"
-               << "}\n";
+
+            nlohmann::json j_out;
+            j_out["schema_version"] = "3.0.0";
+            j_out["software"] = software_block();
+            j_out["num_taxa"] = res.map_alignment.num_taxa;
+            j_out["num_codons"] = res.map_alignment.num_codons;
+            j_out["num_indel_windows"] = res.windows.size();
+            j_out["num_wheatstone_bridges"] = res.ohmic_network.bridges.size();
+            j_out["num_collapsed_polytomies"] = res.ohmic_network.num_collapsed_polytomies;
+            j_out["initial_mg94_log_l"] = finite_or_null(res.initial_mg94_log_l);
+            j_out["stage1_mg94_log_l"] = finite_or_null(res.stage1_mg94_log_l);
+            j_out["stage2_mg94_log_l"] = finite_or_null(res.stage2_mg94_log_l);
+            j_out["total_taxa_realigned"] = res.total_taxa_realigned;
+            j_out["total_codons_shifted"] = res.total_codons_shifted;
+            j_out["total_coupled_moves_accepted"] = res.total_coupled_moves_accepted;
+            j_out["false_positive_sites_eliminated"] = res.false_positive_sites_eliminated;
+            j_out["true_positive_sites_rescued"] = res.true_positive_sites_rescued;
+            j_out["runtime_seconds"] = finite_or_null(res.runtime_seconds);
+            j_out["alignment_quality"] = {
+                {"mean_column_homology_posterior", finite_or_null(mean_pp)},
+                {"min_column_homology_posterior", finite_or_null(min_pp)},
+                {"pp_consensus_track", pp_cons_str},
+                {"column_homology_posteriors", pp_arr}
+            };
+            j_out["wheatstone_bridges"] = wb_arr;
+            j_out["optimized_tree_newick"] = res.optimized_tree.to_newick(true);
+            j_out["extended_newick"] = res.extended_newick;
+
+            jf << j_out.dump(2) << "\n";
             try {
                 close_or_throw(jf, out_json_path);
             } catch (const std::exception& e) {

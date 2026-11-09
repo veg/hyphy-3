@@ -3,8 +3,8 @@ LoadFunctionLibrary("libv3/all-terms.bf");
 LoadFunctionLibrary("libv3/tasks/alignments.bf");
 LoadFunctionLibrary("libv3/models/codon/MG_REV.bf");
 
-alignment_file = "/Users/sergei/Development/hyphy/hyphy-next/benchmarks/data/cd2_reduced.fna";
-tree_file      = "/Users/sergei/Development/hyphy/hyphy-next/benchmarks/data/cd2_reduced.nwk";
+alignment_file = "data/cd2_reduced.fna";
+tree_file      = "data/cd2_reduced.nwk";
 
 DataSet ds = ReadDataFile (alignment_file);
 code_info = alignments.LoadGeneticCode ("Universal");

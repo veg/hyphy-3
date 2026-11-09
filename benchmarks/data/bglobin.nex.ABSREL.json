@@ -1171,22 +1171,22 @@
     "inputs": {
       "alignment": {
         "format": "FASTA/NEXUS",
-        "path": "/Users/sergei/Development/hyphy-3/benchmarks/data/bglobin.nex",
+        "path": "benchmarks/data/bglobin.nex",
         "sha256": "378373d6ed942694ee1e72668721b5f3e443224ce4422c94b0dffb9cef38b85a",
         "size_bytes": 8186
       }
     },
     "invocation": {
       "arguments": {
-        "alignment": "/Users/sergei/Development/hyphy-3/benchmarks/data/bglobin.nex",
+        "alignment": "benchmarks/data/bglobin.nex",
         "branches": "All",
         "code": "Universal",
         "json_format": "modern_v3",
         "max_rates": "3",
         "pvalue": "0.050000"
       },
-      "cli_command": "/Users/sergei/Development/hyphy-3/build/hyphy3-absrel --alignment /Users/sergei/Development/hyphy-3/benchmarks/data/bglobin.nex --progress",
-      "working_directory": "/Users/sergei/Development/hyphy"
+      "cli_command": "build/hyphy3-absrel --alignment benchmarks/data/bglobin.nex --progress",
+      "working_directory": "."
     }
   },
   "schema_version": "3.0.0",

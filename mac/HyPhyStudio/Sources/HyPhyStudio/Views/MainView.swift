@@ -230,13 +230,19 @@ public struct MainView: View {
         }
 
         // Fallbacks
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Views
+            .deletingLastPathComponent() // HyPhyStudio
+            .deletingLastPathComponent() // Sources
+            .deletingLastPathComponent() // HyPhyStudio
+            .deletingLastPathComponent() // mac
         if fnaStr == nil {
-            let fnaPath = "/Users/sergei/Development/hyphy-3/benchmarks/data/cd2.fna"
-            fnaStr = try? String(contentsOfFile: fnaPath)
+            fnaStr = (try? String(contentsOfFile: "benchmarks/data/cd2.fna"))
+                ?? (try? String(contentsOf: repoRoot.appendingPathComponent("benchmarks/data/cd2.fna")))
         }
         if nwkStr == nil {
-            let nwkPath = "/Users/sergei/Development/hyphy-3/benchmarks/data/cd2_fitted.nwk"
-            nwkStr = try? String(contentsOfFile: nwkPath)
+            nwkStr = (try? String(contentsOfFile: "benchmarks/data/cd2_fitted.nwk"))
+                ?? (try? String(contentsOf: repoRoot.appendingPathComponent("benchmarks/data/cd2_fitted.nwk")))
         }
 
         guard let fasta = fnaStr, let tree = nwkStr else { return }

@@ -489,6 +489,7 @@ public:
                     for (int r = 1; r <= Ls; ++r) {
                         int c_min = std::max(1, r - B0);
                         int c_max = std::min(Ll, r + dL + B0);
+                        int prev_c_max = std::min(Ll, (r - 1) + dL + B0);
                         std::fill(curr_M.begin() + std::max(0, c_min - 1), curr_M.begin() + c_max + 1, kNegInf);
                         std::fill(curr_D.begin() + std::max(0, c_min - 1), curr_D.begin() + c_max + 1, kNegInf);
                         if (r <= B0) {
@@ -501,9 +502,14 @@ public:
                         Scalar ins_sc = kNegInf;
                         for (int c = c_min; c <= c_max; ++c) {
                             int8_t cj = s_long[c - 1];
-                            Scalar d_sc = std::max(prev_M[c] - cal_g_open - cal_g_ext, prev_D[c] - cal_g_ext);
+                            Scalar d_sc = (c <= prev_c_max)
+                                        ? std::max(prev_M[c] - cal_g_open - cal_g_ext, prev_D[c] - cal_g_ext)
+                                        : kNegInf;
                             curr_D[c] = d_sc;
-                            ins_sc = std::max(curr_M[c - 1] - cal_g_open - cal_g_ext, ins_sc - cal_g_ext);
+                            bool left_in_band = (c > c_min) || (c == 1 && r <= B0);
+                            Scalar i_op = left_in_band ? (curr_M[c - 1] - cal_g_open - cal_g_ext) : kNegInf;
+                            Scalar i_ex = (c > c_min) ? (ins_sc - cal_g_ext) : kNegInf;
+                            ins_sc = std::max(i_op, i_ex);
                             Scalar sim = 0.0;
                             if (ci >= 0 && cj >= 0) {
                                 if (ci == cj) sim = 1.00;
@@ -511,16 +517,18 @@ public:
                                 else if (gcode.diff_matrix[ci][cj].num_diffs == 1) sim = 0.30;
                             }
                             Scalar m_sc = prev_M[c - 1] + sim;
-                            if (m_sc >= d_sc && m_sc >= ins_sc) {
-                                curr_M[c] = m_sc;
-                                bt_mat[b_idx(r, c)] = 0;
-                            } else if (d_sc >= ins_sc) {
-                                curr_M[c] = d_sc;
-                                bt_mat[b_idx(r, c)] = 1;
-                            } else {
-                                curr_M[c] = ins_sc;
-                                bt_mat[b_idx(r, c)] = 2;
+                            Scalar best_cell = m_sc;
+                            uint8_t best_bt = 0;
+                            if (d_sc > best_cell) {
+                                best_cell = d_sc;
+                                best_bt = 1;
                             }
+                            if (ins_sc > best_cell) {
+                                best_cell = ins_sc;
+                                best_bt = 2;
+                            }
+                            curr_M[c] = best_cell;
+                            bt_mat[b_idx(r, c)] = best_bt;
                         }
                         std::swap(prev_M, curr_M);
                         std::swap(prev_D, curr_D);
@@ -3304,6 +3312,7 @@ public:
         for (size_t r = 1; r <= Ls; ++r) {
             int c_min = std::max(1, static_cast<int>(r) - B0);
             int c_max = std::min(static_cast<int>(Ll), static_cast<int>(r) + dL + B0);
+            int prev_c_max = std::min(static_cast<int>(Ll), static_cast<int>(r - 1) + dL + B0);
             int fill_lo = std::max(0, c_min - 2);
             int fill_hi = std::min(static_cast<int>(Ll), c_max + 2);
             curr_M[0] = kNegInf;
@@ -3329,19 +3338,25 @@ public:
                 size_t cu = static_cast<size_t>(c);
                 int8_t cj = s_long[cu - 1];
 
-                Scalar d_op = prev_M[cu] - g_open - g_ext;
-                Scalar d_ex = prev_D[cu] - g_ext;
-                if (d_op >= d_ex) {
-                    curr_D[cu] = d_op;
-                    curr_id_D[cu] = prev_id_M[cu];
+                if (c <= prev_c_max) {
+                    Scalar d_op = prev_M[cu] - g_open - g_ext;
+                    Scalar d_ex = prev_D[cu] - g_ext;
+                    if (d_op >= d_ex) {
+                        curr_D[cu] = d_op;
+                        curr_id_D[cu] = prev_id_M[cu];
+                    } else {
+                        curr_D[cu] = d_ex;
+                        curr_id_D[cu] = prev_id_D[cu];
+                    }
                 } else {
-                    curr_D[cu] = d_ex;
-                    curr_id_D[cu] = prev_id_D[cu];
+                    curr_D[cu] = kNegInf;
+                    curr_id_D[cu] = 0;
                 }
 
-                Scalar i_op = curr_M[cu - 1] - g_open - g_ext;
-                Scalar i_ex = ins_sc - g_ext;
-                if (i_op >= i_ex) {
+                bool left_in_band = (c > c_min) || (c == 1 && static_cast<int>(r) <= B0);
+                Scalar i_op = left_in_band ? (curr_M[cu - 1] - g_open - g_ext) : kNegInf;
+                Scalar i_ex = (c > c_min) ? (ins_sc - g_ext) : kNegInf;
+                if (i_op > i_ex) {
                     ins_sc = i_op;
                     ins_id = curr_id_M[cu - 1];
                 } else {
@@ -3460,6 +3475,7 @@ public:
         for (size_t r = 1; r <= Ls; ++r) {
             int c_min = std::max(1, static_cast<int>(r) - B0);
             int c_max = std::min(static_cast<int>(Ll), static_cast<int>(r) + dL + B0);
+            int prev_c_max = std::min(static_cast<int>(Ll), static_cast<int>(r - 1) + dL + B0);
             int fill_lo = std::max(0, c_min - 2);
             int fill_hi = std::min(static_cast<int>(Ll), c_max + 2);
             curr_M[0] = kNegInf;
@@ -3485,19 +3501,25 @@ public:
                 size_t cu = static_cast<size_t>(c);
                 int8_t cj = s_long[cu - 1];
 
-                Scalar d_op = prev_M[cu] - g_open - g_ext;
-                Scalar d_ex = prev_D[cu] - g_ext;
-                if (d_op >= d_ex) {
-                    curr_D[cu] = d_op;
-                    curr_tr_D[cu] = prev_tr_M[cu];
+                if (c <= prev_c_max) {
+                    Scalar d_op = prev_M[cu] - g_open - g_ext;
+                    Scalar d_ex = prev_D[cu] - g_ext;
+                    if (d_op >= d_ex) {
+                        curr_D[cu] = d_op;
+                        curr_tr_D[cu] = prev_tr_M[cu];
+                    } else {
+                        curr_D[cu] = d_ex;
+                        curr_tr_D[cu] = prev_tr_D[cu];
+                    }
                 } else {
-                    curr_D[cu] = d_ex;
-                    curr_tr_D[cu] = prev_tr_D[cu];
+                    curr_D[cu] = kNegInf;
+                    curr_tr_D[cu] = TrackAcc{};
                 }
 
-                Scalar i_op = curr_M[cu - 1] - g_open - g_ext;
-                Scalar i_ex = ins_sc - g_ext;
-                if (i_op >= i_ex) {
+                bool left_in_band = (c > c_min) || (c == 1 && static_cast<int>(r) <= B0);
+                Scalar i_op = left_in_band ? (curr_M[cu - 1] - g_open - g_ext) : kNegInf;
+                Scalar i_ex = (c > c_min) ? (ins_sc - g_ext) : kNegInf;
+                if (i_op > i_ex) {
                     ins_sc = i_op;
                     ins_tr = curr_tr_M[cu - 1];
                 } else {
@@ -4048,29 +4070,9 @@ public:
             const Scalar g_open = settings.transducer_gap_open;
             const Scalar g_ext  = settings.transducer_gap_extend;
 
-            Eigen::MatrixXd dp_M = Eigen::MatrixXd::Constant(L1 + 1, L2 + 1, NEG_INF);
-            Eigen::MatrixXd dp_I = Eigen::MatrixXd::Constant(L1 + 1, L2 + 1, NEG_INF);
-            Eigen::MatrixXd dp_D = Eigen::MatrixXd::Constant(L1 + 1, L2 + 1, NEG_INF);
-
-            Eigen::MatrixXi bt_M = Eigen::MatrixXi::Zero(L1 + 1, L2 + 1);
-            Eigen::MatrixXi bt_I = Eigen::MatrixXi::Zero(L1 + 1, L2 + 1);
-            Eigen::MatrixXi bt_D = Eigen::MatrixXi::Zero(L1 + 1, L2 + 1);
-
-            dp_M(0, 0) = 0.0;
-            for (size_t i = 1; i <= L1; ++i) {
-                Scalar occ_L = left.occupancy[i - 1];
-                dp_I(i, 0) = (i == 1) ? (-g_open * occ_L) : (dp_I(i - 1, 0) - g_ext * occ_L);
-                bt_I(i, 0) = (i == 1) ? 0 : 1;
-            }
-            for (size_t j = 1; j <= L2; ++j) {
-                Scalar occ_R = right.occupancy[j - 1];
-                dp_D(0, j) = (j == 1) ? (-g_open * occ_R) : (dp_D(0, j - 1) - g_ext * occ_R);
-                bt_D(0, j) = (j == 1) ? 0 : 2;
-            }
-
             // Subquadratic O(B * L) Collinear 3-AA Seed-Chain Anchor Corridor when min(L1, L2) > subquadratic_length_threshold
             const bool use_corridor = (std::min(L1, L2) > settings.subquadratic_length_threshold);
-            std::vector<size_t> j_lo_vec(L1 + 1, 1), j_hi_vec(L1 + 1, L2);
+            std::vector<size_t> row_lo(L1 + 1, 0), row_hi(L1 + 1, L2);
             if (use_corridor) {
                 auto modal_aa = [&](const std::vector<Vector>& L_prof) -> std::vector<int> {
                     std::vector<int> res(L_prof.size(), -1);
@@ -4161,6 +4163,8 @@ public:
                 int dL_abs = static_cast<int>(std::max(L1, L2) - std::min(L1, L2));
                 int B_prof = std::max({64, dL_abs + 48, max_diag_excursion + 32});
 
+                row_lo[0] = 0;
+                row_hi[0] = std::min<size_t>(L2, static_cast<size_t>(B_prof));
                 size_t seg = 0;
                 for (size_t i = 1; i <= L1; ++i) {
                     while (seg + 2 < anchors.size() && anchors[seg + 1].first < i) {
@@ -4172,90 +4176,160 @@ public:
                     double c1 = static_cast<double>(anchors[seg + 1].second);
                     double frac = (r1 > r0) ? ((static_cast<double>(i) - r0) / (r1 - r0)) : 0.0;
                     int j_cen = static_cast<int>(std::llround(c0 + frac * (c1 - c0)));
-                    j_lo_vec[i] = static_cast<size_t>(std::max(1, j_cen - B_prof));
-                    j_hi_vec[i] = static_cast<size_t>(std::min<int>(static_cast<int>(L2), j_cen + B_prof));
+                    row_lo[i] = (static_cast<int>(i) <= B_prof)
+                              ? 0
+                              : static_cast<size_t>(std::min<int>(static_cast<int>(L2), std::max(1, j_cen - B_prof)));
+                    row_hi[i] = static_cast<size_t>(std::min<int>(static_cast<int>(L2), std::max(1, j_cen + B_prof)));
+                }
+                row_hi[L1] = L2;
+                row_lo[L1] = std::min(row_lo[L1], L2);
+                // Enforce monotonic corridor connectivity from (0, 0) to (L1, L2)
+                for (size_t i = 1; i <= L1; ++i) {
+                    row_lo[i] = std::max(row_lo[i], row_lo[i - 1]);
+                    row_hi[i] = std::max(row_hi[i], row_hi[i - 1]);
+                    if (row_lo[i] > row_hi[i - 1]) row_lo[i] = row_hi[i - 1];
+                }
+                for (size_t i = L1; i > 0; --i) {
+                    if (row_hi[i - 1] < row_lo[i]) row_hi[i - 1] = row_lo[i];
+                    if (row_lo[i - 1] > row_lo[i]) row_lo[i - 1] = row_lo[i];
                 }
             }
 
+            // Allocate compact O(B * L) corridor buffers instead of dense O(L1 * L2) matrices
+            std::vector<size_t> row_offset(L1 + 2, 0);
+            for (size_t i = 0; i <= L1; ++i) {
+                row_offset[i + 1] = row_offset[i] + (row_hi[i] - row_lo[i] + 1);
+            }
+            const size_t total_cells = row_offset[L1 + 1];
+            std::vector<Scalar> dp_M_buf(total_cells, NEG_INF);
+            std::vector<Scalar> dp_I_buf(total_cells, NEG_INF);
+            std::vector<Scalar> dp_D_buf(total_cells, NEG_INF);
+            std::vector<uint8_t> bt_M_buf(total_cells, 0);
+            std::vector<uint8_t> bt_I_buf(total_cells, 0);
+            std::vector<uint8_t> bt_D_buf(total_cells, 0);
+
+            auto in_band = [&](size_t r, size_t c) -> bool {
+                return r <= L1 && c >= row_lo[r] && c <= row_hi[r];
+            };
+            auto cell_idx = [&](size_t r, size_t c) -> size_t {
+                return row_offset[r] + (c - row_lo[r]);
+            };
+            auto get_M = [&](size_t r, size_t c) -> Scalar {
+                return in_band(r, c) ? dp_M_buf[cell_idx(r, c)] : NEG_INF;
+            };
+            auto get_I = [&](size_t r, size_t c) -> Scalar {
+                return in_band(r, c) ? dp_I_buf[cell_idx(r, c)] : NEG_INF;
+            };
+            auto get_D = [&](size_t r, size_t c) -> Scalar {
+                return in_band(r, c) ? dp_D_buf[cell_idx(r, c)] : NEG_INF;
+            };
+
+            dp_M_buf[cell_idx(0, 0)] = 0.0;
             for (size_t i = 1; i <= L1; ++i) {
-                size_t j_start = j_lo_vec[i];
-                size_t j_end   = j_hi_vec[i];
+                if (!in_band(i, 0)) break;
+                Scalar occ_L = left.occupancy[i - 1];
+                size_t idx = cell_idx(i, 0);
+                dp_I_buf[idx] = (i == 1) ? (-g_open * occ_L) : (get_I(i - 1, 0) - g_ext * occ_L);
+                bt_I_buf[idx] = (i == 1) ? 0 : 1;
+            }
+            for (size_t j = 1; j <= row_hi[0]; ++j) {
+                Scalar occ_R = right.occupancy[j - 1];
+                size_t idx = cell_idx(0, j);
+                dp_D_buf[idx] = (j == 1) ? (-g_open * occ_R) : (get_D(0, j - 1) - g_ext * occ_R);
+                bt_D_buf[idx] = (j == 1) ? 0 : 2;
+            }
+
+            for (size_t i = 1; i <= L1; ++i) {
+                size_t j_start = std::max<size_t>(1, row_lo[i]);
+                size_t j_end   = row_hi[i];
+                Scalar occ_L = std::max<Scalar>(0.50, left.occupancy[i - 1]);
+                Scalar eff_open_I = g_open * occ_L;
+                Scalar eff_ext_I  = g_ext  * occ_L;
                 for (size_t j = j_start; j <= j_end; ++j) {
+                    size_t idx = cell_idx(i, j);
                     // 1. State I: align left[i-1] to gap, weighted by clade occupancy o_i^(L) (floored at 0.50)
-                    Scalar occ_L = std::max<Scalar>(0.50, left.occupancy[i - 1]);
-                    Scalar eff_open_I = g_open * occ_L;
-                    Scalar eff_ext_I  = g_ext  * occ_L;
-                    Scalar i_from_m = dp_M(i - 1, j) - eff_open_I;
-                    Scalar i_from_i = dp_I(i - 1, j) - eff_ext_I;
-                    if (i_from_m >= i_from_i) {
-                        dp_I(i, j) = i_from_m;
-                        bt_I(i, j) = 0;
-                    } else {
-                        dp_I(i, j) = i_from_i;
-                        bt_I(i, j) = 1;
+                    if (in_band(i - 1, j)) {
+                        Scalar i_from_m = get_M(i - 1, j) - eff_open_I;
+                        Scalar i_from_i = get_I(i - 1, j) - eff_ext_I;
+                        if (i_from_m >= i_from_i) {
+                            dp_I_buf[idx] = i_from_m;
+                            bt_I_buf[idx] = 0;
+                        } else {
+                            dp_I_buf[idx] = i_from_i;
+                            bt_I_buf[idx] = 1;
+                        }
                     }
 
                     // 2. State D: align right[j-1] to gap, weighted by clade occupancy o_j^(R) (floored at 0.50)
-                    Scalar occ_R = std::max<Scalar>(0.50, right.occupancy[j - 1]);
-                    Scalar eff_open_D = g_open * occ_R;
-                    Scalar eff_ext_D  = g_ext  * occ_R;
-                    Scalar d_from_m = dp_M(i, j - 1) - eff_open_D;
-                    Scalar d_from_d = dp_D(i, j - 1) - eff_ext_D;
-                    if (d_from_m >= d_from_d) {
-                        dp_D(i, j) = d_from_m;
-                        bt_D(i, j) = 0;
-                    } else {
-                        dp_D(i, j) = d_from_d;
-                        bt_D(i, j) = 2;
+                    if (in_band(i, j - 1)) {
+                        Scalar occ_R = std::max<Scalar>(0.50, right.occupancy[j - 1]);
+                        Scalar eff_open_D = g_open * occ_R;
+                        Scalar eff_ext_D  = g_ext  * occ_R;
+                        Scalar d_from_m = get_M(i, j - 1) - eff_open_D;
+                        Scalar d_from_d = get_D(i, j - 1) - eff_ext_D;
+                        if (d_from_m >= d_from_d) {
+                            dp_D_buf[idx] = d_from_m;
+                            bt_D_buf[idx] = 0;
+                        } else {
+                            dp_D_buf[idx] = d_from_d;
+                            bt_D_buf[idx] = 2;
+                        }
                     }
 
                     // 3. State M: homologous Match of left[i-1] and right[j-1]
-                    Scalar bf = homology_bayes_factor(L1_fwd[i - 1], L2_fwd[j - 1]);
-                    Scalar emit = std::log(std::max<Scalar>(1e-4, bf + eps_floor));
-                    Scalar m0 = dp_M(i - 1, j - 1);
-                    Scalar m1 = dp_I(i - 1, j - 1);
-                    Scalar m2 = dp_D(i - 1, j - 1);
-                    if (m0 >= m1 && m0 >= m2) {
-                        dp_M(i, j) = m0 + emit;
-                        bt_M(i, j) = 0;
-                    } else if (m1 >= m2) {
-                        dp_M(i, j) = m1 + emit;
-                        bt_M(i, j) = 1;
-                    } else {
-                        dp_M(i, j) = m2 + emit;
-                        bt_M(i, j) = 2;
+                    if (in_band(i - 1, j - 1)) {
+                        Scalar bf = homology_bayes_factor(L1_fwd[i - 1], L2_fwd[j - 1]);
+                        Scalar emit = std::log(std::max<Scalar>(1e-4, bf + eps_floor));
+                        Scalar m0 = get_M(i - 1, j - 1);
+                        Scalar m1 = get_I(i - 1, j - 1);
+                        Scalar m2 = get_D(i - 1, j - 1);
+                        Scalar best_m = m0;
+                        uint8_t best_bt = 0;
+                        if (m1 > best_m) {
+                            best_m = m1;
+                            best_bt = 1;
+                        }
+                        if (m2 > best_m) {
+                            best_m = m2;
+                            best_bt = 2;
+                        }
+                        dp_M_buf[idx] = best_m + emit;
+                        bt_M_buf[idx] = best_bt;
                     }
                 }
             }
 
             // Backtrack optimal transducer path
             int state = 0;
-            Scalar best_end = dp_M(L1, L2);
-            if (dp_I(L1, L2) > best_end) { best_end = dp_I(L1, L2); state = 1; }
-            if (dp_D(L1, L2) > best_end) { best_end = dp_D(L1, L2); state = 2; }
+            Scalar best_end = get_M(L1, L2);
+            if (get_I(L1, L2) > best_end) { best_end = get_I(L1, L2); state = 1; }
+            if (get_D(L1, L2) > best_end) { best_end = get_D(L1, L2); state = 2; }
 
             struct Step { int op; size_t i; size_t j; }; // op: 0=M, 1=I, 2=D
             std::vector<Step> path;
             size_t ci = L1, cj = L2;
             while (ci > 0 || cj > 0) {
-                if (state == 0 && ci > 0 && cj > 0) {
+                if (state == 0 && ci > 0 && cj > 0 && in_band(ci, cj)) {
                     path.push_back({0, ci - 1, cj - 1});
-                    state = bt_M(ci, cj);
+                    state = bt_M_buf[cell_idx(ci, cj)];
                     ci--; cj--;
-                } else if (state == 1 && ci > 0) {
+                } else if (state == 1 && ci > 0 && in_band(ci, cj)) {
                     path.push_back({1, ci - 1, 0});
-                    state = bt_I(ci, cj);
+                    state = bt_I_buf[cell_idx(ci, cj)];
                     ci--;
-                } else if (state == 2 && cj > 0) {
+                } else if (state == 2 && cj > 0 && in_band(ci, cj)) {
                     path.push_back({2, 0, cj - 1});
-                    state = bt_D(ci, cj);
+                    state = bt_D_buf[cell_idx(ci, cj)];
                     cj--;
-                } else if (ci > 0) {
+                } else if (ci > 0 && (cj == 0 || !in_band(ci, cj - 1))) {
                     path.push_back({1, ci - 1, 0});
                     ci--;
+                } else if (cj > 0) {
+                    path.push_back({2, 0, cj - 1});
+                    cj--;
                 } else {
-                    path.push_back({2, 0, cj - 1});
-                    cj--;
+                    path.push_back({1, ci - 1, 0});
+                    ci--;
                 }
             }
             std::reverse(path.begin(), path.end());

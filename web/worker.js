@@ -260,8 +260,8 @@ self.onmessage = async function(e) {
       const html = mod.ccall(
         'walrus_render_html_from_json',
         'string',
-        ['string'],
-        [jsonStr]
+        ['string', 'string'],
+        [jsonStr, label]
       );
       const err = mod.ccall('walrus_get_last_error', 'string', [], []);
       if (!html || err) {

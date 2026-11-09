@@ -439,6 +439,8 @@ int run_tree(int argc, char* argv[]) {
 #ifdef _OPENMP
     if (num_threads > 0) {
         omp_set_num_threads(num_threads);
+    } else if (!std::getenv("OMP_NUM_THREADS")) {
+        omp_set_num_threads(std::min(omp_get_max_threads(), 8));
     }
 #endif
 
@@ -510,7 +512,11 @@ int run_tree(int argc, char* argv[]) {
             prov.execution.start_time = Provenance::current_iso8601();
             prov.execution.end_time = prov.execution.start_time;
             prov.execution.wall_time_seconds = res.runtime_seconds;
+#ifdef _OPENMP
+            prov.execution.cpu_threads = (num_threads > 0) ? num_threads : omp_get_max_threads();
+#else
             prov.execution.cpu_threads = (num_threads > 0) ? num_threads : 1;
+#endif
             prov.execution.hostname = Provenance::get_hostname();
             prov.execution.os = Provenance::detect_os();
             prov.execution.compiler = Provenance::detect_compiler();

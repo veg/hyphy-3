@@ -1,5 +1,6 @@
 #include "hyphy/analyses/persite_optimizer.hpp"
 #include "hyphy/core/likelihood.hpp"
+#include "hyphy/core/stats.hpp"
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -92,18 +93,7 @@ std::pair<double, double> PersiteOptimizer::optimize_mu_for_omega(
 }
 
 double PersiteOptimizer::chi2_pvalue(double x, int df) {
-    if (x <= 0) return 1.0;
-    if (x > 100) return 0.0;
-
-    if (df == 1) {
-        double z = std::sqrt(x);
-        return std::erfc(z / std::sqrt(2.0));
-    }
-
-    double mean = static_cast<double>(df);
-    double variance = 2.0 * mean;
-    double z = (x - mean) / std::sqrt(variance);
-    return 0.5 * std::erfc(z / std::sqrt(2.0));
+    return static_cast<double>(hyphy::core::stats::chi2_p_value(static_cast<Scalar>(x), static_cast<Scalar>(df)));
 }
 
 PersiteOptimizer::SiteResult PersiteOptimizer::optimize_site_omega_grid(
@@ -238,6 +228,7 @@ void PersiteOptimizer::apply_fdr_correction(
     std::vector<SiteResult>& results,
     double alpha
 ) {
+    (void)alpha;
     if (results.empty()) return;
 
     std::vector<size_t> up_indices, down_indices;
@@ -259,24 +250,19 @@ void PersiteOptimizer::apply_fdr_correction(
         std::vector<size_t> sorted_indices = group_indices;
         std::sort(sorted_indices.begin(), sorted_indices.end(),
             [&results](size_t a, size_t b) {
-                return results[a].p_value < results[b].p_value;
+                double pa = std::isfinite(results[a].p_value) ? results[a].p_value : 1.0;
+                double pb = std::isfinite(results[b].p_value) ? results[b].p_value : 1.0;
+                return pa < pb;
             });
 
-        int max_i = -1;
-        for (size_t i = 0; i < m; ++i) {
-            double threshold = static_cast<double>(i + 1) / m * alpha;
-            if (results[sorted_indices[i]].p_value <= threshold) {
-                max_i = static_cast<int>(i);
-            }
-        }
-
-        if (max_i >= 0) {
-            double min_q = 1.0;
-            for (int i = static_cast<int>(m) - 1; i >= 0; --i) {
-                double q_candidate = results[sorted_indices[i]].p_value * m / (i + 1);
-                min_q = std::min(min_q, q_candidate);
-                results[sorted_indices[i]].q_value = min_q;
-            }
+        double min_q = 1.0;
+        for (int i = static_cast<int>(m) - 1; i >= 0; --i) {
+            double p = std::isfinite(results[sorted_indices[i]].p_value)
+                ? std::clamp(results[sorted_indices[i]].p_value, 0.0, 1.0)
+                : 1.0;
+            double q_candidate = p * static_cast<double>(m) / static_cast<double>(i + 1);
+            min_q = std::clamp(std::min(min_q, q_candidate), 0.0, 1.0);
+            results[sorted_indices[i]].q_value = min_q;
         }
     };
 

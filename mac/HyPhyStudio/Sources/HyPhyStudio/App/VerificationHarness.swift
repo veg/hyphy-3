@@ -16,6 +16,18 @@ public enum VerificationHarness {
         print("  HYPHY STUDIO — SYSTEM VERIFICATION & INTEGRATION TEST HARNESS")
         print("=================================================================")
 
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // App
+            .deletingLastPathComponent() // HyPhyStudio
+            .deletingLastPathComponent() // Sources
+            .deletingLastPathComponent() // HyPhyStudio
+            .deletingLastPathComponent() // mac
+        func loadRepoFile(_ relPath: String) -> String? {
+            if let s = try? String(contentsOfFile: relPath) { return s }
+            let url = repoRoot.appendingPathComponent(relPath)
+            return try? String(contentsOf: url)
+        }
+
         // 1. Locate CD2 dataset
         var fnaStr: String?
         var nwkStr: String?
@@ -26,10 +38,10 @@ public enum VerificationHarness {
             nwkStr = try? String(contentsOf: nwkURL)
         }
         if fnaStr == nil {
-            fnaStr = try? String(contentsOfFile: "/Users/sergei/Development/hyphy-3/benchmarks/data/cd2.fna")
+            fnaStr = loadRepoFile("benchmarks/data/cd2.fna")
         }
         if nwkStr == nil {
-            nwkStr = try? String(contentsOfFile: "/Users/sergei/Development/hyphy-3/benchmarks/data/cd2_fitted.nwk")
+            nwkStr = loadRepoFile("benchmarks/data/cd2_fitted.nwk")
         }
 
         guard let fasta = fnaStr, let newick = nwkStr else {
@@ -44,7 +56,7 @@ public enum VerificationHarness {
             nexStr = try? String(contentsOf: nexURL)
         }
         if nexStr == nil {
-            nexStr = try? String(contentsOfFile: "/Users/sergei/Development/hyphy-3/benchmarks/data/bglobin.nex")
+            nexStr = loadRepoFile("benchmarks/data/bglobin.nex")
         }
         guard let nexusContent = nexStr else {
             fatalError("[-] FAILED: Could not locate bglobin.nex!")
@@ -65,7 +77,7 @@ public enum VerificationHarness {
             fasStr = try? String(contentsOf: fasURL)
         }
         if fasStr == nil {
-            fasStr = try? String(contentsOfFile: "/Users/sergei/Development/hyphy-3/benchmarks/data/cd2.fna")
+            fasStr = loadRepoFile("benchmarks/data/cd2.fna")
         }
         guard let fasContent = fasStr else {
             fatalError("[-] FAILED: Could not locate cd2.fas!")

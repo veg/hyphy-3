@@ -78,10 +78,19 @@ public:
 #ifdef __EMSCRIPTEN__
             throw std::runtime_error("Gzipped alignment files (.gz) must be decompressed in the browser via DecompressionStream before passing to the WASM engine: " + filepath);
 #else
-            std::string cmd = "gzip -dc \"" + filepath + "\"";
+            std::string escaped_path = "'";
+            for (char c : filepath) {
+                if (c == '\'') {
+                    escaped_path += "'\\''";
+                } else {
+                    escaped_path += c;
+                }
+            }
+            escaped_path += "'";
+            std::string cmd = "gzip -dc " + escaped_path;
             FILE* pipe = popen(cmd.c_str(), "r");
             if (!pipe) {
-                throw std::runtime_error("Failed to decompress gzip alignment file: " + filepath);
+                throw std::runtime_error("Failed to decompress gzip file: " + filepath);
             }
             std::string out;
             char buf[65536];
@@ -89,7 +98,10 @@ public:
             while ((nread = std::fread(buf, 1, sizeof(buf), pipe)) > 0) {
                 out.append(buf, nread);
             }
-            pclose(pipe);
+            int pclose_status = pclose(pipe);
+            if (pclose_status != 0) {
+                throw std::runtime_error("Failed to decompress gzip file: " + filepath);
+            }
             if (out.empty()) {
                 throw std::runtime_error("Decompressed gzip alignment is empty: " + filepath);
             }
@@ -132,7 +144,22 @@ public:
                 }
             } else if (line[0] == '(') {
                 aln.embedded_tree_newick = line;
-                if (aln.embedded_tree_newick.back() != ';') {
+                while (aln.embedded_tree_newick.find(';') == std::string::npos && std::getline(file, line)) {
+                    while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) {
+                        line.pop_back();
+                    }
+                    size_t first_non_ws = 0;
+                    while (first_non_ws < line.size() && (line[first_non_ws] == ' ' || line[first_non_ws] == '\t')) {
+                        ++first_non_ws;
+                    }
+                    if (first_non_ws < line.size()) {
+                        aln.embedded_tree_newick += line.substr(first_non_ws);
+                    }
+                }
+                auto semi_pos = aln.embedded_tree_newick.find(';');
+                if (semi_pos != std::string::npos) {
+                    aln.embedded_tree_newick.resize(semi_pos + 1);
+                } else if (!aln.embedded_tree_newick.empty() && aln.embedded_tree_newick.back() != ';') {
                     aln.embedded_tree_newick += ";";
                 }
                 break;

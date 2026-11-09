@@ -6,6 +6,7 @@
 #include "hyphy/core/rate_matrix.hpp"
 #include "hyphy/core/likelihood.hpp"
 #include "hyphy/core/param_map.hpp"
+#include "hyphy/core/stats.hpp"
 #include "hyphy/opt/nelder_mead.hpp"
 #include "LBFGSB.h"
 #include <iostream>
@@ -193,7 +194,7 @@ public:
 
         size_t K = 5 + num_branches;
         size_t N = nuc_aln.num_nucleotides;
-        res.aicc = -2.0 * res.log_likelihood + 2.0 * K * N / (N - K - 1.0);
+        res.aicc = hyphy::core::stats::compute_aicc(res.log_likelihood, K, N);
         return res;
     }
 

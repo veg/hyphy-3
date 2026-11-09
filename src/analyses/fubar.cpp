@@ -27,8 +27,8 @@ std::string FUBARAnalyzer::to_modern_json(
                 {"grid_points", settings.grid_points},
                 {"total_grid_points", settings.grid_points * settings.grid_points},
                 {"method", fubar_method_to_string(settings.method)},
-                {"concentration", settings.concentration},
-                {"posterior_threshold", settings.posterior_threshold},
+                {"concentration", finite_or_null(settings.concentration)},
+                {"posterior_threshold", finite_or_null(settings.posterior_threshold)},
                 {"non_zero", settings.non_zero},
                 {"tree_scaling", settings.tree_scaling}
             }
@@ -54,7 +54,7 @@ std::string FUBARAnalyzer::to_modern_json(
             }
             prov.execution.start_time = Provenance::current_iso8601();
             prov.execution.end_time = prov.execution.start_time;
-            prov.execution.wall_time_seconds = res.time_total_sec;
+            prov.execution.wall_time_seconds = std::isfinite(res.time_total_sec) ? res.time_total_sec : 0.0;
             prov.execution.cpu_threads = 1;
             prov.execution.hostname = Provenance::get_hostname();
             prov.execution.os = Provenance::detect_os();
@@ -84,12 +84,16 @@ std::string FUBARAnalyzer::to_modern_json(
         // Phylogeny — shape pinned by fubar.v3.schema.json
         j["phylogeny"] = {
             {"tree", tree.to_newick(true)},
-            {"total_tree_length", res.baseline_tree_length},
+            {"total_tree_length", finite_or_null(res.baseline_tree_length)},
             {"nodes_count", tree.num_nodes()}
         };
 
         // Model fits
         if (res.has_gtr_fit) {
+            nlohmann::json gtr_bls = nlohmann::json::object();
+            for (const auto& [k, v] : res.gtr_branch_lengths) {
+                gtr_bls[k] = finite_or_null(v);
+            }
             j["model_fits"]["nucleotide_gtr"] = {
                 {"log_likelihood", finite_or_null(res.gtr_log_l)},
                 {"aicc", finite_or_null(res.gtr_aicc)},
@@ -100,7 +104,7 @@ std::string FUBARAnalyzer::to_modern_json(
                     {"theta_CT", finite_or_null(res.gtr_rates.theta_CT)},
                     {"theta_GT", finite_or_null(res.gtr_rates.theta_GT)}
                 }},
-                {"branch_lengths", res.gtr_branch_lengths}
+                {"branch_lengths", gtr_bls}
             };
         }
 
@@ -108,9 +112,9 @@ std::string FUBARAnalyzer::to_modern_json(
         j["rate_grid"] = {
             {"dimensions", {settings.grid_points, settings.grid_points}},
             {"total_points", res.grid.size()},
-            {"prior_weight_non_positive", res.weight_non_positive},
-            {"best_scaler_alpha", res.best_scaler_alpha},
-            {"best_scaler_beta", res.best_scaler_beta},
+            {"prior_weight_non_positive", finite_or_null(res.weight_non_positive)},
+            {"best_scaler_alpha", finite_or_null(res.best_scaler_alpha)},
+            {"best_scaler_beta", finite_or_null(res.best_scaler_beta)},
             {"data", {
                 {"alpha", nlohmann::json::array()},
                 {"beta", nlohmann::json::array()},
@@ -118,18 +122,18 @@ std::string FUBARAnalyzer::to_modern_json(
             }}
         };
         for (size_t g = 0; g < res.grid.size(); ++g) {
-            j["rate_grid"]["data"]["alpha"].push_back(res.grid[g].first);
-            j["rate_grid"]["data"]["beta"].push_back(res.grid[g].second);
-            j["rate_grid"]["data"]["posterior_weight"].push_back(res.posterior_grid_weights[g]);
+            j["rate_grid"]["data"]["alpha"].push_back(finite_or_null(res.grid[g].first));
+            j["rate_grid"]["data"]["beta"].push_back(finite_or_null(res.grid[g].second));
+            j["rate_grid"]["data"]["posterior_weight"].push_back(finite_or_null(res.posterior_grid_weights[g]));
         }
 
         // Summary
         j["summary"] = {
             {"positive_sites_count", res.positive_sites.size()},
             {"purifying_sites_count", res.purifying_sites.size()},
-            {"posterior_threshold", settings.posterior_threshold},
-            {"expected_false_positives", res.expected_false_positives},
-            {"false_positives_ci_95", {res.false_positives_ci_95.first, res.false_positives_ci_95.second}},
+            {"posterior_threshold", finite_or_null(settings.posterior_threshold)},
+            {"expected_false_positives", finite_or_null(res.expected_false_positives)},
+            {"false_positives_ci_95", {finite_or_null(res.false_positives_ci_95.first), finite_or_null(res.false_positives_ci_95.second)}},
             {"positive_sites", res.positive_sites},
             {"purifying_sites", res.purifying_sites}
         };
@@ -193,15 +197,15 @@ std::string FUBARAnalyzer::to_legacy_json(const FUBARResult& res, const std::str
         j["fits"] = nlohmann::json::object();
         if (res.has_gtr_fit) {
             j["fits"]["Nucleotide GTR"] = {
-                {"Log Likelihood", res.gtr_log_l},
-                {"AIC-c", res.gtr_aicc},
+                {"Log Likelihood", finite_or_null(res.gtr_log_l)},
+                {"AIC-c", finite_or_null(res.gtr_aicc)},
                 {"Rate Distributions", {
-                    {"Substitution rate from nucleotide A to nucleotide C", res.gtr_rates.theta_AC},
+                    {"Substitution rate from nucleotide A to nucleotide C", finite_or_null(res.gtr_rates.theta_AC)},
                     {"Substitution rate from nucleotide A to nucleotide G", 1.0},
-                    {"Substitution rate from nucleotide A to nucleotide T", res.gtr_rates.theta_AT},
-                    {"Substitution rate from nucleotide C to nucleotide G", res.gtr_rates.theta_CG},
-                    {"Substitution rate from nucleotide C to nucleotide T", res.gtr_rates.theta_CT},
-                    {"Substitution rate from nucleotide G to nucleotide T", res.gtr_rates.theta_GT}
+                    {"Substitution rate from nucleotide A to nucleotide T", finite_or_null(res.gtr_rates.theta_AT)},
+                    {"Substitution rate from nucleotide C to nucleotide G", finite_or_null(res.gtr_rates.theta_CG)},
+                    {"Substitution rate from nucleotide C to nucleotide T", finite_or_null(res.gtr_rates.theta_CT)},
+                    {"Substitution rate from nucleotide G to nucleotide T", finite_or_null(res.gtr_rates.theta_GT)}
                 }},
                 {"display order", 0},
                 {"estimated parameters", 24}
@@ -215,8 +219,8 @@ std::string FUBARAnalyzer::to_legacy_json(const FUBARResult& res, const std::str
             {"chain-length", settings.mcmc_chain_length},
             {"burn-in", settings.mcmc_burn_in},
             {"samples", settings.mcmc_samples},
-            {"concentration", settings.concentration},
-            {"posterior", settings.posterior_threshold},
+            {"concentration", finite_or_null(settings.concentration)},
+            {"posterior", finite_or_null(settings.posterior_threshold)},
             {"non-zero", settings.non_zero ? 1 : 0},
             {"method", fubar_method_to_string(settings.method)}
         };
@@ -224,14 +228,14 @@ std::string FUBARAnalyzer::to_legacy_json(const FUBARResult& res, const std::str
         // Grid: [G x 3] matrix
         j["grid"] = nlohmann::json::array();
         for (size_t g = 0; g < res.grid.size(); ++g) {
-            j["grid"].push_back({res.grid[g].first, res.grid[g].second, res.posterior_grid_weights[g]});
+            j["grid"].push_back(sanitized_doubles({res.grid[g].first, res.grid[g].second, res.posterior_grid_weights[g]}));
         }
 
         // Posterior: {"0": {"0": [weights...], ...}}
         j["posterior"] = nlohmann::json::object();
         j["posterior"]["0"] = nlohmann::json::object();
         for (size_t s = 0; s < res.site_results.size(); ++s) {
-            j["posterior"]["0"][std::to_string(s)] = nlohmann::json::array({res.site_results[s].posterior_weights});
+            j["posterior"]["0"][std::to_string(s)] = nlohmann::json::array({sanitized_doubles(res.site_results[s].posterior_weights)});
         }
 
         // MLE headers and content
@@ -252,7 +256,7 @@ std::string FUBARAnalyzer::to_legacy_json(const FUBARResult& res, const std::str
         };
 
         for (const auto& sr : res.site_results) {
-            j["MLE"]["content"]["0"].push_back({
+            j["MLE"]["content"]["0"].push_back(sanitized_doubles({
                 sr.alpha,
                 sr.beta,
                 sr.beta_minus_alpha,
@@ -261,15 +265,15 @@ std::string FUBARAnalyzer::to_legacy_json(const FUBARResult& res, const std::str
                 sr.bayes_factor,
                 sr.psrf,
                 sr.neff
-            });
+            }));
         }
 
         // Timers
         j["timers"] = {
-            {"Nucleotide Fit", {{"timer", res.time_gtr_sec}}},
-            {"Grid Calculations", {{"timer", res.time_grid_sec}}},
-            {"Posterior estimation", {{"timer", res.time_posterior_sec}}},
-            {"Overall", {{"timer", res.time_total_sec}}}
+            {"Nucleotide Fit", {{"timer", finite_or_null(res.time_gtr_sec)}}},
+            {"Grid Calculations", {{"timer", finite_or_null(res.time_grid_sec)}}},
+            {"Posterior estimation", {{"timer", finite_or_null(res.time_posterior_sec)}}},
+            {"Overall", {{"timer", finite_or_null(res.time_total_sec)}}}
         };
 
         j["runtime"] = "3.0.0";

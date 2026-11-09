@@ -102,6 +102,7 @@ int main(int argc, char* argv[]) {
     }
     if (cmd == "--version" || cmd == "-v" || cmd == "version") {
         print_hyphy3_banner();
+        std::cout << "HyPhy 3 v" HYPHY3_VERSION " (commit: " HYPHY3_GIT_COMMIT ", build: " HYPHY3_BUILD_TYPE ")\n";
         return 0;
     }
 

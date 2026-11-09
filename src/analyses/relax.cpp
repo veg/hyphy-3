@@ -37,38 +37,38 @@ nlohmann::json RELAXResult::to_legacy_json(const Tree& tree, const Alignment& al
         // GTR fit
         nlohmann::json gtr_freqs = nlohmann::json::array();
         for (int i = 0; i < 4; ++i) {
-            gtr_freqs.push_back({aln.nuc_frequencies(i)});
+            gtr_freqs.push_back({finite_or_null(aln.nuc_frequencies(i))});
         }
         fits["Nucleotide GTR"] = {
-            {"AIC-c", gtr_aicc},
-            {"Log Likelihood", gtr_log_likelihood},
+            {"AIC-c", finite_or_null(gtr_aicc)},
+            {"Log Likelihood", finite_or_null(gtr_log_likelihood)},
             {"display order", 0},
             {"estimated parameters", gtr_parameters},
             {"Equilibrium frequencies", gtr_freqs},
             {"Rate Distributions", {
-                {"Substitution rate from nucleotide A to nucleotide C", gtr_rates.theta_AC},
+                {"Substitution rate from nucleotide A to nucleotide C", finite_or_null(gtr_rates.theta_AC)},
                 {"Substitution rate from nucleotide A to nucleotide G", 1.0},
-                {"Substitution rate from nucleotide A to nucleotide T", gtr_rates.theta_AT},
-                {"Substitution rate from nucleotide C to nucleotide G", gtr_rates.theta_CG},
-                {"Substitution rate from nucleotide C to nucleotide T", gtr_rates.theta_CT},
-                {"Substitution rate from nucleotide G to nucleotide T", gtr_rates.theta_GT}
+                {"Substitution rate from nucleotide A to nucleotide T", finite_or_null(gtr_rates.theta_AT)},
+                {"Substitution rate from nucleotide C to nucleotide G", finite_or_null(gtr_rates.theta_CG)},
+                {"Substitution rate from nucleotide C to nucleotide T", finite_or_null(gtr_rates.theta_CT)},
+                {"Substitution rate from nucleotide G to nucleotide T", finite_or_null(gtr_rates.theta_GT)}
             }}
         };
 
         // MG94 separate rates fit
         nlohmann::json mg_freqs = nlohmann::json::array();
         for (int i = 0; i < aln.codon_frequencies_f3x4.size(); ++i) {
-            mg_freqs.push_back({aln.codon_frequencies_f3x4(i)});
+            mg_freqs.push_back({finite_or_null(aln.codon_frequencies_f3x4(i))});
         }
         fits["MG94xREV with separate rates for branch sets"] = {
-            {"AIC-c", mg94_aicc},
-            {"Log Likelihood", mg94_log_likelihood},
+            {"AIC-c", finite_or_null(mg94_aicc)},
+            {"Log Likelihood", finite_or_null(mg94_log_likelihood)},
             {"display order", 1},
             {"estimated parameters", mg94_parameters},
             {"Equilibrium frequencies", mg_freqs},
             {"Rate Distributions", {
-                {"non-synonymous/synonymous rate ratio for *Reference*", {{mg94_omega_R, 1.0}}},
-                {"non-synonymous/synonymous rate ratio for *Test*", {{mg94_omega_T, 1.0}}}
+                {"non-synonymous/synonymous rate ratio for *Reference*", {{finite_or_null(mg94_omega_R), 1.0}}},
+                {"non-synonymous/synonymous rate ratio for *Test*", {{finite_or_null(mg94_omega_T), 1.0}}}
             }}
         };
 
@@ -77,12 +77,12 @@ nlohmann::json RELAXResult::to_legacy_json(const Tree& tree, const Alignment& al
             nlohmann::json r_obj, t_obj;
             for (size_t k = 0; k < ref_d.omegas.size(); ++k) {
                 r_obj[std::to_string(k)] = {
-                    {"omega", ref_d.omegas[k]},
-                    {"proportion", ref_d.weights[k]}
+                    {"omega", finite_or_null(ref_d.omegas[k])},
+                    {"proportion", finite_or_null(ref_d.weights[k])}
                 };
                 t_obj[std::to_string(k)] = {
-                    {"omega", test_d.omegas[k]},
-                    {"proportion", test_d.weights[k]}
+                    {"omega", finite_or_null(test_d.omegas[k])},
+                    {"proportion", finite_or_null(test_d.weights[k])}
                 };
             }
             res["Reference"] = r_obj;
@@ -91,8 +91,8 @@ nlohmann::json RELAXResult::to_legacy_json(const Tree& tree, const Alignment& al
                 nlohmann::json u_obj;
                 for (size_t k = 0; k < uncl_d.omegas.size(); ++k) {
                     u_obj[std::to_string(k)] = {
-                        {"omega", uncl_d.omegas[k]},
-                        {"proportion", uncl_d.weights[k]}
+                        {"omega", finite_or_null(uncl_d.omegas[k])},
+                        {"proportion", finite_or_null(uncl_d.weights[k])}
                     };
                 }
                 res["Unclassified"] = u_obj;
@@ -102,8 +102,8 @@ nlohmann::json RELAXResult::to_legacy_json(const Tree& tree, const Alignment& al
 
         // Alternative fit
         fits["RELAX alternative"] = {
-            {"AIC-c", alternative_fit.aicc},
-            {"Log Likelihood", alternative_fit.log_likelihood},
+            {"AIC-c", finite_or_null(alternative_fit.aicc)},
+            {"Log Likelihood", finite_or_null(alternative_fit.log_likelihood)},
             {"display order", 2},
             {"estimated parameters", alternative_fit.parameters},
             {"realized_cycles", alternative_fit.realized_cycles},
@@ -113,8 +113,8 @@ nlohmann::json RELAXResult::to_legacy_json(const Tree& tree, const Alignment& al
 
         // Null fit
         fits["RELAX null"] = {
-            {"AIC-c", null_fit.aicc},
-            {"Log Likelihood", null_fit.log_likelihood},
+            {"AIC-c", finite_or_null(null_fit.aicc)},
+            {"Log Likelihood", finite_or_null(null_fit.log_likelihood)},
             {"display order", 3},
             {"estimated parameters", null_fit.parameters},
             {"realized_cycles", null_fit.realized_cycles},
@@ -126,9 +126,9 @@ nlohmann::json RELAXResult::to_legacy_json(const Tree& tree, const Alignment& al
 
         // 4. Test Results
         j["test results"] = {
-            {"LRT", lrt},
-            {"p-value", p_value},
-            {"relaxation or intensification parameter", k}
+            {"LRT", finite_or_null(lrt)},
+            {"p-value", finite_or_null(p_value)},
+            {"relaxation or intensification parameter", finite_or_null(k)}
         };
         if (is_failed) {
             j["error"] = error_message;
@@ -149,16 +149,16 @@ nlohmann::json RELAXResult::to_legacy_json(const Tree& tree, const Alignment& al
                 nlohmann::json b_entry;
                 b_entry["original name"] = node.name;
                 if (gtr_branch_lengths.count(node.name)) {
-                    b_entry["Nucleotide GTR"] = gtr_branch_lengths.at(node.name);
+                    b_entry["Nucleotide GTR"] = finite_or_null(gtr_branch_lengths.at(node.name));
                 }
                 if (mg94_branch_lengths.count(node.name)) {
-                    b_entry["MG94xREV with separate rates for branch sets"] = mg94_branch_lengths.at(node.name);
+                    b_entry["MG94xREV with separate rates for branch sets"] = finite_or_null(mg94_branch_lengths.at(node.name));
                 }
                 if (!alternative_fit.branch_lengths.empty() && node.id >= 0 && static_cast<size_t>(node.id) < alternative_fit.branch_lengths.size()) {
-                    b_entry["RELAX alternative"] = alternative_fit.branch_lengths[node.id];
+                    b_entry["RELAX alternative"] = finite_or_null(alternative_fit.branch_lengths[node.id]);
                 }
                 if (!null_fit.branch_lengths.empty() && node.id >= 0 && static_cast<size_t>(node.id) < null_fit.branch_lengths.size()) {
-                    b_entry["RELAX null"] = null_fit.branch_lengths[node.id];
+                    b_entry["RELAX null"] = finite_or_null(null_fit.branch_lengths[node.id]);
                 }
                 branch_attr[node.name] = b_entry;
             }
@@ -173,8 +173,8 @@ nlohmann::json RELAXResult::to_legacy_json(const Tree& tree, const Alignment& al
             if (!constrained_vals.empty()) {
                 j["Site Log Likelihood"] = {
                     {"0", {
-                        {"unconstrained", {alternative_fit.site_log_likelihoods}},
-                        {"constrained", {constrained_vals}}
+                        {"unconstrained", {sanitized_doubles(alternative_fit.site_log_likelihoods)}},
+                        {"constrained", {sanitized_doubles(constrained_vals)}}
                     }}
                 };
             }
@@ -208,7 +208,7 @@ nlohmann::json RELAXResult::to_modern_json(const Tree& tree, const Alignment& al
         nlohmann::json j = new_analysis_json(meta, prov);
         if (prov.invocation.cli_command.empty() && prov.inputs.empty() &&
             j["provenance"].contains("execution")) {
-            j["provenance"]["execution"]["wall_time_seconds"] = runtime_seconds;
+            j["provenance"]["execution"]["wall_time_seconds"] = finite_or_null(runtime_seconds);
         }
         j["dataset"] = dataset_block(aln);
         j["phylogeny"] = phylogeny_block(

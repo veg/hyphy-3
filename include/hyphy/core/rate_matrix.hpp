@@ -294,26 +294,61 @@ struct ExpCMParameters {
     }
 };
 
-// Fixed-size 61x61 matrix and 61-vector for codon substitution rates
-using Matrix61Codon = Eigen::Matrix<Scalar, 61, 61>;
-using Vector61Codon = Eigen::Matrix<Scalar, 61, 1>;
+// Stack-allocated (up to 64 sense codons) dynamic codon matrix and vector
+struct Matrix61Codon : public Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, 0, 64, 64> {
+    using Base = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, 0, 64, 64>;
+    Matrix61Codon() : Base(61, 61) { this->setZero(); }
+    Matrix61Codon(Eigen::Index r, Eigen::Index c) : Base(r, c) {}
+    template <typename OtherDerived>
+    Matrix61Codon(const Eigen::MatrixBase<OtherDerived>& other) : Base(other) {}
+    template <typename OtherDerived>
+    Matrix61Codon(const Eigen::ArrayBase<OtherDerived>& other) : Base(other.matrix()) {}
+    template <typename OtherDerived>
+    Matrix61Codon(const Eigen::EigenBase<OtherDerived>& other) : Base(other) {}
+    template <typename OtherDerived>
+    Matrix61Codon(const Eigen::ReturnByValue<OtherDerived>& other) : Base(other) {}
+    using Base::operator=;
+    static Matrix61Codon Zero(Eigen::Index r = 61, Eigen::Index c = 61) { return Base::Zero(r, c); }
+    static Matrix61Codon Ones(Eigen::Index r = 61, Eigen::Index c = 61) { return Base::Ones(r, c); }
+    static Matrix61Codon Identity(Eigen::Index r = 61, Eigen::Index c = 61) { return Base::Identity(r, c); }
+};
+
+struct Vector61Codon : public Eigen::Matrix<Scalar, Eigen::Dynamic, 1, 0, 64, 1> {
+    using Base = Eigen::Matrix<Scalar, Eigen::Dynamic, 1, 0, 64, 1>;
+    Vector61Codon() : Base(61) { this->setZero(); }
+    explicit Vector61Codon(Eigen::Index n) : Base(n) {}
+    Vector61Codon(Eigen::Index r, Eigen::Index c) : Base(r, c) {}
+    template <typename OtherDerived>
+    Vector61Codon(const Eigen::MatrixBase<OtherDerived>& other) : Base(other) {}
+    template <typename OtherDerived>
+    Vector61Codon(const Eigen::ArrayBase<OtherDerived>& other) : Base(other.matrix()) {}
+    template <typename OtherDerived>
+    Vector61Codon(const Eigen::EigenBase<OtherDerived>& other) : Base(other) {}
+    template <typename OtherDerived>
+    Vector61Codon(const Eigen::ReturnByValue<OtherDerived>& other) : Base(other) {}
+    using Base::operator=;
+    static Vector61Codon Zero(Eigen::Index n = 61) { return Base::Zero(n); }
+    static Vector61Codon Ones(Eigen::Index n = 61) { return Base::Ones(n); }
+};
+
 static constexpr Scalar EXPCM_ALMOST_ZERO = 1e-8;
 
 /**
  * ExpCM Q Matrix (Mutation Term)
  *
  * HKY-like substitution rates for codons. Independent of site-specific
- * preferences. Size: 61 × 61 (sense codons).
+ * preferences. Size: N × N (sense codons).
  */
 class ExpCMQMatrix {
 public:
     Matrix61Codon Q = Matrix61Codon::Zero();
 
     void build(const GeneticCode& gcode, const ExpCMParameters& params) {
-        Q.setZero();
+        const int N = static_cast<int>(gcode.num_sense_codons);
+        Q = Matrix61Codon::Zero(N, N);
 
-        for (int x = 0; x < gcode.num_sense_codons; ++x) {
-            for (int y = 0; y < gcode.num_sense_codons; ++y) {
+        for (int x = 0; x < N; ++x) {
+            for (int y = 0; y < N; ++y) {
                 if (x == y) continue;
 
                 const auto& diff = gcode.diff_matrix[x][y];
@@ -329,7 +364,7 @@ public:
             }
         }
 
-        for (int x = 0; x < gcode.num_sense_codons; ++x) {
+        for (int x = 0; x < N; ++x) {
             Q(x, x) = -Q.row(x).sum();
         }
     }
@@ -347,7 +382,7 @@ private:
  * ExpCM F Matrix (Fixation Term)
  *
  * Site-specific selection based on amino-acid preferences.
- * For each site, creates a 61 × 61 matrix with selection values.
+ * For each site, creates an N × N matrix with selection values.
  */
 class ExpCMFMatrix {
 public:
@@ -359,10 +394,11 @@ public:
             throw std::out_of_range("Site index out of range");
         }
 
-        F.setOnes();
+        const int N = static_cast<int>(gcode.num_sense_codons);
+        F = Matrix61Codon::Ones(N, N);
 
-        for (int x = 0; x < gcode.num_sense_codons; ++x) {
-            for (int y = 0; y < gcode.num_sense_codons; ++y) {
+        for (int x = 0; x < N; ++x) {
+            for (int y = 0; y < N; ++y) {
                 if (x == y) continue;
 
                 char aa_x = gcode.sense_codon_aa[x];
@@ -405,7 +441,8 @@ public:
 
     void build(const Matrix61Codon& F, const Matrix61Codon& Q) {
         P = F.cwiseProduct(Q);
-        for (int x = 0; x < 61; ++x) {
+        const int N = static_cast<int>(P.rows());
+        for (int x = 0; x < N; ++x) {
             P(x, x) = -P.row(x).sum();
         }
     }
@@ -417,8 +454,8 @@ public:
  * Because P_r = F_r ⊙ Q satisfies detailed balance with respect to
  * p_{r,x} ∝ (π_{r,A(x)})^β φ_{x1} φ_{x2} φ_{x3}:
  *   S_r = diag(p_r^{1/2}) P_r diag(p_r^{-1/2})
- * is real symmetric, enabling a single O(61^3) SelfAdjointEigenSolver per site
- * and fast O(61^2) evaluation of P_{r,b}(t_b) = U_pi exp(t_b Λ_r) V_pi across all branches.
+ * is real symmetric, enabling a single O(N^3) SelfAdjointEigenSolver per site
+ * and fast O(N^2) evaluation of P_{r,b}(t_b) = U_pi exp(t_b Λ_r) V_pi across all branches.
  */
 struct ExpCMSiteEigen {
     Vector61Codon pi = Vector61Codon::Zero();
@@ -429,29 +466,32 @@ struct ExpCMSiteEigen {
     Matrix61Codon V_pi = Matrix61Codon::Zero(); // V^T diag(p_r^{1/2})
 
     void decompose(const Matrix61Codon& P, const Vector61Codon& pi_site) {
+        const int N = static_cast<int>(pi_site.size());
         pi = pi_site;
-        for (int i = 0; i < 61; ++i) {
+        sqrt_pi.resize(N);
+        inv_sqrt_pi.resize(N);
+        for (int i = 0; i < N; ++i) {
             Scalar p = std::max(pi(i), Scalar(1e-30));
             sqrt_pi(i) = std::sqrt(p);
             inv_sqrt_pi(i) = 1.0 / sqrt_pi(i);
         }
 
-        Matrix61Codon S = sqrt_pi.asDiagonal() * P * inv_sqrt_pi.asDiagonal();
+        Matrix61Codon::Base S = sqrt_pi.asDiagonal() * P * inv_sqrt_pi.asDiagonal();
         S = 0.5 * (S + S.transpose());
 
-        Eigen::SelfAdjointEigenSolver<Matrix61Codon> solver(S);
+        Eigen::SelfAdjointEigenSolver<Matrix61Codon::Base> solver(S);
         if (solver.info() != Eigen::Success) {
             throw std::runtime_error("ExpCM site eigendecomposition failed");
         }
 
         eigenvalues = solver.eigenvalues().cwiseMin(0.0);
-        const Matrix61Codon& V = solver.eigenvectors();
+        const auto& V = solver.eigenvectors();
         U_pi = inv_sqrt_pi.asDiagonal() * V;
         V_pi = V.transpose() * sqrt_pi.asDiagonal();
     }
 
     Matrix61Codon transition_matrix(Scalar branch_length) const {
-        Vector61Codon exp_lambda = (eigenvalues * branch_length).array().exp();
+        Vector61Codon exp_lambda = (eigenvalues * branch_length).array().exp().matrix();
         Matrix61Codon P_t = (U_pi * exp_lambda.asDiagonal()) * V_pi;
         return P_t.cwiseMax(0.0);
     }

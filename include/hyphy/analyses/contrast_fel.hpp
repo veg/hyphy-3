@@ -543,7 +543,7 @@ public:
         analyzer.global_log_l = mg_res.log_likelihood;
         size_t K_mg = 5 + (p_part ? 2 : 1) + (mg_res.tree.num_nodes() - 1);
         size_t N_codons = analyzer.aln.num_codons;
-        analyzer.global_aicc = -2.0 * mg_res.log_likelihood + 2.0 * K_mg * N_codons / (N_codons - K_mg - 1.0);
+        analyzer.global_aicc = hyphy::core::stats::compute_aicc(mg_res.log_likelihood, K_mg, N_codons);
 
         analyzer.has_gtr_fit = true;
         analyzer.gtr_log_l = gtr_res.log_likelihood;
@@ -833,17 +833,8 @@ public:
         int df = static_cast<int>(K - 1);
         if (!valid_fits) {
             res.p_value = 1.0;
-        } else if (df == 1) {
-            res.p_value = std::erfc(std::sqrt(penalized_lrt / 2.0));
         } else {
-            // Incomplete gamma chi^2 survival for df >= 2
-            // Approx using Wilson-Hilferty transformation
-            Scalar s_df = static_cast<Scalar>(df);
-            Scalar z = std::pow(penalized_lrt / s_df, 1.0 / 3.0) - (1.0 - 2.0 / (9.0 * s_df));
-            z /= std::sqrt(2.0 / (9.0 * s_df));
-            res.p_value = 0.5 * std::erfc(z / std::sqrt(2.0));
-            if (res.p_value < 0.0) res.p_value = 0.0;
-            if (res.p_value > 1.0) res.p_value = 1.0;
+            res.p_value = hyphy::core::stats::chi2_p_value(penalized_lrt, static_cast<Scalar>(df));
         }
 
         // Total tested branch length

@@ -12,6 +12,21 @@ using namespace hyphy::core;
 using namespace hyphy::opt;
 
 nlohmann::json GARDResult::to_json() const {
+        auto finite_vec = [](const auto& vec) {
+            nlohmann::json arr = nlohmann::json::array();
+            for (const auto& v : vec) {
+                arr.push_back(finite_or_null(static_cast<double>(v)));
+            }
+            return arr;
+        };
+        auto finite_map = [](const auto& mp) {
+            nlohmann::json obj = nlohmann::json::object();
+            for (const auto& [k, v] : mp) {
+                obj[k] = finite_or_null(static_cast<double>(v));
+            }
+            return obj;
+        };
+
         nlohmann::json j;
         j["$schema"] = "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/gard.v3.schema.json";
         j["schema_version"] = "3.0.0";
@@ -40,7 +55,7 @@ nlohmann::json GARDResult::to_json() const {
             }
             prov.execution.start_time = Provenance::current_iso8601();
             prov.execution.end_time = prov.execution.start_time;
-            prov.execution.wall_time_seconds = time_elapsed;
+            prov.execution.wall_time_seconds = std::isfinite(time_elapsed) ? time_elapsed : 0.0;
             prov.execution.cpu_threads = 1;
             prov.execution.hostname = Provenance::get_hostname();
             prov.execution.os = Provenance::detect_os();
@@ -81,8 +96,8 @@ nlohmann::json GARDResult::to_json() const {
             {"mode", (srv_mode == GARDSRVMode::DiscreteGamma) ? "discrete_gamma" : "none"},
             {"classes", (srv_mode == GARDSRVMode::DiscreteGamma) ? static_cast<int>(gamma_rates.size()) : 1},
             {"shape_alpha", finite_or_null(gamma_alpha)},
-            {"rates", gamma_rates},
-            {"weights", gamma_weights}
+            {"rates", finite_vec(gamma_rates)},
+            {"weights", finite_vec(gamma_weights)}
         };
 
         j["tree_engine"] = {
@@ -96,8 +111,16 @@ nlohmann::json GARDResult::to_json() const {
                 {"bridge_index", b.bridge_index},
                 {"hub_node", b.hub_name},
                 {"bridge_node", b.bridge_name},
-                {"initial_weights", {b.initial_weights[0], b.initial_weights[1], b.initial_weights[2]}},
-                {"fitted_weights", {b.fitted_weights[0], b.fitted_weights[1], b.fitted_weights[2]}},
+                {"initial_weights", {
+                    finite_or_null(b.initial_weights[0]),
+                    finite_or_null(b.initial_weights[1]),
+                    finite_or_null(b.initial_weights[2])
+                }},
+                {"fitted_weights", {
+                    finite_or_null(b.fitted_weights[0]),
+                    finite_or_null(b.fitted_weights[1]),
+                    finite_or_null(b.fitted_weights[2])
+                }},
                 {"ohmic_support", finite_or_null(b.ohmic_support)},
                 {"shunt_stress", finite_or_null(b.shunt_stress)}
             });
@@ -120,7 +143,7 @@ nlohmann::json GARDResult::to_json() const {
             improv_arr.push_back({
                 {"breakpoints_count", bps},
                 {"breakpoints", step_bps},
-                {"delta_aicc", delta}
+                {"delta_aicc", finite_or_null(delta)}
             });
         }
 
@@ -166,9 +189,9 @@ nlohmann::json GARDResult::to_json() const {
                 {"partition_index", pm.partition_index},
                 {"interval", {pm.interval.first, pm.interval.second}},
                 {"best_tree_index", pm.best_tree_index},
-                {"tree_log_likelihoods", pm.tree_log_likelihoods},
-                {"kh_p_values", pm.kh_p_values},
-                {"sh_p_values", pm.sh_p_values}
+                {"tree_log_likelihoods", finite_vec(pm.tree_log_likelihoods)},
+                {"kh_p_values", finite_vec(pm.kh_p_values)},
+                {"sh_p_values", finite_vec(pm.sh_p_values)}
             });
         }
 
@@ -183,14 +206,22 @@ nlohmann::json GARDResult::to_json() const {
             {"partition_tree_matrix", part_matrix_arr}
         };
 
-        j["site_breakpoint_support"] = site_breakpoint_support;
+        j["site_breakpoint_support"] = finite_map(site_breakpoint_support);
         j["total_models_evaluated"] = total_models_evaluated;
-        j["time_elapsed"] = time_elapsed;
+        j["time_elapsed"] = finite_or_null(time_elapsed);
 
         return j;
     }
 
 nlohmann::json GARDResult::to_legacy_json() const {
+        auto finite_map = [](const auto& mp) {
+            nlohmann::json obj = nlohmann::json::object();
+            for (const auto& [k, v] : mp) {
+                obj[k] = finite_or_null(static_cast<double>(v));
+            }
+            return obj;
+        };
+
         nlohmann::json j;
         j["analysis"] = {
             {"authors", "Sergei L Kosakovsky Pond"},
@@ -201,8 +232,8 @@ nlohmann::json GARDResult::to_legacy_json() const {
             {"version", "0.2"}
         };
 
-        j["baselineScore"] = baseline_aicc;
-        j["bestModelAICc"] = best_model.aicc;
+        j["baselineScore"] = finite_or_null(baseline_aicc);
+        j["bestModelAICc"] = finite_or_null(best_model.aicc);
 
         nlohmann::json bp_data = nlohmann::json::object();
         nlohmann::json trees_obj = nlohmann::json::object();
@@ -239,7 +270,7 @@ nlohmann::json GARDResult::to_legacy_json() const {
                 const auto& step_bps = (i < improvement_breakpoints.size()) ? improvement_breakpoints[i] : best_model.breakpoints;
                 improv_obj[std::to_string(i)] = {
                     {"breakpoints", step_bps},
-                    {"deltaAICc", improvements[i].second}
+                    {"deltaAICc", finite_or_null(improvements[i].second)}
                 };
             }
         }
@@ -252,9 +283,9 @@ nlohmann::json GARDResult::to_legacy_json() const {
             {"partition count", best_model.partitions.size()}
         };
         j["potentialBreakpoints"] = potential_breakpoints;
-        j["singleTreeAICc"] = single_tree_aicc;
-        j["siteBreakPointSupport"] = site_breakpoint_support;
-        j["timeElapsed"] = static_cast<size_t>(time_elapsed + 0.5);
+        j["singleTreeAICc"] = finite_or_null(single_tree_aicc);
+        j["siteBreakPointSupport"] = finite_map(site_breakpoint_support);
+        j["timeElapsed"] = std::isfinite(time_elapsed) ? static_cast<size_t>(std::max(0.0, time_elapsed) + 0.5) : size_t(0);
         j["totalModelCount"] = total_models_evaluated;
 
         nlohmann::json legacy_bp_tests = nlohmann::json::array();
@@ -263,12 +294,12 @@ nlohmann::json GARDResult::to_legacy_json() const {
                 {"breakpoint", t.breakpoint_site},
                 {"left_partition", {t.left_interval.first, t.left_interval.second}},
                 {"right_partition", {t.right_interval.first, t.right_interval.second}},
-                {"delta_log_l_left", t.delta_lnl_left},
-                {"delta_log_l_right", t.delta_lnl_right},
-                {"kh_p_value_left", t.kh_p_value_left},
-                {"kh_p_value_right", t.kh_p_value_right},
-                {"sh_p_value_left", t.sh_p_value_left},
-                {"sh_p_value_right", t.sh_p_value_right},
+                {"delta_log_l_left", finite_or_null(t.delta_lnl_left)},
+                {"delta_log_l_right", finite_or_null(t.delta_lnl_right)},
+                {"kh_p_value_left", finite_or_null(t.kh_p_value_left)},
+                {"kh_p_value_right", finite_or_null(t.kh_p_value_right)},
+                {"sh_p_value_left", finite_or_null(t.sh_p_value_left)},
+                {"sh_p_value_right", finite_or_null(t.sh_p_value_right)},
                 {"statistically_significant", t.statistically_significant}
             });
         }

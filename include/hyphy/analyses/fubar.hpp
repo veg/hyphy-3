@@ -59,7 +59,7 @@ inline FUBARMethod string_to_fubar_method(const std::string& str) {
     if (s == "metropolis-hastings" || s == "metropolis_hastings" || s == "mh" || s == "mcmc") {
         return FUBARMethod::MetropolisHastings;
     }
-    return FUBARMethod::VariationalBayes;
+    throw std::invalid_argument("Unknown FUBAR method: '" + str + "' (expected VB0, CG, or MH)");
 }
 
 inline std::string format_float_val(Scalar val, int prec = 3) {

@@ -24,6 +24,7 @@ endif()
 option(HYPHY3_FAST_COMPILE "Trade optimization for compile speed (dev builds)" OFF)
 if(HYPHY3_FAST_COMPILE)
     string(REGEX REPLACE "-O3" "-O1" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    string(REGEX REPLACE "-O3" "-O1" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
 endif()
 #
 # - HYPHY3_PCH (default ON): precompile the stable part of the shared header
@@ -89,9 +90,16 @@ target_compile_definitions(hyphy3_core INTERFACE
 # OpenMP support (skipped under Emscripten WASM cross-compilation)
 if(NOT EMSCRIPTEN)
     find_package(OpenMP)
-    if(NOT OpenMP_CXX_FOUND AND EXISTS "/opt/homebrew/opt/libomp")
-        set(OpenMP_ROOT "/opt/homebrew/opt/libomp")
-        find_package(OpenMP)
+    if(NOT OpenMP_CXX_FOUND)
+        foreach(_omp_prefix "/opt/homebrew/opt/libomp" "/usr/local/opt/libomp")
+            if(EXISTS "${_omp_prefix}")
+                set(OpenMP_ROOT "${_omp_prefix}")
+                find_package(OpenMP)
+                if(OpenMP_CXX_FOUND)
+                    break()
+                endif()
+            endif()
+        endforeach()
     endif()
     if(OpenMP_CXX_FOUND)
         message(STATUS "OpenMP CXX found: ${OpenMP_CXX_VERSION}")
@@ -435,6 +443,20 @@ add_executable(hyphy-characterize ALIAS hyphy3-characterize)
 add_executable(hyphy-walrus ALIAS hyphy3-walrus)
 add_executable(hyphy-expcm ALIAS hyphy3-expcm)
 
+include(GNUInstallDirs)
+set(_hyphy3_cli_targets
+    hyphy3 hyphy3-characterize hyphy3-walrus hyphy3-busted hyphy3-fel
+    hyphy3-absrel hyphy3-meme hyphy3-relax hyphy3-slac hyphy3-fubar
+    hyphy3-gard hyphy3-contrast-fel hyphy3-dfel hyphy3-prime hyphy3-mss
+    hyphy3-ohmic hyphy3-tree hyphy3-joint-align hyphy3-expcm
+)
+if(TARGET hyphy3-report)
+    list(APPEND _hyphy3_cli_targets hyphy3-report)
+endif()
+install(TARGETS ${_hyphy3_cli_targets}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
 # WebAssembly (Emscripten) One-Button WALRUS Engine Target
 if(EMSCRIPTEN)
     add_executable(hyphy3_wasm src/apps/hyphy_wasm.cpp)
@@ -476,7 +498,11 @@ if(Python_FOUND)
             )
             # Wheel/sdist installs (scikit-build-core): extension lands at the
             # wheel root so `import _hyphy3` works after `pip install .`.
-            install(TARGETS _hyphy3 LIBRARY DESTINATION .)
+            if(DEFINED SKBUILD)
+                install(TARGETS _hyphy3 LIBRARY DESTINATION .)
+            else()
+                install(TARGETS _hyphy3 LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+            endif()
 
             if(HYPHY3_BUILD_TESTS)
                 add_test(NAME PythonAutogradTest
