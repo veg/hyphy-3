@@ -2634,10 +2634,145 @@
       };
     }
 
+    function abortRunningWorkerIfBusy() {
+      if (!runningStage) return;
+      runningStage = null;
+      wasmReady = false;
+      document.getElementById('wasmLed').className = 'status-dot busy';
+      try { if (worker) worker.terminate(); } catch (_) {}
+      initWorker();
+    }
+
+    function flushAnalysisResults(fromStage = 0) {
+      if (fromStage <= 0) {
+        stage0Data = null;
+        stageRuntimeMs.stage0 = null;
+        selectedSeqIndex = null;
+        closeInspectorDrawer();
+        document.getElementById('codeRecommendBanner')?.classList.remove('visible');
+        document.getElementById('heroSummarySentence').textContent = 'Evaluating coding sequences…';
+        document.getElementById('statAdmitted').textContent = '…';
+        document.getElementById('statAdmittedSub').textContent = 'Scanning reading frames…';
+        document.getElementById('statRescued').textContent = '…';
+        document.getElementById('statRescuedSub').textContent = 'Frame / UTR adjusted';
+        document.getElementById('statQuarantined').textContent = '…';
+        document.getElementById('statQuarantinedSub').textContent = 'Filtered out';
+        document.getElementById('statCohortProfile').textContent = '…';
+        document.getElementById('statCohortProfileSub').textContent = 'Median length & identity';
+        document.getElementById('sequenceListContainer').innerHTML =
+          '<div class="empty-state">Running Stage 0 6-frame admission &amp; homology triage…</div>';
+        const s0Svg = document.getElementById('stage0ScatterSvg');
+        if (s0Svg) s0Svg.innerHTML = '';
+        document.getElementById('btnAdvanceCount').textContent = '0';
+        document.querySelectorAll('#filterPills .pill').forEach(btn => {
+          const f = btn.getAttribute('data-filter');
+          if (f === 'attention') btn.textContent = 'Needs Review (0)';
+          else if (f === 'all') btn.textContent = 'All Sequences (0)';
+          else if (f === 'admitted') btn.textContent = 'Admitted (0)';
+          else if (f === 'quarantined') btn.textContent = 'Quarantined (0)';
+        });
+      }
+
+      if (fromStage <= 1) {
+        stage1Data = null;
+        stageRuntimeMs.stage1 = null;
+        activeStage1DrawerItem = null;
+        closeStage1Drawer();
+        document.getElementById('s1HeroSentence').innerHTML =
+          '<span class="hero-verdict-title">Aligning admitted sequences in codon space…</span>';
+        document.getElementById('s1StatCodons').textContent = '—';
+        document.getElementById('s1StatCodonsSub').textContent = 'Codon columns';
+        document.getElementById('s1StatCore').textContent = '—';
+        document.getElementById('s1StatCoreSub').textContent = 'In-frame conservation';
+        document.getElementById('s1StatConf').textContent = '—';
+        document.getElementById('s1StatConfSub').textContent = 'Mean P_hom across columns';
+        document.getElementById('s1StatEvents').textContent = '—';
+        document.getElementById('s1StatEventsSub').textContent = 'Repairs & indel windows';
+        document.getElementById('s1EventsContainer').innerHTML =
+          '<div class="empty-state">Running Stage 1 codon alignment &amp; indel refinement…</div>';
+        document.getElementById('s1MinimapSvgWrap').innerHTML = '';
+        document.getElementById('s1SlicePre').innerHTML = '';
+        document.getElementById('s1TaxaContainer').innerHTML = '';
+        document.getElementById('btnStage1TaxaCount').textContent = '0';
+        document.querySelectorAll('#stage1TabPills .pill').forEach(btn => {
+          const t = btn.getAttribute('data-tab');
+          if (t === 'events') btn.textContent = 'Indel & Frameshift Events (0)';
+          else if (t === 'taxa') btn.textContent = 'Aligned Sequences (0)';
+        });
+      }
+
+      if (fromStage <= 2) {
+        stage2Data = null;
+        stageRuntimeMs.stage2 = null;
+        activeStage2DrawerItem = null;
+        closeStage2Drawer();
+        document.getElementById('s2HeroSentence').innerHTML =
+          '<span class="hero-verdict-title">Optimizing codon phylogeny and scanning for recombination breakpoints…</span>';
+        document.getElementById('s2StatTreeLen').textContent = '—';
+        document.getElementById('s2StatTreeLenSub').textContent = 'subs/codon';
+        document.getElementById('s2StatOmega').textContent = '—';
+        document.getElementById('s2StatOmegaSub').textContent = 'Tree-wide dN/dS';
+        document.getElementById('s2StatRecomb').textContent = '—';
+        document.getElementById('s2StatRecombSub').textContent = 'Breakpoint routing';
+        document.getElementById('s2StatGc3').textContent = '—';
+        document.getElementById('s2StatGc3Sub').textContent = '3rd-position GC range';
+        document.getElementById('s2TreeSvgWrap').innerHTML =
+          '<div class="empty-state">Optimizing MG94 codon phylogeny…</div>';
+        document.getElementById('s2EventsContainer').innerHTML = '';
+        document.getElementById('s2BranchesContainer').innerHTML = '';
+        document.getElementById('btnStage2BranchesCount').textContent = '0';
+        document.querySelectorAll('#stage2TabPills .pill').forEach(btn => {
+          const t = btn.getAttribute('data-tab');
+          if (t === 'events') btn.textContent = 'Recombination & Events (0)';
+          else if (t === 'branches') btn.textContent = 'All Branches (0)';
+        });
+      }
+
+      if (fromStage <= 3) {
+        stage3Data = null;
+        stageRuntimeMs.stage3 = null;
+        activeStage3DrawerItem = null;
+        closeStage3Drawer();
+        lastFullReportHtml = '';
+        lastFullReportJson = '';
+        stageRuntimeMs.full = null;
+        const tabFull = document.getElementById('tabFullReport');
+        if (tabFull) tabFull.disabled = true;
+        const iframe = document.getElementById('reportIframe');
+        if (iframe) iframe.srcdoc = '';
+        document.getElementById('s3HeroSentence').textContent =
+          'Running unified evolutionary selection forensics…';
+        document.getElementById('s3HeroChips').innerHTML = '';
+        document.getElementById('s3StatGeneWide').textContent = '—';
+        document.getElementById('s3StatGeneWideSub').textContent = 'Episodic diversification test';
+        document.getElementById('s3StatSelectedSites').textContent = '—';
+        document.getElementById('s3StatSelectedSitesSub').textContent = 'MEME • FEL • Contrast • PRIME';
+        document.getElementById('s3StatCladeRegime').textContent = '—';
+        document.getElementById('s3StatCladeRegimeSub').textContent = 'RELAX • aBSREL';
+        document.getElementById('s3StatConserved').textContent = '—';
+        document.getElementById('s3StatConservedSub').textContent = 'Purifying core & co-evolution';
+        document.getElementById('s3CountFindings').textContent = '0';
+        document.getElementById('s3CountLineages').textContent = '0';
+        document.getElementById('s3CountCodons').textContent = '0';
+        document.getElementById('s3ManhattanSvgWrap').innerHTML =
+          '<div class="empty-state">Computing codon-level selection profile, lineage regimes, and ancestral codon reconstructions...</div>';
+        document.getElementById('s3FindingsContainer').innerHTML = '';
+        document.getElementById('s3LineageTreeWrap').innerHTML = '';
+        document.getElementById('s3LineagesContainer').innerHTML = '';
+        document.getElementById('s3CodonsContainer').innerHTML = '';
+      }
+
+      updatePipelineStepperUI();
+    }
+
     function loadSelectedSample() {
-      const key = document.getElementById('sampleSelect').value;
+      const sel = document.getElementById('sampleSelect');
+      const key = sel ? sel.value : '';
       const item = (window.WALRUS_SAMPLES || {})[key];
       if (!item) return;
+      // Remove any temporary custom upload option from sampleSelect when switching back to a prebuilt sample
+      const customOpt = sel.querySelector('option[data-custom="1"]');
+      if (customOpt) customOpt.remove();
       currentRawSeq = item.content;
       currentDatasetLabel = item.id || key;
       if (item.code) {
@@ -2646,21 +2781,16 @@
       manualAdmissionOverride.clear();
       manualFrameOverride.clear();
       customForegroundNodeIds.clear();
-      stage1Data = null; stageRuntimeMs.stage1 = null;
-      stage2Data = null; stageRuntimeMs.stage2 = null;
-      stage3Data = null; stageRuntimeMs.stage3 = null;
-      lastFullReportHtml = ''; stageRuntimeMs.full = null;
-      document.getElementById('tabFullReport').disabled = true;
-      closeInspectorDrawer();
-      closeStage1Drawer();
-      closeStage2Drawer();
-      closeStage3Drawer();
+      flushAnalysisResults(0);
+      abortRunningWorkerIfBusy();
       switchView('stage0');
       runStage0Now();
     }
 
     function runStage0Now() {
-      if (!wasmReady || !currentRawSeq) return;
+      if (!currentRawSeq) return;
+      flushAnalysisResults(0);
+      if (!wasmReady) return;
       runningStage = 'stage0';
       document.getElementById('wasmLed').className = 'status-dot busy';
       updatePipelineStepperUI();
@@ -2949,6 +3079,7 @@
         alert('At least 3 admitted sequences are required for Stage 1.');
         return;
       }
+      flushAnalysisResults(1);
       runningStage = 'stage1';
       switchView('stage1');
       document.getElementById('wasmLed').className = 'status-dot busy';
@@ -3625,6 +3756,7 @@
         alert('At least 3 sequences are required for Stage 2.');
         return;
       }
+      flushAnalysisResults(2);
       runningStage = 'stage2';
       switchView('stage2');
       document.getElementById('wasmLed').className = 'status-dot busy';
@@ -4496,7 +4628,9 @@
         }
       }
 
-      // Immediately switch to Stage 3 view with a responsive loading state
+      // Immediately flush previous Stage 3 & Stage 4 results and switch to Stage 3 view
+      const treeNwk = stage2Data ? buildStage2TaggedNewick() : '';
+      flushAnalysisResults(3);
       runningStage = 'stage3';
       switchView('stage3');
       document.getElementById('s3StatGeneWide').textContent = '…';
@@ -4510,7 +4644,6 @@
       document.getElementById('s3ManhattanSvgWrap').innerHTML =
         `<div class="empty-state">Computing codon-level selection profile, lineage regimes, and ancestral codon reconstructions...</div>`;
 
-      const treeNwk = stage2Data ? buildStage2TaggedNewick() : '';
       const code = document.getElementById('geneticCodeSelect').value || 'Universal';
       document.getElementById('wasmLed').className = 'status-dot busy';
       updatePipelineStepperUI();
@@ -5810,12 +5943,21 @@
       manualAdmissionOverride.clear();
       manualFrameOverride.clear();
       customForegroundNodeIds.clear();
-      stage1Data = null; stageRuntimeMs.stage1 = null;
-      stage2Data = null; stageRuntimeMs.stage2 = null;
-      stage3Data = null; stageRuntimeMs.stage3 = null;
-      lastFullReportHtml = ''; stageRuntimeMs.full = null;
-      document.getElementById('tabFullReport').disabled = true;
+      const sel = document.getElementById('sampleSelect');
+      if (sel) {
+        let customOpt = sel.querySelector('option[data-custom="1"]');
+        if (!customOpt) {
+          customOpt = document.createElement('option');
+          customOpt.setAttribute('data-custom', '1');
+          sel.prepend(customOpt);
+        }
+        customOpt.value = '__custom__';
+        customOpt.textContent = `Custom // ${label}`;
+        sel.value = '__custom__';
+      }
       closePasteModal();
+      flushAnalysisResults(0);
+      abortRunningWorkerIfBusy();
       switchView('stage0');
       runStage0Now();
     }
@@ -5846,6 +5988,10 @@
       reader.onload = function(e) {
         const content = String(e.target.result || '');
         if (file.name.endsWith('.json') || /^\s*\{/.test(content)) {
+          currentRawSeq = '';
+          currentDatasetLabel = file.name;
+          flushAnalysisResults(0);
+          abortRunningWorkerIfBusy();
           runningStage = 'full';
           document.getElementById('wasmLed').className = 'status-dot busy';
           updatePipelineStepperUI();
