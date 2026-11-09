@@ -92,11 +92,19 @@ std::vector<RawParsedSeq> parse_raw_sequences_preserving_gaps(const std::string&
             vf << raw_text;
         }
         auto gcode = hyphy::core::GeneticCode::universal();
-        auto seqs = hyphy::analyses::JointAlignEngine::load_unaligned_fasta(vpath, gcode);
-        for (const auto& s : seqs) {
-            finalize_record(s.name, s.raw_seq);
+        try {
+            auto aln = hyphy::core::Alignment::load(vpath, gcode);
+            for (const auto& s : aln.sequences) {
+                finalize_record(s.name, s.raw_seq);
+            }
+            out_is_prealigned = true;
+        } catch (...) {
+            auto seqs = hyphy::analyses::JointAlignEngine::load_unaligned_fasta(vpath, gcode);
+            for (const auto& s : seqs) {
+                finalize_record(s.name, s.raw_seq);
+            }
+            out_is_prealigned = false;
         }
-        out_is_prealigned = true;
         return out;
     }
 
@@ -131,12 +139,10 @@ std::vector<RawParsedSeq> parse_raw_sequences_preserving_gaps(const std::string&
     if (out.size() >= 2) {
         size_t len0 = out[0].raw_with_gaps.size();
         bool all_equal = (len0 > 0 && len0 % 3 == 0);
-        bool any_gaps = false;
         for (const auto& r : out) {
             if (r.raw_with_gaps.size() != len0) all_equal = false;
-            if (r.gap_count > 0) any_gaps = true;
         }
-        out_is_prealigned = (all_equal && any_gaps);
+        out_is_prealigned = all_equal;
     }
     return out;
 }
@@ -1151,6 +1157,7 @@ const char* walrus_stage1_run(
             stage1_mg94_log_l = initial_mg94_log_l;
 
             if (refine_indel_windows != 0) {
+                auto backup_aln = map_aln;
                 windows = hyphy::analyses::JointAlignEngine::run_stage1_window_realignment(
                     map_aln,
                     tree,
@@ -1166,9 +1173,17 @@ const char* walrus_stage1_run(
                 if (total_codons_shifted > 0) {
                     hyphy::analyses::MG94Fitter mg_stage1(tree, map_aln);
                     auto fit1 = mg_stage1.fit_omega_and_scale(mg_params.beta, mg_params);
-                    global_omega = fit1.x_opt(0);
-                    tree = fit1.tree;
-                    stage1_mg94_log_l = fit1.log_likelihood;
+                    if (!used_de_novo && fit1.log_likelihood < initial_mg94_log_l) {
+                        map_aln = std::move(backup_aln);
+                        site_homology_posteriors.assign(map_aln.num_codons, 1.0);
+                        total_taxa_realigned = 0;
+                        total_codons_shifted = 0;
+                        stage1_mg94_log_l = initial_mg94_log_l;
+                    } else {
+                        global_omega = fit1.x_opt(0);
+                        tree = fit1.tree;
+                        stage1_mg94_log_l = fit1.log_likelihood;
+                    }
                 }
             } else {
                 auto raw_wins = hyphy::analyses::JointAlignEngine::detect_indel_windows(

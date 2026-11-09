@@ -135,7 +135,7 @@ int run_gard(int argc, char* argv[]) {
                 return 1;
             }
         } else if (arg == "--gamma-classes" && i + 1 < argc) {
-            gamma_classes = parse_nonneg_ull("--gamma-classes", argv[++i]);
+            gamma_classes = parse_nonneg_ull("--gamma-classes", argv[++i], std::numeric_limits<long long>::max(), 1);
         } else if (arg == "--bridges" && i + 1 < argc) {
             std::string br = argv[++i];
             if (br == "yes" || br == "true" || br == "1") {

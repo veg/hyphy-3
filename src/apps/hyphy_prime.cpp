@@ -101,7 +101,9 @@ int run_prime(int argc, char* argv[]) {
 
         auto status = parse_common_cli_arg(i, argc, argv, cli);
         if (status == CommonArgParseStatus::Handled) {
-            output_format = (cli.json_format == JSONFormat::Legacy) ? "legacy" : "modern";
+            if (output_format != "both") {
+                output_format = (cli.json_format == JSONFormat::Legacy) ? "legacy" : "modern";
+            }
             continue;
         }
         if (status == CommonArgParseStatus::Error) return 1;

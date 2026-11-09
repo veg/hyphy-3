@@ -2443,6 +2443,12 @@
         spec: '23 species × 254 codons • NEXUS',
         name: 'Drosophila Alcohol Dehydrogenase (ADH)',
         desc: '23 Drosophila species with multi-regime compositional divergence, synonymous constraint islands, and co-evolving amino-acid pairs.'
+      },
+      'paml_mx.nex': {
+        tag: 'PAML Tutorial {Avian}',
+        spec: '12 vertebrates × 663 codons • NEXUS',
+        name: 'Vertebrate Myxovirus Resistance Mx (MBE 2023 Tutorial)',
+        desc: 'Álvarez-Carretero, Kapli & Yang (2023 MBE msad041) PAML positive-selection tutorial — antiviral Mx GTPase across 10 mammals and 2 birds with the {Avian} clade tagged as foreground.'
       }
     };
 
@@ -4484,7 +4490,7 @@
 
       if (!forceProceed && !preflightAcknowledgedForCurrentDataset) {
         const est = estimateCohortResources(payload, false);
-        if (est.stage3Sec > 300 || est.peakRamMb > 512) {
+        if (est.stage3Sec > 300 || est.peakRamMb > 1024) {
           openPreflightModal(est, { mode: 'stage3_only' });
           return;
         }
@@ -5556,7 +5562,8 @@
     let pendingPreflightAction = null;
 
     function inspectRawSequenceCohort(rawText) {
-      const s = String(rawText || '');
+      // Normalize CRLF and classic Mac CR (\r) line endings so NEXUS/PHYLIP/FASTA line splits work reliably
+      const s = String(rawText || '').replace(/\r\n?/g, '\n');
       const rawBytes = s.length;
       const lengthsWithGaps = [];
       const lengthsUngapped = [];
@@ -5565,15 +5572,17 @@
         const m = s.match(/\bMATRIX\b([\s\S]*?);/i);
         if (m) {
           const seqMap = new Map();
-          const lines = m[1].split(/\r?\n/);
+          const lines = m[1].split('\n');
           for (let line of lines) {
             line = line.replace(/\[.*?\]/g, '').trim();
-            if (!line) continue;
+            if (!line || line === ';') continue;
             const parts = line.split(/\s+/);
             if (parts.length >= 2) {
-              const name = parts[0];
+              const name = parts[0].replace(/^['"]|['"]$/g, '');
               const seqPart = parts.slice(1).join('').replace(/[^A-Za-z\-?.]/g, '');
-              seqMap.set(name, (seqMap.get(name) || '') + seqPart);
+              if (name && seqPart) {
+                seqMap.set(name, (seqMap.get(name) || '') + seqPart);
+              }
             }
           }
           seqMap.forEach(seq => {
@@ -5581,6 +5590,31 @@
             lengthsUngapped.push(seq.replace(/[\-?.]/g, '').length);
           });
         }
+      } else if (/^\s*\d+\s+\d+\s*\n/.test(s)) {
+        // Sequential or interleaved PHYLIP format
+        const lines = s.trim().split('\n');
+        const hdr = lines[0].trim().split(/\s+/);
+        const expectedTaxa = parseInt(hdr[0], 10) || 0;
+        const seqList = [];
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          if (seqList.length < expectedTaxa) {
+            const parts = line.split(/\s+/);
+            if (parts.length >= 2) {
+              seqList.push(parts.slice(1).join('').replace(/[^A-Za-z\-?.]/g, ''));
+            }
+          } else if (expectedTaxa > 0) {
+            const idx = (i - 1) % expectedTaxa;
+            seqList[idx] = (seqList[idx] || '') + line.replace(/[^A-Za-z\-?.]/g, '');
+          }
+        }
+        seqList.forEach(seq => {
+          if (seq.length > 0) {
+            lengthsWithGaps.push(seq.length);
+            lengthsUngapped.push(seq.replace(/[\-?.]/g, '').length);
+          }
+        });
       } else {
         const blocks = s.split(/^>/m);
         for (let i = 1; i < blocks.length; i++) {
@@ -5612,36 +5646,40 @@
     }
 
     // Calibrated against single-threaded SIMD128 WebAssembly benchmarks (INITIAL_MEMORY=64MB, MAXIMUM_MEMORY=2048MB)
+    // Stage 0 uses O(N sqrt(N)) landmark k-NN admission when N > 64; Stage 1 uses seed-chain anchor-banded profile DP O(N*B*C) when C > 200.
     function estimateCohortResources(rawText, forceDeNovo) {
       const info = inspectRawSequenceCohort(rawText);
       const N = Math.max(1, info.numTaxa);
       const C = Math.max(1, info.maxCodons);
       const needDeNovoPoa = !info.isPreAligned || !!forceDeNovo || !!currentStripGapsMode;
+      const bandWidth = Math.min(C, 96); // Anchor-banded DP active band width for C > 200
+      const stage0Pairs = (N <= 64) ? (0.5 * N * (N - 1)) : (N * Math.sqrt(N) * 4.0);
 
       // Empirical single-threaded WASM stage runtime estimates (seconds)
-      const stage0Sec = 0.05 + 4.5e-5 * N * N * (C / 200.0);
+      const stage0Sec = 0.08 + 1.5e-6 * stage0Pairs * Math.min(C, 600);
       const stage1Sec = needDeNovoPoa
-        ? (0.25 + 1.8e-6 * N * C * C)
-        : (0.15 + 2.2e-4 * N * C);
-      const stage2Sec = 0.20 + 3.8e-4 * N * C + 6.5e-6 * N * N * C;
-      const stage3Sec = 1.50 + 5.4e-3 * N * C + 1.2e-5 * N * N * C;
+        ? (0.20 + 2.2e-6 * N * C * bandWidth)
+        : (0.15 + 1.8e-4 * N * C);
+      const stage2Sec = 0.20 + 2.2e-4 * N * C + 1.5e-6 * N * N * C;
+      const stage3Sec = 1.00 + 4.8e-3 * N * C;
       const totalSec = stage0Sec + stage1Sec + stage2Sec + stage3Sec;
 
       // Peak WebAssembly linear heap estimate (MB) against 2,048 MB hard cap
-      const poaRamMb = needDeNovoPoa ? (48e-6 * C * C) : (8e-6 * C * C);
-      const phyloRamMb = 0.020 * N * C;
+      // Banded POA DP requires O(B * C) space, while Stage 3 allocates 61-state codon CLVs O(N * C)
+      const poaRamMb = needDeNovoPoa ? (0.00015 * bandWidth * C) : (0.00004 * bandWidth * C);
+      const phyloRamMb = 0.018 * N * C;
       const bufRamMb = (info.rawBytes / 1e6) * 4.0;
       const peakRamMb = Math.round(64 + phyloRamMb + poaRamMb + bufRamMb);
 
       const isOver5Min = totalSec > 300;
-      const isHighRam = peakRamMb > 512;
-      const isLargeDims = (N > 150 || C > 2500);
-      const needsWarning = isOver5Min || isHighRam || isLargeDims;
+      const isHighRam = peakRamMb > 1024;
+      const needsWarning = isOver5Min || isHighRam;
       const isCriticalOom = peakRamMb > 1750 || info.rawBytes > 30 * 1024 * 1024;
 
       return {
         ...info,
         needDeNovoPoa,
+        bandWidth,
         stage0Sec,
         stage1Sec,
         stage2Sec,
@@ -5650,7 +5688,6 @@
         peakRamMb,
         isOver5Min,
         isHighRam,
-        isLargeDims,
         needsWarning,
         isCriticalOom
       };
@@ -5705,7 +5742,7 @@
         <div class="drawer-stat-cell">
           <div class="drawer-stat-lbl">Stages 0–2 Est.</div>
           <div class="drawer-stat-val">${fmtDurationEst(s012Sec)}</div>
-          <div class="drawer-stat-sub">QA (${fmtDurationEst(est.stage0Sec)}) • POA (${fmtDurationEst(est.stage1Sec)}) • Tree (${fmtDurationEst(est.stage2Sec)})</div>
+          <div class="drawer-stat-sub">QA (${fmtDurationEst(est.stage0Sec)}) • Banded POA (${fmtDurationEst(est.stage1Sec)}) • Tree (${fmtDurationEst(est.stage2Sec)})</div>
         </div>
         <div class="drawer-stat-cell">
           <div class="drawer-stat-lbl">Stage 3 Selection Est.</div>
@@ -5714,11 +5751,11 @@
         </div>`;
 
       const reasons = [];
-      if (est.needDeNovoPoa && est.maxCodons > 1200) {
-        reasons.push(`De novo Codon Pair-HMM + POA alignment scales quadratically with codon length O(N·C²), requiring ~${Math.round(48e-6 * est.maxCodons * est.maxCodons)} MB of dynamic programming matrices and ${fmtDurationEst(est.stage1Sec)}.`);
+      if (est.stage3Sec > 240) {
+        reasons.push(`Stage 3 fits 8 codon models (BUSTED, FEL, MEME, Contrast-FEL, RELAX, aBSREL, PRIME, Epistasis) across ${est.numTaxa} taxa × ${est.maxCodons} codons (${(est.numTaxa * est.maxCodons).toLocaleString()} codon-taxon cells) in a single browser Web Worker thread (${fmtDurationEst(est.stage3Sec)}).`);
       }
-      if (est.stage3Sec > 180) {
-        reasons.push(`Stage 3 fits 8 codon models (BUSTED, FEL, MEME, Contrast-FEL, RELAX, aBSREL, PRIME, Epistasis) across ${est.numTaxa} taxa × ${est.maxCodons} codons in a single browser Web Worker thread (${fmtDurationEst(est.stage3Sec)}).`);
+      if (est.isHighRam) {
+        reasons.push(`Storing 61-state codon conditional likelihood vectors (CLVs) across ${2 * est.numTaxa - 1} branches × ${est.maxCodons} sites requires ~${est.peakRamMb} MB of WebAssembly linear heap.`);
       }
       if (reasons.length === 0) {
         reasons.push(`This dataset contains ${est.numTaxa} sequences and ~${est.maxCodons} codons (${(est.numTaxa * est.maxCodons).toLocaleString()} total codon cells).`);
@@ -5730,7 +5767,7 @@
         recEl.innerHTML = `<strong>Tip:</strong> Stage 3 runs in a background Web Worker, so your browser window will remain responsive while the progress bar animates (${fmtDurationEst(est.stage3Sec)}). For very large alignments, the native multi-threaded CLI (<code>hyphy3-walrus</code>) utilizes all CPU cores and hardware BLAS.`;
       } else {
         safeBtn.style.display = 'inline-flex';
-        recEl.innerHTML = `<strong>Recommended for large files:</strong> Click <strong>Run Stage 0 QA Only (Fast)</strong> to run 6-frame admission &amp; curation in <strong>${fmtDurationEst(est.stage0Sec)}</strong> without automatically chaining into heavy downstream stages, or use the native multi-threaded CLI (<code>hyphy3-walrus</code>) for cohorts with &gt;50,000 codon-taxon cells.`;
+        recEl.innerHTML = `<strong>Recommended for large files:</strong> Click <strong>Run Stage 0 QA Only (Fast)</strong> to run 6-frame admission &amp; curation in <strong>${fmtDurationEst(est.stage0Sec)}</strong> without automatically chaining into Stage 3, or use the native multi-threaded CLI (<code>hyphy3-walrus</code>) for cohorts with &gt;60,000 codon-taxon cells.`;
       }
 
       document.getElementById('preflightModal').classList.add('open');

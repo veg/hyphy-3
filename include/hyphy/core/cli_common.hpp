@@ -105,14 +105,14 @@ inline long long parse_ll_full(const char* flag, const std::string& val) {
         pos = 0;
     }
     if (val.empty() || pos != val.size()) {
-        throw std::runtime_error(std::string("Error: invalid ") + flag + " value '" + val + "'. Expected an integer.");
+        throw std::runtime_error(std::string("invalid ") + flag + " value '" + val + "'. Expected an integer.");
     }
     return v;
 }
 
 /**
  * @brief Parse a floating-point option value, requiring the whole string to be
- *        consumed (see parse_ll_full).
+ *        consumed and finite (see parse_ll_full).
  */
 inline double parse_double_full(const char* flag, const std::string& val) {
     size_t pos = 0;
@@ -122,8 +122,8 @@ inline double parse_double_full(const char* flag, const std::string& val) {
     } catch (const std::exception&) {
         pos = 0;
     }
-    if (val.empty() || pos != val.size()) {
-        throw std::runtime_error(std::string("Error: invalid ") + flag + " value '" + val + "'. Expected a number.");
+    if (val.empty() || pos != val.size() || !std::isfinite(v)) {
+        throw std::runtime_error(std::string("invalid ") + flag + " value '" + val + "'. Expected a finite number.");
     }
     return v;
 }
@@ -142,7 +142,7 @@ inline unsigned long long parse_nonneg_ull(
 {
     long long v = parse_ll_full(flag, val);
     if (v < min_val || v > max_val) {
-        throw std::runtime_error(std::string("Error: invalid ") + flag + " value '" + val + "'. Expected an integer in [" + std::to_string(min_val) + ", " + std::to_string(max_val) + "].");
+        throw std::runtime_error(std::string("invalid ") + flag + " value '" + val + "'. Expected an integer in [" + std::to_string(min_val) + ", " + std::to_string(max_val) + "].");
     }
     return static_cast<unsigned long long>(v);
 }
@@ -159,7 +159,7 @@ inline unsigned long long parse_nonneg_ull(
 inline double parse_probability(const char* flag, const std::string& val) {
     double v = parse_double_full(flag, val);
     if (!(v >= 0.0 && v <= 1.0)) {
-        throw std::runtime_error(std::string("Error: invalid ") + flag + " value '" + val + "'. Expected a number in [0, 1].");
+        throw std::runtime_error(std::string("invalid ") + flag + " value '" + val + "'. Expected a number in [0, 1].");
     }
     return v;
 }
@@ -242,7 +242,7 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
                 parse_nonneg_ull("--threads", val, std::numeric_limits<int>::max()));
         } catch (const std::exception& e) {
             opts.has_error = true;
-            opts.error_message = e.what();
+            opts.error_message = std::string("Error: ") + e.what();
             std::cerr << Console::danger(opts.error_message) << "\n";
             return CommonArgParseStatus::Error;
         }
@@ -266,7 +266,7 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
             opts.pvalue_threshold = parse_probability("--pvalue", val);
         } catch (const std::exception& e) {
             opts.has_error = true;
-            opts.error_message = e.what();
+            opts.error_message = std::string("Error: ") + e.what();
             std::cerr << Console::danger(opts.error_message) << "\n";
             return CommonArgParseStatus::Error;
         }

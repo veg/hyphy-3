@@ -112,7 +112,7 @@ int run_mss(int argc, char* argv[]) {
         } else if (arg == "--select" || arg == "--selector" || arg == "--partition-select") {
             settings.select_partition = true;
         } else if ((arg == "--classes" || arg == "--rates" || arg == "-K") && i + 1 < argc) {
-            settings.select_classes = parse_nonneg_ull("--classes", argv[++i], 12);
+            settings.select_classes = parse_nonneg_ull("--classes", argv[++i], 12, 1);
         } else if (arg == "--auto-k") {
             settings.select_auto_k = true;
         } else if (arg == "--fixed-k" || arg == "--no-auto-k") {

@@ -71,7 +71,7 @@ int run_absrel(int argc, char* argv[]) {
         if (status == CommonArgParseStatus::Error) return 1;
 
         if ((arg == "--max-rates" || arg == "--rates") && i + 1 < argc) {
-            settings.max_rate_classes = static_cast<int>(parse_nonneg_ull("--max-rates", argv[++i], std::numeric_limits<int>::max()));
+            settings.max_rate_classes = static_cast<int>(parse_nonneg_ull("--max-rates", argv[++i], std::numeric_limits<int>::max(), 1));
         } else if (arg == "--help" || arg == "-h") {
             print_absrel_usage(argv[0]);
             return 0;
