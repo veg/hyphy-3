@@ -47,20 +47,25 @@
       line-height: 1.5;
       -webkit-font-smoothing: antialiased;
       min-height: 100vh;
+      overflow-x: hidden;
     }
 
     /* Top Bar */
     .topbar {
       background: var(--bg-card);
       border-bottom: 1px solid var(--border);
-      padding: 12px 32px;
+      padding: 10px 16px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 20px;
+      flex-wrap: nowrap;
+      gap: 8px;
       position: sticky;
       top: 0;
       z-index: 50;
+      width: 100%;
+      max-width: 100vw;
+      box-sizing: border-box;
     }
 
     .topbar-progress {
@@ -98,20 +103,25 @@
     .brand {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
       font-weight: 700;
-      font-size: 16px;
+      font-size: 15.5px;
       letter-spacing: -0.01em;
+      flex-shrink: 0;
+      min-width: 0;
     }
 
     .brand-status {
       font-family: var(--font-mono);
-      font-size: 11.5px;
+      font-size: 11px;
       font-weight: 500;
       color: var(--ink-muted);
       padding-left: 8px;
       border-left: 1px solid var(--border);
       white-space: nowrap;
+      max-width: 165px;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .brand-status.busy {
       color: var(--orange);
@@ -136,23 +146,31 @@
     .stage-steps {
       display: flex;
       align-items: center;
-      gap: 4px;
+      gap: 3px;
+      flex: 0 1 auto;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .stage-steps::-webkit-scrollbar {
+      display: none;
     }
 
     .step-connector {
-      width: 14px;
+      width: 8px;
       height: 1.5px;
       background: var(--border);
       transition: background 0.2s;
+      flex-shrink: 0;
     }
     .step-connector.done {
       background: var(--green);
     }
 
     .stage-step {
-      padding: 6px 12px;
+      padding: 5px 9px;
       border-radius: 6px;
-      font-size: 13px;
+      font-size: 12.5px;
       font-weight: 500;
       color: var(--ink-secondary);
       background: var(--bg-subtle);
@@ -160,9 +178,11 @@
       cursor: pointer;
       display: inline-flex;
       align-items: center;
-      gap: 7px;
+      gap: 5px;
       transition: all 0.14s;
       position: relative;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
     .stage-step:hover:not(:disabled):not(.active) {
       border-color: var(--ink-muted);
@@ -1162,11 +1182,18 @@
     /* =================================================================== */
     .topbar-actions {
       display: flex;
-      gap: 8px;
+      gap: 6px;
       align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      flex-shrink: 0;
+    }
+    .topbar-actions .btn-sm {
+      padding: 5px 9px;
+      font-size: 12.5px;
     }
 
-    @media (max-width: 980px) {
+    @media (max-width: 1260px) {
       .topbar {
         flex-wrap: wrap;
         padding: 10px 16px;
@@ -1178,11 +1205,19 @@
       .topbar-actions {
         order: 2;
         margin-left: auto;
-        gap: 6px;
+        gap: 5px;
+        min-width: 0;
+        overflow-x: auto;
+        flex-wrap: nowrap;
+        scrollbar-width: none;
+      }
+      .topbar-actions::-webkit-scrollbar {
+        display: none;
       }
       .topbar .stage-steps {
         order: 3;
         width: 100%;
+        flex: 1 1 100%;
         overflow-x: auto;
         -webkit-overflow-scrolling: touch;
         scrollbar-width: none;
@@ -1197,12 +1232,18 @@
       }
       .stage-step {
         flex-shrink: 0;
-        padding: 5px 10px;
+        padding: 5px 9px;
         font-size: 12.5px;
       }
       .step-connector {
-        width: 8px;
+        width: 6px;
         flex-shrink: 0;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .brand-status {
+        display: none;
       }
     }
 
@@ -1622,7 +1663,7 @@
         padding: 16px;
       }
     }
-    @media (max-width: 540px) {
+    @media (max-width: 640px) {
       .walkthrough-step-grid {
         grid-template-columns: 1fr;
       }
@@ -1632,6 +1673,9 @@
       .walkthrough-cta-row .btn {
         width: 100%;
         justify-content: center;
+        white-space: normal;
+        text-align: center;
+        line-height: 1.35;
       }
     }
   </style>
@@ -1652,47 +1696,47 @@
       </button>
       <span class="step-connector"></span>
 
-      <button id="tabStage0" class="stage-step pending" onclick="openOrRunStage0()">
+      <button id="tabStage0" class="stage-step pending" onclick="openOrRunStage0()" title="Stage 0: 6-Frame QA &amp; Homology Admission">
         <span id="stepNum0" class="step-num">0</span>
-        <span>QA &amp; Admission</span>
+        <span>QA</span>
         <span id="stepState0" class="step-state">—</span>
       </button>
       <span id="stepConn01" class="step-connector"></span>
 
-      <button id="tabStage1" class="stage-step pending" onclick="openOrRunStage1()">
+      <button id="tabStage1" class="stage-step pending" onclick="openOrRunStage1()" title="Stage 1: Codon-Aware Alignment &amp; Frameshift Repair">
         <span id="stepNum1" class="step-num">1</span>
         <span>Alignment</span>
         <span id="stepState1" class="step-state">—</span>
       </button>
       <span id="stepConn12" class="step-connector"></span>
 
-      <button id="tabStage2" class="stage-step pending" onclick="openOrRunStage2()">
+      <button id="tabStage2" class="stage-step pending" onclick="openOrRunStage2()" title="Stage 2: Phylogeny &amp; Recombination Screening">
         <span id="stepNum2" class="step-num">2</span>
         <span>Phylogeny</span>
         <span id="stepState2" class="step-state">—</span>
       </button>
       <span id="stepConn23" class="step-connector"></span>
 
-      <button id="tabStage3" class="stage-step pending" onclick="openOrRunStage3()">
+      <button id="tabStage3" class="stage-step pending" onclick="openOrRunStage3()" title="Stage 3: Selection, Relaxation &amp; Core Invasion">
         <span id="stepNum3" class="step-num">3</span>
         <span>Selection</span>
         <span id="stepState3" class="step-state">—</span>
       </button>
       <span id="stepConn34" class="step-connector"></span>
 
-      <button id="tabFullReport" class="stage-step pending" onclick="switchView('full')" disabled>
+      <button id="tabFullReport" class="stage-step pending" onclick="switchView('full')" disabled title="Stage 4: Complete Standalone Publication Dossier">
         <span id="stepNum4" class="step-num">4</span>
-        <span>Full Dossier</span>
+        <span>Dossier</span>
         <span id="stepState4" class="step-state">—</span>
       </button>
     </nav>
 
     <div class="topbar-actions">
       <input type="file" id="fileInput" accept=".fa,.fasta,.fna,.cds,.nex,.nexus,.txt,.json" style="display:none" onchange="handleFileUpload(event)" />
-      <button class="btn btn-sm" onclick="document.getElementById('fileInput').click()">Upload File</button>
-      <button class="btn btn-sm" onclick="openPasteModal()">Paste FASTA</button>
-      <button class="btn btn-sm" onclick="openStreamModal()" title="Stream coding sequences live from NCBI GenBank/RefSeq, ENA, or URL">🌐 Fetch GenBank / URL</button>
-      <button id="btnTopWalkthrough" class="btn btn-sm" onclick="toggleWalkthroughTour()" title="Interactive Step-by-Step Guided Walkthrough">🎓 Walkthrough</button>
+      <button class="btn btn-sm" onclick="document.getElementById('fileInput').click()" title="Upload a FASTA, NEXUS, or WALRUS JSON file">Upload</button>
+      <button class="btn btn-sm" onclick="openPasteModal()" title="Paste raw FASTA or NEXUS sequences">Paste</button>
+      <button class="btn btn-sm" onclick="openStreamModal()" title="Stream coding sequences live from NCBI GenBank/RefSeq, ENA, or URL">🌐 Fetch</button>
+      <button id="btnTopWalkthrough" class="btn btn-sm" onclick="toggleWalkthroughTour()" title="Interactive Step-by-Step Guided Walkthrough">🎓 Tour</button>
       <button class="btn btn-sm" onclick="openHelpDrawer()" title="How WALRUS Works, Metric Glossary &amp; FAQ">? Guide</button>
     </div>
 
