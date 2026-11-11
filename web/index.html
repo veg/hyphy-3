@@ -955,8 +955,59 @@
 
     .mode-switch-options {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 8px;
+    }
+    @media (max-width: 640px) {
+      .mode-switch-options {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .cluster-pill-live {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: #ECFDF5;
+      color: #065F46;
+      border: 1px solid #A7F3D0;
+      font-weight: 600;
+    }
+    .cluster-pill-live.offline {
+      background: #FEF2F2;
+      color: #991B1B;
+      border-color: #FECACA;
+    }
+    .cluster-prog-track {
+      width: 100%;
+      height: 8px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .cluster-prog-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #0284C7, #059669);
+      transition: width 0.35s ease;
+    }
+    .cluster-log-pre {
+      background: #0F172A;
+      color: #E2E8F0;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.45;
+      padding: 10px 12px;
+      border-radius: 6px;
+      max-height: 150px;
+      overflow: auto;
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
 
     .mode-opt-btn {
@@ -1791,19 +1842,26 @@
           <div class="mode-switch-bar">
             <div class="mode-switch-label">Upload &amp; Paste Launch Mode</div>
             <div class="mode-switch-options">
-              <button id="btnModeInteractive" class="mode-opt-btn active" onclick="setLaunchMode(false)">
+              <button id="btnModeInteractive" class="mode-opt-btn active" onclick="setLaunchMode('interactive')">
                 <div class="mode-opt-title">
                   <span>Step-by-Step Workbench</span>
                   <span class="mode-opt-dot"></span>
                 </div>
                 <div class="mode-opt-sub">Curate Stage 0 first, then advance stage by stage</div>
               </button>
-              <button id="btnModeFullAuto" class="mode-opt-btn" onclick="setLaunchMode(true)">
+              <button id="btnModeFullAuto" class="mode-opt-btn" onclick="setLaunchMode('full_auto')">
                 <div class="mode-opt-title">
-                  <span>⚡ Full Auto Pipeline</span>
+                  <span>⚡ Full Auto (Browser)</span>
                   <span class="mode-opt-dot"></span>
                 </div>
-                <div class="mode-opt-sub">Chain Stages 0 → 1 → 2 → 3 automatically</div>
+                <div class="mode-opt-sub">Chain Stages 0 → 1 → 2 → 3 locally in WASM</div>
+              </button>
+              <button id="btnModeCluster" class="mode-opt-btn" onclick="setLaunchMode('cluster')">
+                <div class="mode-opt-title">
+                  <span>☁️ Cluster Offload</span>
+                  <span class="mode-opt-dot"></span>
+                </div>
+                <div class="mode-opt-sub">Run on 16-core iGEM ARM64 Slurm (no login)</div>
               </button>
             </div>
           </div>
@@ -1827,9 +1885,10 @@
             <button class="btn btn-primary btn-sm" onclick="document.getElementById('fileInput').click()">Choose File…</button>
             <button class="btn btn-sm" onclick="openPasteModal()">Paste FASTA / NEXUS</button>
             <button class="btn btn-sm" onclick="openStreamModal()">🌐 Stream from GenBank / URL</button>
+            <button class="btn btn-sm" onclick="openClusterModalFromCurrent()" title="Submit sequences to Temple iGEM's 16-core ARM64 cluster or check running jobs">☁️ Cluster Jobs</button>
           </div>
-          <div style="font-family:var(--font-mono); font-size:11px; color:var(--ink-muted);">
-            100% Client-Side • Zero Data Leaves Your Machine
+          <div id="landingPrivacyNote" style="font-family:var(--font-mono); font-size:11px; color:var(--ink-muted);">
+            100% Client-Side by Default • Optional Zero-Login 16-Core iGEM Cluster Offload
           </div>
         </div>
       </section>
@@ -2974,7 +3033,133 @@
       <div style="display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap; margin-top:2px;">
         <button class="btn" onclick="closePreflightModal()">Cancel</button>
         <button id="pfBtnSafeStage0" class="btn" onclick="confirmPreflightStage0Only()">Run Stage 0 QA Only (Fast)</button>
-        <button id="pfBtnProceed" class="btn btn-primary" onclick="confirmPreflightProceed()">Proceed Anyway</button>
+        <button id="pfBtnProceed" class="btn" onclick="confirmPreflightProceed()">Run in Browser Anyway</button>
+        <button id="pfBtnCluster" class="btn btn-primary" onclick="confirmPreflightCluster()">☁️ Run on iGEM Cluster (16 Cores)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ZERO-LOGIN CLUSTER OFFLOAD & LIVE SLURM MONITOR MODAL -->
+  <div id="clusterModal" class="modal-backdrop" onclick="closeClusterModal()">
+    <div class="modal-card" style="max-width:680px;" onclick="event.stopPropagation()">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+        <div>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px;">
+            <span id="clusterHealthPill" class="cluster-pill-live">● Checking Cluster…</span>
+            <span id="clusterQuotaText" style="font-family:var(--font-mono); font-size:11.5px; color:var(--ink-muted);">16 ARM64 Cores/Job • Zero Login</span>
+          </div>
+          <strong style="font-size:16.5px; color:var(--ink);">iGEM Silverback Cluster Offload</strong>
+        </div>
+        <button class="btn btn-sm" onclick="closeClusterModal()">✕</button>
+      </div>
+
+      <!-- SUBMISSION PANEL -->
+      <div id="clusterSubmitPanel" style="display:flex; flex-direction:column; gap:12px;">
+        <div style="font-size:13px; color:var(--ink-secondary); line-height:1.48;">
+          Offload large or compute-intensive coding cohorts to Temple University iGEM's <strong>Silverback ARM64 Slurm cluster</strong> (16 threads/job, protected by automatic browser Proof-of-Work — no account or API key required).
+        </div>
+
+        <div class="drawer-stat-grid" style="grid-template-columns:repeat(3, minmax(0,1fr));">
+          <div class="drawer-stat">
+            <div class="drawer-stat-label">Dataset</div>
+            <div id="clSubDataset" class="drawer-stat-val" style="font-size:12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">—</div>
+          </div>
+          <div class="drawer-stat">
+            <div class="drawer-stat-label">Sequences</div>
+            <div id="clSubTaxa" class="drawer-stat-val">—</div>
+          </div>
+          <div class="drawer-stat">
+            <div class="drawer-stat-label">Tagged Tree</div>
+            <div id="clSubTree" class="drawer-stat-val" style="font-size:12.5px;">Auto (De Novo)</div>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+          <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:600; color:var(--ink-secondary);">
+            <span>Alignment Mode</span>
+            <select id="clOptMode" class="select-sm" style="width:100%; height:34px;">
+              <option value="unaligned">Unaligned / De Novo Codon POA (-u)</option>
+              <option value="aligned">Pre-Aligned Codons (-a)</option>
+            </select>
+          </label>
+          <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:600; color:var(--ink-secondary);">
+            <span>Genetic Code</span>
+            <select id="clOptCode" class="select-sm" style="width:100%; height:34px;">
+              <option value="Universal">Universal (Standard)</option>
+              <option value="Vertebrate-mtDNA">Vertebrate mtDNA</option>
+              <option value="Invertebrate-mtDNA">Invertebrate mtDNA</option>
+              <option value="Yeast-mtDNA">Yeast mtDNA</option>
+              <option value="Mold-Protozoan-mtDNA">Mold / Protozoan mtDNA</option>
+              <option value="Ciliate-Nuclear">Ciliate Nuclear</option>
+              <option value="Echinoderm-mtDNA">Echinoderm mtDNA</option>
+            </select>
+          </label>
+        </div>
+
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink); cursor:pointer;">
+          <input type="checkbox" id="clOptCoev" checked />
+          <span>Run Phylogenetic Epistasis / Co-Evolution Screen (<code>--coevolution</code>)</span>
+        </label>
+
+        <div style="font-size:11.5px; color:var(--ink-muted); background:var(--bg-subtle); border:1px solid var(--border); border-radius:6px; padding:8px 10px; line-height:1.4;">
+          <strong>Fair-Use &amp; Privacy:</strong> Max 1,500 sequences, 20 min walltime, 2 concurrent jobs per network. Capability links auto-expire after 48h. For restricted clinical/unpublished patient sequences, run locally in Browser WASM mode instead.
+        </div>
+
+        <div id="clSubmitError" style="display:none; font-size:12.5px; color:#B91C1C; background:#FEF2F2; border:1px solid #FECACA; border-radius:6px; padding:8px 10px;"></div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+          <div id="clSubmitHint" style="font-family:var(--font-mono); font-size:11.5px; color:var(--ink-muted);"></div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" onclick="closeClusterModal()">Cancel</button>
+            <button id="btnClusterSubmitGo" class="btn btn-primary" onclick="submitClusterJobNow()">⚡ Submit to 16-Core Cluster</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- LIVE JOB MONITOR PANEL -->
+      <div id="clusterMonitorPanel" style="display:none; flex-direction:column; gap:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; background:var(--bg-subtle); border:1px solid var(--border); border-radius:6px; padding:10px 12px;">
+          <div>
+            <div id="clMonTitle" style="font-weight:700; font-size:13.5px; color:var(--ink);">—</div>
+            <div id="clMonMeta" style="font-family:var(--font-mono); font-size:11.5px; color:var(--ink-muted);">Job ID: —</div>
+          </div>
+          <div style="display:flex; gap:6px; align-items:center;">
+            <button class="btn btn-sm" onclick="copyClusterShareUrl()" title="Copy capability link to bookmark or share this job">📋 Copy Job Link</button>
+            <button id="btnClusterNewSub" class="btn btn-sm" onclick="switchClusterPanel('submit')">+ New Job</button>
+          </div>
+        </div>
+
+        <div>
+          <div style="display:flex; justify-content:space-between; font-size:12.5px; font-weight:600; color:var(--ink); margin-bottom:6px;">
+            <span id="clMonStage">Queued…</span>
+            <span id="clMonElapsed" style="font-family:var(--font-mono); color:var(--ink-muted);">0.0s</span>
+          </div>
+          <div class="cluster-prog-track">
+            <div id="clMonProgFill" class="cluster-prog-fill" style="width:5%;"></div>
+          </div>
+        </div>
+
+        <pre id="clMonLog" class="cluster-log-pre">Waiting for Slurm compute node allocation…</pre>
+
+        <div id="clMonError" style="display:none; font-size:12.5px; color:#B91C1C; background:#FEF2F2; border:1px solid #FECACA; border-radius:6px; padding:8px 10px;"></div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+          <div>
+            <button id="btnClusterCancel" class="btn btn-sm" style="color:#B91C1C;" onclick="cancelActiveClusterJob()">✕ Cancel Job</button>
+          </div>
+          <div id="clMonDownloads" style="display:none; gap:8px; flex-wrap:wrap;">
+            <button id="btnClDlMsa" class="btn btn-sm" style="display:none;" onclick="downloadClusterArtifact('result.msa.fa')">↓ Aligned .msa.fa</button>
+            <button class="btn btn-sm" onclick="downloadClusterArtifact('result.json')">↓ .walrus.json</button>
+            <button class="btn btn-sm" onclick="downloadClusterArtifact('result.html')">↓ .walrus.html</button>
+            <button class="btn btn-primary btn-sm" onclick="openClusterDossierInApp()">Open Interactive Dossier →</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- RECENT JOBS STRIP -->
+      <div id="clusterRecentWrap" style="display:none; border-top:1px solid var(--border); padding-top:10px;">
+        <div style="font-family:var(--font-mono); font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-muted); margin-bottom:6px;">Recent Cluster Jobs (This Browser, 48h TTL)</div>
+        <div id="clusterRecentList" style="display:flex; flex-direction:column; gap:5px; max-height:110px; overflow:auto;"></div>
       </div>
     </div>
   </div>
@@ -3009,7 +3194,10 @@
       <button class="btn btn-sm" onclick="exportFullPipelineHtml()">↓ Export Standalone HTML Report</button>
     </div>
 
-    <div>
+    <div style="display:flex; align-items:center; gap:8px;">
+      <button id="btnFooterCluster" class="btn btn-sm" style="display:none;" onclick="openClusterModalFromStage()" title="Offload remaining pipeline stages (with your curated sequences / foreground tags) to 16-core iGEM cluster">
+        ☁️ Run on Cluster (16c)
+      </button>
       <button id="btnAdvanceStage1" class="btn btn-primary" onclick="runStage1Now()">
         Continue to Stage 1: Alignment (<span id="btnAdvanceCount">0</span> Admitted) →
       </button>
@@ -3031,6 +3219,7 @@
     let wasmReady = false;
     let activeView = 'landing'; // 'landing' | 'stage0' | 'stage1' | 'stage2' | 'stage3' | 'full'
     let runningStage = null;    // null | 'stage0' | 'stage1' | 'stage2' | 'stage3' | 'full'
+    let defaultLaunchMode = 'interactive'; // 'interactive' | 'full_auto' | 'cluster'
     let defaultLaunchFullAuto = false;
     let autoAdvanceChain = false;
     const stageRuntimeMs = { stage0: null, stage1: null, stage2: null, stage3: null, full: null };
@@ -3240,18 +3429,25 @@
               <button class="btn btn-sm" style="flex:1; justify-content:center;" onclick="launchSampleFromLanding('${escapeHtml(key)}', false)">
                 Step-by-Step →
               </button>
-              <button class="btn btn-primary btn-sm" style="justify-content:center;" onclick="launchSampleFromLanding('${escapeHtml(key)}', true)" title="Run Stages 0 → 1 → 2 → 3 automatically">
-                ⚡ Full Auto
+              <button class="btn btn-primary btn-sm" style="justify-content:center;" onclick="launchSampleFromLanding('${escapeHtml(key)}', true)" title="Run Stages 0 → 1 → 2 → 3 locally in Browser WASM">
+                ⚡ Auto
+              </button>
+              <button class="btn btn-sm" style="justify-content:center; padding:5px 8px;" onclick="launchSampleOnCluster('${escapeHtml(key)}')" title="Run on 16-core iGEM Silverback Cluster (no login)">
+                ☁️
               </button>
             </div>
           </div>`;
       }).join('');
     }
 
-    function setLaunchMode(fullAuto) {
-      defaultLaunchFullAuto = !!fullAuto;
-      document.getElementById('btnModeInteractive')?.classList.toggle('active', !defaultLaunchFullAuto);
-      document.getElementById('btnModeFullAuto')?.classList.toggle('active', defaultLaunchFullAuto);
+    function setLaunchMode(mode) {
+      if (mode === true) mode = 'full_auto';
+      if (mode === false) mode = 'interactive';
+      defaultLaunchMode = (mode === 'cluster' || mode === 'full_auto') ? mode : 'interactive';
+      defaultLaunchFullAuto = (defaultLaunchMode === 'full_auto');
+      document.getElementById('btnModeInteractive')?.classList.toggle('active', defaultLaunchMode === 'interactive');
+      document.getElementById('btnModeFullAuto')?.classList.toggle('active', defaultLaunchMode === 'full_auto');
+      document.getElementById('btnModeCluster')?.classList.toggle('active', defaultLaunchMode === 'cluster');
     }
 
     function launchSampleFromLanding(sampleKey, runFullAuto) {
@@ -6630,6 +6826,8 @@
       document.getElementById('footerStage1Exports').style.display = (v === 'stage1') ? 'flex' : 'none';
       document.getElementById('footerStage2Exports').style.display = (v === 'stage2') ? 'flex' : 'none';
       document.getElementById('footerStage3Exports').style.display = (v === 'stage3') ? 'flex' : 'none';
+      const footerClBtn = document.getElementById('btnFooterCluster');
+      if (footerClBtn) footerClBtn.style.display = (v === 'stage0' || v === 'stage1' || v === 'stage2') ? 'inline-flex' : 'none';
       document.getElementById('btnAdvanceStage1').style.display = (v === 'stage0') ? 'inline-flex' : 'none';
       document.getElementById('btnAdvanceStage2').style.display = (v === 'stage1') ? 'inline-flex' : 'none';
       document.getElementById('btnAdvanceStage3').style.display = (v === 'stage2') ? 'inline-flex' : 'none';
@@ -7180,12 +7378,17 @@
       }
       expEl.textContent = reasons.join(' ');
 
+      if (defaultLaunchMode === 'cluster' && actionCtx && actionCtx.content) {
+        openClusterModalWithPayload(actionCtx.content, actionCtx.label || 'dataset.fa', '');
+        return;
+      }
+
       if (actionCtx && actionCtx.mode === 'stage3_only') {
         safeBtn.style.display = 'none';
-        recEl.innerHTML = `<strong>Tip:</strong> Stage 3 runs in a background Web Worker, so your browser window will remain responsive while the progress bar animates (${fmtDurationEst(est.stage3Sec)}). For very large alignments, the native multi-threaded CLI (<code>hyphy3-walrus</code>) utilizes all CPU cores and hardware BLAS.`;
+        recEl.innerHTML = `<strong>Recommended:</strong> Click <strong>☁️ Run on iGEM Cluster (16 Cores)</strong> below to finish on 16 ARM64 threads (preserving your curated sequences &amp; foreground tags), or run in the background browser Web Worker (${fmtDurationEst(est.stage3Sec)}).`;
       } else {
         safeBtn.style.display = 'inline-flex';
-        recEl.innerHTML = `<strong>Recommended for large files:</strong> Click <strong>Run Stage 0 QA Only (Fast)</strong> to run 6-frame admission &amp; curation in <strong>${fmtDurationEst(est.stage0Sec)}</strong> without automatically chaining into Stage 3, or use the native multi-threaded CLI (<code>hyphy3-walrus</code>) for cohorts with &gt;60,000 codon-taxon cells.`;
+        recEl.innerHTML = `<strong>Recommended for large cohorts:</strong> Click <strong>☁️ Run on iGEM Cluster (16 Cores)</strong> for fast 16-thread Slurm execution (zero login), or click <strong>Run Stage 0 QA Only (Fast)</strong> (${fmtDurationEst(est.stage0Sec)}).`;
       }
 
       document.getElementById('preflightModal').classList.add('open');
@@ -7206,7 +7409,7 @@
       const recChk = document.getElementById('chkRecombScan');
       if (sprChk) sprChk.checked = false;
       if (recChk) recChk.checked = false;
-      launchCustomSequencePayload(act.content, act.label, false);
+      launchCustomSequencePayload(act.content, act.label, false, true);
     }
 
     function confirmPreflightProceed() {
@@ -7217,11 +7420,30 @@
       if (act.mode === 'stage3_only') {
         runStage3Now(true);
       } else if (act.content) {
-        launchCustomSequencePayload(act.content, act.label, act.runFullAuto);
+        launchCustomSequencePayload(act.content, act.label, act.runFullAuto, true);
       }
     }
 
-    function launchCustomSequencePayload(content, label, runFullAuto) {
+    function confirmPreflightCluster() {
+      const act = pendingPreflightAction;
+      closePreflightModal();
+      if (act && act.mode === 'stage3_only') {
+        openClusterModalFromStage();
+      } else if (act && act.content) {
+        openClusterModalWithPayload(act.content, act.label || 'dataset.fa', '');
+      } else {
+        openClusterModalFromCurrent();
+      }
+    }
+
+    function launchCustomSequencePayload(content, label, runFullAuto, forceLocal) {
+      if (!forceLocal && defaultLaunchMode === 'cluster') {
+        currentRawSeq = content;
+        currentDatasetLabel = label;
+        closePasteModal();
+        openClusterModalWithPayload(content, label, '');
+        return;
+      }
       currentRawSeq = content;
       currentDatasetLabel = label;
       autoAdvanceChain = !!runFullAuto;
@@ -7469,8 +7691,495 @@
       return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
+    // =========================================================================
+    // ZERO-LOGIN iGEM SILVERBACK CLUSTER OFFLOAD & LIVE SLURM MONITOR
+    // =========================================================================
+    const CLUSTER_STORAGE_KEY = 'walrus_recent_cluster_jobs_v1';
+    let clusterEndpoint = '';
+    let clusterPendingSeq = '';
+    let clusterPendingTree = '';
+    let clusterPendingLabel = '';
+    let activeClusterJobId = '';
+    let clusterPollTimer = null;
+    let clusterHydratedJobId = '';
+
+    async function resolveClusterEndpoint() {
+      const qUrl = new URLSearchParams(window.location.search).get('cluster');
+      if (qUrl && /^https?:\/\//i.test(qUrl)) {
+        clusterEndpoint = qUrl.replace(/\/+$/, '');
+        return clusterEndpoint;
+      }
+      try {
+        const resp = await fetch('cluster_config.json?t=' + Math.floor(Date.now() / 60000), { cache: 'no-store' });
+        if (resp.ok) {
+          const cfg = await resp.json();
+          if (cfg && cfg.endpoint) {
+            clusterEndpoint = String(cfg.endpoint).replace(/\/+$/, '');
+          }
+        }
+      } catch (_) {}
+      return clusterEndpoint;
+    }
+
+    function loadRecentClusterJobs() {
+      try {
+        const arr = JSON.parse(localStorage.getItem(CLUSTER_STORAGE_KEY) || '[]');
+        if (!Array.isArray(arr)) return [];
+        const cutoff = (Date.now() / 1000) - (48 * 3600);
+        return arr.filter(x => x && x.job_id && (!x.created_at || x.created_at > cutoff));
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function saveRecentClusterJob(entry) {
+      try {
+        const list = loadRecentClusterJobs().filter(x => x.job_id !== entry.job_id);
+        list.unshift(entry);
+        localStorage.setItem(CLUSTER_STORAGE_KEY, JSON.stringify(list.slice(0, 12)));
+      } catch (_) {}
+      renderRecentClusterJobs();
+    }
+
+    function getStoredCancelToken(jobId) {
+      const found = loadRecentClusterJobs().find(x => x.job_id === jobId);
+      return found ? (found.cancel_token || '') : '';
+    }
+
+    function renderRecentClusterJobs() {
+      const wrap = document.getElementById('clusterRecentWrap');
+      const listEl = document.getElementById('clusterRecentList');
+      if (!wrap || !listEl) return;
+      const jobs = loadRecentClusterJobs();
+      if (!jobs.length) {
+        wrap.style.display = 'none';
+        return;
+      }
+      wrap.style.display = 'block';
+      listEl.innerHTML = jobs.map(j => {
+        const isCur = (j.job_id === activeClusterJobId);
+        return `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:12px; padding:4px 8px; border-radius:5px; background:${isCur ? '#EFF6FF' : 'var(--bg-subtle)'}; border:1px solid ${isCur ? '#BFDBFE' : 'var(--border)'};">
+          <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"><strong>${escapeHtml(j.label || 'dataset')}</strong> <code style="font-size:11px; color:var(--ink-muted);">${escapeHtml(j.job_id)}</code></span>
+          <button class="btn btn-sm" style="padding:2px 8px; font-size:11px;" onclick="monitorClusterJob('${escapeHtml(j.job_id)}')">Open</button>
+        </div>`;
+      }).join('');
+    }
+
+    async function refreshClusterHealth() {
+      const pill = document.getElementById('clusterHealthPill');
+      const quota = document.getElementById('clusterQuotaText');
+      const ep = await resolveClusterEndpoint();
+      if (!ep) {
+        if (pill) { pill.textContent = '● Endpoint Unconfigured'; pill.className = 'cluster-pill-live offline'; }
+        return false;
+      }
+      try {
+        const r = await fetch(ep + '/v1/status', { cache: 'no-store' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const st = await r.json();
+        if (pill) {
+          pill.textContent = st.online
+            ? `● Silverback Online (${st.active_jobs}/${st.max_concurrent_jobs} running${st.queued_jobs ? ', ' + st.queued_jobs + ' queued' : ''})`
+            : '● Cluster Maintenance';
+          pill.className = st.online ? 'cluster-pill-live' : 'cluster-pill-live offline';
+        }
+        if (quota) {
+          quota.textContent = `${st.threads_per_job || 16} ARM64 Threads/Job • Max ${(st.limits && st.limits.max_taxa) || 1500} Taxa`;
+        }
+        return !!st.online;
+      } catch (_) {
+        if (pill) { pill.textContent = '● Cluster Unreachable'; pill.className = 'cluster-pill-live offline'; }
+        return false;
+      }
+    }
+
+    function detectLikelyAligned(seqText) {
+      if (!seqText) return false;
+      const trimmed = seqText.trimStart();
+      if (/^#NEXUS/i.test(trimmed)) return true;
+      const lens = [];
+      let cur = 0, seen = false, hasGap = false;
+      const lines = trimmed.split(/\r?\n/);
+      for (let i = 0; i < lines.length && lens.length < 30; i++) {
+        const s = lines[i].trim();
+        if (!s) continue;
+        if (s[0] === '(') break;
+        if (s[0] === '>') {
+          if (seen) lens.push(cur);
+          seen = true;
+          cur = 0;
+        } else {
+          if (s.indexOf('-') !== -1) hasGap = true;
+          cur += s.replace(/\s+/g, '').length;
+        }
+      }
+      if (seen) lens.push(cur);
+      if (lens.length < 2) return false;
+      const allEqual = lens.every(L => L === lens[0] && L > 0 && L % 3 === 0);
+      return allEqual && (hasGap || lens.length >= 4);
+    }
+
+    function switchClusterPanel(which) {
+      const subP = document.getElementById('clusterSubmitPanel');
+      const monP = document.getElementById('clusterMonitorPanel');
+      if (subP) subP.style.display = (which === 'submit') ? 'flex' : 'none';
+      if (monP) monP.style.display = (which === 'monitor') ? 'flex' : 'none';
+      renderRecentClusterJobs();
+    }
+
+    function openClusterModalWithPayload(seqContent, label, treeNewick, forceAlignedMode) {
+      clusterPendingSeq = seqContent || '';
+      clusterPendingTree = treeNewick || '';
+      clusterPendingLabel = label || currentDatasetLabel || 'cohort.fa';
+
+      const est = estimateCohortResources(clusterPendingSeq, false);
+      document.getElementById('clSubDataset').textContent = clusterPendingLabel;
+      document.getElementById('clSubTaxa').textContent = est.numTaxa ? `${est.numTaxa.toLocaleString()} seqs` : '—';
+      document.getElementById('clSubTree').textContent = clusterPendingTree
+        ? (clusterPendingTree.indexOf('{') !== -1 ? 'Stage 2 + {Tags}' : 'Custom Newick')
+        : 'Auto (De Novo)';
+
+      const modeSel = document.getElementById('clOptMode');
+      if (modeSel) {
+        modeSel.value = forceAlignedMode || (detectLikelyAligned(clusterPendingSeq) ? 'aligned' : 'unaligned');
+      }
+      const codeSel = document.getElementById('clOptCode');
+      const appCode = document.getElementById('geneticCodeSelect')?.value || 'Universal';
+      if (codeSel && Array.from(codeSel.options).some(o => o.value === appCode)) {
+        codeSel.value = appCode;
+      }
+
+      const errEl = document.getElementById('clSubmitError');
+      if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+      const hintEl = document.getElementById('clSubmitHint');
+      if (hintEl) hintEl.textContent = '';
+
+      switchClusterPanel('submit');
+      document.getElementById('clusterModal')?.classList.add('open');
+      refreshClusterHealth();
+    }
+
+    function openClusterModalFromCurrent() {
+      if (activeClusterJobId && (!currentRawSeq || activeView === 'full')) {
+        document.getElementById('clusterModal')?.classList.add('open');
+        monitorClusterJob(activeClusterJobId);
+        return;
+      }
+      openClusterModalWithPayload(currentRawSeq, currentDatasetLabel, '');
+    }
+
+    function openClusterModalFromStage() {
+      let seq = currentRawSeq;
+      let tree = '';
+      let forceMode = '';
+      if (stage1Data && stage1Data.exports && stage1Data.exports.aligned_cds_fasta) {
+        seq = stage1Data.exports.aligned_cds_fasta;
+        forceMode = 'aligned';
+      } else if (stage0Data) {
+        const curated = buildCuratedAdmittedFasta();
+        if (curated) seq = curated;
+      }
+      if (stage2Data && typeof buildStage2TaggedNewick === 'function') {
+        tree = buildStage2TaggedNewick() || '';
+      }
+      openClusterModalWithPayload(seq, currentDatasetLabel, tree, forceMode);
+    }
+
+    function launchSampleOnCluster(sampleKey) {
+      const item = (window.WALRUS_SAMPLES || {})[sampleKey];
+      if (!item) return;
+      if (item.code && document.getElementById('geneticCodeSelect')) {
+        document.getElementById('geneticCodeSelect').value = item.code;
+      }
+      openClusterModalWithPayload(item.content, sampleKey, '');
+    }
+
+    function closeClusterModal() {
+      document.getElementById('clusterModal')?.classList.remove('open');
+    }
+
+    function countLeadingZeroBits(bytes) {
+      let bits = 0;
+      for (let i = 0; i < bytes.length; i++) {
+        const b = bytes[i];
+        if (b === 0) {
+          bits += 8;
+        } else {
+          bits += Math.clz32(b) - 24;
+          break;
+        }
+      }
+      return bits;
+    }
+
+    async function solveClusterPow(token, difficulty, onProgress) {
+      const enc = new TextEncoder();
+      let nonce = 0;
+      const batchSize = 4096;
+      while (true) {
+        for (let i = 0; i < batchSize; i++, nonce++) {
+          const buf = await crypto.subtle.digest('SHA-256', enc.encode(`${token}:${nonce}`));
+          if (countLeadingZeroBits(new Uint8Array(buf)) >= difficulty) {
+            return String(nonce);
+          }
+        }
+        if (onProgress) onProgress(nonce);
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    async function maybeGzipJson(jsonStr) {
+      const rawBytes = new TextEncoder().encode(jsonStr);
+      if (typeof CompressionStream === 'function' && rawBytes.byteLength > 2048) {
+        try {
+          const cs = new CompressionStream('gzip');
+          const writer = cs.writable.getWriter();
+          writer.write(rawBytes);
+          writer.close();
+          const gzBuf = await new Response(cs.readable).arrayBuffer();
+          return { body: gzBuf, gzipped: true };
+        } catch (_) {}
+      }
+      return { body: rawBytes, gzipped: false };
+    }
+
+    async function submitClusterJobNow() {
+      const btn = document.getElementById('btnClusterSubmitGo');
+      const errEl = document.getElementById('clSubmitError');
+      const hintEl = document.getElementById('clSubmitHint');
+      if (errEl) errEl.style.display = 'none';
+
+      if (!clusterPendingSeq || clusterPendingSeq.trim().length < 30) {
+        if (errEl) {
+          errEl.textContent = 'No sequence dataset loaded. Choose or paste a FASTA/NEXUS file first.';
+          errEl.style.display = 'block';
+        }
+        return;
+      }
+
+      const ep = await resolveClusterEndpoint();
+      if (!ep) {
+        if (errEl) {
+          errEl.textContent = 'Cluster gateway URL is not configured.';
+          errEl.style.display = 'block';
+        }
+        return;
+      }
+
+      btn.disabled = true;
+      try {
+        if (hintEl) hintEl.textContent = 'Requesting anti-bot PoW challenge…';
+        const chResp = await fetch(ep + '/v1/challenge', { cache: 'no-store' });
+        const ch = await chResp.json();
+        if (!chResp.ok) throw new Error(ch.error || ('Challenge HTTP ' + chResp.status));
+
+        if (hintEl) hintEl.textContent = `Solving SHA-256 Proof-of-Work (${ch.difficulty} bits)…`;
+        const solution = await solveClusterPow(ch.token, ch.difficulty);
+
+        const payloadObj = {
+          label: clusterPendingLabel,
+          sequences: clusterPendingSeq,
+          tree: clusterPendingTree || '',
+          options: {
+            mode: document.getElementById('clOptMode')?.value || 'unaligned',
+            genetic_code: document.getElementById('clOptCode')?.value || 'Universal',
+            coevolution: !!document.getElementById('clOptCoev')?.checked
+          },
+          pow: { token: ch.token, solution }
+        };
+
+        if (hintEl) hintEl.textContent = 'Compressing & uploading sequences to Silverback…';
+        const packed = await maybeGzipJson(JSON.stringify(payloadObj));
+        const headers = { 'Content-Type': 'application/json' };
+        if (packed.gzipped) headers['Content-Encoding'] = 'gzip';
+
+        const subResp = await fetch(ep + '/v1/jobs', {
+          method: 'POST',
+          headers,
+          body: packed.body
+        });
+        const sub = await subResp.json();
+        if (!subResp.ok) throw new Error(sub.error || ('Submit HTTP ' + subResp.status));
+
+        saveRecentClusterJob({
+          job_id: sub.job_id,
+          cancel_token: sub.cancel_token || '',
+          label: clusterPendingLabel,
+          created_at: Math.floor(Date.now() / 1000)
+        });
+
+        try { history.replaceState(null, '', '#job=' + sub.job_id); } catch (_) {}
+        if (hintEl) hintEl.textContent = '';
+        monitorClusterJob(sub.job_id);
+      } catch (err) {
+        if (errEl) {
+          errEl.textContent = err && err.message ? err.message : String(err);
+          errEl.style.display = 'block';
+        }
+        if (hintEl) hintEl.textContent = '';
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function monitorClusterJob(jobId) {
+      if (!jobId) return;
+      activeClusterJobId = jobId;
+      if (clusterPollTimer) { clearTimeout(clusterPollTimer); clusterPollTimer = null; }
+      switchClusterPanel('monitor');
+      document.getElementById('clusterModal')?.classList.add('open');
+      document.getElementById('clMonMeta').textContent = `Job ID: ${jobId}`;
+      document.getElementById('clMonError').style.display = 'none';
+      document.getElementById('clMonDownloads').style.display = 'none';
+      document.getElementById('btnClusterCancel').style.display = getStoredCancelToken(jobId) ? 'inline-flex' : 'none';
+
+      await pollClusterJobOnce(jobId);
+    }
+
+    async function pollClusterJobOnce(jobId) {
+      if (jobId !== activeClusterJobId) return;
+      const ep = await resolveClusterEndpoint();
+      if (!ep) return;
+      try {
+        const r = await fetch(`${ep}/v1/jobs/${encodeURIComponent(jobId)}`, { cache: 'no-store' });
+        const st = await r.json();
+        if (!r.ok) throw new Error(st.error || ('HTTP ' + r.status));
+
+        document.getElementById('clMonTitle').textContent = `${st.label || 'Cohort'} (${st.num_taxa || '?'} seqs • ${st.threads || 16} ARM64 threads)`;
+        document.getElementById('clMonMeta').textContent = `Job ID: ${st.job_id}${st.node ? ' • Slurm Node: ' + st.node : (st.queue_position ? ' • Queue #' + st.queue_position : '')}`;
+        document.getElementById('clMonStage').textContent = st.stage || st.status;
+        document.getElementById('clMonElapsed').textContent = `${(st.elapsed_sec || 0).toFixed(1)}s`;
+        document.getElementById('clMonProgFill').style.width = `${Math.max(4, Math.min(100, st.progress_pct || 5))}%`;
+
+        const logEl = document.getElementById('clMonLog');
+        if (logEl) {
+          logEl.textContent = st.log_tail || (st.status === 'completed' ? 'Analysis complete — standalone HTML & JSON dossiers ready.' : 'Waiting for Slurm compute node output…');
+          logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        if (st.status === 'completed') {
+          document.getElementById('btnClusterCancel').style.display = 'none';
+          document.getElementById('clMonDownloads').style.display = 'flex';
+          document.getElementById('btnClDlMsa').style.display = st.has_msa ? 'inline-flex' : 'none';
+          refreshClusterHealth();
+          if (clusterHydratedJobId !== jobId) {
+            clusterHydratedJobId = jobId;
+            await hydrateAppFromClusterJob(jobId, st.label || 'cluster_job', st.elapsed_sec || 0);
+          }
+          return;
+        }
+
+        if (st.status === 'failed' || st.status === 'canceled') {
+          document.getElementById('btnClusterCancel').style.display = 'none';
+          const errEl = document.getElementById('clMonError');
+          if (errEl) {
+            errEl.textContent = st.error || `Job ${st.status}.`;
+            errEl.style.display = 'block';
+          }
+          refreshClusterHealth();
+          return;
+        }
+
+        clusterPollTimer = setTimeout(() => pollClusterJobOnce(jobId), 1800);
+      } catch (err) {
+        const errEl = document.getElementById('clMonError');
+        if (errEl) {
+          errEl.textContent = err && err.message ? err.message : String(err);
+          errEl.style.display = 'block';
+        }
+      }
+    }
+
+    async function hydrateAppFromClusterJob(jobId, label, elapsedSec) {
+      const ep = await resolveClusterEndpoint();
+      if (!ep) return;
+      try {
+        const [htmlResp, jsonResp] = await Promise.all([
+          fetch(`${ep}/v1/jobs/${encodeURIComponent(jobId)}/result.html`),
+          fetch(`${ep}/v1/jobs/${encodeURIComponent(jobId)}/result.json`)
+        ]);
+        if (htmlResp.ok) {
+          lastFullReportHtml = await htmlResp.text();
+        }
+        if (jsonResp.ok) {
+          lastFullReportJson = await jsonResp.text();
+        }
+        if (lastFullReportHtml) {
+          currentDatasetLabel = label;
+          stageRuntimeMs.full = Math.round((elapsedSec || 1) * 1000);
+          document.getElementById('tabFullReport').disabled = false;
+          document.getElementById('reportIframe').srcdoc = lastFullReportHtml;
+          updatePipelineStepperUI();
+        }
+      } catch (_) {}
+    }
+
+    function openClusterDossierInApp() {
+      if (lastFullReportHtml) {
+        closeClusterModal();
+        switchView('full');
+      }
+    }
+
+    async function downloadClusterArtifact(kind) {
+      if (!activeClusterJobId) return;
+      const ep = await resolveClusterEndpoint();
+      if (!ep) return;
+      const base = (document.getElementById('clMonTitle')?.textContent || 'walrus').split(' (')[0].replace(/\.[^.]+$/, '');
+      const extMap = {
+        'result.json': `${base}.walrus.json`,
+        'result.html': `${base}.walrus.html`,
+        'result.msa.fa': `${base}.walrus.msa.fa`
+      };
+      const mimeMap = {
+        'result.json': 'application/json',
+        'result.html': 'text/html',
+        'result.msa.fa': 'chemical/x-fasta'
+      };
+      const r = await fetch(`${ep}/v1/jobs/${encodeURIComponent(activeClusterJobId)}/${kind}`);
+      if (!r.ok) return alert('Artifact unavailable.');
+      const txt = await r.text();
+      downloadBlob(extMap[kind] || kind, txt, mimeMap[kind] || 'text/plain');
+    }
+
+    async function cancelActiveClusterJob() {
+      if (!activeClusterJobId) return;
+      const tok = getStoredCancelToken(activeClusterJobId);
+      if (!tok) return;
+      const ep = await resolveClusterEndpoint();
+      if (!ep) return;
+      await fetch(`${ep}/v1/jobs/${encodeURIComponent(activeClusterJobId)}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cancel_token: tok })
+      });
+      pollClusterJobOnce(activeClusterJobId);
+    }
+
+    function copyClusterShareUrl() {
+      if (!activeClusterJobId) return;
+      const url = `${window.location.origin}${window.location.pathname}#job=${activeClusterJobId}`;
+      navigator.clipboard?.writeText(url);
+      const stageEl = document.getElementById('clMonStage');
+      if (stageEl) {
+        const prev = stageEl.textContent;
+        stageEl.textContent = '✓ Copied shareable capability URL to clipboard!';
+        setTimeout(() => { stageEl.textContent = prev; }, 1600);
+      }
+    }
+
+    function checkUrlHashForClusterJob() {
+      const m = (window.location.hash || '').match(/^#job=(wlr_[A-Za-z0-9_-]{16,32})$/);
+      if (m) {
+        monitorClusterJob(m[1]);
+      }
+    }
+
+    window.addEventListener('hashchange', checkUrlHashForClusterJob);
+
     window.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape') {
+        closeClusterModal();
         closePreflightModal();
         closeStreamModal();
         closeHelpDrawer();
@@ -7491,6 +8200,7 @@
       }
       switchView('landing');
       initWorker();
+      checkUrlHashForClusterJob();
     });
   </script>
 </body>
