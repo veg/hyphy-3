@@ -13,7 +13,7 @@
 
 ## ⚡ TL;DR
 
-**HyPhy 3** is a complete ground-up C++20 re-architecture of the [HyPhy](https://hyphy.org) molecular evolution platform, built around an analytical **Inside-Outside adjoint engine** and the flagship **WALRUS** (*Whole-Alignment Likelihood, Rooting & Unified Selection*) pipeline:
+**HyPhy 3** is a complete ground-up C++20 re-architecture of the [HyPhy](https://hyphy.org) molecular evolution platform, built around an analytical **Inside-Outside adjoint engine** and the flagship **WALRUS** (*Wheatstone Alignment and Likelihood Rate Unification for Selection*) pipeline:
 
 1. **🦭 WALRUS End-to-End Pipeline ([Web App](https://veg.github.io/hyphy-3/) & `hyphy3 walrus`)**: Takes raw, unaligned, or frameshifted FASTA/NEXUS sequences and executes a 4-stage checkpointed workflow—**6-frame QA & homology admission** $\rightarrow$ **Codon Pair-HMM + POA alignment with column homology posteriors ($P_{\text{hom}}$)** $\rightarrow$ **MG94×REV phylogeny, rooting & $\Delta\text{BIC}$ recombination routing** $\rightarrow$ **unified gene/branch/site/property selection & epistatic forensics**.
 2. **🚀 $\mathcal{O}(B)$ Differentiable Phylogenetic Core**: Computes exact analytical log-likelihood derivatives across all $B$ branches in a single two-pass traversal (**20×–87× faster** than numerical finite differences or 1D Brent loops), vectorized with Apple Accelerate AMX, AVX2/NEON, and WASM SIMD128 $61 \times P$ batched GEMM kernels.
@@ -23,7 +23,7 @@
 
 ## 🦭 Flagship Component: WALRUS
 
-**WALRUS** (*Whole-Alignment Likelihood, Rooting & Unified Selection*) replaces fragile multi-tool bioinformatics shell pipelines with a single likelihood-consistent engine where alignment uncertainty ($P_{\text{hom}}$), frameshift repairs, tree topology, and recombination breakpoints propagate directly into downstream selection tests.
+**WALRUS** (*Wheatstone Alignment and Likelihood Rate Unification for Selection*) replaces fragile multi-tool bioinformatics shell pipelines with a single likelihood-consistent engine where alignment uncertainty ($P_{\text{hom}}$), frameshift repairs, tree topology, and recombination breakpoints propagate directly into downstream selection tests.
 
 ### The 4 Interactive Stages
 
