@@ -68,6 +68,50 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure -LE deep -j2
 
+  symlinks:
+    # Exercises HYPHY3_STANDALONE_SYMLINKS=ON: the hyphy3-* names must install
+    # as links to the driver and dispatch correctly through argv[0].
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'labeled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libomp-dev ccache
+
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-symlinks-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-symlinks-${{ runner.os }}-
+            ccache-fast-${{ runner.os }}-
+
+      - name: Configure
+        run: cmake -S . -B build $CMAKE_ARGS -DHYPHY3_BUILD_TESTS=OFF -DHYPHY3_STANDALONE_SYMLINKS=ON
+
+      - name: Build
+        run: |
+          ccache --zero-stats
+          cmake --build build -j"$(nproc)"
+          ccache --show-stats
+
+      - name: Install and verify symlinks
+        run: |
+          cmake --install build --prefix "$PWD/stage"
+          for name in fel meme busted absrel relax fubar prime gard slac dfel \
+                      contrast-fel mss ohmic tree joint-align characterize walrus expcm; do
+            link="stage/bin/hyphy3-$name"
+            test -L "$link" || { echo "FAIL: $link is not a symlink"; exit 1; }
+          done
+          # Dispatch through the alias: standalone name must reach run_fel.
+          stage/bin/hyphy3-fel --help >/dev/null
+          stage/bin/hyphy3-walrus --help >/dev/null
+          test "$(readlink stage/bin/hyphy3-fel)" = "hyphy3"
+
   deep:
     if: >-
       github.event_name == 'schedule' ||
