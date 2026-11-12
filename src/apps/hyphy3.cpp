@@ -89,7 +89,78 @@ void print_hyphy3_usage(const char* prog) {
               << "  " << prog << " report results.MEME.json --html results.MEME.html\n\n";
 }
 
+// Dispatch a resolved subcommand name to its run_* entry point. argc/argv are
+// passed through unchanged, so argv[0] must already be the program name the
+// analysis should display (e.g. "hyphy3 fel" or "hyphy3-fel").
+static int dispatch_subcommand(const std::string& cmd, int argc, char* argv[]) {
+    try {
+        if (cmd == "walrus" || cmd == "WALRUS" || cmd == "characterize" || cmd == "auto" || cmd == "omni" || cmd == "one-button") {
+            return run_characterize(argc, argv);
+        } else if (cmd == "fel") {
+            return run_fel(argc, argv);
+        } else if (cmd == "contrast-fel" || cmd == "contrast_fel" || cmd == "cfel") {
+            return run_contrast_fel(argc, argv);
+        } else if (cmd == "meme") {
+            return run_meme(argc, argv);
+        } else if (cmd == "busted") {
+            return run_busted(argc, argv);
+        } else if (cmd == "busted-ph" || cmd == "busted_ph" || cmd == "BUSTED-PH") {
+            return run_busted_ph(argc, argv);
+        } else if (cmd == "absrel") {
+            return run_absrel(argc, argv);
+        } else if (cmd == "relax") {
+            return run_relax(argc, argv);
+        } else if (cmd == "fubar" || cmd == "FUBAR" || cmd == "fub") {
+            return run_fubar(argc, argv);
+        } else if (cmd == "prime" || cmd == "PRIME") {
+            return run_prime(argc, argv);
+        } else if (cmd == "gard" || cmd == "GARD") {
+            return run_gard(argc, argv);
+        } else if (cmd == "slac" || cmd == "SLAC") {
+            return run_slac(argc, argv);
+        } else if (cmd == "dfel" || cmd == "directional-fel" || cmd == "directional_fel") {
+            return run_dfel(argc, argv);
+        } else if (cmd == "mss" || cmd == "MSS" || cmd == "synrev" || cmd == "SynREV") {
+            return run_mss(argc, argv);
+        } else if (cmd == "ohmic" || cmd == "OHMIC" || cmd == "--ohmic") {
+            return run_ohmic(argc, argv);
+        } else if (cmd == "tree" || cmd == "TREE" || cmd == "tree-search" ||
+                   cmd == "label-tree" || cmd == "trim-tree" || cmd == "trim-label-tree") {
+            return run_tree(argc, argv);
+        } else if (cmd == "joint-align" || cmd == "joint_align" || cmd == "align") {
+            return run_joint_align(argc, argv);
+        } else if (cmd == "expcm" || cmd == "ExpCM" || cmd == "EXPCM") {
+            return run_expcm(argc, argv);
+        } else if (cmd == "report") {
+            return run_report(argc, argv);
+        } else {
+            std::cerr << "Error: Unknown analysis '" << cmd << "'.\n\n";
+            print_hyphy3_usage(argv[0]);
+            return 1;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
+}
+
 int main(int argc, char* argv[]) {
+    // Alias dispatch: when invoked through a hyphenated name (hyphy3-fel,
+    // hyphy-meme, ...), the basename suffix selects the subcommand so the
+    // combined binary can be installed under the standalone names — e.g. as
+    // symlinks — without separate executables. argv is passed through
+    // unchanged, so the analysis reports "hyphy3-fel" as its program name
+    // exactly as the real standalone binaries do.
+    const std::string invoked = (argc > 0 && argv[0]) ? argv[0] : "";
+    const std::string::size_type sep = invoked.find_last_of("/\\");
+    const std::string base = (sep == std::string::npos) ? invoked : invoked.substr(sep + 1);
+    for (const char* prefix : {"hyphy3-", "hyphy-"}) {
+        const std::string p(prefix);
+        if (base.size() > p.size() && base.compare(0, p.size(), p) == 0) {
+            return dispatch_subcommand(base.substr(p.size()), argc, argv);
+        }
+    }
+
     if (argc < 2) {
         print_hyphy3_usage(argv[0]);
         return 0;
@@ -127,53 +198,5 @@ int main(int argc, char* argv[]) {
     }
     int sub_argc = static_cast<int>(sub_argv.size());
 
-    try {
-        if (cmd == "walrus" || cmd == "WALRUS" || cmd == "characterize" || cmd == "auto" || cmd == "omni" || cmd == "one-button") {
-            return run_characterize(sub_argc, sub_argv.data());
-        } else if (cmd == "fel") {
-            return run_fel(sub_argc, sub_argv.data());
-        } else if (cmd == "contrast-fel" || cmd == "contrast_fel" || cmd == "cfel") {
-            return run_contrast_fel(sub_argc, sub_argv.data());
-        } else if (cmd == "meme") {
-            return run_meme(sub_argc, sub_argv.data());
-        } else if (cmd == "busted") {
-            return run_busted(sub_argc, sub_argv.data());
-        } else if (cmd == "busted-ph" || cmd == "busted_ph" || cmd == "BUSTED-PH") {
-            return run_busted_ph(sub_argc, sub_argv.data());
-        } else if (cmd == "absrel") {
-            return run_absrel(sub_argc, sub_argv.data());
-        } else if (cmd == "relax") {
-            return run_relax(sub_argc, sub_argv.data());
-        } else if (cmd == "fubar" || cmd == "FUBAR" || cmd == "fub") {
-            return run_fubar(sub_argc, sub_argv.data());
-        } else if (cmd == "prime" || cmd == "PRIME") {
-            return run_prime(sub_argc, sub_argv.data());
-        } else if (cmd == "gard" || cmd == "GARD") {
-            return run_gard(sub_argc, sub_argv.data());
-        } else if (cmd == "slac" || cmd == "SLAC") {
-            return run_slac(sub_argc, sub_argv.data());
-        } else if (cmd == "dfel" || cmd == "directional-fel" || cmd == "directional_fel") {
-            return run_dfel(sub_argc, sub_argv.data());
-        } else if (cmd == "mss" || cmd == "MSS" || cmd == "synrev" || cmd == "SynREV") {
-            return run_mss(sub_argc, sub_argv.data());
-        } else if (cmd == "ohmic" || cmd == "OHMIC" || cmd == "--ohmic") {
-            return run_ohmic(sub_argc, sub_argv.data());
-        } else if (cmd == "tree" || cmd == "TREE" || cmd == "tree-search" ||
-                   cmd == "label-tree" || cmd == "trim-tree" || cmd == "trim-label-tree") {
-            return run_tree(sub_argc, sub_argv.data());
-        } else if (cmd == "joint-align" || cmd == "joint_align" || cmd == "align") {
-            return run_joint_align(sub_argc, sub_argv.data());
-        } else if (cmd == "expcm" || cmd == "ExpCM" || cmd == "EXPCM") {
-            return run_expcm(sub_argc, sub_argv.data());
-        } else if (cmd == "report") {
-            return run_report(sub_argc, sub_argv.data());
-        } else {
-            std::cerr << "Error: Unknown analysis '" << cmd << "'.\n\n";
-            print_hyphy3_usage(argv[0]);
-            return 1;
-        }
-    } catch (const std::exception& e) {
-        std::cerr << Console::danger("Error: ") << e.what() << "\n";
-        return 1;
-    }
+    return dispatch_subcommand(cmd, sub_argc, sub_argv.data());
 }

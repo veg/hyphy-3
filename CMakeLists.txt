@@ -36,6 +36,14 @@ option(HYPHY3_PCH "Shared precompiled header for all executable targets" ON)
 #   ctest suite. Needs tests/ and benchmarks/data. The Dockerfile passes
 #   -DHYPHY3_BUILD_TESTS=OFF so the image build does not need them.
 option(HYPHY3_BUILD_TESTS "Build the test suite" ON)
+#
+# - HYPHY3_STANDALONE_SYMLINKS (default OFF): the hyphy3 driver already
+#   dispatches on argv[0], so the hyphy3-* CLI names work as symlinks to the
+#   driver. Enabling this skips ~20 duplicate app-TU compilations (~40% of the
+#   build) and shrinks installs by not embedding the analysis code in 18
+#   separate binaries. Build-tree targets hyphy3-fel etc. are not created when
+#   ON; the names appear at install time.
+option(HYPHY3_STANDALONE_SYMLINKS "Install hyphy3-* names as symlinks to hyphy3 instead of separate executables" OFF)
 
 # Header-only Eigen 3.4.0 (SOURCE_SUBDIR points to a non-existent subdir so
 # FetchContent_MakeAvailable populates the headers without running Eigen's
@@ -364,6 +372,11 @@ target_compile_definitions(hyphy3 PRIVATE HYPHY3_COMBINED_DRIVER)
 target_link_libraries(hyphy3 PRIVATE hyphy3_report)
 
 # Standalone CLI Applications
+# With HYPHY3_STANDALONE_SYMLINKS these targets are not built at all: every
+# standalone main() is just a try/catch wrapper around the same run_*() entry
+# point the hyphy3 driver exposes, and the driver dispatches on argv[0]. The
+# hyphy3-* names are then created as symlinks at install time (below).
+if(NOT HYPHY3_STANDALONE_SYMLINKS)
 add_executable(hyphy3-fel src/apps/hyphy_fel.cpp)
 target_link_libraries(hyphy3-fel PRIVATE hyphy3_report)
 
@@ -442,20 +455,44 @@ add_executable(hyphy-joint-align ALIAS hyphy3-joint-align)
 add_executable(hyphy-characterize ALIAS hyphy3-characterize)
 add_executable(hyphy-walrus ALIAS hyphy3-walrus)
 add_executable(hyphy-expcm ALIAS hyphy3-expcm)
+endif()
 
 include(GNUInstallDirs)
-set(_hyphy3_cli_targets
-    hyphy3 hyphy3-characterize hyphy3-walrus hyphy3-busted hyphy3-fel
-    hyphy3-absrel hyphy3-meme hyphy3-relax hyphy3-slac hyphy3-fubar
-    hyphy3-gard hyphy3-contrast-fel hyphy3-dfel hyphy3-prime hyphy3-mss
-    hyphy3-ohmic hyphy3-tree hyphy3-joint-align hyphy3-expcm
-)
-if(TARGET hyphy3-report)
-    list(APPEND _hyphy3_cli_targets hyphy3-report)
+if(HYPHY3_STANDALONE_SYMLINKS)
+    set(_hyphy3_cli_targets hyphy3)
+else()
+    set(_hyphy3_cli_targets
+        hyphy3 hyphy3-characterize hyphy3-walrus hyphy3-busted hyphy3-fel
+        hyphy3-absrel hyphy3-meme hyphy3-relax hyphy3-slac hyphy3-fubar
+        hyphy3-gard hyphy3-contrast-fel hyphy3-dfel hyphy3-prime hyphy3-mss
+        hyphy3-ohmic hyphy3-tree hyphy3-joint-align hyphy3-expcm
+    )
+    if(TARGET hyphy3-report)
+        list(APPEND _hyphy3_cli_targets hyphy3-report)
+    endif()
 endif()
 install(TARGETS ${_hyphy3_cli_targets}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+if(HYPHY3_STANDALONE_SYMLINKS)
+    # Same names the standalone executables would have installed. Created
+    # relative so the links keep working if the install tree is relocated
+    # (conda prefix relocation, moved DESTDIR staging, etc.). Declared after
+    # install(TARGETS) so the driver and bindir already exist; install()
+    # commands run in declaration order.
+    foreach(_alias IN ITEMS
+        fel contrast-fel meme busted absrel relax fubar prime gard slac dfel
+        mss ohmic tree joint-align characterize walrus expcm
+    )
+        install(CODE "
+            file(MAKE_DIRECTORY
+                \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}\")
+            execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
+                hyphy3
+                \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/hyphy3-${_alias}\")
+        ")
+    endforeach()
+endif()
 
 # WebAssembly (Emscripten) One-Button WALRUS Engine Target
 if(EMSCRIPTEN)
