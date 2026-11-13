@@ -272,3 +272,62 @@ TEST_CASE("PRIME site-level progress callbacks") {
     CHECK(live_cb_count.load() == aln.num_codons);
     CHECK(final_cb_count == aln.num_codons);
 }
+
+TEST_CASE("PRIME: LCAP Canonical A..Y Ordering & G-PRIME Global Empirical Bayes Prior") {
+    auto lcap = PropertyDatabase::get_predefined_properties("LCAP");
+    REQUIRE(lcap.size() == 5);
+    for (const auto& p : lcap) {
+        Scalar sum = 0.0, sum_sq = 0.0;
+        for (int i = 0; i < 20; ++i) {
+            sum += p.z_scores[i];
+            sum_sq += p.z_scores[i] * p.z_scores[i];
+        }
+        CHECK(std::abs(sum / 20.0) < 1e-12);
+        CHECK(std::abs(std::sqrt(sum_sq / 20.0) - 1.0) < 1e-12);
+    }
+
+    // Verify canonical IUPAC indexing (preventing the legacy FLIMVSPTAYHQNKDECWRG scramble):
+    // 0: Chemical Composition -> C (idx 1) is maximum
+    CHECK(lcap[0].z_scores[aa_char_to_index('C')] > 3.0);
+    // 2: Molecular Volume -> W (idx 18) is maximum, G (idx 5) is minimum
+    CHECK(lcap[2].z_scores[aa_char_to_index('W')] > 2.0);
+    CHECK(lcap[2].z_scores[aa_char_to_index('G')] < -1.5);
+    // 3: Iso-electric Point -> R (idx 14) is maximum, D (idx 2) is minimum
+    CHECK(lcap[3].z_scores[aa_char_to_index('R')] > 2.4);
+    CHECK(lcap[3].z_scores[aa_char_to_index('D')] < -1.7);
+
+    // Test --prior global on Internal branches
+    std::string aln_path = resolve_test_path("benchmarks/data/cd2.fna");
+    std::string tree_path = resolve_test_path("benchmarks/data/cd2.nwk");
+    Alignment aln = Alignment::from_fasta(aln_path);
+    Tree tree = Tree::from_newick_file(tree_path);
+
+    PRIMESettings settings;
+    settings.property_set = "3PROP";
+    settings.shrinkage_lambda = 0.5;
+    settings.shrinkage_prior = "global";
+    settings.test_branches = "Internal";
+
+    auto analyzer = PRIMEAnalyzer::create_and_fit(tree, aln, settings);
+    REQUIRE(analyzer.global_fit.lambdas.size() == 3);
+    auto results = analyzer.run(nullptr, false, false);
+
+    size_t inv_checked = 0;
+    for (const auto& sr : results.site_results) {
+        CHECK(sr.omnibus_lrt >= 0.0);
+        if (sr.fel_beta <= 1e-4) {
+            inv_checked++;
+            CHECK(sr.omnibus_lrt == 0.0);
+            CHECK(sr.omnibus_p_value == 1.0);
+            // Invariant / zero-nonsynonymous sites inherit G-PRIME global lambdas under --prior global
+            for (size_t k = 0; k < 3; ++k) {
+                CHECK(std::abs(sr.properties[k].lambda - results.global_fit.lambdas[k]) < 1e-12);
+            }
+        }
+    }
+    CHECK(inv_checked > 0);
+
+    nlohmann::json mj = results.to_modern_json(tree, aln, "hyphy3 prime --prior global", aln_path);
+    CHECK(mj["statistical_tests"]["site_level_summary"]["shrinkage_prior"] == "global");
+}
+

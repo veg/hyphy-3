@@ -577,6 +577,42 @@ def test_ohmic_modern_and_legacy_json_schema():
 
     print("Ohmic Modern & Legacy JSON Schema tests passed successfully!")
 
+def test_forecast_modern_json_schema_and_numpy():
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    aln_path = os.path.join(repo_root, "benchmarks", "data", "cd2.fna")
+    tree_path = os.path.join(repo_root, "benchmarks", "data", "cd2.nwk")
+    schema_path = os.path.join(repo_root, "schemas", "v3", "forecast.v3.schema.json")
+
+    assert os.path.exists(schema_path), f"Missing schema: {schema_path}"
+    with open(schema_path) as sf:
+        schema = json.load(sf)
+
+    aln = hp.Alignment.from_fasta(aln_path)
+    tree = hp.Tree.from_newick_file(tree_path)
+
+    settings = hp.ForecastSettings()
+    settings.branches = "Internal"
+    settings.property_set = "3PROP"
+    settings.shrinkage_prior = "global"
+    settings.syn_model = "SynREV"
+    settings.horizon = 0.05
+
+    analyzer = hp.ForecastAnalyzer(tree, aln, settings)
+    res = analyzer.run(False, False)
+
+    assert res.aa_dms_matrix.shape == (187, 20)
+    assert res.aa_stationary_matrix.shape == (187, 20)
+    assert res.ancestral_aa_matrix.shape == (187, 20)
+    assert res.codon_rate_matrix.shape == (187, 61)
+    assert res.codon_log_prob_matrix.shape == (187, 61)
+
+    modern = json.loads(res.to_modern_json(analyzer.tree, aln, aln_path))
+    jsonschema.validate(instance=modern, schema=schema)
+    assert modern["schema_version"] == "3.0.0"
+    assert modern["analysis"]["id"] == "forecast"
+    assert modern["site_results"]["row_count"] == 187
+    print("FORECAST Modern JSON Schema & NumPy tensor tests passed successfully!")
+
 if __name__ == "__main__":
     test_fel_modern_and_legacy_json_schema()
     test_fel_branch_subset_json_schema()
@@ -590,6 +626,8 @@ if __name__ == "__main__":
     test_slac_modern_and_legacy_json_schema()
     test_dfel_json_schema()
     test_ohmic_modern_and_legacy_json_schema()
+    test_forecast_modern_json_schema_and_numpy()
+
 
 
 
