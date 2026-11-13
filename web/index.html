@@ -3505,6 +3505,13 @@
           stage3Data = null; stageRuntimeMs.stage3 = null;
           onStage0Loaded();
           updatePipelineStepperUI();
+          sendTelemetry('stage0_done', {
+            mode: 'wasm',
+            stage: 'stage0',
+            wall_ms: msg.elapsedMs,
+            n_taxa: (stage0Data && stage0Data.taxa) ? stage0Data.taxa.length : 0,
+            n_sites: (stage0Data && stage0Data.median_sense_codons) ? stage0Data.median_sense_codons : 0
+          });
           if (autoAdvanceChain) {
             runStage1Now();
           }
@@ -3517,6 +3524,13 @@
           stage3Data = null; stageRuntimeMs.stage3 = null;
           onStage1Loaded();
           switchView('stage1');
+          sendTelemetry('stage1_done', {
+            mode: 'wasm',
+            stage: 'stage1',
+            wall_ms: msg.elapsedMs,
+            n_taxa: (stage1Data && stage1Data.num_taxa) || 0,
+            n_sites: (stage1Data && stage1Data.num_codons) || 0
+          });
           if (autoAdvanceChain) {
             runStage2Now();
           }
@@ -3528,6 +3542,13 @@
           stage3Data = null; stageRuntimeMs.stage3 = null;
           onStage2Loaded();
           switchView('stage2');
+          sendTelemetry('stage2_done', {
+            mode: 'wasm',
+            stage: 'stage2',
+            wall_ms: msg.elapsedMs,
+            n_taxa: (stage1Data && stage1Data.num_taxa) || 0,
+            n_sites: (stage1Data && stage1Data.num_codons) || 0
+          });
           if (autoAdvanceChain) {
             runStage3Now();
           }
@@ -3546,6 +3567,13 @@
           }
           onStage3Loaded();
           switchView('stage3');
+          sendTelemetry('stage3_done', {
+            mode: 'wasm',
+            stage: 'stage3',
+            wall_ms: msg.elapsedMs,
+            n_taxa: (stage1Data && stage1Data.num_taxa) || 0,
+            n_sites: (stage1Data && stage1Data.num_codons) || 0
+          });
         } else if (msg.type === 'result') {
           runningStage = null;
           autoAdvanceChain = false;
@@ -3556,11 +3584,25 @@
           document.getElementById('tabFullReport').disabled = false;
           document.getElementById('reportIframe').srcdoc = lastFullReportHtml;
           switchView('full');
+          sendTelemetry(msg.mode === 'render_json' ? 'render_json_done' : 'ping_done', {
+            mode: 'wasm',
+            stage: msg.mode || 'ping',
+            wall_ms: msg.elapsedMs
+          });
         } else if (msg.type === 'error') {
+          const errStage = (msg.stage !== undefined && msg.stage !== null) ? ('stage' + msg.stage).replace(/^stagestage/, 'stage') : (runningStage || 'wasm');
           runningStage = null;
           autoAdvanceChain = false;
           document.getElementById('wasmLed').className = 'status-dot ready';
           updatePipelineStepperUI();
+          sendTelemetry('wasm_error', {
+            mode: 'wasm',
+            stage: errStage,
+            err_kind: msg.errKind || 'WasmError',
+            err_msg: msg.error || msg.message || 'Unknown WASM error',
+            n_taxa: (stage1Data && stage1Data.num_taxa) || ((stage0Data && stage0Data.taxa) ? stage0Data.taxa.length : 0),
+            n_sites: (stage1Data && stage1Data.num_codons) || 0
+          });
           alert('Error: ' + (msg.error || msg.message));
         }
       };
@@ -3571,6 +3613,14 @@
         wasmReady = false;
         document.getElementById('wasmLed').className = 'status-dot';
         updatePipelineStepperUI();
+        sendTelemetry('worker_crash', {
+          mode: 'wasm',
+          stage: String(failedStage),
+          err_kind: 'WorkerCrash',
+          err_msg: (err && err.message) ? err.message : 'WASM worker terminated (OOM or trap)',
+          n_taxa: (stage1Data && stage1Data.num_taxa) || ((stage0Data && stage0Data.taxa) ? stage0Data.taxa.length : 0),
+          n_sites: (stage1Data && stage1Data.num_codons) || 0
+        });
         try { worker.terminate(); } catch (_) {}
         alert(`WebAssembly worker terminated during ${failedStage} (likely exceeded the 2 GB browser WebAssembly memory limit or hit an uncaught runtime trap). Respawning a clean engine worker now.`);
         setTimeout(initWorker, 150);
@@ -3721,6 +3771,7 @@
       if (item.code) {
         document.getElementById('geneticCodeSelect').value = item.code;
       }
+      sendTelemetry('sample_load', { mode: 'wasm', sample_id: currentDatasetLabel });
       manualAdmissionOverride.clear();
       manualFrameOverride.clear();
       customForegroundNodeIds.clear();
@@ -7437,6 +7488,12 @@
     }
 
     function launchCustomSequencePayload(content, label, runFullAuto, forceLocal) {
+      const est = estimateCohortResources(content, false);
+      sendTelemetry('custom_input', {
+        mode: (!forceLocal && defaultLaunchMode === 'cluster') ? 'cluster' : 'wasm',
+        n_taxa: est.numTaxa || 0,
+        n_sites: Math.round((est.maxNt || 0) / 3)
+      });
       if (!forceLocal && defaultLaunchMode === 'cluster') {
         currentRawSeq = content;
         currentDatasetLabel = label;
@@ -7538,6 +7595,8 @@
     }
 
     function downloadBlob(filename, content, mime) {
+      const extMatch = String(filename || '').match(/\.([A-Za-z0-9]+)$/);
+      sendTelemetry('export_artifact', { mode: 'ui', stage: extMatch ? extMatch[1].toLowerCase() : 'file' });
       const blob = new Blob([content], { type: mime || 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -8001,6 +8060,15 @@
         const sub = await subResp.json();
         if (!subResp.ok) throw new Error(sub.error || ('Submit HTTP ' + subResp.status));
 
+        const subEst = estimateCohortResources(clusterPendingSeq, false);
+        sendTelemetry('cluster_submit', {
+          mode: 'cluster',
+          stage: sub.cached ? 'cached' : 'queued',
+          n_taxa: subEst.numTaxa || 0,
+          n_sites: Math.round((subEst.maxNt || 0) / 3),
+          threads: sub.threads || 16
+        });
+
         saveRecentClusterJob({
           job_id: sub.job_id,
           cancel_token: sub.cancel_token || '',
@@ -8012,8 +8080,15 @@
         if (hintEl) hintEl.textContent = '';
         monitorClusterJob(sub.job_id);
       } catch (err) {
+        const errMsg = err && err.message ? err.message : String(err);
+        sendTelemetry('cluster_error', {
+          mode: 'cluster',
+          stage: 'submit',
+          err_kind: 'ClusterSubmitError',
+          err_msg: errMsg
+        });
         if (errEl) {
-          errEl.textContent = err && err.message ? err.message : String(err);
+          errEl.textContent = errMsg;
           errEl.style.display = 'block';
         }
         if (hintEl) hintEl.textContent = '';
@@ -8064,6 +8139,14 @@
           refreshClusterHealth();
           if (clusterHydratedJobId !== jobId) {
             clusterHydratedJobId = jobId;
+            sendTelemetry('cluster_done', {
+              mode: 'cluster',
+              stage: 'full',
+              wall_ms: Math.round((st.elapsed_sec || 0) * 1000),
+              n_taxa: st.num_taxa || 0,
+              n_sites: Math.round((st.max_nt || 0) / 3),
+              threads: st.threads || 16
+            });
             await hydrateAppFromClusterJob(jobId, st.label || 'cluster_job', st.elapsed_sec || 0);
           }
           return;
@@ -8075,6 +8158,15 @@
           if (errEl) {
             errEl.textContent = st.error || `Job ${st.status}.`;
             errEl.style.display = 'block';
+          }
+          if (st.status === 'failed') {
+            sendTelemetry('cluster_error', {
+              mode: 'cluster',
+              stage: 'slurm',
+              err_kind: 'ClusterJobFailed',
+              err_msg: st.error || 'Cluster job failed',
+              n_taxa: st.num_taxa || 0
+            });
           }
           refreshClusterHealth();
           return;
@@ -8168,6 +8260,79 @@
       }
     }
 
+    // Cookieless, zero-blocking usage & error telemetry (sends only structural counts & scrubbed error signatures)
+    let telemetryErrorCount = 0;
+    const TELEMETRY_MAX_ERRORS = 8;
+
+    function scrubTelemetryError(msg) {
+      if (!msg) return '';
+      return String(msg)
+        .replace(/'[^']{1,120}'/g, "'<id>'")
+        .replace(/"[^"]{1,120}"/g, '"<id>"')
+        .slice(0, 240);
+    }
+
+    function sendTelemetry(event, props) {
+      try {
+        const isErr = event.endsWith('_error') || event === 'worker_crash';
+        if (isErr) {
+          if (telemetryErrorCount >= TELEMETRY_MAX_ERRORS) return;
+          telemetryErrorCount += 1;
+        }
+        const p = Object.assign({
+          event: event,
+          threads: (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 0
+        }, props || {});
+        if (p.err_msg) p.err_msg = scrubTelemetryError(p.err_msg);
+        if (typeof p.wall_ms === 'number') p.wall_ms = Math.round(p.wall_ms);
+
+        const dispatch = (ep) => {
+          if (!ep) return;
+          const url = ep + '/v1/telemetry';
+          const bodyStr = JSON.stringify(p);
+          if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+            const ok = navigator.sendBeacon(url, new Blob([bodyStr], { type: 'text/plain;charset=UTF-8' }));
+            if (ok) return;
+          }
+          fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+            body: bodyStr,
+            keepalive: true,
+            mode: 'cors'
+          }).catch(() => {});
+        };
+
+        if (clusterEndpoint) {
+          dispatch(clusterEndpoint);
+        } else {
+          resolveClusterEndpoint().then(dispatch).catch(() => {});
+        }
+      } catch (_) {}
+    }
+
+    window.addEventListener('error', (ev) => {
+      const msg = (ev && ev.message) ? ev.message : 'Uncaught UI error';
+      const loc = (ev && ev.lineno) ? ` (L${ev.lineno})` : '';
+      sendTelemetry('ui_error', {
+        mode: 'ui',
+        stage: activeView || 'ui',
+        err_kind: (ev && ev.error && ev.error.name) ? ev.error.name : 'UIError',
+        err_msg: msg + loc
+      });
+    });
+
+    window.addEventListener('unhandledrejection', (ev) => {
+      const reason = ev && ev.reason;
+      const msg = (reason && reason.message) ? reason.message : String(reason || 'Unhandled promise rejection');
+      sendTelemetry('ui_error', {
+        mode: 'ui',
+        stage: activeView || 'ui',
+        err_kind: (reason && reason.name) ? reason.name : 'UnhandledRejection',
+        err_msg: msg
+      });
+    });
+
     function checkUrlHashForClusterJob() {
       const m = (window.location.hash || '').match(/^#job=(wlr_[A-Za-z0-9_-]{16,32})$/);
       if (m) {
@@ -8201,6 +8366,7 @@
       switchView('landing');
       initWorker();
       checkUrlHashForClusterJob();
+      sendTelemetry('app_open', { mode: 'ui', stage: 'landing' });
     });
   </script>
 </body>

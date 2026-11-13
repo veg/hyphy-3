@@ -81,6 +81,29 @@ case "$cmd" in
     fi
     ;;
 
+  reload-gateway)
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
+      pkill -f "^/usr/bin/python3 $GATEWAY_DIR/walrus_gateway.py" || true
+      for _ in $(seq 1 16); do
+        sleep 0.5
+        if curl -fsS "http://127.0.0.1:$BIND_PORT/v1/status" >/dev/null 2>&1; then
+          echo "Reloaded walrus_gateway.py cleanly (cloudflared tunnel preserved)."
+          curl -fsS "http://127.0.0.1:$BIND_PORT/v1/status" && echo ""
+          exit 0
+        fi
+      done
+      echo "Warning: gateway did not come back within 8s; check $LOG_DIR/gateway.log" >&2
+      exit 1
+    else
+      echo "Session '$SESSION' is not running; starting full service..."
+      "$0" start "$named_token"
+    fi
+    ;;
+
+  stats)
+    curl -fsS "http://127.0.0.1:$BIND_PORT/v1/stats" | /usr/bin/python3 -m json.tool
+    ;;
+
   status)
     if tmux has-session -t "$SESSION" 2>/dev/null; then
       echo "Service tmux session '$SESSION': RUNNING"
@@ -95,7 +118,7 @@ case "$cmd" in
     ;;
 
   *)
-    echo "Usage: $0 {start|stop|restart|status|url} [named_tunnel_token]" >&2
+    echo "Usage: $0 {start|stop|restart|reload-gateway|status|stats|url} [named_tunnel_token]" >&2
     exit 2
     ;;
 esac

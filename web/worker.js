@@ -33,7 +33,8 @@ initModule()
   })
   .catch((err) => {
     const errMsg = 'WASM initialization failed: ' + (err && err.message ? err.message : String(err));
-    self.postMessage({ type: 'error', error: errMsg, message: errMsg });
+    const errKind = (err && err.name) ? String(err.name) : 'WasmInitError';
+    self.postMessage({ type: 'error', stage: 'init', errKind: errKind, error: errMsg, message: errMsg });
   });
 
 self.onmessage = async function(e) {
@@ -71,9 +72,11 @@ self.onmessage = async function(e) {
       });
     } catch (err) {
       const errMsg = err && err.message ? err.message : String(err);
+      const errKind = (err && err.name) ? String(err.name) : 'WasmError';
       self.postMessage({
         type: 'error',
         stage: 0,
+        errKind: errKind,
         error: errMsg,
         message: errMsg
       });
@@ -110,9 +113,11 @@ self.onmessage = async function(e) {
       });
     } catch (err) {
       const errMsg = err && err.message ? err.message : String(err);
+      const errKind = (err && err.name) ? String(err.name) : 'WasmError';
       self.postMessage({
         type: 'error',
         stage: 1,
+        errKind: errKind,
         error: errMsg,
         message: errMsg
       });
@@ -150,9 +155,11 @@ self.onmessage = async function(e) {
       });
     } catch (err) {
       const errMsg = err && err.message ? err.message : String(err);
+      const errKind = (err && err.name) ? String(err.name) : 'WasmError';
       self.postMessage({
         type: 'error',
         stage: 2,
+        errKind: errKind,
         error: errMsg,
         message: errMsg
       });
@@ -191,9 +198,11 @@ self.onmessage = async function(e) {
       });
     } catch (err) {
       const errMsg = err && err.message ? err.message : String(err);
+      const errKind = (err && err.name) ? String(err.name) : 'WasmError';
       self.postMessage({
         type: 'error',
         stage: 3,
+        errKind: errKind,
         error: errMsg,
         message: errMsg
       });
@@ -229,6 +238,7 @@ self.onmessage = async function(e) {
 
       self.postMessage({
         type: 'result',
+        mode: 'ping',
         html: html,
         json: json,
         label: label,
@@ -236,8 +246,11 @@ self.onmessage = async function(e) {
       });
     } catch (err) {
       const errMsg = err && err.message ? err.message : String(err);
+      const errKind = (err && err.name) ? String(err.name) : 'WasmError';
       self.postMessage({
         type: 'error',
+        stage: 'ping',
+        errKind: errKind,
         error: errMsg,
         message: errMsg
       });
@@ -271,6 +284,7 @@ self.onmessage = async function(e) {
 
       self.postMessage({
         type: 'result',
+        mode: 'render_json',
         html: html,
         json: jsonStr,
         label: label,
@@ -278,8 +292,11 @@ self.onmessage = async function(e) {
       });
     } catch (err) {
       const errMsg = err && err.message ? err.message : String(err);
+      const errKind = (err && err.name) ? String(err.name) : 'WasmError';
       self.postMessage({
         type: 'error',
+        stage: 'render_json',
+        errKind: errKind,
         error: errMsg,
         message: errMsg
       });
