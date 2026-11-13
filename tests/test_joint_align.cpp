@@ -251,5 +251,72 @@ int main() {
                   << c_res.sites_property_constrained_or_shifting << " Toggle/Convergent sites, JSON+HTML verified)\n";
     }
 
+    // 7. Test --keep-pseudogenes (Viterbi frameshift splicing, internal stop masking, and MACSE '!' handling)
+    {
+        std::string ifitm3_path = std::string(HYPHY3_SOURCE_DIR) + "/tests/data/unaligned_cds/mammalian_ifitm3_unaligned.fa";
+        auto pseudo_cohort = JointAlignEngine::load_unaligned_fasta(ifitm3_path);
+        assert(pseudo_cohort.size() == 13);
+
+        // Pseudogenize 5 of 13 orthologs (38.5% > 25% default Gate 2 ceiling):
+        //   - Taxon 0: two premature internal stop codons (TGA, TAG)
+        //   - Taxon 1: +1 bp frameshift insertion mid-gene + downstream nonsense stop
+        //   - Taxon 2: -1 bp frameshift deletion mid-gene
+        //   - Taxon 3: +2 bp frameshift insertion mid-gene
+        //   - Taxon 4: reverse-complemented pseudogene with premature internal stop (TAA)
+        pseudo_cohort[0].raw_seq.replace(3 * 35, 3, "TGA");
+        pseudo_cohort[0].raw_seq.replace(3 * 70, 3, "TAG");
+        pseudo_cohort[0].raw_seq.replace(3 * 50, 3, "TCA"); // blocks antisense frame 0
+        pseudo_cohort[1].raw_seq.replace(3 * 32, 3, "TGA");
+        pseudo_cohort[1].raw_seq.insert(3 * 48, "G");
+        pseudo_cohort[1].raw_seq.replace(3 * 85 + 1, 3, "TGA");
+        pseudo_cohort[2].raw_seq.replace(3 * 34, 3, "TAG");
+        pseudo_cohort[2].raw_seq.erase(3 * 58, 1);
+        pseudo_cohort[3].raw_seq.replace(3 * 36, 3, "TGA");
+        pseudo_cohort[3].raw_seq.insert(3 * 62, "CC");
+        {
+            std::string tmp = pseudo_cohort[4].raw_seq;
+            tmp.replace(3 * 45, 3, "TCA"); // becomes TGA mid-CDS on reverse-complement strand
+            tmp.replace(3 * 65, 3, "TAA");
+            pseudo_cohort[4].raw_seq = JointAlignEngine::reverse_complement_dna(tmp);
+        }
+        // Also append an unrelated non-homologous ORF to ensure Gate 3 still quarantines true non-homologs!
+        std::string non_hom = "ATG";
+        for (int k = 0; k < 130; ++k) non_hom += (k % 2 == 0) ? "GCT" : "GGT";
+        pseudo_cohort.push_back(Sequence{"Unrelated_Decoy", non_hom, {}, {}});
+
+        // Default settings must abort at Gate 2 (>25% premature stops/frameshifts) and suggest --keep-pseudogenes
+        JointAlignSettings js_default;
+        js_default.quiet = true;
+        bool aborted_default = false;
+        try {
+            JointAlignEngine::triage_and_admit_unaligned_sequences(pseudo_cohort, nullptr, js_default);
+        } catch (const std::exception& e) {
+            std::string msg = e.what();
+            assert(msg.find("Gate 2") != std::string::npos);
+            assert(msg.find("--keep-pseudogenes") != std::string::npos);
+            aborted_default = true;
+        }
+        assert(aborted_default);
+
+        // With keep_pseudogenes = true: all 5 homologous pseudogenes are rescued (13/14 admitted) while Unrelated_Decoy is quarantined!
+        JointAlignSettings js_pseudo;
+        js_pseudo.quiet = true;
+        js_pseudo.keep_pseudogenes = true;
+        auto [adm_p, rep_p] = JointAlignEngine::triage_and_admit_unaligned_sequences(pseudo_cohort, nullptr, js_pseudo);
+        assert(rep_p.total_input_sequences == 14);
+        assert(rep_p.admitted_sequences == 13);
+        assert(rep_p.rescued_frame_or_strand == 5);
+        assert(rep_p.quarantined_sequences == 1);
+        assert(rep_p.entries[13].status == "Quarantined");
+
+        // Verify MACSE '!' split-codon mask resolution in GeneticCode
+        auto gc = GeneticCode::universal();
+        uint64_t all_sense = (uint64_t(1) << gc->num_sense_codons) - 1;
+        assert(gc->resolve_triplet_mask('A', '!', 'G') == all_sense);
+        assert(gc->resolve_triplet_mask('!', '!', 'T') == all_sense);
+
+        std::cout << "[PASS] --keep-pseudogenes Viterbi Frameshift Splicing, Premature Stop Masking, Gate 3 Homology Retention & MACSE '!' Masking\n";
+    }
+
     return 0;
 }

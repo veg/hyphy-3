@@ -46,6 +46,7 @@ static void print_characterize_usage(const char* prog) {
               << "  " << Console::brand("--fdr") << " <float>                Benjamini-Hochberg / Simes FDR q-value threshold (default: 0.10)\n"
               << "  " << Console::brand("--branches, -b") << " <tag>         Optional foreground branch tag for RELAX/Contrast-FEL (default: BIC-gated auto)\n"
               << "  " << Console::brand("--coevolution") << "                Opt-in Tier 3 screen for epistatic co-substituting site pairs\n"
+              << "  " << Console::brand("--keep-pseudogenes") << "           Admit pseudogenized sequences (repair frameshifts & mask premature stops to NNN)\n"
               << "  " << Console::brand("--no-spr") << "                     Disable coupled SPR + indel search\n"
               << "  " << Console::brand("--threads") << " <int>              Number of OpenMP threads (0 = auto)\n"
               << "  " << Console::brand("--quiet, -q") << "                  Suppress progress output\n";
@@ -127,6 +128,8 @@ int run_characterize(int argc, char* argv[])
             settings.foreground_tag = argv[++i];
         } else if (arg == "--coevolution") {
             settings.enable_coevolution = true;
+        } else if (arg == "--keep-pseudogenes" || arg == "--pseudogenes") {
+            settings.keep_pseudogenes = true;
         } else if (arg == "--no-spr") {
             settings.enable_coupled_spr = false;
         } else if (arg == "--threads" && i + 1 < argc) {

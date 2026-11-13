@@ -48,6 +48,7 @@ struct CharacterizeSettings {
     bool enable_coupled_spr = true;
     bool enable_segment_routing = true;
     bool enable_coevolution = false;   // Tier 3 (Opt-in): Epistatic co-substitution pairs (--coevolution)
+    bool keep_pseudogenes = false;     // Admit foreground/background pseudogenes (repair frameshifts & mask premature stops to NNN)
     bool emit_legacy_jsons = false;    // Decision 7: Optional Vision/Datamonkey legacy JSON bundle
     bool quiet = false;
     std::string genetic_code_name = "Universal";
@@ -354,6 +355,7 @@ public:
         JointAlignSettings jas;
         jas.p_value_threshold = settings.p_value_threshold;
         jas.enable_coupled_topology_search = settings.enable_coupled_spr;
+        jas.keep_pseudogenes = settings.keep_pseudogenes;
         jas.run_marginalized_fel = true;
         jas.quiet = settings.quiet;
 
@@ -381,6 +383,7 @@ public:
         JointAlignSettings jas;
         jas.p_value_threshold = settings.p_value_threshold;
         jas.enable_coupled_topology_search = settings.enable_coupled_spr;
+        jas.keep_pseudogenes = settings.keep_pseudogenes;
         if (input_tree.has_value() && !settings.enable_coupled_spr) {
             jas.em_iterations = 1;
         }

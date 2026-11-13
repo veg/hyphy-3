@@ -80,10 +80,14 @@ public:
     }
 
     uint64_t resolve_triplet_mask(char c1, char c2, char c3) const {
+        uint64_t all_sense = (num_sense_codons >= 64) ? ~uint64_t(0) : ((uint64_t(1) << num_sense_codons) - 1);
+        // MACSE frameshift placeholder '!' invalidates the split codon unless exported as ---/NNN
+        if (c1 == '!' || c2 == '!' || c3 == '!') {
+            return all_sense;
+        }
         uint8_t m1 = char_to_iupac_mask(c1);
         uint8_t m2 = char_to_iupac_mask(c2);
         uint8_t m3 = char_to_iupac_mask(c3);
-        uint64_t all_sense = (num_sense_codons >= 64) ? ~uint64_t(0) : ((uint64_t(1) << num_sense_codons) - 1);
         if (m1 == 0xF && m2 == 0xF && m3 == 0xF) {
             return all_sense;
         }
