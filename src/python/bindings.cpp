@@ -23,6 +23,7 @@
 #include "hyphy/analyses/relax.hpp"
 #include "hyphy/analyses/fubar.hpp"
 #include "hyphy/analyses/prime.hpp"
+#include "hyphy/analyses/forecast.hpp"
 #include "hyphy/core/neighbor_joining.hpp"
 #include "hyphy/analyses/gard.hpp"
 #include "hyphy/analyses/slac.hpp"
@@ -556,6 +557,7 @@ NB_MODULE(_hyphy3, m) {
         .def_rw("property_set", &PRIMESettings::property_set)
         .def_rw("custom_property_file", &PRIMESettings::custom_property_file)
         .def_rw("shrinkage_lambda", &PRIMESettings::shrinkage_lambda)
+        .def_rw("shrinkage_prior", &PRIMESettings::shrinkage_prior)
         .def_rw("max_bound", &PRIMESettings::max_bound)
         .def_rw("full_model", &PRIMESettings::full_model)
         .def_rw("fit_global", &PRIMESettings::fit_global)
@@ -626,6 +628,98 @@ NB_MODULE(_hyphy3, m) {
             return prime.run(nullptr, show_progress, force_progress, site_cb, live_site_cb);
         }, "show_progress"_a = false, "force_progress"_a = false,
            "site_callback"_a = nb::none(), "live_site_callback"_a = nb::none());
+
+    // Mutational Fitness & Evolutionary Trajectory Forecasting (FORECAST)
+    nb::class_<ForecastSettings>(m, "ForecastSettings")
+        .def(nb::init<>())
+        .def_rw("branches", &ForecastSettings::branches)
+        .def_rw("branch_regex", &ForecastSettings::branch_regex)
+        .def_rw("branch_names", &ForecastSettings::branch_names)
+        .def_rw("property_set", &ForecastSettings::property_set)
+        .def_rw("custom_property_file", &ForecastSettings::custom_property_file)
+        .def_rw("shrinkage_lambda", &ForecastSettings::shrinkage_lambda)
+        .def_rw("shrinkage_prior", &ForecastSettings::shrinkage_prior)
+        .def_rw("max_bound", &ForecastSettings::max_bound)
+        .def_rw("syn_model", &ForecastSettings::syn_model)
+        .def_rw("syn_shrinkage", &ForecastSettings::syn_shrinkage)
+        .def_rw("ancestral_exponent", &ForecastSettings::ancestral_exponent)
+        .def_rw("ancestral_pseudocount", &ForecastSettings::ancestral_pseudocount)
+        .def_rw("omega_prior_weight", &ForecastSettings::omega_prior_weight)
+        .def_rw("rate_prior_weight", &ForecastSettings::rate_prior_weight)
+        .def_rw("horizon", &ForecastSettings::horizon)
+        .def_rw("reference_taxon", &ForecastSettings::reference_taxon)
+        .def_rw("p_value_threshold", &ForecastSettings::p_value_threshold);
+
+    nb::class_<ForecastSiteResult>(m, "ForecastSiteResult")
+        .def_ro("site_index", &ForecastSiteResult::site_index)
+        .def_ro("focal_codon_index", &ForecastSiteResult::focal_codon_index)
+        .def_ro("focal_codon", &ForecastSiteResult::focal_codon)
+        .def_prop_ro("focal_aa", [](const ForecastSiteResult& s) { return std::string(1, s.focal_aa); })
+        .def_ro("root_codon_index", &ForecastSiteResult::root_codon_index)
+        .def_ro("root_codon", &ForecastSiteResult::root_codon)
+        .def_prop_ro("root_aa", [](const ForecastSiteResult& s) { return std::string(1, s.root_aa); })
+        .def_ro("alpha", &ForecastSiteResult::alpha)
+        .def_ro("beta", &ForecastSiteResult::beta)
+        .def_ro("beta_background", &ForecastSiteResult::beta_background)
+        .def_ro("effective_omega", &ForecastSiteResult::effective_omega)
+        .def_ro("omnibus_lrt", &ForecastSiteResult::omnibus_lrt)
+        .def_ro("omnibus_p_value", &ForecastSiteResult::omnibus_p_value)
+        .def_ro("omnibus_q_value", &ForecastSiteResult::omnibus_q_value)
+        .def_ro("expected_substitutions_horizon", &ForecastSiteResult::expected_substitutions_horizon)
+        .def_ro("stationary_aa_entropy", &ForecastSiteResult::stationary_aa_entropy)
+        .def_ro("effective_aa_count", &ForecastSiteResult::effective_aa_count)
+        .def_ro("lambdas", &ForecastSiteResult::lambdas);
+
+    nb::class_<ForecastResult>(m, "ForecastResult")
+        .def_ro("settings", &ForecastResult::settings)
+        .def_ro("effective_branches", &ForecastResult::effective_branches)
+        .def_ro("effective_syn_model", &ForecastResult::effective_syn_model)
+        .def_ro("resolved_reference_taxon", &ForecastResult::resolved_reference_taxon)
+        .def_ro("aa_alphabet", &ForecastResult::aa_alphabet)
+        .def_ro("sense_codons", &ForecastResult::sense_codons)
+        .def_ro("sense_codon_aa", &ForecastResult::sense_codon_aa)
+        .def_ro("property_names", &ForecastResult::property_names)
+        .def_ro("total_sites", &ForecastResult::total_sites)
+        .def_ro("num_sense_codons", &ForecastResult::num_sense_codons)
+        .def_ro("num_properties", &ForecastResult::num_properties)
+        .def_ro("gtr_log_l", &ForecastResult::gtr_log_l)
+        .def_ro("prime_global_log_l", &ForecastResult::prime_global_log_l)
+        .def_ro("prime_global_aicc", &ForecastResult::prime_global_aicc)
+        .def_ro("global_omega", &ForecastResult::global_omega)
+        .def_ro("global_lambdas", &ForecastResult::global_lambdas)
+        .def_ro("mss_baseline_log_l", &ForecastResult::mss_baseline_log_l)
+        .def_ro("mss_log_l", &ForecastResult::mss_log_l)
+        .def_ro("mss_omnibus_lrt", &ForecastResult::mss_omnibus_lrt)
+        .def_ro("mss_omnibus_p_value", &ForecastResult::mss_omnibus_p_value)
+        .def_ro("mss_num_classes", &ForecastResult::mss_num_classes)
+        .def_ro("mss_class_names", &ForecastResult::mss_class_names)
+        .def_ro("mss_class_rates", &ForecastResult::mss_class_rates)
+        .def_ro("syn_pair_matrix", &ForecastResult::syn_pair_matrix)
+        .def_ro("baseline_scale_factor", &ForecastResult::baseline_scale_factor)
+        .def_ro("horizon_tau", &ForecastResult::horizon_tau)
+        .def_ro("aa_dms_matrix", &ForecastResult::aa_dms_matrix)
+        .def_ro("aa_stationary_matrix", &ForecastResult::aa_stationary_matrix)
+        .def_ro("ancestral_aa_matrix", &ForecastResult::ancestral_aa_matrix)
+        .def_ro("site_lambda_matrix", &ForecastResult::site_lambda_matrix)
+        .def_ro("codon_rate_matrix", &ForecastResult::codon_rate_matrix)
+        .def_ro("codon_log_prob_matrix", &ForecastResult::codon_log_prob_matrix)
+        .def_ro("site_results", &ForecastResult::site_results)
+        .def_ro("runtime_seconds", &ForecastResult::runtime_seconds)
+        .def("write_dms_tsv", &ForecastResult::write_dms_tsv, "filepath"_a)
+        .def("write_codon_tsv", &ForecastResult::write_codon_tsv, "filepath"_a)
+        .def("to_modern_json", [](const ForecastResult& res, const Tree& tree, const Alignment& aln, const std::string& input_filepath) {
+            return res.to_modern_json(tree, aln, Provenance{}, input_filepath).dump();
+        }, "tree"_a, "alignment"_a, "input_filepath"_a = "");
+
+    nb::class_<ForecastAnalyzer>(m, "ForecastAnalyzer")
+        .def(nb::init<Tree, Alignment, ForecastSettings>(),
+             "tree"_a, "alignment"_a, "settings"_a = ForecastSettings{})
+        .def_static("create", &ForecastAnalyzer::create,
+             "tree"_a, "alignment"_a, "settings"_a = ForecastSettings{})
+        .def("run", &ForecastAnalyzer::run, "show_progress"_a = false, "force_progress"_a = false)
+        .def_ro("tree", &ForecastAnalyzer::tree)
+        .def_ro("aln", &ForecastAnalyzer::aln)
+        .def_ro("settings", &ForecastAnalyzer::settings);
 
     // Differentiable Engine: Inside-Outside Likelihood and Analytical Adjoint Gradients!
     m.def("compute_branch_length_gradients", [](

@@ -102,7 +102,7 @@ jobs:
       - name: Install and verify symlinks
         run: |
           cmake --install build --prefix "$PWD/stage"
-          for name in fel meme busted absrel relax fubar prime gard slac dfel \
+          for name in fel meme busted absrel relax fubar prime forecast gard slac dfel \
                       contrast-fel mss ohmic tree joint-align characterize walrus expcm; do
             link="stage/bin/hyphy3-$name"
             test -L "$link" || { echo "FAIL: $link is not a symlink"; exit 1; }

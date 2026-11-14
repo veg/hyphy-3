@@ -70,6 +70,28 @@ MAX_SEQ_UNGAPPED_NT = 30000
 MAX_TOTAL_NT = 15_000_000
 JOB_TTL_SECONDS = 48 * 3600
 MAX_JOBS_DISK_BYTES = 20 * 1024 * 1024 * 1024  # 20 GB total job cache ceiling
+MAX_TELEMETRY_BYTES = 2048
+MAX_TELEMETRY_PER_MIN = 45
+TELEMETRY_RETENTION_DAYS = 30
+
+ALLOWED_TELEMETRY_EVENTS = {
+    "app_open",
+    "sample_load",
+    "custom_input",
+    "stage0_done",
+    "stage1_done",
+    "stage2_done",
+    "stage3_done",
+    "ping_done",
+    "render_json_done",
+    "cluster_submit",
+    "cluster_done",
+    "export_artifact",
+    "wasm_error",
+    "worker_crash",
+    "ui_error",
+    "cluster_error",
+}
 
 ALLOWED_ORIGINS = {
     "https://veg.github.io",
@@ -99,6 +121,8 @@ IUPAC_NUC_CHARS = set("ACGTRYMKSWHBVDNacgtrymkswhbvdnUu-.?")
 
 DB_LOCK = threading.Lock()
 WAKE_EVENT = threading.Event()
+TELEMETRY_RATE_LOCK = threading.Lock()
+TELEMETRY_RATE_BUCKETS: dict[str, tuple[int, int]] = {}
 
 
 def load_or_create_secret() -> bytes:
@@ -155,6 +179,35 @@ def init_db() -> None:
                 sig TEXT PRIMARY KEY,
                 expires_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS telemetry_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                day TEXT NOT NULL,
+                day_visitor TEXT NOT NULL,
+                country TEXT DEFAULT '',
+                event TEXT NOT NULL,
+                mode TEXT DEFAULT '',
+                stage TEXT DEFAULT '',
+                sample_id TEXT DEFAULT '',
+                n_taxa INTEGER DEFAULT 0,
+                n_sites INTEGER DEFAULT 0,
+                wall_ms INTEGER DEFAULT 0,
+                threads INTEGER DEFAULT 0,
+                err_kind TEXT DEFAULT '',
+                err_msg TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_telem_ts ON telemetry_events(ts);
+            CREATE INDEX IF NOT EXISTS idx_telem_event ON telemetry_events(event, ts);
+            CREATE INDEX IF NOT EXISTS idx_telem_day ON telemetry_events(day, day_visitor);
+
+            CREATE TABLE IF NOT EXISTS telemetry_daily (
+                day TEXT NOT NULL,
+                event TEXT NOT NULL,
+                total_count INTEGER NOT NULL DEFAULT 0,
+                unique_visitors INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (day, event)
+            );
             """
         )
 
@@ -176,6 +229,37 @@ def client_subnet_hash(headers, remote_addr: str) -> str:
     except ValueError:
         norm = raw_ip
     return hmac.new(SERVER_SECRET, f"subnet:{norm}".encode("utf-8"), hashlib.sha256).hexdigest()[:24]
+
+
+def daily_visitor_hash(subnet_h: str, utc_day: str) -> str:
+    return hmac.new(SERVER_SECRET, f"visitor:{utc_day}:{subnet_h}".encode("utf-8"), hashlib.sha256).hexdigest()[:16]
+
+
+def allow_telemetry_beacon(subnet_h: str) -> bool:
+    minute_slot = int(time.time() // 60)
+    with TELEMETRY_RATE_LOCK:
+        if len(TELEMETRY_RATE_BUCKETS) > 4096:
+            stale = [k for k, (slot, _) in TELEMETRY_RATE_BUCKETS.items() if slot < minute_slot - 1]
+            for k in stale:
+                TELEMETRY_RATE_BUCKETS.pop(k, None)
+        slot, cnt = TELEMETRY_RATE_BUCKETS.get(subnet_h, (minute_slot, 0))
+        if slot != minute_slot:
+            slot, cnt = minute_slot, 0
+        if cnt >= MAX_TELEMETRY_PER_MIN:
+            return False
+        TELEMETRY_RATE_BUCKETS[subnet_h] = (slot, cnt + 1)
+        return True
+
+
+def scrub_error_message(raw_msg: str) -> str:
+    if not raw_msg:
+        return ""
+    s = re.sub(r"[\x00-\x1f\x7f]+", " ", str(raw_msg)).strip()
+    # Redact quoted identifiers (e.g., user sequence or taxon names) and local file paths
+    s = re.sub(r"'[^']{1,120}'", "'<id>'", s)
+    s = re.sub(r'"[^"]{1,120}"', '"<id>"', s)
+    s = re.sub(r"/(?:Users|home|tmp|var)/[^\s:;,)>\]]+", "<path>", s)
+    return s[:240]
 
 
 def leading_zero_bits(digest: bytes) -> int:
@@ -638,7 +722,9 @@ def reconcile_and_dispatch() -> None:
 
 
 def reap_expired_jobs() -> None:
-    cutoff = time.time() - JOB_TTL_SECONDS
+    now = time.time()
+    cutoff = now - JOB_TTL_SECONDS
+    telem_cutoff = now - (TELEMETRY_RETENTION_DAYS * 86400)
     with DB_LOCK, get_db() as conn:
         old_rows = conn.execute(
             "SELECT job_id FROM jobs WHERE created_at < ? AND status IN ('completed', 'failed', 'canceled')",
@@ -647,6 +733,22 @@ def reap_expired_jobs() -> None:
         for r in old_rows:
             shutil.rmtree(JOBS_DIR / r["job_id"], ignore_errors=True)
             conn.execute("DELETE FROM jobs WHERE job_id = ?", (r["job_id"],))
+
+        # Roll up telemetry events older than TELEMETRY_RETENTION_DAYS into compact daily totals
+        conn.execute(
+            """
+            INSERT INTO telemetry_daily (day, event, total_count, unique_visitors)
+            SELECT day, event, COUNT(*), COUNT(DISTINCT day_visitor)
+            FROM telemetry_events
+            WHERE ts < ?
+            GROUP BY day, event
+            ON CONFLICT(day, event) DO UPDATE SET
+                total_count = telemetry_daily.total_count + excluded.total_count,
+                unique_visitors = MAX(telemetry_daily.unique_visitors, excluded.unique_visitors)
+            """,
+            (telem_cutoff,),
+        )
+        conn.execute("DELETE FROM telemetry_events WHERE ts < ?", (telem_cutoff,))
 
     # Enforce total storage ceiling across jobs/
     entries = []
@@ -673,8 +775,135 @@ def reap_expired_jobs() -> None:
                 total_bytes -= sz
 
 
+def build_telemetry_stats(conn: sqlite3.Connection) -> dict:
+    now = time.time()
+    utc_today = time.strftime("%Y-%m-%d", time.gmtime(now))
+    t_24h = now - 86400.0
+    t_7d = now - (7 * 86400.0)
+
+    today_uv = conn.execute(
+        "SELECT COUNT(DISTINCT day_visitor) AS c FROM telemetry_events WHERE day = ?",
+        (utc_today,),
+    ).fetchone()["c"]
+
+    daily_uv_rows = conn.execute(
+        """
+        SELECT day, COUNT(DISTINCT day_visitor) AS uv, COUNT(*) AS events
+        FROM telemetry_events
+        WHERE ts >= ?
+        GROUP BY day
+        ORDER BY day DESC
+        """,
+        (t_7d,),
+    ).fetchall()
+
+    countries_7d = conn.execute(
+        """
+        SELECT country, COUNT(DISTINCT day_visitor) AS uv, COUNT(*) AS events
+        FROM telemetry_events
+        WHERE ts >= ? AND country != ''
+        GROUP BY country
+        ORDER BY uv DESC, events DESC
+        LIMIT 12
+        """,
+        (t_7d,),
+    ).fetchall()
+
+    events_24h = {
+        r["event"]: int(r["c"])
+        for r in conn.execute(
+            "SELECT event, COUNT(*) AS c FROM telemetry_events WHERE ts >= ? GROUP BY event ORDER BY c DESC",
+            (t_24h,),
+        ).fetchall()
+    }
+
+    stage_perf_7d = [
+        {
+            "event": r["event"],
+            "runs": int(r["runs"]),
+            "mean_wall_ms": int(round(r["avg_ms"] or 0)),
+            "max_wall_ms": int(r["max_ms"] or 0),
+            "mean_taxa": round(float(r["avg_taxa"] or 0.0), 1),
+            "mean_sites": round(float(r["avg_sites"] or 0.0), 1),
+        }
+        for r in conn.execute(
+            """
+            SELECT event, COUNT(*) AS runs, AVG(wall_ms) AS avg_ms, MAX(wall_ms) AS max_ms,
+                   AVG(NULLIF(n_taxa, 0)) AS avg_taxa, AVG(NULLIF(n_sites, 0)) AS avg_sites
+            FROM telemetry_events
+            WHERE ts >= ? AND event IN ('stage0_done', 'stage1_done', 'stage2_done', 'stage3_done', 'ping_done', 'cluster_done')
+            GROUP BY event
+            ORDER BY runs DESC
+            """,
+            (t_7d,),
+        ).fetchall()
+    ]
+
+    top_samples_7d = [
+        {"sample_id": r["sample_id"], "loads": int(r["c"])}
+        for r in conn.execute(
+            """
+            SELECT sample_id, COUNT(*) AS c
+            FROM telemetry_events
+            WHERE ts >= ? AND event = 'sample_load' AND sample_id != ''
+            GROUP BY sample_id
+            ORDER BY c DESC
+            LIMIT 10
+            """,
+            (t_7d,),
+        ).fetchall()
+    ]
+
+    top_errors_7d = [
+        {
+            "event": r["event"],
+            "stage": r["stage"],
+            "err_kind": r["err_kind"],
+            "err_msg": r["err_msg"],
+            "count": int(r["c"]),
+            "last_seen_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(r["last_ts"]))),
+        }
+        for r in conn.execute(
+            """
+            SELECT event, stage, err_kind, err_msg, COUNT(*) AS c, MAX(ts) AS last_ts
+            FROM telemetry_events
+            WHERE ts >= ? AND event IN ('wasm_error', 'worker_crash', 'ui_error', 'cluster_error')
+            GROUP BY event, stage, err_kind, err_msg
+            ORDER BY c DESC, last_ts DESC
+            LIMIT 20
+            """,
+            (t_7d,),
+        ).fetchall()
+    ]
+
+    cluster_jobs = {
+        r["status"]: int(r["c"])
+        for r in conn.execute("SELECT status, COUNT(*) AS c FROM jobs GROUP BY status").fetchall()
+    }
+
+    return {
+        "generated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+        "privacy": "cookieless daily-rotating HMAC subnet visitor IDs; zero sequence or filename retention",
+        "today_utc": utc_today,
+        "today_unique_visitors": int(today_uv or 0),
+        "daily_activity_7d": [
+            {"day": r["day"], "unique_visitors": int(r["uv"]), "events": int(r["events"])}
+            for r in daily_uv_rows
+        ],
+        "top_countries_7d": [
+            {"country": r["country"], "unique_visitors": int(r["uv"]), "events": int(r["events"])}
+            for r in countries_7d
+        ],
+        "events_last_24h": events_24h,
+        "stage_performance_7d": stage_perf_7d,
+        "top_samples_7d": top_samples_7d,
+        "cluster_jobs_48h_window": cluster_jobs,
+        "top_errors_7d": top_errors_7d,
+    }
+
+
 class WalrusGatewayHandler(BaseHTTPRequestHandler):
-    server_version = "WalrusClusterGateway/1.0"
+    server_version = "WalrusClusterGateway/1.1"
 
     def log_message(self, fmt: str, *args) -> None:
         sys.stdout.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {fmt % args}\n")
@@ -731,13 +960,13 @@ class WalrusGatewayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _read_json_body(self) -> tuple[bool, str, dict]:
+    def _read_json_body(self, max_bytes: int = MAX_UPLOAD_BYTES) -> tuple[bool, str, dict]:
         cl_str = self.headers.get("Content-Length", "")
         if not cl_str.isdigit():
             return False, "Missing Content-Length header.", {}
         cl = int(cl_str)
-        if cl <= 0 or cl > MAX_UPLOAD_BYTES:
-            return False, f"Payload exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.", {}
+        if cl <= 0 or cl > max_bytes:
+            return False, f"Payload exceeds {max_bytes} byte limit.", {}
         body = self.rfile.read(cl)
         if self.headers.get("Content-Encoding", "").lower() == "gzip":
             try:
@@ -760,6 +989,12 @@ class WalrusGatewayHandler(BaseHTTPRequestHandler):
         self._send_cors_headers()
         self.end_headers()
 
+    def do_HEAD(self) -> None:
+        self.send_response(HTTPStatus.OK)
+        self._send_cors_headers()
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.end_headers()
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
@@ -777,6 +1012,7 @@ class WalrusGatewayHandler(BaseHTTPRequestHandler):
                     "max_concurrent_jobs": MAX_CONCURRENT_SLURM,
                     "active_jobs": active,
                     "queued_jobs": queued,
+                    "telemetry": True,
                     "limits": {
                         "max_taxa": MAX_TAXA,
                         "max_seq_nt": MAX_SEQ_UNGAPPED_NT,
@@ -786,6 +1022,12 @@ class WalrusGatewayHandler(BaseHTTPRequestHandler):
                     },
                 },
             )
+            return
+
+        if path == "/v1/stats":
+            with DB_LOCK, get_db() as conn:
+                summary = build_telemetry_stats(conn)
+            self._send_json(HTTPStatus.OK, summary)
             return
 
         if path == "/v1/challenge":
@@ -881,6 +1123,89 @@ class WalrusGatewayHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+
+        if path == "/v1/telemetry":
+            subnet_h = client_subnet_hash(self.headers, self.client_address[0])
+            if not allow_telemetry_beacon(subnet_h):
+                self.send_response(HTTPStatus.NO_CONTENT)
+                self._send_cors_headers()
+                self.end_headers()
+                return
+
+            ok, _, body = self._read_json_body(max_bytes=MAX_TELEMETRY_BYTES)
+            if not ok:
+                self.send_response(HTTPStatus.NO_CONTENT)
+                self._send_cors_headers()
+                self.end_headers()
+                return
+
+            ev = str(body.get("event", "")).strip()
+            if ev not in ALLOWED_TELEMETRY_EVENTS:
+                self.send_response(HTTPStatus.NO_CONTENT)
+                self._send_cors_headers()
+                self.end_headers()
+                return
+
+            now = time.time()
+            utc_day = time.strftime("%Y-%m-%d", time.gmtime(now))
+            visitor = daily_visitor_hash(subnet_h, utc_day)
+            raw_cc = str(self.headers.get("CF-IPCountry", "")).strip().upper()
+            country = raw_cc if (len(raw_cc) == 2 and raw_cc.isalpha() and raw_cc != "XX") else ""
+
+            mode = re.sub(r"[^a-z0-9_-]+", "", str(body.get("mode", "")).lower())[:16]
+            stage = re.sub(r"[^a-z0-9_-]+", "", str(body.get("stage", "")).lower())[:24]
+            sample_id = (
+                re.sub(r"[^A-Za-z0-9._-]+", "", str(body.get("sample_id", "")))[:64]
+                if ev == "sample_load"
+                else ""
+            )
+
+            def _clamp_int(val, hi: int) -> int:
+                try:
+                    return max(0, min(hi, int(round(float(val)))))
+                except Exception:
+                    return 0
+
+            n_taxa = _clamp_int(body.get("n_taxa", 0), 100_000)
+            n_sites = _clamp_int(body.get("n_sites", 0), 1_000_000)
+            wall_ms = _clamp_int(body.get("wall_ms", 0), 86_400_000)
+            threads = _clamp_int(body.get("threads", 0), 512)
+            err_kind = re.sub(r"[^A-Za-z0-9_.:-]+", "", str(body.get("err_kind", "")))[:48]
+            err_msg = scrub_error_message(str(body.get("err_msg", "")))
+
+            try:
+                with DB_LOCK, get_db() as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO telemetry_events (
+                            ts, day, day_visitor, country, event, mode, stage,
+                            sample_id, n_taxa, n_sites, wall_ms, threads, err_kind, err_msg
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            now,
+                            utc_day,
+                            visitor,
+                            country,
+                            ev,
+                            mode,
+                            stage,
+                            sample_id,
+                            n_taxa,
+                            n_sites,
+                            wall_ms,
+                            threads,
+                            err_kind,
+                            err_msg,
+                        ),
+                    )
+            except Exception:
+                pass
+
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self._send_cors_headers()
+            self.end_headers()
+            return
 
         m_cancel = re.fullmatch(r"/v1/jobs/(wlr_[A-Za-z0-9_-]{16,32})/cancel", path)
         if m_cancel:

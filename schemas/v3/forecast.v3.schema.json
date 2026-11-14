@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/veg/hyphy-3/main/schemas/v3/forecast.v3.schema.json",
+  "title": "HyPhy 3.0 FORECAST Output Schema",
+  "description": "Formal JSON Schema for Mutational Fitness & Evolutionary Trajectory Forecasting (FORECAST) results in HyPhy v3.0.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema_version",
+    "analysis",
+    "software",
+    "provenance",
+    "dataset",
+    "phylogeny",
+    "model_fits",
+    "statistical_tests",
+    "site_results",
+    "timers",
+    "method_results"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "format": "uri" },
+    "schema_version": { "type": "string", "const": "3.0.0" },
+    "analysis": {
+      "type": "object",
+      "required": ["id", "name", "version", "category"],
+      "properties": {
+        "id": { "type": "string", "const": "forecast" },
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "citations": { "type": "array" },
+        "settings": { "type": "object" }
+      }
+    },
+    "software": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string", "const": "hyphy" },
+        "version": { "type": "string" },
+        "git_commit": { "type": "string" },
+        "build_type": { "type": "string" },
+        "compiler": { "type": "string" }
+      }
+    },
+    "provenance": { "type": "object" },
+    "dataset": {
+      "type": "object",
+      "required": ["taxa_count", "codon_sites", "nucleotide_sites", "unique_patterns", "taxa", "genetic_code"],
+      "properties": {
+        "taxa_count": { "type": "integer", "minimum": 3 },
+        "codon_sites": { "type": "integer", "minimum": 1 },
+        "nucleotide_sites": { "type": "integer", "minimum": 3 },
+        "unique_patterns": { "type": "integer", "minimum": 1 },
+        "taxa": { "type": "array", "items": { "type": "string" } },
+        "genetic_code": { "type": "object" },
+        "partitions": { "type": "array" }
+      }
+    },
+    "phylogeny": {
+      "type": "object",
+      "required": ["newick", "nodes", "tree_lengths"],
+      "properties": {
+        "newick": { "type": "string" },
+        "nodes": { "type": "object" },
+        "tree_lengths": { "type": "object" }
+      }
+    },
+    "model_fits": {
+      "type": "object",
+      "required": ["nucleotide_gtr", "global_prime", "synonymous_mss"],
+      "properties": {
+        "nucleotide_gtr": { "type": "object" },
+        "global_prime": { "type": "object" },
+        "synonymous_mss": { "type": "object" }
+      }
+    },
+    "statistical_tests": {
+      "type": "object",
+      "required": ["synonymous_selection"],
+      "properties": {
+        "synonymous_selection": {
+          "type": "object",
+          "required": ["model", "lrt", "p_value", "df"],
+          "properties": {
+            "model": { "type": "string" },
+            "lrt": { "type": ["number", "null"] },
+            "p_value": { "type": ["number", "null"] },
+            "df": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "site_results": {
+      "type": "object",
+      "required": ["row_count", "columns", "data"],
+      "properties": {
+        "row_count": { "type": "integer", "minimum": 1 },
+        "columns": { "type": "object" },
+        "data": {
+          "type": "object",
+          "required": [
+            "site",
+            "focal_codon",
+            "focal_aa",
+            "alpha",
+            "beta",
+            "effective_omega",
+            "expected_substitutions_horizon",
+            "stationary_aa_entropy",
+            "effective_aa_count"
+          ]
+        }
+      }
+    },
+    "timers": {
+      "type": "object",
+      "required": ["total_seconds"],
+      "properties": {
+        "total_seconds": { "type": ["number", "null"] }
+      }
+    },
+    "method_results": {
+      "type": "object",
+      "required": [
+        "aa_alphabet",
+        "sense_codons",
+        "sense_codon_aa",
+        "property_names",
+        "horizon",
+        "aa_dms_matrix",
+        "aa_stationary_matrix",
+        "ancestral_aa_matrix",
+        "codon_rate_matrix",
+        "codon_log_prob_matrix"
+      ],
+      "properties": {
+        "aa_alphabet": {
+          "type": "array",
+          "minItems": 20,
+          "maxItems": 20,
+          "items": { "type": "string" }
+        },
+        "sense_codons": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "sense_codon_aa": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "property_names": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "horizon": { "type": ["number", "null"] },
+        "horizon_tau": { "type": ["number", "null"] },
+        "baseline_scale_factor": { "type": ["number", "null"] },
+        "aa_dms_matrix": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": ["number", "null"] } }
+        },
+        "aa_stationary_matrix": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": ["number", "null"] } }
+        },
+        "ancestral_aa_matrix": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": ["number", "null"] } }
+        },
+        "codon_rate_matrix": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": ["number", "null"] } }
+        },
+        "codon_log_prob_matrix": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": ["number", "null"] } }
+        }
+      }
+    }
+  }
+}

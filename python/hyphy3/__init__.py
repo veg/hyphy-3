@@ -50,6 +50,11 @@ from _hyphy3 import (
     PRIMEGlobalResult,
     PRIMEResult,
     PRIMEAnalyzer,
+    # FORECAST
+    ForecastSettings,
+    ForecastSiteResult,
+    ForecastResult,
+    ForecastAnalyzer,
     # GARD
     GARDSettings,
     GARDPartition,
@@ -130,6 +135,10 @@ __all__ = [
     "PRIMEGlobalResult",
     "PRIMEResult",
     "PRIMEAnalyzer",
+    "ForecastSettings",
+    "ForecastSiteResult",
+    "ForecastResult",
+    "ForecastAnalyzer",
     "GARDSettings",
     "GARDPartition",
     "GARDModel",

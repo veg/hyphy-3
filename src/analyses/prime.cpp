@@ -116,6 +116,7 @@ nlohmann::json PRIMEResult::to_modern_json(
         {"threshold", finite_or_null(settings.p_value_threshold)},
         {"stage2_threshold", finite_or_null(settings.stage2_p_value)},
         {"shrinkage_lambda", finite_or_null(settings.shrinkage_lambda)},
+        {"shrinkage_prior", settings.uses_global_prior() ? "global" : "zero"},
         {"total_sites", static_cast<int>(total_sites)},
         {"invariant_sites", static_cast<int>(invariant_sites)},
         {"significant_sites", static_cast<int>(significant_sites)},

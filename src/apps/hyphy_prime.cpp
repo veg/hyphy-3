@@ -37,9 +37,10 @@ static void print_prime_usage(const char* prog) {
               << "  " << Console::brand("--hyphaeon") << "               Opt-in: HyphAeon 384D transformer conductances (needs Python aeon-core)\n"
               << "  " << Console::brand("--embeddings") << " <file>      Path to precomputed [N x D] taxon embeddings TSV/CSV for Ohmic\n"
               << "  " << Console::brand("--code") << " <name>            Genetic code (default: Universal; e.g. Vertebrate-mtDNA)\n"
-              << "  " << Console::brand("--property-set") << " <set>     Property set: 5PROP (default), Atchley, 3PROP, 4PROP, 2PROP\n"
+              << "  " << Console::brand("--property-set") << " <set>     Property set: 5PROP (default), LCAP, Atchley, 3PROP, 4PROP, 2PROP\n"
               << "  " << Console::brand("--property-file") << " <file>   Custom amino acid properties JSON file\n"
               << "  " << Console::brand("--shrinkage") << " <val>        Empirical Bayes Ridge shrinkage lambda (default: 0.5; 0 to disable)\n"
+              << "  " << Console::brand("--prior") << " <mode>           Shrinkage prior center: 'zero' (default) or 'global' (G-PRIME EB)\n"
               << "  " << Console::brand("--branches") << " <spec>        Branches to test: 'All' (default), 'Internal', 'Leaves', or regex\n"
               << "  " << Console::brand("--threads") << " <N>            Number of OpenMP worker threads (0 = auto)\n"
               << "  " << Console::brand("--output") << " <file>          Path to output JSON file (default: <alignment>.PRIME.json)\n"
@@ -54,7 +55,7 @@ static void print_prime_usage(const char* prog) {
               << Console::bold("Examples:") << "\n"
               << "  " << prog << " --alignment data/cd2.fna --tree data/cd2.nwk\n"
               << "  " << prog << " --alignment data/cd2.fna --tree auto --output cd2.PRIME.json\n"
-              << "  " << prog << " --alignment tests/data/bglobin.nex --property-set 3PROP\n"
+              << "  " << prog << " --alignment tests/data/bglobin.nex --property-set 3PROP --prior global --branches Internal\n"
               << "  " << prog << " --alignment data/yokoyama.nex --property-set Atchley --shrinkage 1.0\n\n";
 }
 
@@ -64,6 +65,7 @@ int run_prime(int argc, char* argv[]) {
     std::string property_file = "";
     std::string branch_spec = "All";
     std::string output_format = "modern";
+    std::string shrinkage_prior = "zero";
     Scalar pvalue_threshold = 0.10;
     Scalar stage2_pvalue = 0.10;
     Scalar shrinkage_lambda = 0.5;
@@ -108,7 +110,7 @@ int run_prime(int argc, char* argv[]) {
         }
         if (status == CommonArgParseStatus::Error) return 1;
 
-        if (arg == "--property-set" && i + 1 < argc) {
+        if ((arg == "--property-set" || arg == "--properties") && i + 1 < argc) {
             property_set = argv[++i];
         } else if (arg == "--property-file" && i + 1 < argc) {
             property_file = argv[++i];
@@ -116,6 +118,21 @@ int run_prime(int argc, char* argv[]) {
             shrinkage_lambda = parse_double_full("--shrinkage", argv[++i]);
         } else if (arg == "--no-shrinkage") {
             shrinkage_lambda = 0.0;
+        } else if ((arg == "--prior" || arg == "--shrinkage-prior") && i + 1 < argc) {
+            shrinkage_prior = argv[++i];
+            std::string lp = shrinkage_prior;
+            std::transform(lp.begin(), lp.end(), lp.begin(), ::tolower);
+            if (lp != "zero" && lp != "global" && lp != "g-prime" && lp != "gprime") {
+                std::cerr << Console::danger("Error: unknown --prior '") << shrinkage_prior
+                          << "'. Expected 'zero' or 'global'.\n";
+                return 1;
+            }
+        } else if (arg == "--impute-states") {
+            // Accepted for CLI convenience; marginal/Viterbi states are always reconstructed
+            if (i + 1 < argc && (std::string(argv[i + 1]) == "Yes" || std::string(argv[i + 1]) == "No" ||
+                                 std::string(argv[i + 1]) == "true" || std::string(argv[i + 1]) == "false")) {
+                ++i;
+            }
         } else if (arg == "--pvalue2" && i + 1 < argc) {
             stage2_pvalue = parse_probability("--pvalue2", argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
@@ -142,6 +159,15 @@ int run_prime(int argc, char* argv[]) {
     finalize_common_cli_options(cli, ".PRIME.json");
     print_prime_banner();
 
+    PRIMESettings settings;
+    settings.property_set = property_set;
+    settings.custom_property_file = property_file;
+    settings.shrinkage_lambda = shrinkage_lambda;
+    settings.shrinkage_prior = shrinkage_prior;
+    settings.p_value_threshold = pvalue_threshold;
+    settings.stage2_p_value = stage2_pvalue;
+    settings.test_branches = branch_spec;
+
     std::cout << "\n" << Console::bold("Configuration:") << "\n"
               << "  " << Console::muted("Alignment file : ") << Console::bold(cli.alignment_file) << "\n";
     if (!cli.tree_file.empty()) {
@@ -150,7 +176,11 @@ int run_prime(int argc, char* argv[]) {
     std::cout << "  " << Console::muted("Genetic code   : ") << Console::bold(cli.code_name) << "\n"
               << "  " << Console::muted("Property set   : ") << Console::bold(property_file.empty() ? property_set : ("Custom: " + property_file)) << "\n"
               << "  " << Console::muted("Shrinkage λ    : ") << Console::bold(std::to_string(shrinkage_lambda))
-              << (shrinkage_lambda > 0.0 ? Console::success(" [Empirical Bayes Ridge Enabled]") : Console::warning(" [Unpenalized MLE]")) << "\n"
+              << (shrinkage_lambda > 0.0
+                    ? (settings.uses_global_prior()
+                        ? Console::success(" [Empirical Bayes Ridge -> G-PRIME]")
+                        : Console::success(" [Empirical Bayes Ridge -> 0]"))
+                    : Console::warning(" [Unpenalized MLE]")) << "\n"
               << "  " << Console::muted("Branches       : ") << Console::bold(branch_spec) << "\n\n";
 
     LoadedCodonDataset ds;
@@ -165,14 +195,6 @@ int run_prime(int argc, char* argv[]) {
               << "  " << Console::muted("Sequences      : ") << Console::bold(std::to_string(aln.num_taxa)) << "\n"
               << "  " << Console::muted("Codon sites    : ") << Console::bold(std::to_string(aln.num_codons)) << "\n"
               << "  " << Console::muted("Unique patterns: ") << Console::bold(std::to_string(aln.patterns.size())) << "\n\n";
-
-    PRIMESettings settings;
-    settings.property_set = property_set;
-    settings.custom_property_file = property_file;
-    settings.shrinkage_lambda = shrinkage_lambda;
-    settings.p_value_threshold = pvalue_threshold;
-    settings.stage2_p_value = stage2_pvalue;
-    settings.test_branches = branch_spec;
 
     std::cout << Console::bold("Step 1:") << " Nucleotide GTR & Codon Baseline Fitting...\n";
     auto prime_analyzer = PRIMEAnalyzer::create_and_fit(tree, aln, settings);

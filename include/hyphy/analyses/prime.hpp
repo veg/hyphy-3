@@ -110,6 +110,8 @@ public:
 
         if (lower_name == "atchley") {
             return get_atchley_properties();
+        } else if (lower_name == "lcap") {
+            return get_lcap_properties();
         } else if (lower_name == "2prop") {
             return get_2prop_properties();
         } else if (lower_name == "3prop") {
@@ -120,6 +122,60 @@ public:
             // Default: 5PROP
             return get_5prop_properties();
         }
+    }
+
+    static std::vector<AminoAcidProperty> get_lcap_properties() {
+        // Conant & Stadler (2009) LCAP properties [Mol Biol Evol 26(5): 1155-1161]
+        // Strictly ordered in canonical alphabetical IUPAC order:
+        // A, C, D, E, F, G, H, I, K, L, M, N, P, Q, R, S, T, V, W, Y
+        std::vector<AminoAcidProperty> props;
+        props.push_back({
+            "Chemical Composition",
+            "LCAP Chemical Composition (Grantham c)",
+            {-0.5868451756885411, 3.342731546150394, 1.384845017074097, 0.7270716263181436, -0.5868927454579467,
+              0.4699025925311998, 0.2419262642781204, -0.5868457923690357, -0.1156419909884284, -0.5868460291700075,
+             -0.586845591345447,  1.312947120977898, -0.02935869926260699, 0.6848994365857728,  0.3415170202317384,
+              1.442413127765356,  0.4272890876194427, -0.5868454280017823, -0.4010042423293907, -0.3012025870591999},
+            {}, 0.0, 1.0
+        });
+        props.push_back({
+            "Polarity",
+            "LCAP Polarity (Grantham p)",
+            { 0.08234475255665361, -0.8846717344020271, 1.904064473242525,  1.643233506555707, -0.9956290326072353,
+              0.4163765565466709,   0.9376066737521076, -0.9956292005349376, 1.271792102330754, -1.107220007612595,
+             -0.8100842857525447,   1.383229010106464,  0.04436400722996305, 0.9747140546900138, 0.9747140551029528,
+              0.4912036016809371,   0.2672975016276415, -0.7357356892564315, -0.9219033329616851, -0.624379765568966},
+            {}, 0.0, 1.0
+        });
+        props.push_back({
+            "Volume",
+            "LCAP Molecular Volume (Grantham v)",
+            {-1.093771866791469, -0.535022037570798, -0.5583026469068318, 0.1168546775994032, 1.257637282334762,
+             -1.745647766340383,  0.4195123000264476, 0.7687283894814801, 0.9549794083529999, 0.7687291690973896,
+              0.6290409911059951, -0.5117403202399798, -1.058850814502372, 0.1634169621566906, 1.071384899476407,
+             -1.070491916990394, -0.3953354747308322, 0.1401332510120709, 2.142318464323941,  1.350763381619076},
+            {}, 0.0, 1.0
+        });
+        props.push_back({
+            "Iso-electric Point",
+            "LCAP Isoelectric Point (pI)",
+            {-0.01141750903277056, -0.5378282523391487, -1.839706056109631, -1.584990785596673, -0.3057542421356372,
+             -0.02839872447370546,  0.8885757410301605, -9.737035422433548e-05, 2.105545575730344, -0.02273844767848476,
+             -0.1585867248775605,  -0.3453753360155064,  0.1583919144982974, -0.2095283729063603, 2.682902758933077,
+             -0.192548376206011,    0.07914812431496633, -0.03405832632980638, -0.07368049231084244, -0.2038687480243035},
+            {}, 0.0, 1.0
+        });
+        props.push_back({
+            "Hydropathy",
+            "LCAP Hydropathy Index",
+            { 0.9671789981061145,  1.201528247390539, -0.8071943355554064, -0.8071934015198535, 1.301968439295016,
+              0.2306464200526206, -0.7067573940958518, 1.871099553721135,  -0.9411095669881511, 1.636753002222122,
+              1.000656143286975,  -0.807193639057381, -0.171098473395166,  -0.8071939952622403, -1.14198047362342,
+              0.09673165440139944, 0.1302104025093898, 1.770671640107803,   0.06325356334516005, -0.0706624429784429},
+            {}, 0.0, 1.0
+        });
+        for (auto& p : props) p.standardize();
+        return props;
     }
 
     static std::vector<AminoAcidProperty> get_5prop_properties() {
@@ -466,16 +522,23 @@ struct PRIMEGlobalResult {
 struct PRIMESettings {
     Scalar p_value_threshold = 0.10;
     Scalar stage2_p_value = 0.10;
-    std::string property_set = "5PROP"; // "5PROP", "Atchley", "3PROP", "4PROP", "2PROP", or JSON file
+    std::string property_set = "5PROP"; // "5PROP", "LCAP", "Atchley", "3PROP", "4PROP", "2PROP", or JSON file
     std::string custom_property_file = "";
-    Scalar shrinkage_lambda = 0.5; // L2 Ridge regularization parameter
-    Scalar max_bound = 8.0;        // Soft tanh bounding ceiling
+    Scalar shrinkage_lambda = 0.5;      // L2 Ridge regularization parameter
+    std::string shrinkage_prior = "zero"; // "zero" (null-centered) or "global" (G-PRIME-centered Empirical Bayes)
+    Scalar max_bound = 8.0;             // Soft tanh bounding ceiling
     bool full_model = true;
-    bool fit_global = true;        // Run G-PRIME before S-PRIME
+    bool fit_global = true;             // Run G-PRIME before S-PRIME
     bool impute_states = false;
-    std::string test_branches = "All"; // "All", "Internal", "Leaves", or specific tags
+    std::string test_branches = "All";  // "All", "Internal", "Leaves", or specific tags
     std::string test_branch_regex = "";
     std::vector<std::string> test_branch_names = {};
+
+    bool uses_global_prior() const {
+        std::string p = shrinkage_prior;
+        std::transform(p.begin(), p.end(), p.begin(), ::tolower);
+        return (p == "global" || p == "g-prime" || p == "gprime");
+    }
 };
 
 struct PRIMEResult {
@@ -679,6 +742,7 @@ public:
         auto mg_res = mg_fitter.fit_omega_and_scale(1.0, base_p);
         base_p.alpha = 1.0;
         base_p.beta = mg_res.x_opt(0);
+        base_params = base_p;
         conversion_factor = (mg_res.x_opt.size() >= 2) ? mg_res.x_opt(1) : 1.0;
         tree = mg_res.tree;
         prepare_branch_lengths();
@@ -695,6 +759,7 @@ public:
         int S = code.num_sense_codons;
         size_t num_nodes = tree.num_nodes();
         size_t num_patterns = aln.patterns.size();
+        bool has_bg = (num_background > 0 && num_tested > 0);
 
         std::vector<size_t> leaf_to_taxon(num_nodes, static_cast<size_t>(-1));
         for (size_t i = 0; i < num_nodes; ++i) {
@@ -706,27 +771,43 @@ public:
             }
         }
 
-        // Parameter vector: [omega, lambda_0, ..., lambda_{K-1}]
-        size_t dim = 1 + K;
+        // Parameter vector: [omega_test, (omega_bg), lambda_0, ..., lambda_{K-1}]
+        size_t lam_offset = has_bg ? 2 : 1;
+        size_t dim = lam_offset + K;
         std::vector<Scalar> init_x(dim, 0.0);
         init_x[0] = std::clamp(base_params.beta, 0.05, 5.0);
+        if (has_bg) init_x[1] = std::clamp(base_params.beta, 0.05, 5.0);
 
         std::vector<Scalar> lb(dim, -5.0);
         std::vector<Scalar> ub(dim, 5.0);
         lb[0] = 0.01; ub[0] = 20.0;
+        if (has_bg) {
+            lb[1] = 0.01; ub[1] = 20.0;
+        }
 
         auto eval_alignment_lnl = [&](const std::vector<Scalar>& x) -> Scalar {
             Scalar omega = x[0];
+            Scalar omega_bg = has_bg ? x[1] : omega;
             std::vector<Scalar> lams(K);
-            for (size_t k = 0; k < K; ++k) lams[k] = x[1 + k];
+            for (size_t k = 0; k < K; ++k) lams[k] = x[lam_offset + k];
 
             PRIMEMatrix pm;
             pm.update(1.0, omega, lams, codon_prop_diffs, gtr_rates, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, code, settings.max_bound);
 
+            PRIMEMatrix pm_bg;
+            if (has_bg) {
+                std::vector<Scalar> zero_lams(K, 0.0);
+                pm_bg.update(1.0, omega_bg, zero_lams, codon_prop_diffs, gtr_rates, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, code, settings.max_bound);
+            }
+
             std::vector<Matrix> P_branches(num_nodes);
             for (size_t i = 0; i < num_nodes; ++i) {
                 if (tree.nodes[i].id != tree.root_id) {
-                    P_branches[i] = pm.transition_matrix(tree.nodes[i].branch_length);
+                    if (is_test_branch[i] || !has_bg) {
+                        P_branches[i] = pm.transition_matrix(tree.nodes[i].branch_length);
+                    } else {
+                        P_branches[i] = pm_bg.transition_matrix(tree.nodes[i].branch_length);
+                    }
                 }
             }
 
@@ -740,7 +821,6 @@ public:
                 for (size_t p = 0; p < num_patterns; ++p) {
                     Scalar lnl = FELAnalyzer::compute_pattern_log_likelihood(
                         tree, aln.patterns[p], leaf_to_taxon,
-                        // Passing dummy MG94 with same pi
                         static_cast<const MG94Matrix&>(pm),
                         P_branches, thread_node_L, thread_node_scale
                     );
@@ -759,11 +839,12 @@ public:
 
         global_fit.beta = pt.x[0];
         global_fit.alpha = 1.0;
-        global_fit.lambdas.assign(pt.x.begin() + 1, pt.x.end());
+        global_fit.lambdas.assign(pt.x.begin() + static_cast<std::ptrdiff_t>(lam_offset), pt.x.end());
         global_fit.log_likelihood = -pt.f;
         size_t total_params = 5 + (num_nodes - 1) + dim;
         global_fit.aicc = hyphy::core::stats::compute_aicc(global_fit.log_likelihood, total_params, aln.num_codons * aln.num_taxa);
         global_fit.baseline_tree_length = baseline_tree_length;
+        global_fit.property_names.clear();
         for (const auto& p : properties) {
             global_fit.property_names.push_back(p.name);
         }
@@ -797,8 +878,16 @@ public:
             }
         }
 
-        // First: Compute site-level FEL baseline for all patterns
-        FELAnalyzer fel_analyzer(tree, aln, base_params);
+        // First: Compute site-level FEL baseline for all patterns on the matching branch partition
+        FELSettings fel_settings;
+        fel_settings.p_value_threshold = settings.p_value_threshold;
+        fel_settings.full_model = settings.full_model;
+        fel_settings.srv = true;
+        fel_settings.test_branches = settings.test_branches;
+        fel_settings.test_branch_regex = settings.test_branch_regex;
+        fel_settings.test_branch_names = settings.test_branch_names;
+
+        FELAnalyzer fel_analyzer(tree, aln, base_params, fel_settings);
         fel_analyzer.gtr_rates = gtr_rates;
         fel_analyzer.conversion_factor = conversion_factor;
         fel_analyzer.prepare_branch_lengths();
@@ -1030,6 +1119,8 @@ private:
             res.properties[k].property_name = properties[k].name;
         }
 
+        const bool use_global_prior = settings.uses_global_prior() && (global_fit.lambdas.size() == K);
+
         // Fast path: Invariant site or no non-synonymous substitutions
         if ((fel_res.alpha == 0.0 && fel_res.beta == 0.0) || fel_res.beta <= 1e-4) {
             res.alpha = fel_res.alpha;
@@ -1041,7 +1132,11 @@ private:
             res.omnibus_q_value = 1.0;
             res.total_branch_length = 0.0;
             for (size_t k = 0; k < K; ++k) {
-                res.properties[k].lambda = 0.0;
+                // Under G-PRIME-centered Empirical Bayes prior with zero nonsynonymous signal,
+                // the exact posterior MAP equals global_fit.lambdas[k] while LRT vs FEL stays 0.
+                res.properties[k].lambda = (use_global_prior && settings.shrinkage_lambda > 0.0)
+                    ? global_fit.lambdas[k]
+                    : 0.0;
                 res.properties[k].lrt = 0.0;
                 res.properties[k].p_value = 1.0;
                 res.properties[k].log_l_null = fel_res.log_l_alt;
@@ -1078,12 +1173,15 @@ private:
             );
         };
 
-        // L2 Ridge Shrinkage Penalty: (gamma / 2) * sum(lambda_k^2)
+        // L2 Ridge Shrinkage Penalty: (gamma / 2) * sum_k (lambda_k - mu_k)^2
+        // where mu_k = global_fit.lambdas[k] under --prior global, or 0 under --prior zero.
         auto calc_shrinkage_penalty = [&](const std::vector<Scalar>& lams) -> Scalar {
             if (settings.shrinkage_lambda <= 0.0) return 0.0;
             Scalar sum_sq = 0.0;
-            for (Scalar val : lams) {
-                sum_sq += val * val;
+            for (size_t k = 0; k < K; ++k) {
+                Scalar mu = use_global_prior ? global_fit.lambdas[k] : 0.0;
+                Scalar diff = lams[k] - mu;
+                sum_sq += diff * diff;
             }
             return 0.5 * settings.shrinkage_lambda * sum_sq;
         };
@@ -1132,15 +1230,22 @@ private:
             grid_pts.push_back(pt_glob);
         }
 
-        // Coordinate test vertices: +/- 1.0 on each lambda
+        // Coordinate test vertices: +/- 1.0 around prior center on each lambda
         size_t ls = 2 + (has_bg ? 1 : 0);
         for (size_t k = 0; k < K; ++k) {
+            Scalar center_k = use_global_prior ? global_fit.lambdas[k] : 0.0;
             std::vector<Scalar> p_pos = pt_fel;
-            p_pos[ls + k] = 1.0;
+            if (use_global_prior) {
+                for (size_t j = 0; j < K; ++j) p_pos[ls + j] = global_fit.lambdas[j];
+            }
+            p_pos[ls + k] = std::clamp(center_k + 1.0, -10.0, 10.0);
             grid_pts.push_back(p_pos);
 
             std::vector<Scalar> p_neg = pt_fel;
-            p_neg[ls + k] = -1.0;
+            if (use_global_prior) {
+                for (size_t j = 0; j < K; ++j) p_neg[ls + j] = global_fit.lambdas[j];
+            }
+            p_neg[ls + k] = std::clamp(center_k - 1.0, -10.0, 10.0);
             grid_pts.push_back(p_neg);
         }
 
@@ -1168,8 +1273,10 @@ private:
         Scalar raw_alt_lnl = eval_pattern_lnl(res.alpha, res.beta, res.beta_nuisance, mle_lambdas);
         res.log_l_alt = raw_alt_lnl;
 
-        // Guaranteed nesting: Alt can NEVER be worse than FEL (which is lambda = 0)
-        if (res.log_l_alt < res.log_l_fel) {
+        // Under zero-centered prior, Alt is nested around FEL (lambda = 0).
+        // Under G-PRIME-centered prior, preserve the hierarchical MAP lambdas while ensuring
+        // unpenalized LRT vs FEL never turns negative.
+        if (res.log_l_alt < res.log_l_fel && !use_global_prior) {
             res.log_l_alt = res.log_l_fel;
             res.alpha = fel_res.alpha;
             res.beta = fel_res.beta;
@@ -1244,7 +1351,9 @@ private:
             // Strict nesting enforcement: Null logL cannot exceed Alt logL
             if (res.properties[k].log_l_null > res.log_l_alt) {
                 res.log_l_alt = res.properties[k].log_l_null;
-                res.properties[k].lambda = 0.0;
+                if (!use_global_prior) {
+                    res.properties[k].lambda = 0.0;
+                }
             }
         }
 

@@ -124,6 +124,7 @@ struct InputAdmissionReport {
 struct JointAlignSettings {
     // Stage 0 (Input Triage & Homology Admission Control) settings
     bool enforce_admission_control = true;
+    bool keep_pseudogenes = false;       // admit homologous pseudogenes by repairing frameshifts & masking internal stops to NNN
     size_t min_sense_codons = 15;        // reject/quarantine tiny fragments (< 15 codons)
     Scalar min_homology_z = 3.5;         // minimum pairwise homology Z-score to join main component
     Scalar min_cohort_median_z = 4.5;    // dataset-wide minimum median pairwise homology Z-score
@@ -2495,10 +2496,14 @@ public:
             if (3 * c + 2 >= raw.size()) return false;
             char c1 = raw[3 * c], c2 = raw[3 * c + 1], c3 = raw[3 * c + 2];
             if (c1 == '-' || c2 == '-' || c3 == '-' || c1 == 'N' || c2 == 'N' || c3 == 'N' ||
-                c1 == '?' || c2 == '?' || c3 == '?') {
+                c1 == '?' || c2 == '?' || c3 == '?' || c1 == '!' || c2 == '!' || c3 == '!') {
                 return false;
             }
             return gcode_adm.is_stop_triplet(c1, c2, c3);
+        };
+        auto has_macse_fs_triplet = [&](const std::string& raw, size_t c) -> bool {
+            if (3 * c + 2 >= raw.size()) return false;
+            return raw[3 * c] == '!' || raw[3 * c + 1] == '!' || raw[3 * c + 2] == '!';
         };
 
         // Check if aligned input has a native stop column in the trailing 15% followed by 3' UTR codons (E2)
@@ -2537,38 +2542,69 @@ public:
         }
 
         // Populate admission audit summary and enforce Gate 2 reading-frame check for aligned inputs
-        const Alignment& cur_aln = res.map_alignment;
-        res.admission_report.total_input_sequences = cur_aln.num_taxa;
-        res.admission_report.admitted_sequences = cur_aln.num_taxa;
-        res.admission_report.entries.resize(cur_aln.num_taxa);
+        res.admission_report.total_input_sequences = res.map_alignment.num_taxa;
+        res.admission_report.admitted_sequences = res.map_alignment.num_taxa;
+        res.admission_report.entries.resize(res.map_alignment.num_taxa);
         size_t aligned_stop_failures = 0;
-        for (size_t t = 0; t < cur_aln.num_taxa; ++t) {
+        bool sanitized_raw_pseudogenes = false;
+        for (size_t t = 0; t < res.map_alignment.num_taxa; ++t) {
             auto& ent = res.admission_report.entries[t];
-            ent.name = cur_aln.sequences[t].name;
+            ent.name = res.map_alignment.sequences[t].name;
             ent.raw_nt_length = input_aln.sequences[t].raw_seq.size();
-            size_t valid_cods = 0, stops = 0;
-            for (size_t c = 0; c < cur_aln.num_codons; ++c) {
-                int8_t sc = cur_aln.sequences[t].codons[c];
-                if (sc >= 0) valid_cods++;
-                else if (c + 1 < cur_aln.num_codons && is_raw_stop_triplet(cur_aln.sequences[t].raw_seq, c)) {
-                    stops++;
+            size_t valid_cods = 0, stops = 0, macse_fs = 0;
+            for (size_t c = 0; c < res.map_alignment.num_codons; ++c) {
+                int8_t sc = res.map_alignment.sequences[t].codons[c];
+                if (sc >= 0) {
+                    valid_cods++;
+                } else if (has_macse_fs_triplet(res.map_alignment.sequences[t].raw_seq, c)) {
+                    macse_fs++;
+                    res.initial_alignment.sequences[t].raw_seq.replace(3 * c, 3, "NNN");
+                    res.map_alignment.sequences[t].raw_seq.replace(3 * c, 3, "NNN");
+                    sanitized_raw_pseudogenes = true;
+                } else if (is_raw_stop_triplet(res.map_alignment.sequences[t].raw_seq, c)) {
+                    if (c + 1 < res.map_alignment.num_codons) {
+                        stops++;
+                    }
+                    if (settings.keep_pseudogenes || c + 1 == res.map_alignment.num_codons) {
+                        res.initial_alignment.sequences[t].raw_seq.replace(3 * c, 3, "NNN");
+                        res.map_alignment.sequences[t].raw_seq.replace(3 * c, 3, "NNN");
+                        sanitized_raw_pseudogenes = true;
+                    }
                 }
             }
             ent.codon_length = valid_cods;
             ent.internal_stops_frame0 = stops;
-            if (stops > 0) {
-                aligned_stop_failures++;
-                ent.reason = "Aligned sequence (" + std::to_string(stops) + " internal stop(s) masked)";
+            if (stops > 0 || macse_fs > 0) {
+                if (stops > 0) aligned_stop_failures++;
+                if (settings.keep_pseudogenes) {
+                    ent.status = "Rescued";
+                    res.admission_report.rescued_frame_or_strand++;
+                    std::ostringstream rs;
+                    rs << "Admitted aligned pseudogene (masked ";
+                    if (stops > 0) rs << stops << " internal stop(s)";
+                    if (stops > 0 && macse_fs > 0) rs << " and ";
+                    if (macse_fs > 0) rs << macse_fs << " MACSE frameshift codon(s)";
+                    rs << " to NNN)";
+                    ent.reason = rs.str();
+                } else {
+                    ent.reason = "Aligned sequence (" + std::to_string(stops) + " internal stop(s)" +
+                                 (macse_fs > 0 ? ", " + std::to_string(macse_fs) + " MACSE '!' codon(s)" : "") + " masked)";
+                }
             } else if (utr_trim_col < input_aln.num_codons) {
                 ent.reason = "Aligned in-frame CDS (3' UTR trimmed at codon " + std::to_string(utr_trim_col + 1) + ")";
-            } else if (cur_aln.num_codons > 0 && valid_cods * 2 < cur_aln.num_codons) {
-                ent.reason = "Partial coverage (" + std::to_string(valid_cods) + "/" + std::to_string(cur_aln.num_codons) + " codons)";
+            } else if (res.map_alignment.num_codons > 0 && valid_cods * 2 < res.map_alignment.num_codons) {
+                ent.reason = "Partial coverage (" + std::to_string(valid_cods) + "/" + std::to_string(res.map_alignment.num_codons) + " codons)";
             } else {
                 ent.reason = "Clean in-frame CDS";
             }
         }
+        if (sanitized_raw_pseudogenes) {
+            res.initial_alignment.finalize(res.initial_alignment.code);
+            res.map_alignment.finalize(res.map_alignment.code);
+        }
+        const Alignment& cur_aln = res.map_alignment;
 
-        if (settings.enforce_admission_control &&
+        if (settings.enforce_admission_control && !settings.keep_pseudogenes &&
             (cur_aln.num_taxa - aligned_stop_failures < 3 ||
              static_cast<double>(aligned_stop_failures) / static_cast<double>(cur_aln.num_taxa) > 0.25)) {
             std::string code_hint;
@@ -2603,9 +2639,10 @@ public:
             }
             if (!best_code_name.empty()) {
                 code_hint = " Hint: Re-running with '--code " + best_code_name + "' resolves internal stop codons in " +
-                            std::to_string(best_clean) + "/" + std::to_string(cur_aln.num_taxa) + " sequences.";
+                            std::to_string(best_clean) + "/" + std::to_string(cur_aln.num_taxa) +
+                            " sequences; if foreground lineages carry genuine pseudogenes, add '--keep-pseudogenes'.";
             } else {
-                code_hint = " Hint: If sequences are out-of-frame or unaligned, re-run with '-u' (--unaligned) for automatic reading-frame rescue.";
+                code_hint = " Hint: If sequences are out-of-frame or unaligned, re-run with '-u' (--unaligned); if foreground lineages carry genuine pseudogenes, add '--keep-pseudogenes'.";
             }
             std::ostringstream err;
             err << "Gate 2 (Aligned Reading-Frame & Stop-Codon Gate): " << aligned_stop_failures << " of " << cur_aln.num_taxa
@@ -4756,9 +4793,12 @@ public:
                 ent.reason = "Sequence too short (< " + std::to_string(settings.min_sense_codons) + " codons)";
                 continue;
             }
-            if (static_cast<double>(n_ambig) / static_cast<double>(ct.raw_nt.size()) > 0.20) {
+            const double max_ambig_frac = settings.keep_pseudogenes ? 0.85 : 0.20;
+            if ((ct.raw_nt.size() - n_ambig) < settings.min_sense_codons * 3 ||
+                static_cast<double>(n_ambig) / static_cast<double>(ct.raw_nt.size()) > max_ambig_frac) {
                 ent.status = "Quarantined";
-                ent.reason = "Excessive ambiguous nucleotides (> 20% N/?)";
+                ent.reason = std::string("Excessive ambiguous nucleotides (> ") +
+                             (settings.keep_pseudogenes ? "85%" : "20%") + " N/?)";
                 continue;
             }
 
@@ -4827,23 +4867,32 @@ public:
 
             for (int rc_flag = 0; rc_flag <= 1; ++rc_flag) {
                 const std::string& src = (rc_flag == 0) ? ct.raw_nt : rc_nt;
+                std::array<size_t, 3> frame_stops{};
+                std::array<size_t, 3> frame_hits{};
+                std::array<std::string, 3> frame_cds;
+                std::array<std::vector<int8_t>, 3> frame_cods;
+                for (int off = 0; off < 3; ++off) {
+                    frame_cds[off] = extract_frame_cds(src, off, frame_stops[off], frame_cods[off]);
+                    frame_hits[off] = count_other_cohort_3mers(frame_cods[off], self_ptr);
+                }
                 for (int off = 0; off < 3; ++off) {
                     if (rc_flag == 0 && off == 0) continue;
-                    size_t stops = 0;
-                    std::vector<int8_t> cods;
-                    std::string cds = extract_frame_cds(src, off, stops, cods);
-                    if (stops == 0 && cods.size() >= settings.min_sense_codons) {
-                        size_t min_rescue_hits = std::max<size_t>(8, cods.size() / 8);
-                        size_t hits = count_other_cohort_3mers(cods, self_ptr);
-                        bool st_atg = (cds.size() >= 3 && cds.substr(0, 3) == "ATG");
+                    size_t other_hits = std::max(frame_hits[(off + 1) % 3], frame_hits[(off + 2) % 3]);
+                    // If another reading frame on the same strand also carries substantial homology (>= 10 hits and >= 25% of this frame),
+                    // this sequence contains a mid-gene frameshift rather than a pure 5' reading-frame offset!
+                    if (!cohort_aa3mer_seq_counts.empty() && other_hits >= 10 && other_hits * 4 >= frame_hits[off]) continue;
+                    if (frame_stops[off] == 0 && frame_cods[off].size() >= settings.min_sense_codons) {
+                        size_t min_rescue_hits = std::max<size_t>(8, frame_cods[off].size() / 8);
+                        size_t hits = frame_hits[off];
+                        bool st_atg = (frame_cds[off].size() >= 3 && frame_cds[off].substr(0, 3) == "ATG");
                         if ((!cohort_aa3mer_seq_counts.empty() && hits > best_3mer_hits + 4 && hits >= min_rescue_hits) ||
                             (cohort_aa3mer_seq_counts.empty() && st_atg && best_frame == -1 && !ct.passed_gate2)) {
                             best_frame = off;
                             best_rc = (rc_flag == 1);
                             best_3mer_hits = hits;
                             best_starts_atg = st_atg;
-                            best_cds = std::move(cds);
-                            best_cods = std::move(cods);
+                            best_cds = std::move(frame_cds[off]);
+                            best_cods = std::move(frame_cods[off]);
                         }
                     }
                 }
@@ -4864,6 +4913,203 @@ public:
                 ent.reason = std::string("Auto-rescued ORFs (") + (best_rc ? "rev-comp " : "fwd ") + "frame +" + std::to_string(best_frame) + ")";
                 report.rescued_frame_or_strand++;
                 if (best_starts_atg) add_seq_to_cohort_3mers(t, ct.codons);
+            } else if (!ct.passed_gate2 && settings.keep_pseudogenes) {
+                // 3-reading-frame Viterbi homology splicer & premature-stop masker for pseudogenes:
+                // Recovers homologous reading-frame segments across 1-bp/2-bp frameshift indels (steps 1,2,4,5)
+                // and masks disrupted boundary codons and internal premature stop codons to "NNN" (-1).
+                struct PseudogeneRescueCandidate {
+                    bool valid = false;
+                    bool rc = false;
+                    int init_frame = 0;
+                    double rank_score = -1e18;
+                    size_t sense_codons = 0;
+                    size_t masked_stops = 0;
+                    size_t fs_repairs = 0;
+                    size_t cohort_hits = 0;
+                    std::string cds;
+                    std::vector<int8_t> codons;
+                };
+
+                auto splice_pseudogene_strand = [&](const std::string& src, bool rc_flag) -> PseudogeneRescueCandidate {
+                    PseudogeneRescueCandidate cand;
+                    cand.rc = rc_flag;
+                    const size_t N = src.size();
+                    if (N < settings.min_sense_codons * 3) return cand;
+
+                    std::vector<double> dp(N + 1, -1e18);
+                    std::vector<int32_t> prev_p(N + 1, -1);
+                    std::vector<uint8_t> step_sz(N + 1, 0);
+
+                    dp[0] = 0.0;
+                    if (N > 1) dp[1] = -0.5;
+                    if (N > 2) dp[2] = -0.5;
+
+                    auto has_cohort_3mer_at = [&](size_t pos, int8_t sc0) -> bool {
+                        if (sc0 < 0 || cohort_aa3mer_seq_counts.empty() || pos + 9 > N) return false;
+                        int8_t sc1 = gcode->triplet_to_sense(src[pos + 3], src[pos + 4], src[pos + 5]);
+                        int8_t sc2 = gcode->triplet_to_sense(src[pos + 6], src[pos + 7], src[pos + 8]);
+                        if (sc1 < 0 || sc2 < 0) return false;
+                        uint32_t h = (static_cast<uint32_t>(static_cast<uint8_t>(gcode->sense_codon_aa[sc0])) << 16)
+                                   | (static_cast<uint32_t>(static_cast<uint8_t>(gcode->sense_codon_aa[sc1])) << 8)
+                                   |  static_cast<uint32_t>(static_cast<uint8_t>(gcode->sense_codon_aa[sc2]));
+                        auto it = cohort_aa3mer_seq_counts.find(h);
+                        if (it == cohort_aa3mer_seq_counts.end()) return false;
+                        size_t self_contrib = (self_ptr && self_ptr->count(h)) ? 1 : 0;
+                        return it->second > self_contrib;
+                    };
+
+                    for (size_t p = 0; p < N; ++p) {
+                        if (dp[p] <= -1e17) continue;
+                        // In-frame step: p -> p + 3
+                        if (p + 3 <= N) {
+                            char c0 = src[p], c1 = src[p + 1], c2 = src[p + 2];
+                            bool all_n = (c0 == 'N' && c1 == 'N' && c2 == 'N');
+                            bool has_n = (c0 == 'N' || c1 == 'N' || c2 == 'N');
+                            int8_t sc = gcode->triplet_to_sense(c0, c1, c2);
+                            double delta = 0.0;
+                            if (!all_n) {
+                                if (sc < 0 && !has_n) {
+                                    delta = (p + 3 >= N - 2) ? 0.5 : -3.0;
+                                } else if (sc >= 0) {
+                                    delta = 0.25;
+                                    if (p <= 2 && c0 == 'A' && c1 == 'T' && c2 == 'G') delta += 1.5;
+                                    if (has_cohort_3mer_at(p, sc)) delta += 3.5;
+                                }
+                            }
+                            if (dp[p] + delta > dp[p + 3]) {
+                                dp[p + 3] = dp[p] + delta;
+                                prev_p[p + 3] = static_cast<int32_t>(p);
+                                step_sz[p + 3] = 3;
+                            }
+                        }
+                        // Frameshift transitions: step in {1, 2, 4, 5}
+                        if (p >= 3) {
+                            constexpr uint8_t fs_steps[4] = {1, 2, 4, 5};
+                            for (uint8_t st : fs_steps) {
+                                if (p + st + 3 > N) continue;
+                                bool n_bridge = true;
+                                for (uint8_t k = 0; k < st; ++k) {
+                                    if (src[p + k] != 'N') { n_bridge = false; break; }
+                                }
+                                double pen = n_bridge ? -1.0 : -8.5;
+                                if (dp[p] + pen > dp[p + st]) {
+                                    dp[p + st] = dp[p] + pen;
+                                    prev_p[p + st] = static_cast<int32_t>(p);
+                                    step_sz[p + st] = st;
+                                }
+                            }
+                        }
+                    }
+
+                    size_t best_end = N;
+                    double best_dp = dp[N];
+                    for (size_t e = (N >= 2 ? N - 2 : 0); e <= N; ++e) {
+                        if (dp[e] > best_dp) {
+                            best_dp = dp[e];
+                            best_end = e;
+                        }
+                    }
+                    if (best_dp <= -1e17) return cand;
+
+                    std::vector<std::pair<size_t, uint8_t>> steps;
+                    size_t cur = best_end;
+                    while (cur > 2 && prev_p[cur] >= 0) {
+                        uint8_t st = step_sz[cur];
+                        size_t pr = static_cast<size_t>(prev_p[cur]);
+                        steps.push_back({pr, st});
+                        cur = pr;
+                    }
+                    if (cur <= 2 && prev_p[cur] >= 0) {
+                        uint8_t st = step_sz[cur];
+                        size_t pr = static_cast<size_t>(prev_p[cur]);
+                        steps.push_back({pr, st});
+                        cur = pr;
+                    }
+                    cand.init_frame = static_cast<int>(cur);
+                    std::reverse(steps.begin(), steps.end());
+
+                    cand.cds.reserve(steps.size() * 3);
+                    cand.codons.reserve(steps.size());
+                    for (size_t si = 0; si < steps.size(); ++si) {
+                        auto [pos, st] = steps[si];
+                        if (st == 3) {
+                            std::string trip = src.substr(pos, 3);
+                            if (trip == "NNN") continue;
+                            bool has_n = (trip.find('N') != std::string::npos);
+                            int8_t sc = gcode->triplet_to_sense(trip[0], trip[1], trip[2]);
+                            if (sc < 0 && !has_n) {
+                                if (si + 1 == steps.size()) break; // trim terminal stop
+                                cand.masked_stops++;
+                                cand.cds += "NNN";
+                                cand.codons.push_back(-1);
+                            } else {
+                                cand.cds += trip;
+                                cand.codons.push_back(sc);
+                                if (sc >= 0) cand.sense_codons++;
+                            }
+                        } else {
+                            bool n_bridge = true;
+                            for (uint8_t k = 0; k < st; ++k) {
+                                if (src[pos + k] != 'N') { n_bridge = false; break; }
+                            }
+                            if (!n_bridge) {
+                                cand.fs_repairs++;
+                                cand.cds += "NNN";
+                                cand.codons.push_back(-1);
+                            }
+                        }
+                    }
+
+                    if (cand.sense_codons < settings.min_sense_codons) return cand;
+                    cand.cohort_hits = count_other_cohort_3mers(cand.codons, self_ptr);
+                    if (rc_flag) {
+                        size_t min_rc_hits = std::max<size_t>(6, cand.sense_codons / 10);
+                        if (cohort_aa3mer_seq_counts.empty() || cand.cohort_hits < min_rc_hits) return cand;
+                    }
+                    cand.valid = true;
+                    cand.rank_score = best_dp + 4.0 * static_cast<double>(cand.cohort_hits);
+                    return cand;
+                };
+
+                PseudogeneRescueCandidate best_cand = splice_pseudogene_strand(ct.raw_nt, false);
+                if (!cohort_aa3mer_seq_counts.empty()) {
+                    PseudogeneRescueCandidate rc_cand = splice_pseudogene_strand(rc_nt, true);
+                    if (rc_cand.valid && (!best_cand.valid || rc_cand.rank_score > best_cand.rank_score + 6.0)) {
+                        best_cand = std::move(rc_cand);
+                    }
+                }
+
+                if (best_cand.valid) {
+                    ct.clean_cds = std::move(best_cand.cds);
+                    ct.codons = std::move(best_cand.codons);
+                    ct.frame_offset = best_cand.init_frame;
+                    ct.rev_comp = best_cand.rc;
+                    ct.stops_chosen = 0;
+                    ct.passed_gate2 = true;
+                    ent.status = "Rescued";
+                    ent.frame_offset = best_cand.init_frame;
+                    ent.reverse_complemented = best_cand.rc;
+                    ent.codon_length = ct.codons.size();
+                    std::ostringstream rs;
+                    rs << "Admitted pseudogene (" << (best_cand.rc ? "rev-comp " : "fwd ")
+                       << "frame +" << best_cand.init_frame;
+                    if (best_cand.fs_repairs > 0) {
+                        rs << "; repaired " << best_cand.fs_repairs << " frameshift"
+                           << (best_cand.fs_repairs > 1 ? "s" : "");
+                    }
+                    if (best_cand.masked_stops > 0) {
+                        rs << (best_cand.fs_repairs > 0 ? ", " : "; ")
+                           << "masked " << best_cand.masked_stops << " internal stop"
+                           << (best_cand.masked_stops > 1 ? "s" : "") << " to NNN";
+                    }
+                    rs << ")";
+                    ent.reason = rs.str();
+                    report.rescued_frame_or_strand++;
+                } else {
+                    ent.status = "Quarantined";
+                    ent.reason = "Internal premature stop codons in frame +0 (" + std::to_string(ct.stops_frame0) + " stops; unrescuable fragment)";
+                    gate2_failures++;
+                }
             } else if (!ct.passed_gate2) {
                 ent.status = "Quarantined";
                 ent.reason = "Internal premature stop codons in frame +0 (" + std::to_string(ct.stops_frame0) + " stops; pseudogene/intron/UTR)";
@@ -4874,7 +5120,9 @@ public:
         // If > 25% of input sequences fail Gate 2 (or fewer than 3 survive), abort dataset-wide!
         size_t gate2_survivors = raw_seqs.size() - gate2_failures;
         if (settings.enforce_admission_control &&
-            (gate2_survivors < 3 || static_cast<double>(gate2_failures) / static_cast<double>(raw_seqs.size()) > 0.25)) {
+            (gate2_survivors < 3 ||
+             (!settings.keep_pseudogenes &&
+              static_cast<double>(gate2_failures) / static_cast<double>(raw_seqs.size()) > 0.25))) {
             std::string code_hint;
             const std::vector<std::string> alt_codes = {
                 "Vertebrate-mtDNA", "Invertebrate-mtDNA", "Yeast-mtDNA", "Mold-Protozoan-mtDNA",
@@ -4907,7 +5155,9 @@ public:
             if (!best_code_name.empty()) {
                 code_hint = " Hint: Re-running with '--code " + best_code_name + "' resolves internal stop codons in " +
                             std::to_string(best_clean) + "/" + std::to_string(raw_seqs.size()) +
-                            " sequences (possible mitochondrial or non-standard genetic code).";
+                            " sequences (possible mitochondrial or non-standard genetic code); if foreground lineages carry genuine pseudogenes, re-run with '--keep-pseudogenes'.";
+            } else if (!settings.keep_pseudogenes) {
+                code_hint = " Hint: If foreground lineages carry genuine pseudogenes (premature stops or frameshifts), re-run with '--keep-pseudogenes'.";
             }
             std::ostringstream err;
             err << "Gate 2 (Reading-Frame & Stop-Codon Gate): " << gate2_failures << " of " << raw_seqs.size()
@@ -4931,12 +5181,13 @@ public:
         std::sort(active_lengths.begin(), active_lengths.end());
         size_t median_codons = active_lengths.empty() ? 1 : active_lengths[active_lengths.size() / 2];
 
-        // Quarantine extreme length outliers (< 0.30x or > 2.8x median length) before pairwise alignment
+        // Quarantine extreme length outliers (< 0.30x [0.15x with --keep-pseudogenes] or > 2.8x median length) before pairwise alignment
+        const double min_len_ratio = settings.keep_pseudogenes ? 0.15 : 0.30;
         std::vector<size_t> length_ok_indices;
         for (size_t idx : active_indices) {
             size_t L = candidates[idx].codons.size();
             if (settings.enforce_admission_control && median_codons >= 30 &&
-                (L < static_cast<size_t>(0.30 * static_cast<double>(median_codons)) ||
+                (L < static_cast<size_t>(min_len_ratio * static_cast<double>(median_codons)) ||
                  L > static_cast<size_t>(2.80 * static_cast<double>(median_codons)))) {
                 report.entries[idx].status = "Quarantined";
                 report.entries[idx].reason = "Extreme length outlier (" + std::to_string(L) + " codons vs cohort median " +

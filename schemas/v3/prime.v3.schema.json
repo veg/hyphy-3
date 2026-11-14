@@ -167,6 +167,7 @@
             "threshold": { "type": "number" },
             "stage2_threshold": { "type": "number" },
             "shrinkage_lambda": { "type": "number" },
+            "shrinkage_prior": { "type": "string", "enum": ["zero", "global"] },
             "total_sites": { "type": "integer" },
             "invariant_sites": { "type": "integer" },
             "significant_sites": { "type": "integer" },

@@ -304,7 +304,7 @@ public:
             std::string seq;
             while (idx < n) {
                 char c = mat_content[idx];
-                if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.') {
+                if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.' || c == '!') {
                     seq += (c == '.' ? '-' : c);
                     idx++;
                 } else if (c == '\n' || c == '\r') {
@@ -442,7 +442,7 @@ public:
             if (paml_sequential && !aln.sequences.empty() && aln.sequences.back().raw_seq.size() < nchar) {
                 std::string seq;
                 for (char c : line) {
-                    if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.') {
+                    if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.' || c == '!') {
                         seq += (c == '.' ? '-' : c);
                     }
                 }
@@ -458,7 +458,7 @@ public:
                 std::string seq;
                 for (size_t i = sp; i < line.size(); ++i) {
                     char c = line[i];
-                    if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.') {
+                    if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.' || c == '!') {
                         seq += (c == '.' ? '-' : c);
                     }
                 }
@@ -472,7 +472,7 @@ public:
                 // Continuation line (interleaved or sequential)
                 std::string seq;
                 for (char c : line) {
-                    if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.') {
+                    if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.' || c == '!') {
                         seq += (c == '.' ? '-' : c);
                     }
                 }

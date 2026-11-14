@@ -38,6 +38,7 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--pvalue") << " <float>        Significance threshold for FEL selection calls (default: 0.10)\n"
               << "  " << Console::brand("--gap-open") << " <float>      Codon deletion opening penalty in nats (default: 3.2)\n"
               << "  " << Console::brand("--gap-extend") << " <float>    Codon deletion extension penalty in nats (default: 0.85)\n"
+              << "  " << Console::brand("--keep-pseudogenes") << "      Admit pseudogenized sequences (repair frameshifts & mask premature stops to NNN)\n"
               << "  " << Console::brand("--out-msa") << " <file>        Write MAP co-estimated codon alignment to FASTA file\n"
               << "  " << Console::brand("--out-stk") << " <file>        Write Stockholm 1.0 MSA with per-column (#=GC PP_cons) & per-residue (#=GR PP) confidence\n"
               << "  " << Console::brand("--out-poa") << " <file>        Write Partial Order Alignment (POA) codon graph in GFA v1.0 format (*.gfa)\n"
@@ -108,6 +109,8 @@ int run_joint_align(int argc, char* argv[]) {
             settings.gap_open_penalty = parse_double_full("--gap-open", argv[++i]);
         } else if (arg == "--gap-extend" && i + 1 < argc) {
             settings.gap_extend_penalty = parse_double_full("--gap-extend", argv[++i]);
+        } else if (arg == "--keep-pseudogenes" || arg == "--pseudogenes") {
+            settings.keep_pseudogenes = true;
         } else if (arg == "--out-msa" && i + 1 < argc) {
             out_msa_path = argv[++i];
         } else if ((arg == "--out-stk" || arg == "--out-stockholm") && i + 1 < argc) {

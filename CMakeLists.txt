@@ -179,6 +179,7 @@ add_library(hyphy3_emitters STATIC
     src/analyses/contrast_fel.cpp
     src/analyses/directional_fel.cpp
     src/analyses/fel.cpp
+    src/analyses/forecast.cpp
     src/analyses/fubar.cpp
     src/analyses/gard.cpp
     src/analyses/meme.cpp
@@ -249,6 +250,10 @@ if(HYPHY3_BUILD_TESTS)
     add_executable(hyphy_prime_test tests/test_prime.cpp)
     target_link_libraries(hyphy_prime_test PRIVATE hyphy3_core)
     add_test(NAME PRIMETest COMMAND hyphy_prime_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+    add_executable(hyphy_forecast_test tests/test_forecast.cpp)
+    target_link_libraries(hyphy_forecast_test PRIVATE hyphy3_core)
+    add_test(NAME ForecastTest COMMAND hyphy_forecast_test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     add_executable(hyphy_gard_test tests/test_gard.cpp)
     target_link_libraries(hyphy_gard_test PRIVATE hyphy3_core)
@@ -344,7 +349,7 @@ if(HYPHY3_BUILD_TESTS)
 endif()
 
 
-# Unified HyPhy 3 CLI Driver (hyphy3 fel ..., hyphy3 meme ..., hyphy3 busted ..., hyphy3 absrel ..., hyphy3 relax ..., hyphy3 fubar ..., hyphy3 prime ..., hyphy3 gard ..., hyphy3 slac ..., hyphy3 dfel ..., hyphy3 mss ..., hyphy3 ohmic ..., hyphy3 joint-align ..., hyphy3 expcm ...)
+# Unified HyPhy 3 CLI Driver (hyphy3 fel ..., hyphy3 meme ..., hyphy3 busted ..., hyphy3 absrel ..., hyphy3 relax ..., hyphy3 fubar ..., hyphy3 prime ..., hyphy3 forecast ..., hyphy3 gard ..., hyphy3 slac ..., hyphy3 dfel ..., hyphy3 mss ..., hyphy3 ohmic ..., hyphy3 joint-align ..., hyphy3 expcm ...)
 add_executable(hyphy3
     src/apps/hyphy3.cpp
     src/apps/hyphy_fel.cpp
@@ -355,6 +360,7 @@ add_executable(hyphy3
     src/apps/hyphy_relax.cpp
     src/apps/hyphy_fubar.cpp
     src/apps/hyphy_prime.cpp
+    src/apps/hyphy_forecast.cpp
     src/apps/hyphy_gard.cpp
     src/apps/hyphy_slac.cpp
     src/apps/hyphy_dfel.cpp
@@ -401,6 +407,9 @@ target_link_libraries(hyphy3-fubar PRIVATE hyphy3_report)
 add_executable(hyphy3-prime src/apps/hyphy_prime.cpp)
 target_link_libraries(hyphy3-prime PRIVATE hyphy3_report)
 
+add_executable(hyphy3-forecast src/apps/hyphy_forecast.cpp)
+target_link_libraries(hyphy3-forecast PRIVATE hyphy3_report)
+
 add_executable(hyphy3-gard src/apps/hyphy_gard.cpp)
 target_link_libraries(hyphy3-gard PRIVATE hyphy3_report)
 
@@ -445,6 +454,7 @@ add_executable(hyphy-absrel ALIAS hyphy3-absrel)
 add_executable(hyphy-relax ALIAS hyphy3-relax)
 add_executable(hyphy-fubar ALIAS hyphy3-fubar)
 add_executable(hyphy-prime ALIAS hyphy3-prime)
+add_executable(hyphy-forecast ALIAS hyphy3-forecast)
 add_executable(hyphy-gard ALIAS hyphy3-gard)
 add_executable(hyphy-slac ALIAS hyphy3-slac)
 add_executable(hyphy-dfel ALIAS hyphy3-dfel)
@@ -464,7 +474,7 @@ else()
     set(_hyphy3_cli_targets
         hyphy3 hyphy3-characterize hyphy3-walrus hyphy3-busted hyphy3-fel
         hyphy3-absrel hyphy3-meme hyphy3-relax hyphy3-slac hyphy3-fubar
-        hyphy3-gard hyphy3-contrast-fel hyphy3-dfel hyphy3-prime hyphy3-mss
+        hyphy3-gard hyphy3-contrast-fel hyphy3-dfel hyphy3-prime hyphy3-forecast hyphy3-mss
         hyphy3-ohmic hyphy3-tree hyphy3-joint-align hyphy3-expcm
     )
     if(TARGET hyphy3-report)
@@ -481,7 +491,7 @@ if(HYPHY3_STANDALONE_SYMLINKS)
     # install(TARGETS) so the driver and bindir already exist; install()
     # commands run in declaration order.
     foreach(_alias IN ITEMS
-        fel contrast-fel meme busted absrel relax fubar prime gard slac dfel
+        fel contrast-fel meme busted absrel relax fubar prime forecast gard slac dfel
         mss ohmic tree joint-align characterize walrus expcm
     )
         install(CODE "
