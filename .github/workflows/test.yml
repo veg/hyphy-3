@@ -50,10 +50,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake g++ libomp-dev ccache
 
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: ccache-fast-${{ runner.os }}-${{ github.sha }}
+          # run_attempt makes each save key unique: a rerun restores the
+          # previous attempt's cache via the restore-keys prefix below.
+          key: ccache-fast-${{ runner.os }}-${{ github.sha }}-${{ github.run_attempt }}
           restore-keys: ccache-fast-${{ runner.os }}-
 
       - name: Configure
@@ -64,6 +66,16 @@ jobs:
           ccache --zero-stats
           cmake --build build -j"$(nproc)"
           ccache --show-stats
+
+      # Save immediately after Build rather than in the post-job hook, which is
+      # skipped when the job is killed (e.g. Test exceeding the timeout). A
+      # cancelled run then still leaves a warm cache for the rerun. always() so
+      # a failed build also caches the objects it did compile.
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .ccache
+          key: ccache-fast-${{ runner.os }}-${{ github.sha }}-${{ github.run_attempt }}
 
       - name: Test
         run: ctest --test-dir build --output-on-failure -LE deep -j2
@@ -82,10 +94,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake g++ libomp-dev ccache
 
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: ccache-symlinks-${{ runner.os }}-${{ github.sha }}
+          key: ccache-symlinks-${{ runner.os }}-${{ github.sha }}-${{ github.run_attempt }}
           restore-keys: |
             ccache-symlinks-${{ runner.os }}-
             ccache-fast-${{ runner.os }}-
@@ -98,6 +110,13 @@ jobs:
           ccache --zero-stats
           cmake --build build -j"$(nproc)"
           ccache --show-stats
+
+      # Save before verification for the same reason as in the fast job.
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .ccache
+          key: ccache-symlinks-${{ runner.os }}-${{ github.sha }}-${{ github.run_attempt }}
 
       - name: Install and verify symlinks
         run: |
@@ -154,12 +173,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pytest nanobind jsonschema
 
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         if: steps.changed.outputs.run == 'true'
         with:
           path: .ccache
-          key: ccache-deep-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-deep-${{ runner.os }}-
+          key: ccache-deep-${{ runner.os }}-${{ github.sha }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-deep-${{ runner.os }}-
+            ccache-fast-${{ runner.os }}-
 
       - name: Configure
         if: steps.changed.outputs.run == 'true'
@@ -171,6 +192,15 @@ jobs:
           ccache --zero-stats
           cmake --build build -j"$(nproc)"
           ccache --show-stats
+
+      # Save right after Build; the post-job hook would be skipped if the full
+      # suite hits the timeout. always() keeps the run-gate so skipped nightlies
+      # don't write a cache.
+      - uses: actions/cache/save@v4
+        if: always() && steps.changed.outputs.run == 'true'
+        with:
+          path: .ccache
+          key: ccache-deep-${{ runner.os }}-${{ github.sha }}-${{ github.run_attempt }}
 
       - name: Test
         if: steps.changed.outputs.run == 'true'
