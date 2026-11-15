@@ -54,8 +54,8 @@ BIND_PORT = int(os.environ.get("WALRUS_BIND_PORT", "18791"))
 SLURM_PARTITION = os.environ.get("WALRUS_SLURM_PARTITION", "datamonkey")
 THREADS_PER_JOB = int(os.environ.get("WALRUS_THREADS_PER_JOB", "16"))
 MEM_PER_JOB = os.environ.get("WALRUS_MEM_PER_JOB", "24G")
-WALLTIME_SLURM = os.environ.get("WALRUS_WALLTIME", "00:20:00")
-RUNNER_TIMEOUT_SEC = int(os.environ.get("WALRUS_RUNNER_TIMEOUT_SEC", "1140"))
+WALLTIME_SLURM = os.environ.get("WALRUS_WALLTIME", "00:45:00")
+RUNNER_TIMEOUT_SEC = int(os.environ.get("WALRUS_RUNNER_TIMEOUT_SEC", "2640"))
 
 MAX_CONCURRENT_SLURM = int(os.environ.get("WALRUS_MAX_CONCURRENT", "4"))
 MAX_PENDING_QUEUE = int(os.environ.get("WALRUS_MAX_QUEUE", "25"))
@@ -115,6 +115,8 @@ ALLOWED_GENETIC_CODES = {
     "Ascidian-mtDNA",
     "Flatworm-mtDNA",
     "Blepharisma-Nuclear",
+    "Chlorophycean-mtDNA",
+    "Trematode-mtDNA",
 }
 
 IUPAC_NUC_CHARS = set("ACGTRYMKSWHBVDNacgtrymkswhbvdnUu-.?")
@@ -255,9 +257,9 @@ def scrub_error_message(raw_msg: str) -> str:
     if not raw_msg:
         return ""
     s = re.sub(r"[\x00-\x1f\x7f]+", " ", str(raw_msg)).strip()
-    # Redact quoted identifiers (e.g., user sequence or taxon names) and local file paths
-    s = re.sub(r"'[^']{1,120}'", "'<id>'", s)
-    s = re.sub(r'"[^"]{1,120}"', '"<id>"', s)
+    # Redact quoted identifiers (e.g., user sequence or taxon names) without mangling 5'/3' primes
+    s = re.sub(r"(?<![0-9A-Za-z])'[^'\n]{1,120}'", "'<id>'", s)
+    s = re.sub(r'(?<![0-9A-Za-z])"[^"\n]{1,120}"', '"<id>"', s)
     s = re.sub(r"/(?:Users|home|tmp|var)/[^\s:;,)>\]]+", "<path>", s)
     return s[:240]
 
@@ -352,18 +354,54 @@ def validate_sequences_and_tree(raw_seq: str, raw_tree: str) -> tuple[bool, str,
     if not raw_seq or "\x00" in raw_seq:
         return False, "Sequence payload is empty or contains binary null bytes.", {}
 
-    stripped = raw_seq.lstrip()
-    is_nexus = stripped[:6].upper() == "#NEXUS"
+    # Normalize CRLF / classic Mac CR line endings
+    norm_seq = raw_seq.replace("\r\n", "\n").replace("\r", "\n")
+    stripped = norm_seq.lstrip()
+    upper_head = stripped[:64].upper()
+
+    if upper_head.startswith("# STOCKHOLM"):
+        return (
+            False,
+            "Stockholm (.sto) alignment files are not directly supported; please convert to FASTA, NEXUS, or PHYLIP.",
+            {},
+        )
+    if stripped.startswith("("):
+        return (
+            False,
+            "Uploaded file looks like a Newick tree rather than nucleotide coding sequences (CDS).",
+            {},
+        )
+
+    is_nexus = upper_head.startswith("#NEXUS") or bool(
+        re.match(r"^BEGIN\s+(?:DATA|CHARACTERS|TAXA|TREES)\b", stripped, flags=re.IGNORECASE)
+    )
+    phylip_hdr = None
+    if not is_nexus:
+        for ln in norm_seq.splitlines():
+            s_ln = ln.strip()
+            if not s_ln or s_ln.startswith("#"):
+                continue
+            phylip_hdr = re.match(r"^(\d+)\s+(\d+)\s*$", s_ln)
+            break
+
     taxa_count = 0
     max_ungapped = 0
     total_ungapped = 0
     nuc_matches = 0
     alpha_total = 0
+    clean_seq_out = norm_seq
 
     if is_nexus:
-        # Basic NEXUS sanity validation; HyPhy 3's parser handles full NEXUS grammar
-        ntax_m = re.search(r"\bNTAX\s*=\s*(\d+)", raw_seq, flags=re.IGNORECASE)
-        nchar_m = re.search(r"\bNCHAR\s*=\s*(\d+)", raw_seq, flags=re.IGNORECASE)
+        if not re.search(r"\bMATRIX\b", norm_seq, flags=re.IGNORECASE):
+            if re.search(r"\bBEGIN\s+TREES\b", norm_seq, flags=re.IGNORECASE):
+                return (
+                    False,
+                    "NEXUS file contains a TREES block without a sequence MATRIX. Upload nucleotide coding sequences first.",
+                    {},
+                )
+            return False, "NEXUS input is missing a sequence MATRIX block.", {}
+        ntax_m = re.search(r"\bNTAX\s*=\s*(\d+)", norm_seq, flags=re.IGNORECASE)
+        nchar_m = re.search(r"\bNCHAR\s*=\s*(\d+)", norm_seq, flags=re.IGNORECASE)
         if not ntax_m or not nchar_m:
             return False, "NEXUS input is missing NTAX or NCHAR dimensions.", {}
         taxa_count = int(ntax_m.group(1))
@@ -381,42 +419,92 @@ def validate_sequences_and_tree(raw_seq: str, raw_tree: str) -> tuple[bool, str,
                 f"Sequence length NCHAR={max_ungapped} is outside allowed bounds (30..{MAX_SEQ_UNGAPPED_NT} nt).",
                 {},
             )
+    elif phylip_hdr is not None:
+        taxa_count = int(phylip_hdr.group(1))
+        max_ungapped = int(phylip_hdr.group(2))
+        total_ungapped = taxa_count * max_ungapped
+        if taxa_count < MIN_TAXA or taxa_count > MAX_TAXA:
+            return (
+                False,
+                f"Cluster offload requires between {MIN_TAXA} and {MAX_TAXA} sequences (found {taxa_count}).",
+                {},
+            )
+        if max_ungapped < 30 or max_ungapped > MAX_SEQ_UNGAPPED_NT:
+            return (
+                False,
+                f"PHYLIP length {max_ungapped} is outside allowed bounds (30..{MAX_SEQ_UNGAPPED_NT} nt).",
+                {},
+            )
     else:
-        if not stripped.startswith(">"):
-            return False, "Sequences must be in FASTA (>header) or #NEXUS format.", {}
-        cur_len = 0
+        # FASTA format (allow leading '#' or ';' comment lines)
+        first_data_line = ""
+        for ln in norm_seq.splitlines():
+            s_ln = ln.strip()
+            if not s_ln or s_ln.startswith("#") or s_ln.startswith(";"):
+                continue
+            first_data_line = s_ln
+            break
+        if not first_data_line.startswith(">"):
+            return False, "Sequences must be in FASTA (>header), #NEXUS, or PHYLIP format.", {}
+
+        records: list[tuple[str, str, list[str], str]] = []
+        cur_id = ""
+        cur_rest = ""
+        cur_seq_lines: list[str] = []
+        cur_ungapped: list[str] = []
+        embedded_tree_lines: list[str] = []
+        in_tree = False
         seen_header = False
-        for line in raw_seq.splitlines():
+
+        def _flush_record() -> str | None:
+            nonlocal max_ungapped
+            if not seen_header:
+                return None
+            ungapped_str = "".join(cur_ungapped)
+            if not ungapped_str:
+                return "FASTA contains an empty sequence record."
+            max_ungapped = max(max_ungapped, len(ungapped_str))
+            records.append((cur_id, cur_rest, list(cur_seq_lines), ungapped_str.upper()))
+            return None
+
+        for line in norm_seq.splitlines():
             s = line.strip()
             if not s:
                 continue
-            if s.startswith("("):
-                break
+            if not seen_header and (s.startswith("#") or s.startswith(";")):
+                continue
+            if in_tree or s.startswith("("):
+                in_tree = True
+                embedded_tree_lines.append(s)
+                continue
             if s.startswith(">"):
-                if seen_header:
-                    if cur_len == 0:
-                        return False, "FASTA contains an empty sequence record.", {}
-                    max_ungapped = max(max_ungapped, cur_len)
-                taxa_count += 1
-                if taxa_count > MAX_TAXA:
-                    return (
-                        False,
-                        f"Dataset exceeds the {MAX_TAXA}-sequence cluster limit.",
-                        {},
-                    )
+                err_f = _flush_record()
+                if err_f:
+                    return False, err_f, {}
+                hdr_body = s[1:].strip()
+                if not hdr_body:
+                    cur_id, cur_rest = "unnamed", ""
+                else:
+                    parts = hdr_body.split(None, 1)
+                    cur_id = parts[0]
+                    cur_rest = (" " + parts[1]) if len(parts) > 1 else ""
+                cur_seq_lines = []
+                cur_ungapped = []
                 seen_header = True
-                cur_len = 0
+                if len(records) + 1 > MAX_TAXA * 2:
+                    return False, f"Dataset exceeds the {MAX_TAXA}-sequence cluster limit.", {}
             else:
+                cur_seq_lines.append(s)
                 for ch in s:
                     if ch in ("-", ".", "?", " ", "\t"):
                         continue
-                    cur_len += 1
+                    cur_ungapped.append(ch)
                     total_ungapped += 1
                     if ch.isalpha():
                         alpha_total += 1
                         if ch in IUPAC_NUC_CHARS:
                             nuc_matches += 1
-                if cur_len > MAX_SEQ_UNGAPPED_NT:
+                if len(cur_ungapped) > MAX_SEQ_UNGAPPED_NT:
                     return (
                         False,
                         f"A sequence exceeds the {MAX_SEQ_UNGAPPED_NT:,} nt coding-sequence limit.",
@@ -428,15 +516,54 @@ def validate_sequences_and_tree(raw_seq: str, raw_tree: str) -> tuple[bool, str,
                         f"Total coding nucleotides exceed the {MAX_TOTAL_NT:,} nt cluster limit.",
                         {},
                     )
-        if seen_header:
-            if cur_len == 0:
-                return False, "FASTA contains an empty trailing sequence record.", {}
-            max_ungapped = max(max_ungapped, cur_len)
 
+        err_last = _flush_record()
+        if err_last:
+            return False, err_last, {}
+
+        # Deduplicate exact (id, ungapped_seq) records and disambiguate colliding IDs with distinct sequences
+        seen_exact: set[tuple[str, str]] = set()
+        used_ids: set[str] = set()
+        id_counts: dict[str, int] = {}
+        dedup_lines: list[str] = []
+        rewritten = False
+        kept_taxa = 0
+
+        for tid, trest, slines, u_upper in records:
+            key = (tid, u_upper)
+            if key in seen_exact:
+                rewritten = True
+                continue
+            seen_exact.add(key)
+            final_id = tid
+            if final_id in used_ids:
+                rewritten = True
+                idx_n = id_counts.get(tid, 1) + 1
+                while f"{tid}_dup{idx_n}" in used_ids:
+                    idx_n += 1
+                id_counts[tid] = idx_n
+                final_id = f"{tid}_dup{idx_n}"
+            used_ids.add(final_id)
+            kept_taxa += 1
+            dedup_lines.append(f">{final_id}{trest}")
+            dedup_lines.extend(slines)
+
+        if embedded_tree_lines:
+            dedup_lines.extend(embedded_tree_lines)
+        if rewritten:
+            clean_seq_out = "\n".join(dedup_lines) + "\n"
+
+        taxa_count = kept_taxa
+        if taxa_count > MAX_TAXA:
+            return (
+                False,
+                f"Dataset exceeds the {MAX_TAXA}-sequence cluster limit (found {taxa_count} unique sequences).",
+                {},
+            )
         if taxa_count < MIN_TAXA:
             return (
                 False,
-                f"At least {MIN_TAXA} homologous coding sequences are required (found {taxa_count}).",
+                f"At least {MIN_TAXA} unique homologous coding sequences are required (found {taxa_count}).",
                 {},
             )
         if max_ungapped < 30:
@@ -461,6 +588,7 @@ def validate_sequences_and_tree(raw_seq: str, raw_tree: str) -> tuple[bool, str,
         "num_taxa": taxa_count,
         "max_nt": max_ungapped,
         "clean_tree": clean_tree,
+        "clean_seq": clean_seq_out,
     }
 
 
@@ -476,6 +604,7 @@ def sanitize_options(raw_opts: dict) -> tuple[bool, str, dict]:
         return False, f"Unsupported genetic code '{gcode}'.", {}
 
     coev = bool(raw_opts.get("coevolution", True))
+    keep_pseudo = bool(raw_opts.get("keep_pseudogenes", False))
     srv = str(raw_opts.get("srv", ""))
     if srv not in ("", "Yes", "No"):
         return False, "options.srv must be 'Yes', 'No', or empty.", {}
@@ -488,6 +617,7 @@ def sanitize_options(raw_opts: dict) -> tuple[bool, str, dict]:
         "mode": mode,
         "genetic_code": gcode,
         "coevolution": coev,
+        "keep_pseudogenes": keep_pseudo,
         "srv": srv,
         "multiple_hits": mh,
     }
@@ -1017,7 +1147,7 @@ class WalrusGatewayHandler(BaseHTTPRequestHandler):
                         "max_taxa": MAX_TAXA,
                         "max_seq_nt": MAX_SEQ_UNGAPPED_NT,
                         "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
-                        "walltime_minutes": 20,
+                        "walltime_minutes": 45,
                         "retention_hours": 48,
                     },
                 },
@@ -1297,9 +1427,11 @@ class WalrusGatewayHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": seq_err})
                 return
 
+            seq_to_run = meta.get("clean_seq", raw_seq)
+
             # Content-addressed cache lookup
             h = hashlib.sha256()
-            h.update(raw_seq.strip().encode("utf-8"))
+            h.update(seq_to_run.strip().encode("utf-8"))
             h.update(b"\x00")
             h.update(meta["clean_tree"].encode("utf-8"))
             h.update(b"\x00")
@@ -1332,7 +1464,7 @@ class WalrusGatewayHandler(BaseHTTPRequestHandler):
             job_dir.mkdir(parents=True, exist_ok=False)
             os.chmod(job_dir, 0o700)
 
-            (job_dir / "input.seq").write_text(raw_seq, encoding="utf-8")
+            (job_dir / "input.seq").write_text(seq_to_run, encoding="utf-8")
             if meta["clean_tree"]:
                 (job_dir / "input.nwk").write_text(meta["clean_tree"] + "\n", encoding="utf-8")
 

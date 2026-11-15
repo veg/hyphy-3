@@ -112,29 +112,45 @@ std::vector<RawParsedSeq> parse_raw_sequences_preserving_gaps(const std::string&
         out.push_back(std::move(rec));
     };
 
-    // Detect if NEXUS
+    // Inspect first non-whitespace, non-FASTA-comment line to detect NEXUS, PHYLIP, Stockholm, or bare Newick
     size_t p0 = 0;
     while (p0 < raw_text.size() && std::isspace(static_cast<unsigned char>(raw_text[p0]))) ++p0;
-    if (p0 < raw_text.size() && raw_text[p0] == '#') {
-        const std::string vpath = "/tmp/walrus_stage0_input.nex";
+    std::string first_line;
+    if (p0 < raw_text.size()) {
+        size_t nl = raw_text.find_first_of("\r\n", p0);
+        first_line = (nl == std::string::npos) ? raw_text.substr(p0) : raw_text.substr(p0, nl - p0);
+    }
+    std::string upper_first = first_line;
+    for (char& ch : upper_first) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+
+    const bool is_nexus_or_stockholm =
+        (upper_first.rfind("#NEXUS", 0) == 0) ||
+        (upper_first.rfind("# STOCKHOLM", 0) == 0) ||
+        (upper_first.rfind("#STOCKHOLM", 0) == 0) ||
+        (upper_first.rfind("BEGIN ", 0) == 0) ||
+        (upper_first.rfind("BEGIN\t", 0) == 0);
+    const bool is_bare_newick = (!first_line.empty() && first_line[0] == '(');
+    size_t phy_n = 0, phy_c = 0;
+    const bool is_phylip = hyphy::core::Alignment::is_phylip_header_line(first_line, phy_n, phy_c);
+
+    if (is_nexus_or_stockholm || is_bare_newick || is_phylip) {
+        const std::string vpath = is_nexus_or_stockholm ? "/tmp/walrus_stage0_input.nex" : "/tmp/walrus_stage0_input.seq";
         ScopedTempFile tmp_guard(vpath);
         {
             std::ofstream vf(vpath, std::ios::binary | std::ios::trunc);
             vf << raw_text;
         }
-        auto gcode = hyphy::core::GeneticCode::universal();
-        try {
-            auto aln = hyphy::core::Alignment::load(vpath, gcode);
-            for (const auto& s : aln.sequences) {
-                finalize_record(s.name, s.raw_seq);
+        auto unfin_aln = hyphy::core::Alignment::load_unfinalized(vpath);
+        for (const auto& s : unfin_aln.sequences) {
+            finalize_record(s.name, s.raw_seq);
+        }
+        if (out.size() >= 2) {
+            size_t len0 = out[0].raw_with_gaps.size();
+            bool all_equal = (len0 > 0 && len0 % 3 == 0);
+            for (const auto& r : out) {
+                if (r.raw_with_gaps.size() != len0) all_equal = false;
             }
-            out_is_prealigned = true;
-        } catch (...) {
-            auto seqs = hyphy::analyses::JointAlignEngine::load_unaligned_fasta(vpath, gcode);
-            for (const auto& s : seqs) {
-                finalize_record(s.name, s.raw_seq);
-            }
-            out_is_prealigned = false;
+            out_is_prealigned = all_equal;
         }
         return out;
     }
@@ -143,7 +159,7 @@ std::vector<RawParsedSeq> parse_raw_sequences_preserving_gaps(const std::string&
         while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) {
             line.pop_back();
         }
-        if (line.empty()) continue;
+        if (line.empty() || line[0] == '#' || line[0] == ';') continue;
         if (line[0] == '>') {
             if (!cur_name.empty() || !cur_raw.empty()) {
                 finalize_record(cur_name, cur_raw);
@@ -516,7 +532,8 @@ const char* walrus_stage0_run(
     const char* code_name,
     int min_sense_codons,
     double min_homology_z,
-    int strip_gaps_realign
+    int strip_gaps_realign,
+    int keep_pseudogenes
 ) {
     try {
         auto t_start = std::chrono::steady_clock::now();
@@ -537,16 +554,46 @@ const char* walrus_stage0_run(
         bool input_is_prealigned = false;
         auto raw_recs = parse_raw_sequences_preserving_gaps(raw_seq, input_is_prealigned);
         if (raw_recs.empty()) {
-            throw std::runtime_error("No valid FASTA or NEXUS sequences found in input payload.");
+            throw std::runtime_error("No valid FASTA, NEXUS, or PHYLIP sequences found in input payload.");
         }
 
-        // Check duplicate names and lexical alphabet gate (amino-acid letters E,F,I,L,P,Q)
-        std::unordered_set<std::string> seen_names;
+        // Check duplicate names and lexical alphabet gate (amino-acid letters E,F,I,L,P,Q):
+        //  - Exact duplicate (name + ungapped_nt identical to an earlier record): auto-quarantine the duplicate copy
+        //  - Colliding name with distinct sequence content: disambiguate name (<name>_dup2, etc.) so downstream stages never crash on Gate 1
+        std::unordered_set<std::string> reserved_names;
+        for (const auto& r : raw_recs) reserved_names.insert(r.name);
+
+        std::unordered_map<std::string, size_t> first_idx_by_name;
+        std::unordered_map<std::string, size_t> dup_counter_by_name;
         std::vector<std::string> duplicate_names;
+        std::vector<bool> is_exact_dup_taxon(raw_recs.size(), false);
+        std::vector<size_t> exact_dup_of_idx(raw_recs.size(), 0);
+        std::vector<std::string> dup_renamed_from(raw_recs.size());
+
         size_t total_alpha = 0, total_aa_only = 0;
-        for (const auto& r : raw_recs) {
-            if (!seen_names.insert(r.name).second) {
+        for (size_t t = 0; t < raw_recs.size(); ++t) {
+            auto& r = raw_recs[t];
+            auto it_first = first_idx_by_name.find(r.name);
+            if (it_first == first_idx_by_name.end()) {
+                first_idx_by_name[r.name] = t;
+            } else {
                 duplicate_names.push_back(r.name);
+                size_t orig_idx = it_first->second;
+                if (r.ungapped_nt == raw_recs[orig_idx].ungapped_nt) {
+                    is_exact_dup_taxon[t] = true;
+                    exact_dup_of_idx[t] = orig_idx;
+                } else {
+                    std::string orig_nm = r.name;
+                    size_t next_n = std::max<size_t>(2, dup_counter_by_name[orig_nm] + 2);
+                    std::string cand_nm;
+                    do {
+                        cand_nm = orig_nm + "_dup" + std::to_string(next_n++);
+                    } while (reserved_names.count(cand_nm));
+                    dup_counter_by_name[orig_nm] = next_n - 2;
+                    reserved_names.insert(cand_nm);
+                    dup_renamed_from[t] = orig_nm;
+                    r.name = cand_nm;
+                }
             }
             for (char ch : r.raw_with_gaps) {
                 if (std::isalpha(static_cast<unsigned char>(ch))) {
@@ -576,7 +623,9 @@ const char* walrus_stage0_run(
             if (!alt_gc) continue;
             size_t clean_f0 = 0;
             size_t total_stops_f0 = 0;
-            for (const auto& r : raw_recs) {
+            for (size_t t = 0; t < raw_recs.size(); ++t) {
+                if (is_exact_dup_taxon[t]) continue;
+                const auto& r = raw_recs[t];
                 if (r.ungapped_nt.size() < 45) continue;
                 auto fa0 = analyze_single_reading_frame(r.ungapped_nt, 0, false, *alt_gc);
                 total_stops_f0 += fa0.internal_stops;
@@ -618,7 +667,7 @@ const char* walrus_stage0_run(
                     all_six_frames[t][rc * 3 + off] = analyze_single_reading_frame(raw_recs[t].ungapped_nt, off, rc == 1, *gcode);
                 }
             }
-            if (all_six_frames[t][0].internal_stops == 0 && all_six_frames[t][0].codon_count >= 15) {
+            if (!is_exact_dup_taxon[t] && all_six_frames[t][0].internal_stops == 0 && all_six_frames[t][0].codon_count >= 15) {
                 seq_f0_3mers[t] = extract_3mers(all_six_frames[t][0].sense_codons);
                 for (uint32_t h : seq_f0_3mers[t]) cohort_aa3mer_counts[h]++;
             }
@@ -646,31 +695,34 @@ const char* walrus_stage0_run(
         hyphy::analyses::JointAlignSettings jsettings;
         jsettings.min_sense_codons = static_cast<size_t>(std::max(5, min_sense_codons));
         jsettings.min_homology_z = std::max(0.5, min_homology_z);
+        jsettings.keep_pseudogenes = (keep_pseudogenes != 0);
         jsettings.quiet = true;
 
         std::vector<hyphy::core::Sequence> input_seqs;
         input_seqs.reserve(raw_recs.size());
         for (size_t t = 0; t < raw_recs.size(); ++t) {
             std::string nm = raw_recs[t].name;
-            // Ensure unique names if duplicates exist so Stage 0 can still diagnose all records
-            if ( duplicate_names.size() > 0 ) {
-                nm = raw_recs[t].name + "#" + std::to_string(t + 1);
+            if (is_exact_dup_taxon[t]) {
+                nm = raw_recs[t].name + "#exactdup" + std::to_string(t + 1);
             }
             input_seqs.push_back(hyphy::core::Sequence{nm, raw_recs[t].ungapped_nt, {}, {}});
         }
 
         hyphy::analyses::InputAdmissionReport adm_report;
+        std::unordered_map<std::string, std::string> admitted_cds_by_key;
         std::string gate_abort_warning;
         if (!is_protein_error && input_seqs.size() >= 3) {
             try {
                 jsettings.enforce_admission_control = true;
                 auto [adm_seqs, rep] = hyphy::analyses::JointAlignEngine::triage_and_admit_unaligned_sequences(input_seqs, gcode, jsettings);
+                for (const auto& asq : adm_seqs) admitted_cds_by_key[asq.name] = asq.raw_seq;
                 adm_report = std::move(rep);
             } catch (const std::exception& e_strict) {
                 gate_abort_warning = e_strict.what();
                 try {
                     jsettings.enforce_admission_control = false;
                     auto [adm_seqs2, rep2] = hyphy::analyses::JointAlignEngine::triage_and_admit_unaligned_sequences(input_seqs, gcode, jsettings);
+                    for (const auto& asq : adm_seqs2) admitted_cds_by_key[asq.name] = asq.raw_seq;
                     adm_report = std::move(rep2);
                 } catch (...) {
                     adm_report.total_input_sequences = raw_recs.size();
@@ -692,6 +744,7 @@ const char* walrus_stage0_run(
         // Compute median codon length of valid sequences
         std::vector<size_t> valid_lengths;
         for (size_t t = 0; t < raw_recs.size(); ++t) {
+            if (is_exact_dup_taxon[t]) continue;
             size_t clen = (t < adm_report.entries.size() && adm_report.entries[t].codon_length > 0)
                               ? adm_report.entries[t].codon_length
                               : all_six_frames[t][0].codon_count;
@@ -699,13 +752,16 @@ const char* walrus_stage0_run(
         }
         std::sort(valid_lengths.begin(), valid_lengths.end());
         size_t median_codons = valid_lengths.empty() ? 100 : valid_lengths[valid_lengths.size() / 2];
-        size_t min_allowed_codons = std::max<size_t>(jsettings.min_sense_codons, static_cast<size_t>(std::floor(0.30 * static_cast<double>(median_codons))));
+        size_t min_allowed_codons = std::max<size_t>(
+            jsettings.min_sense_codons,
+            static_cast<size_t>(std::floor((jsettings.keep_pseudogenes ? 0.15 : 0.30) * static_cast<double>(median_codons)))
+        );
         size_t max_allowed_codons = static_cast<size_t>(std::ceil(2.80 * static_cast<double>(median_codons)));
 
         // Identify reference admitted sequences for nearest-neighbor homology preview
         std::vector<size_t> ref_indices;
         for (size_t t = 0; t < raw_recs.size() && t < adm_report.entries.size(); ++t) {
-            if (adm_report.entries[t].status != "Quarantined" && all_six_frames[t][0].codon_count >= jsettings.min_sense_codons) {
+            if (!is_exact_dup_taxon[t] && adm_report.entries[t].status != "Quarantined" && all_six_frames[t][0].codon_count >= jsettings.min_sense_codons) {
                 ref_indices.push_back(t);
             }
         }
@@ -721,6 +777,11 @@ const char* walrus_stage0_run(
             hyphy::analyses::TaxonAdmissionEntry ent = (t < adm_report.entries.size()) ? adm_report.entries[t] : hyphy::analyses::TaxonAdmissionEntry{};
             ent.name = r.name;
 
+            if (is_exact_dup_taxon[t]) {
+                ent.status = "Quarantined";
+                ent.reason = "Exact duplicate of sequence #" + std::to_string(exact_dup_of_idx[t] + 1) + " ('" + raw_recs[exact_dup_of_idx[t]].name + "')";
+            }
+
             int chosen_f_idx = (ent.reverse_complemented ? 3 : 0) + std::clamp(ent.frame_offset, 0, 2);
             const auto& chosen_fa = all_six_frames[t][chosen_f_idx];
             const auto& f0_fa = all_six_frames[t][0];
@@ -735,10 +796,31 @@ const char* walrus_stage0_run(
                 }
             }
 
+            // If rescued via keep_pseudogenes Viterbi splicer, retrieve the stop-masked clean CDS & translation
+            std::string spliced_pseudo_cds;
+            std::string spliced_pseudo_aa;
+            bool is_pseudogene_rescued = (jsettings.keep_pseudogenes && ent.status == "Rescued" &&
+                                          ent.reason.find("Admitted pseudogene") != std::string::npos);
+            if (is_pseudogene_rescued) {
+                auto it_adm = admitted_cds_by_key.find(input_seqs[t].name);
+                if (it_adm != admitted_cds_by_key.end() && it_adm->second.size() >= 3) {
+                    spliced_pseudo_cds = it_adm->second;
+                    spliced_pseudo_aa.reserve(spliced_pseudo_cds.size() / 3);
+                    for (size_t p = 0; p + 2 < spliced_pseudo_cds.size(); p += 3) {
+                        int8_t sc = gcode->triplet_to_sense(spliced_pseudo_cds[p], spliced_pseudo_cds[p + 1], spliced_pseudo_cds[p + 2]);
+                        spliced_pseudo_aa += (sc >= 0 && static_cast<size_t>(sc) < gcode->sense_codon_aa.size())
+                                                 ? gcode->sense_codon_aa[static_cast<size_t>(sc)]
+                                                 : 'X';
+                    }
+                }
+            }
+
             // Find nearest neighbor among reference sequences by 3-mer overlap or amino acid identity
             size_t best_nn_idx = (ref_indices.empty()) ? 0 : ref_indices[0];
             if (best_nn_idx == t && ref_indices.size() > 1) best_nn_idx = ref_indices[1];
-            const auto& q_aa_for_nn = (ent.status == "Quarantined") ? all_six_frames[t][best_alt_f].aa_seq : chosen_fa.aa_seq;
+            const std::string& q_aa_for_nn = !spliced_pseudo_aa.empty()
+                                                 ? spliced_pseudo_aa
+                                                 : ((ent.status == "Quarantined") ? all_six_frames[t][best_alt_f].aa_seq : chosen_fa.aa_seq);
             std::unordered_set<uint32_t> q_3mers = extract_3mers(
                 (ent.status == "Quarantined") ? all_six_frames[t][best_alt_f].sense_codons : chosen_fa.sense_codons
             );
@@ -801,25 +883,40 @@ const char* walrus_stage0_run(
                 diag_title = "Protein Amino-Acid Sequence Detected";
                 diag_explanation = "This sequence contains amino-acid-specific characters (E, F, I, L, P, Q) rather than nucleotide triplets (A, C, G, T).";
                 remediation_hint = "Upload the corresponding nucleotide coding sequence (CDS) FASTA file.";
+            } else if (is_exact_dup_taxon[t]) {
+                count_quarantined++;
+                failed_gate = "Gate 1 (Duplicate Taxon ID)";
+                diag_title = "Quarantined: Exact Duplicate Sequence & Identifier";
+                diag_explanation = "Sequence identifier '" + r.name + "' and its nucleotide coding sequence are 100% identical to earlier record #" +
+                    std::to_string(exact_dup_of_idx[t] + 1) + ". Automatically quarantined to prevent zero-length duplicate branches and Gate 1 duplicate-ID errors.";
+                remediation_hint = "No action needed — the primary copy (#" + std::to_string(exact_dup_of_idx[t] + 1) + ") remains in the cohort.";
             } else if (ent.status == "Rescued") {
                 count_admitted++;
                 count_rescued++;
-                failed_gate = "Gate 2 (Auto-Rescued ORF)";
-                diag_title = "Automatically Rescued Reading Frame / Strand";
-                std::ostringstream exp;
-                exp << "Raw sequence had " << f0_fa.internal_stops << " internal stop codon(s) or low 3-mer homology in forward frame +0, "
-                    << "but scanning all 6 reading frames identified a clean, stop-free open reading frame on the "
-                    << (ent.reverse_complemented ? "reverse-complement (-)" : "forward (+)")
-                    << " strand at frame offset +" << ent.frame_offset
-                    << " sharing " << chosen_fa.cohort_3mer_hits << " amino-acid 3-mers with the cohort.";
-                if (chosen_fa.utr_5prime_trimmed > 0 || chosen_fa.utr_3prime_trimmed > 0) {
-                    exp << " Trimmed " << chosen_fa.utr_5prime_trimmed << " 5'-UTR leader codon(s) and "
-                        << chosen_fa.utr_3prime_trimmed << " 3'-UTR tail codon(s).";
+                if (is_pseudogene_rescued) {
+                    failed_gate = "Gate 2 (Pseudogene Rescued)";
+                    diag_title = "Admitted Homologous Pseudogene (Stops / Frameshifts Masked)";
+                    diag_explanation = ent.reason + ". Premature stop codons and disrupted frameshift boundary triplets were masked to 'NNN' so phylogenetic selection & purifying-core erosion (LoF_BF / RELAX) can be evaluated.";
+                    remediation_hint = "Admitted via Keep Pseudogenes mode. Inspect masked 'X' positions in the alignment preview.";
+                } else {
+                    failed_gate = "Gate 2 (Auto-Rescued ORF)";
+                    diag_title = "Automatically Rescued Reading Frame / Strand";
+                    std::ostringstream exp;
+                    exp << "Raw sequence had " << f0_fa.internal_stops << " internal stop codon(s) or low 3-mer homology in forward frame +0, "
+                        << "but scanning all 6 reading frames identified a clean, stop-free open reading frame on the "
+                        << (ent.reverse_complemented ? "reverse-complement (-)" : "forward (+)")
+                        << " strand at frame offset +" << ent.frame_offset
+                        << " sharing " << chosen_fa.cohort_3mer_hits << " amino-acid 3-mers with the cohort.";
+                    if (chosen_fa.utr_5prime_trimmed > 0 || chosen_fa.utr_3prime_trimmed > 0) {
+                        exp << " Trimmed " << chosen_fa.utr_5prime_trimmed << " 5'-UTR leader codon(s) and "
+                            << chosen_fa.utr_3prime_trimmed << " 3'-UTR tail codon(s).";
+                    }
+                    diag_explanation = exp.str();
+                    remediation_hint = "Automatically corrected and admitted. Inspect the 6-frame barcode below to verify the rescued reading frame.";
                 }
-                diag_explanation = exp.str();
-                remediation_hint = "Automatically corrected and admitted. Inspect the 6-frame barcode below to verify the rescued reading frame.";
             } else if (ent.status == "Quarantined") {
                 count_quarantined++;
+                const double max_ambig_lim = jsettings.keep_pseudogenes ? 0.85 : 0.20;
                 if (r.ungapped_nt.size() < jsettings.min_sense_codons * 3) {
                     failed_gate = "Gate 1 (Minimum Length)";
                     diag_title = "Quarantined: Sequence Fragment Too Short";
@@ -828,13 +925,14 @@ const char* walrus_stage0_run(
                         " nt), which is below the minimum admission threshold of " +
                         std::to_string(jsettings.min_sense_codons) + " sense codons.";
                     remediation_hint = "Lower the 'Min Codons' threshold slider or click 'Force Admit' if this partial exon fragment is intentional.";
-                } else if (ambig_frac > 0.20) {
+                } else if (ambig_frac > max_ambig_lim) {
                     failed_gate = "Gate 1 (Ambiguity Filter)";
                     diag_title = "Quarantined: Excessive Ambiguous Nucleotides (N/?)";
                     std::ostringstream exp;
                     exp << "Sequence contains " << r.ambig_count << " ambiguous nucleotides ("
                         << std::fixed << std::setprecision(1) << (ambig_frac * 100.0)
-                        << "% of " << r.ungapped_nt.size() << " nt), exceeding the 20.0% maximum ambiguity limit.";
+                        << "% of " << r.ungapped_nt.size() << " nt), exceeding the "
+                        << std::setprecision(0) << (max_ambig_lim * 100.0) << "% maximum ambiguity limit.";
                     diag_explanation = exp.str();
                     remediation_hint = "High-N sequences degrade branch-length and site-level selection inference. Click 'Force Admit' only if missing regions are localized.";
                 } else if (ent.reason.find("length outlier") != std::string::npos) {
@@ -843,7 +941,7 @@ const char* walrus_stage0_run(
                     diag_explanation = "Sequence length (" + std::to_string(eff_codons) +
                         " codons) lies outside the permissible cohort length window [" +
                         std::to_string(min_allowed_codons) + ", " + std::to_string(max_allowed_codons) +
-                        " codons] (0.30x to 2.80x cohort median of " + std::to_string(median_codons) + " codons).";
+                        " codons] (" + (jsettings.keep_pseudogenes ? "0.15x" : "0.30x") + " to 2.80x cohort median of " + std::to_string(median_codons) + " codons).";
                     remediation_hint = "Often caused by un-spliced multi-exon concatamers or severe truncations. Click 'Force Admit' if this species has a genuine large indel.";
                 } else if (ent.reason.find("Non-homologous") != std::string::npos) {
                     failed_gate = "Gate 3 (Homology Z-Score)";
@@ -873,7 +971,7 @@ const char* walrus_stage0_run(
                             << second_best << "-codon ORF in Frame +" << (f1_longest >= f2_longest ? 1 : 2)
                             << " — the classic signature of a 1-bp or 2-bp sequencing/assembly indel shifting the reading frame mid-gene.";
                         diag_explanation = exp.str();
-                        remediation_hint = "Stage 1's codon-aware frameshift transducer can repair 1-bp/2-bp frameshifts if you click 'Force Admit', or you can keep it quarantined as a pseudogene.";
+                        remediation_hint = "Enable 'Keep Pseudogenes' in Thresholds & Code (or click 'Force Admit') so WALRUS splices the reading frame and masks disrupted codons.";
                     } else {
                         diag_title = "Quarantined: Internal Premature Stop Codons in All 6 Frames";
                         std::ostringstream exp;
@@ -886,7 +984,7 @@ const char* walrus_stage0_run(
                         diag_explanation = exp.str();
                         remediation_hint = (!recommended_code.empty() && recommended_code != cname && best_alt_clean > active_code_clean)
                             ? ("Switch Genetic Code to '" + recommended_code + "' in the top bar.")
-                            : "Likely a pseudogene, retained intron, or sequencing error. Inspect the red stop-codon ticks in the 6-frame barcode below.";
+                            : "Enable 'Keep Pseudogenes' in Thresholds & Code to mask premature stops to NNN and test for relaxed selection / LoF erosion.";
                     }
                 }
             } else {
@@ -899,17 +997,30 @@ const char* walrus_stage0_run(
                 }
             }
 
+            if (!dup_renamed_from[t].empty()) {
+                diag_explanation += " Note: Duplicate header identifier '" + dup_renamed_from[t] +
+                    "' had distinct sequence content and was automatically disambiguated to '" + r.name + "'.";
+            }
+
+            const std::string eff_clean_cds = !spliced_pseudo_cds.empty()
+                ? spliced_pseudo_cds
+                : ((ent.status == "Quarantined") ? all_six_frames[t][best_alt_f].clean_cds : chosen_fa.clean_cds);
+            const std::string eff_translated_aa = !spliced_pseudo_aa.empty()
+                ? spliced_pseudo_aa
+                : ((ent.status == "Quarantined") ? all_six_frames[t][best_alt_f].aa_seq : chosen_fa.aa_seq);
+
             nlohmann::json six_frames_arr = nlohmann::json::array();
             for (int f = 0; f < 6; ++f) {
                 const auto& fa = all_six_frames[t][f];
+                const bool is_sel_frame = (f == chosen_f_idx && ent.status != "Quarantined");
                 six_frames_arr.push_back({
                     {"frame_label", fa.label},
                     {"frame_offset", fa.frame_offset},
                     {"reverse_complemented", fa.rev_comp},
-                    {"is_selected", (f == chosen_f_idx && ent.status != "Quarantined")},
+                    {"is_selected", is_sel_frame},
                     {"is_best_fallback", (f == best_alt_f)},
-                    {"codon_count", fa.codon_count},
-                    {"internal_stops", fa.internal_stops},
+                    {"codon_count", (is_sel_frame && !spliced_pseudo_cds.empty()) ? (spliced_pseudo_cds.size() / 3) : fa.codon_count},
+                    {"internal_stops", (is_sel_frame && !spliced_pseudo_cds.empty()) ? size_t(0) : fa.internal_stops},
                     {"starts_with_atg", fa.starts_with_atg},
                     {"has_terminal_stop", fa.has_terminal_stop},
                     {"utr_5prime_trimmed", fa.utr_5prime_trimmed},
@@ -919,8 +1030,8 @@ const char* walrus_stage0_run(
                     {"cohort_3mer_hits", fa.cohort_3mer_hits},
                     {"stop_positions", fa.stop_positions},
                     {"atg_positions", fa.atg_positions},
-                    {"aa_seq", fa.aa_seq},
-                    {"clean_cds", fa.clean_cds}
+                    {"aa_seq", (is_sel_frame && !spliced_pseudo_aa.empty()) ? spliced_pseudo_aa : fa.aa_seq},
+                    {"clean_cds", (is_sel_frame && !spliced_pseudo_cds.empty()) ? spliced_pseudo_cds : fa.clean_cds}
                 });
             }
 
@@ -945,14 +1056,14 @@ const char* walrus_stage0_run(
                 {"gc_cp3", r.gc_cp3},
                 {"codon_length", eff_codons},
                 {"internal_stops_frame0", f0_fa.internal_stops},
-                {"internal_stops_selected", chosen_fa.internal_stops},
+                {"internal_stops_selected", !spliced_pseudo_cds.empty() ? size_t(0) : chosen_fa.internal_stops},
                 {"utr_5prime_trimmed", chosen_fa.utr_5prime_trimmed},
                 {"utr_3prime_trimmed", chosen_fa.utr_3prime_trimmed},
                 {"max_homology_z", safe_json_num(disp_z)},
                 {"max_aa_identity", safe_json_num(disp_id)},
-                {"clean_cds", (ent.status == "Quarantined") ? all_six_frames[t][best_alt_f].clean_cds : chosen_fa.clean_cds},
-                {"raw_with_gaps", r.raw_with_gaps},
-                {"translated_aa", (ent.status == "Quarantined") ? all_six_frames[t][best_alt_f].aa_seq : chosen_fa.aa_seq},
+                {"clean_cds", eff_clean_cds},
+                {"raw_with_gaps", is_pseudogene_rescued ? eff_clean_cds : r.raw_with_gaps},
+                {"translated_aa", eff_translated_aa},
                 {"six_frames", six_frames_arr},
                 {"nearest_neighbor", {
                     {"target_name", (best_nn_idx < raw_recs.size()) ? raw_recs[best_nn_idx].name : ""},
@@ -971,6 +1082,7 @@ const char* walrus_stage0_run(
             {"stage_name", "Stage 0: Input Triage, Reading-Frame Rescue & Homology Admission"},
             {"dataset_label", lbl},
             {"genetic_code", cname},
+            {"keep_pseudogenes", jsettings.keep_pseudogenes},
             {"elapsed_ms", elapsed_ms},
             {"input_is_prealigned", input_is_prealigned},
             {"alignment_mode", (input_is_prealigned && strip_gaps_realign == 0) ? "preserve_alignment" : "de_novo_unaligned"},
@@ -1017,7 +1129,8 @@ const char* walrus_stage1_run(
     const char* dataset_label,
     const char* code_name,
     int refine_indel_windows,
-    int force_de_novo_realign
+    int force_de_novo_realign,
+    int keep_pseudogenes
 ) {
     try {
         auto t_start = std::chrono::steady_clock::now();
@@ -1034,6 +1147,41 @@ const char* walrus_stage1_run(
         auto raw_recs = parse_raw_sequences_preserving_gaps(raw_seq, input_is_prealigned);
         if (raw_recs.size() < 3) {
             throw std::runtime_error("Stage 1 requires at least 3 coding sequences.");
+        }
+
+        // Deduplicate exact duplicates & disambiguate colliding IDs if Stage 1 is invoked directly
+        {
+            std::unordered_set<std::string> reserved_names;
+            for (const auto& r : raw_recs) reserved_names.insert(r.name);
+            std::unordered_map<std::string, std::string> seen_nt_by_name;
+            std::unordered_map<std::string, size_t> dup_cnt;
+            std::vector<RawParsedSeq> deduped;
+            deduped.reserve(raw_recs.size());
+            for (auto& r : raw_recs) {
+                auto it = seen_nt_by_name.find(r.name);
+                if (it == seen_nt_by_name.end()) {
+                    seen_nt_by_name[r.name] = r.ungapped_nt;
+                    deduped.push_back(std::move(r));
+                } else if (it->second == r.ungapped_nt) {
+                    continue; // drop exact duplicate
+                } else {
+                    std::string orig = r.name;
+                    size_t next_n = std::max<size_t>(2, dup_cnt[orig] + 2);
+                    std::string cand;
+                    do {
+                        cand = orig + "_dup" + std::to_string(next_n++);
+                    } while (reserved_names.count(cand));
+                    dup_cnt[orig] = next_n - 2;
+                    reserved_names.insert(cand);
+                    r.name = cand;
+                    seen_nt_by_name[r.name] = r.ungapped_nt;
+                    deduped.push_back(std::move(r));
+                }
+            }
+            raw_recs = std::move(deduped);
+            if (raw_recs.size() < 3) {
+                throw std::runtime_error("Stage 1 requires at least 3 unique coding sequences after removing exact duplicates.");
+            }
         }
 
         // 1. Detect and repair any 1-bp / 2-bp mid-gene reading-frame shifts in sequences that have internal stops in Frame +0
@@ -1126,12 +1274,23 @@ const char* walrus_stage1_run(
             }
             size_t r3 = clean_ungapped[t].size() % 3;
             if (r3 != 0) clean_ungapped[t].resize(clean_ungapped[t].size() - r3);
+            if (keep_pseudogenes != 0) {
+                // Mask any remaining internal stop triplets (and terminal stop) to NNN
+                for (size_t p = 0; p + 2 < clean_ungapped[t].size(); p += 3) {
+                    char c0 = clean_ungapped[t][p], c1 = clean_ungapped[t][p + 1], c2 = clean_ungapped[t][p + 2];
+                    bool has_amb = (c0 == 'N' || c1 == 'N' || c2 == 'N' || c0 == '-' || c1 == '-' || c2 == '-');
+                    if (!has_amb && gcode->triplet_to_sense(c0, c1, c2) < 0) {
+                        clean_ungapped[t].replace(p, 3, "NNN");
+                    }
+                }
+            }
         }
 
         // 2. Build codon alignment & phylogenetic tree (either preserving pre-aligned input or running de novo Pair-HMM + POA)
         hyphy::analyses::JointAlignSettings jsettings;
         jsettings.quiet = true;
         jsettings.enforce_admission_control = false;
+        jsettings.keep_pseudogenes = (keep_pseudogenes != 0);
 
         hyphy::core::Alignment map_aln;
         hyphy::core::Tree tree;
@@ -1142,7 +1301,16 @@ const char* walrus_stage1_run(
             ScopedTempFile tmp_guard(vpath);
             {
                 std::ofstream vf(vpath, std::ios::binary | std::ios::trunc);
-                for (const auto& r : raw_recs) {
+                for (auto r : raw_recs) {
+                    if (keep_pseudogenes != 0) {
+                        for (size_t p = 0; p + 2 < r.raw_with_gaps.size(); p += 3) {
+                            char c0 = r.raw_with_gaps[p], c1 = r.raw_with_gaps[p + 1], c2 = r.raw_with_gaps[p + 2];
+                            bool is_gap_or_n = (c0 == '-' || c1 == '-' || c2 == '-' || c0 == 'N' || c1 == 'N' || c2 == 'N' || c0 == '?' || c1 == '?' || c2 == '?');
+                            if (!is_gap_or_n && gcode->triplet_to_sense(c0, c1, c2) < 0) {
+                                r.raw_with_gaps.replace(p, 3, "NNN");
+                            }
+                        }
+                    }
                     vf << ">" << r.name << "\n" << r.raw_with_gaps << "\n";
                 }
             }
@@ -2506,7 +2674,8 @@ const char* walrus_stage3_run(
     const char* seq_content,
     const char* tree_newick_in,
     const char* dataset_label,
-    const char* code_name
+    const char* code_name,
+    int keep_pseudogenes
 ) {
     try {
         auto t_start = std::chrono::steady_clock::now();
@@ -2542,6 +2711,7 @@ const char* walrus_stage3_run(
         settings.quiet = true;
         settings.genetic_code_name = cname;
         settings.enable_coevolution = true;
+        settings.keep_pseudogenes = (keep_pseudogenes != 0);
 
         std::optional<hyphy::core::Tree> opt_tree = std::nullopt;
         std::string effective_nwk = nwk_in;
@@ -2572,11 +2742,17 @@ const char* walrus_stage3_run(
             auto seqs = hyphy::analyses::JointAlignEngine::load_unaligned_fasta(vpath, gcode);
             res = engine.run_from_unaligned(seqs, gcode, opt_tree);
         } else {
+            std::optional<hyphy::core::Alignment> loaded_aln = std::nullopt;
             try {
                 hyphy::core::Alignment aln = hyphy::core::Alignment::load(vpath, gcode);
                 if (!effective_nwk.empty()) aln.embedded_tree_newick = effective_nwk;
-                res = engine.run_from_alignment(aln, opt_tree);
+                loaded_aln = std::move(aln);
             } catch (...) {
+                loaded_aln = std::nullopt;
+            }
+            if (loaded_aln.has_value()) {
+                res = engine.run_from_alignment(*loaded_aln, opt_tree);
+            } else {
                 auto seqs = hyphy::analyses::JointAlignEngine::load_unaligned_fasta(vpath, gcode);
                 res = engine.run_from_unaligned(seqs, gcode, opt_tree);
             }
@@ -2742,7 +2918,7 @@ const char* walrus_stage3_run(
 }
 
 HYPHY3_WASM_KEEPALIVE
-const char* walrus_ping_run(const char* seq_content, const char* dataset_label, const char* code_name) {
+const char* walrus_ping_run(const char* seq_content, const char* dataset_label, const char* code_name, int keep_pseudogenes) {
     try {
         g_last_error.clear();
         std::string raw_seq = seq_content ? seq_content : "";
@@ -2773,6 +2949,8 @@ const char* walrus_ping_run(const char* seq_content, const char* dataset_label, 
         auto gcode = safe_genetic_code(cname);
         hyphy::analyses::CharacterizeSettings settings;
         settings.quiet = false;
+        settings.genetic_code_name = cname;
+        settings.keep_pseudogenes = (keep_pseudogenes != 0);
 
         hyphy::analyses::CharacterizeEngine engine(settings);
         hyphy::analyses::CharacterizeResult res;
@@ -2780,13 +2958,18 @@ const char* walrus_ping_run(const char* seq_content, const char* dataset_label, 
         if (looks_unaligned_or_needs_stage0(raw_seq)) {
             res = engine.run_from_unaligned_file(vpath, gcode);
         } else {
+            std::optional<hyphy::core::Alignment> loaded_aln = std::nullopt;
             try {
                 hyphy::core::Alignment aln = hyphy::core::Alignment::load(vpath, gcode);
                 std::string tr_nwk = extract_translated_embedded_newick(raw_seq);
                 if (!tr_nwk.empty()) aln.embedded_tree_newick = tr_nwk;
-                res = engine.run_from_alignment(aln);
+                loaded_aln = std::move(aln);
             } catch (...) {
-                // Fallback to Stage 0/1 unaligned transducer if strict alignment load fails
+                loaded_aln = std::nullopt;
+            }
+            if (loaded_aln.has_value()) {
+                res = engine.run_from_alignment(*loaded_aln);
+            } else {
                 res = engine.run_from_unaligned_file(vpath, gcode);
             }
         }

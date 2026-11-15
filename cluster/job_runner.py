@@ -80,6 +80,9 @@ def main() -> int:
     if opts.get("coevolution", True):
         argv.append("--coevolution")
 
+    if opts.get("keep_pseudogenes", False):
+        argv.append("--keep-pseudogenes")
+
     srv = opts.get("srv", "")
     if srv in ("Yes", "No"):
         argv.extend(["--srv", srv])
@@ -118,12 +121,12 @@ def main() -> int:
                 text=True,
             )
             try:
-                rc = proc.wait(timeout=int(spec.get("timeout_sec", 1140)))
+                rc = proc.wait(timeout=int(spec.get("timeout_sec", 2640)))
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
                 rc = 124
-                err_msg = "Job exceeded the 19-minute cluster execution time limit."
+                err_msg = "Job exceeded the 44-minute cluster execution time limit."
     except Exception as exc:
         rc = 1
         err_msg = f"Runner failure: {exc}"

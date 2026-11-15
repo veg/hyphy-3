@@ -318,5 +318,101 @@ int main() {
         std::cout << "[PASS] --keep-pseudogenes Viterbi Frameshift Splicing, Premature Stop Masking, Gate 3 Homology Retention & MACSE '!' Masking\n";
     }
 
+    // 8. Regression tests for NEXUS/PHYLIP/FASTA production edge cases
+    {
+        // 8a. Space-blocked NEXUS + quoted '[...]' taxon labels + doubled single-quote escaping
+        const std::string nex_blocked_path = "/tmp/hyphy3_test_space_blocked_quoted.nex";
+        {
+            std::ofstream out(nex_blocked_path);
+            out << "#NEXUS\n"
+                << "[Header comment]\n"
+                << "BEGIN DATA;\n"
+                << "  DIMENSIONS NTAX=3 NCHAR=12;\n"
+                << "  FORMAT DATATYPE=DNA GAP=- MISSING=?;\n"
+                << "  MATRIX\n"
+                << "    'Alpha [isolate 1]'   ATG GCT TAC GGT\n"
+                << "    'Beta ''B'' [iso 2]'  ATG GCC TAT GGA\n"
+                << "    Gamma_3               ATG GCA TAC GGC [inline comment]\n"
+                << "  ;\n"
+                << "END;\n";
+        }
+        Alignment aln_blk = Alignment::from_nexus(nex_blocked_path, GeneticCode::universal(), false, true);
+        assert(aln_blk.num_taxa == 3);
+        assert(aln_blk.num_codons == 4);
+        assert(aln_blk.sequences[0].name == "Alpha [isolate 1]");
+        assert(aln_blk.sequences[1].name == "Beta 'B' [iso 2]");
+        assert(aln_blk.sequences[2].name == "Gamma_3");
+        std::remove(nex_blocked_path.c_str());
+
+        // 8b. Unaligned / ragged NEXUS loaded via JointAlignEngine::load_unaligned_fasta
+        const std::string nex_ragged_path = "/tmp/hyphy3_test_ragged_unaligned.nex";
+        {
+            std::ofstream out(nex_ragged_path);
+            out << "#NEXUS\n"
+                << "BEGIN DATA;\n"
+                << "  DIMENSIONS NTAX=3 NCHAR=60;\n"
+                << "  FORMAT DATATYPE=DNA GAP=-;\n"
+                << "  MATRIX\n"
+                << "    Tax1 ATGGCTTACGGTCCTGACAAAGCTTTCGAGCTGATCGCTAAACAGTTCGAG\n"
+                << "    Tax2 ATGGCTTACGGTCCTGACAAAGCTTTCGAGCTGATCGCTAAACAGTTCGAGTACGGT\n"
+                << "    Tax3 ATGGCTTACGGTCCTGACAAAGCTTTCGAGCTGATCGCTAAACAG\n"
+                << "  ;\n"
+                << "END;\n";
+        }
+        auto ragged_nex = JointAlignEngine::load_unaligned_fasta(nex_ragged_path);
+        assert(ragged_nex.size() == 3);
+        assert(ragged_nex[0].raw_seq.size() == 51);
+        assert(ragged_nex[1].raw_seq.size() == 57);
+        assert(ragged_nex[2].raw_seq.size() == 45);
+        std::remove(nex_ragged_path.c_str());
+
+        // 8c. Tree-only #NEXUS throws clear actionable error
+        const std::string nex_tree_only = "/tmp/hyphy3_test_tree_only.nex";
+        {
+            std::ofstream out(nex_tree_only);
+            out << "#NEXUS\nBEGIN TREES;\n  TREE t1 = (A:0.1,B:0.2,C:0.3);\nEND;\n";
+        }
+        bool caught_tree_only = false;
+        try {
+            Alignment::load_unfinalized(nex_tree_only);
+        } catch (const std::exception& e) {
+            std::string msg = e.what();
+            assert(msg.find("TREES") != std::string::npos);
+            caught_tree_only = true;
+        }
+        assert(caught_tree_only);
+        std::remove(nex_tree_only.c_str());
+
+        // 8d. PHYLIP + FASTA with leading '#' comment lines
+        const std::string phy_path = "/tmp/hyphy3_test_input.phy";
+        {
+            std::ofstream out(phy_path);
+            out << " 3 48\n"
+                << "SeqA      ATGGCTTACG GTCCTGACAA AGCTTTCGAG CTGATCGCTA AACAGTTC\n"
+                << "SeqB      ATGGCTTACG GTCCTGACAA AGCTTTCGAG CTGATCGCTA AACAGTTT\n"
+                << "SeqC      ATGGCTTACG GTCCTGACAA AGCTTTCGAG CTGATCGCTA AACAGTTC\n";
+        }
+        auto phy_seqs = JointAlignEngine::load_unaligned_fasta(phy_path);
+        assert(phy_seqs.size() == 3);
+        assert(phy_seqs[0].raw_seq.size() == 48);
+        std::remove(phy_path.c_str());
+
+        const std::string fa_comment_path = "/tmp/hyphy3_test_comment.fa";
+        {
+            std::ofstream out(fa_comment_path);
+            out << "# Exported sequence set\n"
+                << ">TaxA\nATGGCTTACGGTCCTGACAAAGCTTTCGAGCTGATCGCTAAACAGTTC\n"
+                << ">TaxB\nATGGCTTACGGTCCTGACAAAGCTTTCGAGCTGATCGCTAAACAGTTT\n"
+                << ">TaxC\nATGGCTTACGGTCCTGACAAAGCTTTCGAGCTGATCGCTAAACAGTTC\n";
+        }
+        Alignment fa_aln = Alignment::from_fasta(fa_comment_path, GeneticCode::universal(), false, true);
+        assert(fa_aln.num_taxa == 3);
+        assert(fa_aln.num_codons == 16);
+        std::remove(fa_comment_path.c_str());
+
+        std::cout << "[PASS] NEXUS Space-Blocked / Quoted-[...] / Ragged Unaligned / Tree-Only, PHYLIP, & Commented FASTA Regressions\n";
+    }
+
     return 0;
 }
+

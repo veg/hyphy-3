@@ -847,6 +847,9 @@ public:
         const double SCALER_THRESH = 1e-150;
         const double SCALER_UP = 1e150;
 
+#ifdef _OPENMP
+        #pragma omp parallel for schedule(static) if(W >= 4 && N >= 32)
+#endif
         for (size_t w = 0; w < W; ++w) {
             size_t site = start_codon + w;
             std::vector<Vector> D_node(num_nodes, Vector::Ones(S));
@@ -1497,10 +1500,17 @@ public:
             };
             std::vector<TaxonProposal> proposals;
 
+#ifdef _OPENMP
+            #pragma omp parallel for schedule(dynamic, 4) if(N >= 16)
+#endif
             for (size_t t = 0; t < N; ++t) {
-                auto tr = solve_codon_indel_transducer_for_taxon(
+                cand_taxon_res[t] = solve_codon_indel_transducer_for_taxon(
                     aln.sequences[t], w_start, w_end, t, leaf_cavity, settings
                 );
+            }
+
+            for (size_t t = 0; t < N; ++t) {
+                const auto& tr = cand_taxon_res[t];
                 if (tr.changed) {
                     for (size_t w = 0; w < W; ++w) {
                         batch_aln.sequences[t].codons[w_start + w] = tr.map_codons[w];
@@ -1513,7 +1523,6 @@ public:
                     batch_codons_shifted += tr.codons_shifted;
                     proposals.push_back({t, tr.map_log_score - tr.input_log_score});
                 }
-                cand_taxon_res[t] = std::move(tr);
             }
 
             if (out_window_taxon_results[wi][0].col_match_posterior.empty()) {
@@ -1534,30 +1543,50 @@ public:
             size_t seq_codons_shifted = 0;
             std::vector<TransducerTaxonResult> seq_taxon_res = cand_taxon_res;
 
-            for (size_t pi_idx = 0; pi_idx < proposals.size(); ++pi_idx) {
+            const size_t gs_limit = (N > 256) ? std::min<size_t>(proposals.size(), 16)
+                                  : ((N > 96) ? std::min<size_t>(proposals.size(), 32) : proposals.size());
+            const size_t cavity_refresh_stride = (N > 256) ? 8 : ((N > 96) ? 4 : 1);
+            size_t last_cavity_refresh_changed = 0;
+
+            std::vector<int8_t> saved_codons(W);
+            std::vector<uint64_t> saved_masks(W, 0);
+
+            for (size_t pi_idx = 0; pi_idx < gs_limit; ++pi_idx) {
                 size_t t = proposals[pi_idx].taxon_idx;
                 if (seq_taxa_changed > 0) {
-                    compute_window_leaf_cavities(tree, seq_aln, mg94, P_branches, w_start, w_end, leaf_cavity, omega_ptr, conv, &two_stratum);
+                    if (seq_taxa_changed - last_cavity_refresh_changed >= cavity_refresh_stride) {
+                        compute_window_leaf_cavities(tree, seq_aln, mg94, P_branches, w_start, w_end, leaf_cavity, omega_ptr, conv, &two_stratum);
+                        last_cavity_refresh_changed = seq_taxa_changed;
+                    }
                     seq_taxon_res[t] = solve_codon_indel_transducer_for_taxon(
                         seq_aln.sequences[t], w_start, w_end, t, leaf_cavity, settings
                     );
                 }
                 if (!seq_taxon_res[t].changed) continue;
 
-                Alignment trial_aln = seq_aln;
+                std::string saved_raw = seq_aln.sequences[t].raw_seq.substr(3 * w_start, 3 * W);
                 for (size_t w = 0; w < W; ++w) {
-                    trial_aln.sequences[t].codons[w_start + w] = seq_taxon_res[t].map_codons[w];
-                    if (w_start + w < trial_aln.sequences[t].codon_masks.size()) {
-                        trial_aln.sequences[t].codon_masks[w_start + w] = seq_taxon_res[t].map_masks[w];
+                    saved_codons[w] = seq_aln.sequences[t].codons[w_start + w];
+                    seq_aln.sequences[t].codons[w_start + w] = seq_taxon_res[t].map_codons[w];
+                    if (w_start + w < seq_aln.sequences[t].codon_masks.size()) {
+                        saved_masks[w] = seq_aln.sequences[t].codon_masks[w_start + w];
+                        seq_aln.sequences[t].codon_masks[w_start + w] = seq_taxon_res[t].map_masks[w];
                     }
                 }
-                trial_aln.sequences[t].raw_seq.replace(3 * w_start, 3 * W, seq_taxon_res[t].map_raw_subseq);
-                Scalar trial_lnl = eval_window_lnl(trial_aln, w_start, w_end);
+                seq_aln.sequences[t].raw_seq.replace(3 * w_start, 3 * W, seq_taxon_res[t].map_raw_subseq);
+                Scalar trial_lnl = eval_window_lnl(seq_aln, w_start, w_end);
                 if (trial_lnl > seq_lnl) {
-                    seq_aln = std::move(trial_aln);
                     seq_lnl = trial_lnl;
                     seq_taxa_changed++;
                     seq_codons_shifted += seq_taxon_res[t].codons_shifted;
+                } else {
+                    for (size_t w = 0; w < W; ++w) {
+                        seq_aln.sequences[t].codons[w_start + w] = saved_codons[w];
+                        if (w_start + w < seq_aln.sequences[t].codon_masks.size()) {
+                            seq_aln.sequences[t].codon_masks[w_start + w] = saved_masks[w];
+                        }
+                    }
+                    seq_aln.sequences[t].raw_seq.replace(3 * w_start, 3 * W, saved_raw);
                 }
             }
 
@@ -1582,6 +1611,7 @@ public:
 
         // Group contiguous overlapping half-stride tiles into chains and polish with
         // bidirectional (forward + backward) Gauss-Seidel sweeps
+        const size_t eff_em_iters = (N > 256) ? 1 : settings.em_iterations;
         size_t chain_start = 0;
         while (chain_start < windows.size()) {
             size_t chain_end = chain_start;
@@ -1590,7 +1620,7 @@ public:
                 chain_end++;
             }
 
-            for (size_t iter = 0; iter < settings.em_iterations; ++iter) {
+            for (size_t iter = 0; iter < eff_em_iters; ++iter) {
                 bool any_accepted = false;
                 // Forward pass: chain_start -> ... -> chain_end
                 for (size_t wi = chain_start; wi <= chain_end; ++wi) {
@@ -1934,7 +1964,8 @@ public:
 
         std::vector<int32_t> candidate_clades = compute_candidate_clades();
 
-        size_t max_clades_to_probe = std::min<size_t>(candidate_clades.size(), 16);
+        const size_t clade_cap = (N > 256) ? 6 : 16;
+        size_t max_clades_to_probe = std::min<size_t>(candidate_clades.size(), clade_cap);
         for (size_t ci = 0; ci < max_clades_to_probe; ++ci) {
             if (ci >= candidate_clades.size()) break;
             int32_t u = candidate_clades[ci];
@@ -1969,7 +2000,8 @@ public:
             }
             std::sort(targets.begin(), targets.end(), [](const auto& a, const auto& b) { return a.r < b.r; });
 
-            size_t lim = std::min(targets.size(), settings.max_coupled_spr_candidates);
+            const size_t target_cap = (N > 256) ? std::min<size_t>(settings.max_coupled_spr_candidates, 3) : settings.max_coupled_spr_candidates;
+            size_t lim = std::min(targets.size(), target_cap);
             for (size_t ti = 0; ti < lim; ++ti) {
                 int32_t v = targets[ti].v;
                 auto spr_opt = TreeEngine::apply_spr_move(tree, u, v);
@@ -5631,11 +5663,59 @@ public:
                 }
             }
             seqs.push_back(Sequence{current_name, std::move(current_seq), {}, {}});
+            current_seq.clear();
         };
+
+        auto convert_unfinalized_alignment = [&](const Alignment& raw_aln) {
+            for (const auto& s : raw_aln.sequences) {
+                current_name = s.name;
+                current_seq.clear();
+                current_seq.reserve(s.raw_seq.size());
+                for (char c : s.raw_seq) {
+                    if (c == '-' || c == '.' || std::isspace(static_cast<unsigned char>(c))) continue;
+                    char uc = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                    if (uc == 'U') uc = 'T';
+                    current_seq += uc;
+                }
+                flush_seq();
+            }
+        };
+
+        // Check first meaningful line so NEXUS (even with '>' inside [...] comments) or PHYLIP routes directly
+        {
+            std::istringstream peek_ss(raw);
+            std::string pline;
+            while (std::getline(peek_ss, pline)) {
+                if (!pline.empty() && pline.back() == '\r') pline.pop_back();
+                size_t p0 = pline.find_first_not_of(" \t");
+                if (p0 == std::string::npos) continue;
+                std::string trimmed = pline.substr(p0);
+                std::string upper = trimmed;
+                for (char& ch : upper) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+                if (trimmed[0] == '#') {
+                    if (upper.rfind("#NEXUS", 0) == 0 || upper.rfind("# STOCKHOLM", 0) == 0 || upper.rfind("#STOCKHOLM", 0) == 0) {
+                        Alignment raw_aln = Alignment::load_unfinalized(filepath);
+                        convert_unfinalized_alignment(raw_aln);
+                        return seqs;
+                    }
+                    continue; // '# comment' line before FASTA
+                }
+                size_t ntax = 0, nchar = 0;
+                if (trimmed[0] != '>' && (Alignment::is_phylip_header_line(trimmed, ntax, nchar) ||
+                                          upper.rfind("BEGIN ", 0) == 0 || upper.rfind("BEGIN\t", 0) == 0 || upper == "BEGIN" ||
+                                          (trimmed[0] == '(' && trimmed.find(':') != std::string::npos))) {
+                    Alignment raw_aln = Alignment::load_unfinalized(filepath);
+                    convert_unfinalized_alignment(raw_aln);
+                    return seqs;
+                }
+                break;
+            }
+        }
 
         while (std::getline(file, line)) {
             if (!line.empty() && line.back() == '\r') line.pop_back();
             if (line.empty()) continue;
+            if (line[0] == '#' && current_name.empty() && current_seq.empty()) continue;
             if (line[0] == '>') {
                 flush_seq();
                 std::string header = line.substr(1);
@@ -5662,8 +5742,8 @@ public:
         flush_seq();
         if (seqs.empty()) {
             // Fallback for PHYLIP / NEXUS / gzipped files passed to --unaligned
-            Alignment loaded = Alignment::load(filepath, gcode);
-            return strip_gaps_to_unaligned(loaded);
+            Alignment raw_aln = Alignment::load_unfinalized(filepath);
+            convert_unfinalized_alignment(raw_aln);
         }
         return seqs;
     }

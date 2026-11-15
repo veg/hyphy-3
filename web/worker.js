@@ -7,21 +7,25 @@ function stripAnsi(str) {
 
 function initModule() {
   if (!walrusModulePromise) {
-    importScripts('hyphy3_walrus.js');
-    walrusModulePromise = createWalrusModule({
-      print: function(text) {
-        const clean = stripAnsi(text).trim();
-        if (clean) {
-          self.postMessage({ type: 'log', stream: 'stdout', line: clean, text: clean });
+    try {
+      importScripts('hyphy3_walrus.js');
+      walrusModulePromise = createWalrusModule({
+        print: function(text) {
+          const clean = stripAnsi(text).trim();
+          if (clean) {
+            self.postMessage({ type: 'log', stream: 'stdout', line: clean, text: clean });
+          }
+        },
+        printErr: function(text) {
+          const clean = stripAnsi(text).trim();
+          if (clean) {
+            self.postMessage({ type: 'log', stream: 'stderr', line: clean, text: clean });
+          }
         }
-      },
-      printErr: function(text) {
-        const clean = stripAnsi(text).trim();
-        if (clean) {
-          self.postMessage({ type: 'log', stream: 'stderr', line: clean, text: clean });
-        }
-      }
-    });
+      });
+    } catch (err) {
+      return Promise.reject(err);
+    }
   }
   return walrusModulePromise;
 }
@@ -49,12 +53,13 @@ self.onmessage = async function(e) {
       const minCodons = (typeof data.minSenseCodons === 'number') ? data.minSenseCodons : 15;
       const minZ = (typeof data.minHomologyZ === 'number') ? data.minHomologyZ : 3.5;
       const stripGaps = data.stripGapsRealign ? 1 : 0;
+      const keepPseudo = data.keepPseudogenes ? 1 : 0;
 
       const jsonStr = mod.ccall(
         'walrus_stage0_run',
         'string',
-        ['string', 'string', 'string', 'number', 'number', 'number'],
-        [seq, label, code, minCodons, minZ, stripGaps]
+        ['string', 'string', 'string', 'number', 'number', 'number', 'number'],
+        [seq, label, code, minCodons, minZ, stripGaps, keepPseudo]
       );
       const err = mod.ccall('walrus_get_last_error', 'string', [], []);
       if (!jsonStr || err) {
@@ -90,12 +95,13 @@ self.onmessage = async function(e) {
       const code = data.geneticCode || data.code || 'Universal';
       const refineWindows = (data.refineIndelWindows === false) ? 0 : 1;
       const forceDeNovo = data.forceDeNovoRealign ? 1 : 0;
+      const keepPseudo = data.keepPseudogenes ? 1 : 0;
 
       const jsonStr = mod.ccall(
         'walrus_stage1_run',
         'string',
-        ['string', 'string', 'string', 'number', 'number'],
-        [seq, label, code, refineWindows, forceDeNovo]
+        ['string', 'string', 'string', 'number', 'number', 'number'],
+        [seq, label, code, refineWindows, forceDeNovo, keepPseudo]
       );
       const err = mod.ccall('walrus_get_last_error', 'string', [], []);
       if (!jsonStr || err) {
@@ -172,12 +178,13 @@ self.onmessage = async function(e) {
       const treeNewick = data.treeNewick || '';
       const label = data.label || 'STAGE3_COHORT';
       const code = data.geneticCode || data.code || 'Universal';
+      const keepPseudo = data.keepPseudogenes ? 1 : 0;
 
       const jsonStr = mod.ccall(
         'walrus_stage3_run',
         'string',
-        ['string', 'string', 'string', 'string'],
-        [seq, treeNewick, label, code]
+        ['string', 'string', 'string', 'string', 'number'],
+        [seq, treeNewick, label, code, keepPseudo]
       );
       const err = mod.ccall('walrus_get_last_error', 'string', [], []);
       if (!jsonStr || err) {
@@ -214,6 +221,7 @@ self.onmessage = async function(e) {
       const seq = data.seqContent || data.sequence || '';
       const label = data.label || 'RED_OCTOBER_TARGET';
       const code = data.geneticCode || data.code || 'Universal';
+      const keepPseudo = data.keepPseudogenes ? 1 : 0;
 
       const banner = '>>> CONNING TOWER: Transmitting acoustic codon ping on target [' + label + '] (' + code + ', ' + seq.length + ' bytes)...';
       self.postMessage({
@@ -226,8 +234,8 @@ self.onmessage = async function(e) {
       const html = mod.ccall(
         'walrus_ping_run',
         'string',
-        ['string', 'string', 'string'],
-        [seq, label, code]
+        ['string', 'string', 'string', 'number'],
+        [seq, label, code, keepPseudo]
       );
       const err = mod.ccall('walrus_get_last_error', 'string', [], []);
       if (!html || err) {

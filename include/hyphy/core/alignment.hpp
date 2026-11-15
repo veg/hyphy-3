@@ -115,7 +115,7 @@ public:
         return buffer.str();
     }
 
-    static Alignment from_fasta(const std::string& filepath, std::shared_ptr<const GeneticCode> gcode = nullptr, bool as_nucleotide = false) {
+    static Alignment from_fasta(const std::string& filepath, std::shared_ptr<const GeneticCode> gcode = nullptr, bool as_nucleotide = false, bool do_finalize = true) {
         Alignment aln;
         std::string raw = read_file_or_gzip(filepath);
         std::istringstream file(raw);
@@ -130,6 +130,7 @@ public:
                 line.pop_back();
             }
             if (line.empty()) continue;
+            if (line[0] == '#' && current_name.empty() && current_seq.empty()) continue;
 
             if (line[0] == '>') {
                 if (!current_name.empty()) {
@@ -137,10 +138,16 @@ public:
                     current_seq.clear();
                 }
                 current_name = line.substr(1);
-                // Strip spaces
-                auto first_space = current_name.find_first_of(" \t");
-                if (first_space != std::string::npos) {
-                    current_name = current_name.substr(0, first_space);
+                // Strip leading spaces, then take first whitespace-delimited token
+                auto first_non_ws = current_name.find_first_not_of(" \t");
+                if (first_non_ws == std::string::npos) {
+                    current_name = "unnamed";
+                } else {
+                    current_name = current_name.substr(first_non_ws);
+                    auto first_space = current_name.find_first_of(" \t");
+                    if (first_space != std::string::npos) {
+                        current_name = current_name.substr(0, first_space);
+                    }
                 }
             } else if (line[0] == '(') {
                 aln.embedded_tree_newick = line;
@@ -171,28 +178,59 @@ public:
             aln.add_sequence(current_name, current_seq);
         }
 
-        if (as_nucleotide) {
-            aln.finalize_nucleotide();
-        } else {
-            aln.finalize(gcode);
+        if (do_finalize) {
+            if (as_nucleotide) {
+                aln.finalize_nucleotide();
+            } else {
+                aln.finalize(gcode);
+            }
         }
         return aln;
     }
 
-    static Alignment from_nexus(const std::string& filepath, std::shared_ptr<const GeneticCode> gcode = nullptr, bool as_nucleotide = false) {
+    static Alignment from_nexus(const std::string& filepath, std::shared_ptr<const GeneticCode> gcode = nullptr, bool as_nucleotide = false, bool do_finalize = true) {
         Alignment aln;
         std::string raw = read_file_or_gzip(filepath);
 
-        // 1. Remove comments [ ... ]
+        // 1. Remove NEXUS comments [ ... ], preserving '[' and ']' inside quoted labels ('...' or "...")
         std::string text;
         text.reserve(raw.size());
         int comment_depth = 0;
-        for (char c : raw) {
+        char active_quote = '\0';
+        for (size_t ri = 0; ri < raw.size(); ++ri) {
+            char c = raw[ri];
+            if (comment_depth > 0) {
+                if (c == '[') {
+                    comment_depth++;
+                } else if (c == ']') {
+                    comment_depth--;
+                } else if (c == '\n' || c == '\r') {
+                    // Preserve line breaks outside comment contents so row structure stays intact
+                    text += c;
+                }
+                continue;
+            }
+            if (active_quote != '\0') {
+                text += c;
+                if (c == active_quote) {
+                    // Doubled single-quote '' inside '...' is an escaped apostrophe in NEXUS
+                    if (c == '\'' && ri + 1 < raw.size() && raw[ri + 1] == '\'') {
+                        text += raw[++ri];
+                    } else {
+                        active_quote = '\0';
+                    }
+                } else if (c == '\n' || c == '\r') {
+                    // Guard against unclosed stray apostrophe on a line eating the rest of the file
+                    active_quote = '\0';
+                }
+                continue;
+            }
             if (c == '[') {
                 comment_depth++;
-            } else if (c == ']') {
-                if (comment_depth > 0) comment_depth--;
-            } else if (comment_depth == 0) {
+            } else {
+                if (c == '\'' || c == '"') {
+                    active_quote = c;
+                }
                 text += c;
             }
         }
@@ -210,10 +248,45 @@ public:
         // 2. Find MATRIX block
         size_t mat_pos = find_case_insensitive(text, "MATRIX");
         if (mat_pos == std::string::npos) {
+            if (find_case_insensitive(text, "BEGIN TREES") != std::string::npos ||
+                find_case_insensitive(text, "TREE ") != std::string::npos ||
+                find_case_insensitive(text, "TREE\t") != std::string::npos) {
+                throw std::runtime_error(
+                    "NEXUS file contains a TREES block but no sequence MATRIX block. "
+                    "Load your sequence alignment first, then supply this tree file separately."
+                );
+            }
             throw std::runtime_error("NEXUS file does not contain a MATRIX block: " + filepath);
         }
 
-        // Parse optional TAXLABELS block and FORMAT NOLABELS / DIMENSIONS NCHAR before MATRIX
+        // Parse optional DIMENSIONS NCHAR=<N> before MATRIX
+        size_t expected_nchar = 0;
+        size_t dim_pos = find_case_insensitive(text, "DIMENSIONS");
+        while (dim_pos != std::string::npos && dim_pos < mat_pos) {
+            size_t dim_end = text.find(';', dim_pos);
+            if (dim_end != std::string::npos && dim_end <= mat_pos) {
+                std::string dim_block = text.substr(dim_pos, dim_end - dim_pos);
+                size_t nc_pos = find_case_insensitive(dim_block, "NCHAR");
+                if (nc_pos != std::string::npos) {
+                    size_t eq = dim_block.find('=', nc_pos + 5);
+                    if (eq != std::string::npos) {
+                        size_t di = eq + 1;
+                        while (di < dim_block.size() && std::isspace(static_cast<unsigned char>(dim_block[di]))) di++;
+                        size_t val = 0;
+                        bool any_digit = false;
+                        while (di < dim_block.size() && std::isdigit(static_cast<unsigned char>(dim_block[di]))) {
+                            val = val * 10 + static_cast<size_t>(dim_block[di] - '0');
+                            any_digit = true;
+                            di++;
+                        }
+                        if (any_digit && val > 0) expected_nchar = val;
+                    }
+                }
+            }
+            dim_pos = find_case_insensitive(text, "DIMENSIONS", dim_pos + 10);
+        }
+
+        // Parse optional TAXLABELS block and FORMAT NOLABELS / INTERLEAVE before MATRIX
         std::vector<std::string> taxlabels;
         size_t tl_pos = find_case_insensitive(text, "TAXLABELS");
         if (tl_pos != std::string::npos && tl_pos < mat_pos) {
@@ -227,8 +300,18 @@ public:
                     std::string name;
                     if (tl_body[ti] == '\'' || tl_body[ti] == '"') {
                         char q = tl_body[ti++];
-                        while (ti < tn && tl_body[ti] != q) name += tl_body[ti++];
-                        if (ti < tn) ti++;
+                        while (ti < tn) {
+                            if (tl_body[ti] == q) {
+                                if (q == '\'' && ti + 1 < tn && tl_body[ti + 1] == '\'') {
+                                    name += '\'';
+                                    ti += 2;
+                                    continue;
+                                }
+                                ti++;
+                                break;
+                            }
+                            name += tl_body[ti++];
+                        }
                     } else {
                         while (ti < tn && !std::isspace(static_cast<unsigned char>(tl_body[ti]))) {
                             name += tl_body[ti++];
@@ -240,6 +323,7 @@ public:
         }
 
         bool nolabels = false;
+        bool is_interleaved = false;
         size_t fmt_pos = find_case_insensitive(text, "FORMAT");
         while (fmt_pos != std::string::npos && fmt_pos < mat_pos) {
             size_t fmt_end = text.find(';', fmt_pos);
@@ -247,7 +331,20 @@ public:
                 std::string fmt_block = text.substr(fmt_pos, fmt_end - fmt_pos);
                 if (find_case_insensitive(fmt_block, "NOLABELS") != std::string::npos) {
                     nolabels = true;
-                    break;
+                }
+                if (find_case_insensitive(fmt_block, "INTERLEAVE") != std::string::npos) {
+                    // Check it is not INTERLEAVE=NO
+                    size_t il_pos = find_case_insensitive(fmt_block, "INTERLEAVE");
+                    size_t eq_il = fmt_block.find('=', il_pos + 10);
+                    bool explicitly_no = false;
+                    if (eq_il != std::string::npos && eq_il - il_pos <= 14) {
+                        size_t vi = eq_il + 1;
+                        while (vi < fmt_block.size() && std::isspace(static_cast<unsigned char>(fmt_block[vi]))) vi++;
+                        if (vi < fmt_block.size() && (fmt_block[vi] == 'N' || fmt_block[vi] == 'n' || fmt_block[vi] == 'F' || fmt_block[vi] == 'f' || fmt_block[vi] == '0')) {
+                            explicitly_no = true;
+                        }
+                    }
+                    if (!explicitly_no) is_interleaved = true;
                 }
             }
             fmt_pos = find_case_insensitive(text, "FORMAT", fmt_pos + 6);
@@ -255,7 +352,41 @@ public:
 
         mat_pos += 6; // skip "MATRIX"
 
-        size_t mat_end = text.find(';', mat_pos);
+        // Find terminating ';' outside single/double quotes in MATRIX
+        size_t mat_end = std::string::npos;
+        {
+            char mq = '\0';
+            for (size_t mi = mat_pos; mi < text.size(); ++mi) {
+                char c = text[mi];
+                if (mq != '\0') {
+                    if (c == mq) {
+                        if (c == '\'' && mi + 1 < text.size() && text[mi + 1] == '\'') {
+                            ++mi;
+                        } else {
+                            mq = '\0';
+                        }
+                    } else if (c == '\n' || c == '\r') {
+                        mq = '\0';
+                    }
+                } else {
+                    if (c == '\'' || c == '"') {
+                        mq = c;
+                    } else if (c == ';') {
+                        mat_end = mi;
+                        break;
+                    }
+                }
+            }
+            // Fallback if unclosed MATRIX lacks ';' before END;
+            if (mat_end == std::string::npos) {
+                size_t end_kw = find_case_insensitive(text, "\nEND;", mat_pos);
+                if (end_kw == std::string::npos) end_kw = find_case_insensitive(text, "\nEND ", mat_pos);
+                if (end_kw == std::string::npos) end_kw = find_case_insensitive(text, "\rEND;", mat_pos);
+                if (end_kw != std::string::npos) {
+                    mat_end = end_kw;
+                }
+            }
+        }
         if (mat_end == std::string::npos) {
             throw std::runtime_error("NEXUS MATRIX block is not terminated with a semicolon: " + filepath);
         }
@@ -283,28 +414,42 @@ public:
             } else {
                 if (mat_content[idx] == '\'' || mat_content[idx] == '"') {
                     char quote = mat_content[idx++];
-                    while (idx < n && mat_content[idx] != quote) {
+                    while (idx < n) {
+                        if (mat_content[idx] == quote) {
+                            if (quote == '\'' && idx + 1 < n && mat_content[idx + 1] == '\'') {
+                                taxon += '\'';
+                                idx += 2;
+                                continue;
+                            }
+                            idx++; // skip closing quote
+                            break;
+                        }
                         taxon += mat_content[idx++];
                     }
-                    if (idx < n) idx++; // skip closing quote
                 } else {
                     while (idx < n && !std::isspace(static_cast<unsigned char>(mat_content[idx]))) {
                         taxon += mat_content[idx++];
                     }
                 }
 
-                // skip whitespace to sequence
+                // skip horizontal/vertical whitespace to sequence
                 while (idx < n && std::isspace(static_cast<unsigned char>(mat_content[idx]))) {
                     idx++;
                 }
                 if (idx >= n) break;
             }
 
-            // read sequence characters
+            size_t existing_len = 0;
+            auto existing_it = aln.taxon_to_index.find(taxon);
+            if (existing_it != aln.taxon_to_index.end() && is_interleaved) {
+                existing_len = aln.sequences[existing_it->second].raw_seq.size();
+            }
+
+            // read sequence characters across the current row (supporting space-grouped blocks like "ATG CGT TAC")
             std::string seq;
             while (idx < n) {
                 char c = mat_content[idx];
-                if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.' || c == '!') {
+                if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.' || c == '!' || c == '*') {
                     seq += (c == '.' ? '-' : c);
                     idx++;
                 } else if (c == '\n' || c == '\r') {
@@ -312,18 +457,22 @@ public:
                     break;
                 } else if (std::isspace(static_cast<unsigned char>(c))) {
                     if (nolabels) {
-                        // In NOLABELS mode, horizontal spaces within a line are ignored; newline ends row
                         idx++;
                         continue;
                     }
-                    // Check if next non-space character is the start of a new taxon
+                    // If single-line NEXUS has multiple taxa on one line, break once expected_nchar is reached
+                    // or if a quoted taxon name immediately follows
                     size_t lookahead = idx;
-                    while (lookahead < n && std::isspace(static_cast<unsigned char>(mat_content[lookahead]))) lookahead++;
+                    while (lookahead < n && (mat_content[lookahead] == ' ' || mat_content[lookahead] == '\t')) lookahead++;
                     if (lookahead < n && (mat_content[lookahead] == '\'' || mat_content[lookahead] == '"')) {
                         break;
                     }
-                    // In single-line contiguous NEXUS, sequence is contiguous until next taxon
-                    break;
+                    if (expected_nchar > 0 && (existing_len + seq.size()) >= expected_nchar) {
+                        break;
+                    }
+                    // Otherwise horizontal spaces separate sequence blocks on the same line (e.g. 10-bp blocks)
+                    idx = lookahead;
+                    continue;
                 } else {
                     idx++;
                 }
@@ -331,7 +480,10 @@ public:
 
             if (!taxon.empty() && !seq.empty()) {
                 auto it = aln.taxon_to_index.find(taxon);
-                if (it == aln.taxon_to_index.end()) {
+                bool can_append_interleaved =
+                    (it != aln.taxon_to_index.end()) &&
+                    (is_interleaved || (expected_nchar > 0 && aln.sequences[it->second].raw_seq.size() + seq.size() <= expected_nchar));
+                if (it == aln.taxon_to_index.end() || !can_append_interleaved) {
                     aln.add_sequence(taxon, seq);
                 } else {
                     aln.sequences[it->second].raw_seq += seq;
@@ -365,10 +517,12 @@ public:
             }
         }
 
-        if (as_nucleotide) {
-            aln.finalize_nucleotide();
-        } else {
-            aln.finalize(gcode);
+        if (do_finalize) {
+            if (as_nucleotide) {
+                aln.finalize_nucleotide();
+            } else {
+                aln.finalize(gcode);
+            }
         }
         return aln;
     }
@@ -387,7 +541,7 @@ public:
         return true;
     }
 
-    static Alignment from_phylip(const std::string& filepath, std::shared_ptr<const GeneticCode> gcode = nullptr, bool as_nucleotide = false) {
+    static Alignment from_phylip(const std::string& filepath, std::shared_ptr<const GeneticCode> gcode = nullptr, bool as_nucleotide = false, bool do_finalize = true) {
         Alignment aln;
         std::string raw = read_file_or_gzip(filepath);
         std::istringstream file(raw);
@@ -442,7 +596,7 @@ public:
             if (paml_sequential && !aln.sequences.empty() && aln.sequences.back().raw_seq.size() < nchar) {
                 std::string seq;
                 for (char c : line) {
-                    if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.' || c == '!') {
+                    if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.' || c == '!' || c == '*') {
                         seq += (c == '.' ? '-' : c);
                     }
                 }
@@ -458,7 +612,7 @@ public:
                 std::string seq;
                 for (size_t i = sp; i < line.size(); ++i) {
                     char c = line[i];
-                    if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.' || c == '!') {
+                    if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.' || c == '!' || c == '*') {
                         seq += (c == '.' ? '-' : c);
                     }
                 }
@@ -472,7 +626,7 @@ public:
                 // Continuation line (interleaved or sequential)
                 std::string seq;
                 for (char c : line) {
-                    if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.' || c == '!') {
+                    if (std::isalpha(static_cast<unsigned char>(c)) || c == '-' || c == '?' || c == '.' || c == '!' || c == '*') {
                         seq += (c == '.' ? '-' : c);
                     }
                 }
@@ -486,10 +640,12 @@ public:
             }
         }
 
-        if (as_nucleotide) {
-            aln.finalize_nucleotide();
-        } else {
-            aln.finalize(gcode);
+        if (do_finalize) {
+            if (as_nucleotide) {
+                aln.finalize_nucleotide();
+            } else {
+                aln.finalize(gcode);
+            }
         }
         return aln;
     }
@@ -502,7 +658,7 @@ public:
         return from_nexus(filepath, nullptr, true);
     }
 
-    static Alignment load(const std::string& filepath, std::shared_ptr<const GeneticCode> gcode = nullptr) {
+    static Alignment dispatch_load(const std::string& filepath, std::shared_ptr<const GeneticCode> gcode, bool as_nucleotide, bool do_finalize) {
         std::string raw = read_file_or_gzip(filepath);
         std::istringstream file(raw);
         std::string line;
@@ -510,50 +666,50 @@ public:
             if (!line.empty() && line.back() == '\r') line.pop_back();
             while (!line.empty() && std::isspace(static_cast<unsigned char>(line.front()))) line.erase(line.begin());
             if (line.empty()) continue;
+
+            std::string upper = line;
+            for (auto& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+
             if (line[0] == '#') {
-                return from_nexus(filepath, gcode);
+                if (upper.rfind("#NEXUS", 0) == 0) {
+                    return from_nexus(filepath, gcode, as_nucleotide, do_finalize);
+                }
+                if (upper.rfind("# STOCKHOLM", 0) == 0 || upper.rfind("#STOCKHOLM", 0) == 0) {
+                    throw std::runtime_error("Stockholm (.sto) format is not directly supported; please convert to FASTA, NEXUS, or PHYLIP.");
+                }
+                // Leading '# comment' line before FASTA / NEXUS / PHYLIP: continue scanning
+                continue;
             }
             if (line[0] == '>') {
-                return from_fasta(filepath, gcode);
+                return from_fasta(filepath, gcode, as_nucleotide, do_finalize);
             }
             size_t ntax = 0, nchar = 0;
             if (is_phylip_header_line(line, ntax, nchar)) {
-                return from_phylip(filepath, gcode, false);
+                return from_phylip(filepath, gcode, as_nucleotide, do_finalize);
             }
-            std::string upper = line;
-            for (auto& c : upper) c = std::toupper(static_cast<unsigned char>(c));
-            if (upper.find("BEGIN") != std::string::npos) {
-                return from_nexus(filepath, gcode);
+            if (upper.rfind("BEGIN ", 0) == 0 || upper.rfind("BEGIN\t", 0) == 0 || upper == "BEGIN") {
+                return from_nexus(filepath, gcode, as_nucleotide, do_finalize);
+            }
+            if (line[0] == '(' && line.find(':') != std::string::npos) {
+                throw std::runtime_error(
+                    "Input appears to be a Newick phylogenetic tree rather than a nucleotide sequence file. "
+                    "Load your sequence alignment first, then supply the tree separately."
+                );
             }
         }
-        return from_fasta(filepath, gcode);
+        return from_fasta(filepath, gcode, as_nucleotide, do_finalize);
+    }
+
+    static Alignment load(const std::string& filepath, std::shared_ptr<const GeneticCode> gcode = nullptr) {
+        return dispatch_load(filepath, gcode, false, true);
     }
 
     static Alignment load_nucleotide(const std::string& filepath) {
-        std::string raw = read_file_or_gzip(filepath);
-        std::istringstream file(raw);
-        std::string line;
-        while (std::getline(file, line)) {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            while (!line.empty() && std::isspace(static_cast<unsigned char>(line.front()))) line.erase(line.begin());
-            if (line.empty()) continue;
-            if (line[0] == '#') {
-                return from_nexus(filepath, nullptr, true);
-            }
-            if (line[0] == '>') {
-                return from_fasta(filepath, nullptr, true);
-            }
-            size_t ntax = 0, nchar = 0;
-            if (is_phylip_header_line(line, ntax, nchar)) {
-                return from_phylip(filepath, nullptr, true);
-            }
-            std::string upper = line;
-            for (auto& c : upper) c = std::toupper(static_cast<unsigned char>(c));
-            if (upper.find("BEGIN") != std::string::npos) {
-                return from_nexus(filepath, nullptr, true);
-            }
-        }
-        return from_fasta(filepath, nullptr, true);
+        return dispatch_load(filepath, nullptr, true, true);
+    }
+
+    static Alignment load_unfinalized(const std::string& filepath) {
+        return dispatch_load(filepath, nullptr, false, false);
     }
 
     void add_sequence(const std::string& name, const std::string& seq) {

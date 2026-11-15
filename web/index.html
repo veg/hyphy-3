@@ -2032,6 +2032,13 @@
             <input type="range" id="minZSlider" min="0.5" max="10.0" step="0.5" value="3.5" oninput="onThresholdSlide()" style="margin-top:6px;" />
           </div>
 
+          <div class="setting-group" style="grid-column: 1 / -1; padding-top:8px; border-top:1px solid var(--border); flex-direction:row; align-items:center; justify-content:space-between; gap:12px;">
+            <label style="display:flex; align-items:center; gap:8px; font-size:13.5px; color:var(--ink); cursor:pointer;">
+              <input type="checkbox" id="chkKeepPseudogenes" style="width:16px; height:16px; cursor:pointer;" onchange="runStage0Now()" />
+              <span>Keep Homologous Pseudogenes (<code>--keep-pseudogenes</code>: mask internal stops to <code>NNN</code> &amp; retain intact core for LoF / RELAX)</span>
+            </label>
+          </div>
+
           <div id="prealignedOptionRow" class="setting-group" style="grid-column: 1 / -1; padding-top:8px; border-top:1px solid var(--border); flex-direction:row; align-items:center; justify-content:space-between;">
             <span style="font-size:13.5px; color:var(--ink-secondary);">Pre-aligned input handling:</span>
             <div style="display:flex; gap:8px;">
@@ -3091,7 +3098,13 @@
               <option value="Yeast-mtDNA">Yeast mtDNA</option>
               <option value="Mold-Protozoan-mtDNA">Mold / Protozoan mtDNA</option>
               <option value="Ciliate-Nuclear">Ciliate Nuclear</option>
+              <option value="Euplotid-Nuclear">Euplotid Nuclear</option>
               <option value="Echinoderm-mtDNA">Echinoderm mtDNA</option>
+              <option value="Ascidian-mtDNA">Ascidian mtDNA</option>
+              <option value="Flatworm-mtDNA">Flatworm mtDNA</option>
+              <option value="Blepharisma-Nuclear">Blepharisma Nuclear</option>
+              <option value="Chlorophycean-mtDNA">Chlorophycean mtDNA</option>
+              <option value="Trematode-mtDNA">Trematode mtDNA</option>
             </select>
           </label>
         </div>
@@ -3101,8 +3114,13 @@
           <span>Run Phylogenetic Epistasis / Co-Evolution Screen (<code>--coevolution</code>)</span>
         </label>
 
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink); cursor:pointer;">
+          <input type="checkbox" id="clOptKeepPseudo" />
+          <span>Keep Homologous Pseudogenes (<code>--keep-pseudogenes</code>: mask internal stops to <code>NNN</code>)</span>
+        </label>
+
         <div style="font-size:11.5px; color:var(--ink-muted); background:var(--bg-subtle); border:1px solid var(--border); border-radius:6px; padding:8px 10px; line-height:1.4;">
-          <strong>Fair-Use &amp; Privacy:</strong> Max 1,500 sequences, 20 min walltime, 2 concurrent jobs per network. Capability links auto-expire after 48h. For restricted clinical/unpublished patient sequences, run locally in Browser WASM mode instead.
+          <strong>Fair-Use &amp; Privacy:</strong> Max 1,500 sequences, 45 min walltime, 2 concurrent jobs per network. Capability links auto-expire after 48h. For restricted clinical/unpublished patient sequences, run locally in Browser WASM mode instead.
         </div>
 
         <div id="clSubmitError" style="display:none; font-size:12.5px; color:#B91C1C; background:#FEF2F2; border:1px solid #FECACA; border-radius:6px; padding:8px 10px;"></div>
@@ -3486,12 +3504,16 @@
       if (file) processUploadedFile(file);
     }
 
+    let workerCrashCount = 0;
+    let autoSwitchedCodeOnce = false;
+
     function initWorker() {
       worker = new Worker('worker.js');
       worker.onmessage = function(e) {
         const msg = e.data || {};
         if (msg.type === 'ready') {
           wasmReady = true;
+          workerCrashCount = 0;
           document.getElementById('wasmLed').className = 'status-dot ready';
           updatePipelineStepperUI();
           if (currentRawSeq && activeView !== 'landing') runStage0Now();
@@ -3510,10 +3532,24 @@
             stage: 'stage0',
             wall_ms: msg.elapsedMs,
             n_taxa: (stage0Data && stage0Data.taxa) ? stage0Data.taxa.length : 0,
-            n_sites: (stage0Data && stage0Data.median_sense_codons) ? stage0Data.median_sense_codons : 0
+            n_sites: (stage0Data && stage0Data.thresholds && stage0Data.thresholds.median_codons) || 0
           });
           if (autoAdvanceChain) {
-            runStage1Now();
+            const sum = (stage0Data && stage0Data.summary) || {};
+            const admCnt = sum.admitted_sequences || 0;
+            const recCode = sum.recommended_code || '';
+            const recClean = sum.recommended_code_clean_count || 0;
+            if (admCnt < 3 && recCode && recCode !== stage0Data.genetic_code && recClean >= 3 && !autoSwitchedCodeOnce) {
+              autoSwitchedCodeOnce = true;
+              const codeSel = document.getElementById('geneticCodeSelect');
+              if (codeSel) codeSel.value = recCode;
+              runStage0Now();
+            } else if (admCnt < 3 || sum.gate_abort_warning) {
+              autoAdvanceChain = false;
+              updatePipelineStepperUI();
+            } else {
+              runStage1Now();
+            }
           }
         } else if (msg.type === 'stage1_result') {
           runningStage = null;
@@ -3528,8 +3564,8 @@
             mode: 'wasm',
             stage: 'stage1',
             wall_ms: msg.elapsedMs,
-            n_taxa: (stage1Data && stage1Data.num_taxa) || 0,
-            n_sites: (stage1Data && stage1Data.num_codons) || 0
+            n_taxa: (stage1Data && stage1Data.summary && stage1Data.summary.num_taxa) || 0,
+            n_sites: (stage1Data && stage1Data.summary && stage1Data.summary.num_codons) || 0
           });
           if (autoAdvanceChain) {
             runStage2Now();
@@ -3546,8 +3582,8 @@
             mode: 'wasm',
             stage: 'stage2',
             wall_ms: msg.elapsedMs,
-            n_taxa: (stage1Data && stage1Data.num_taxa) || 0,
-            n_sites: (stage1Data && stage1Data.num_codons) || 0
+            n_taxa: (stage1Data && stage1Data.summary && stage1Data.summary.num_taxa) || 0,
+            n_sites: (stage1Data && stage1Data.summary && stage1Data.summary.num_codons) || 0
           });
           if (autoAdvanceChain) {
             runStage3Now();
@@ -3571,8 +3607,8 @@
             mode: 'wasm',
             stage: 'stage3',
             wall_ms: msg.elapsedMs,
-            n_taxa: (stage1Data && stage1Data.num_taxa) || 0,
-            n_sites: (stage1Data && stage1Data.num_codons) || 0
+            n_taxa: (stage1Data && stage1Data.summary && stage1Data.summary.num_taxa) || 0,
+            n_sites: (stage1Data && stage1Data.summary && stage1Data.summary.num_codons) || 0
           });
         } else if (msg.type === 'result') {
           runningStage = null;
@@ -3593,21 +3629,22 @@
           const errStage = (msg.stage !== undefined && msg.stage !== null) ? ('stage' + msg.stage).replace(/^stagestage/, 'stage') : (runningStage || 'wasm');
           runningStage = null;
           autoAdvanceChain = false;
-          document.getElementById('wasmLed').className = 'status-dot ready';
+          document.getElementById('wasmLed').className = wasmReady ? 'status-dot ready' : 'status-dot';
           updatePipelineStepperUI();
           sendTelemetry('wasm_error', {
             mode: 'wasm',
             stage: errStage,
             err_kind: msg.errKind || 'WasmError',
             err_msg: msg.error || msg.message || 'Unknown WASM error',
-            n_taxa: (stage1Data && stage1Data.num_taxa) || ((stage0Data && stage0Data.taxa) ? stage0Data.taxa.length : 0),
-            n_sites: (stage1Data && stage1Data.num_codons) || 0
+            n_taxa: (stage1Data && stage1Data.summary && stage1Data.summary.num_taxa) || ((stage0Data && stage0Data.taxa) ? stage0Data.taxa.length : 0),
+            n_sites: (stage1Data && stage1Data.summary && stage1Data.summary.num_codons) || ((stage0Data && stage0Data.thresholds && stage0Data.thresholds.median_codons) || 0)
           });
           alert('Error: ' + (msg.error || msg.message));
         }
       };
       worker.onerror = function(err) {
-        const failedStage = runningStage || 'WASM engine';
+        const wasReady = wasmReady;
+        const failedStage = runningStage || (wasReady ? 'WASM engine' : 'WASM init');
         runningStage = null;
         autoAdvanceChain = false;
         wasmReady = false;
@@ -3618,12 +3655,21 @@
           stage: String(failedStage),
           err_kind: 'WorkerCrash',
           err_msg: (err && err.message) ? err.message : 'WASM worker terminated (OOM or trap)',
-          n_taxa: (stage1Data && stage1Data.num_taxa) || ((stage0Data && stage0Data.taxa) ? stage0Data.taxa.length : 0),
-          n_sites: (stage1Data && stage1Data.num_codons) || 0
+          n_taxa: (stage1Data && stage1Data.summary && stage1Data.summary.num_taxa) || ((stage0Data && stage0Data.taxa) ? stage0Data.taxa.length : 0),
+          n_sites: (stage1Data && stage1Data.summary && stage1Data.summary.num_codons) || ((stage0Data && stage0Data.thresholds && stage0Data.thresholds.median_codons) || 0)
         });
         try { worker.terminate(); } catch (_) {}
-        alert(`WebAssembly worker terminated during ${failedStage} (likely exceeded the 2 GB browser WebAssembly memory limit or hit an uncaught runtime trap). Respawning a clean engine worker now.`);
-        setTimeout(initWorker, 150);
+        if (!wasReady) {
+          alert('WebAssembly engine failed to initialize in this browser (network interrupted or WebAssembly SIMD128 unsupported). You can still submit datasets via ☁️ Cluster Offload.');
+          return;
+        }
+        workerCrashCount += 1;
+        if (workerCrashCount <= 2) {
+          alert(`WebAssembly worker terminated during ${failedStage} (likely exceeded the 2 GB browser WebAssembly memory limit or hit an uncaught runtime trap). Respawning a clean engine worker now.`);
+          setTimeout(initWorker, 150);
+        } else {
+          alert(`WebAssembly worker terminated repeatedly during ${failedStage}. Please reload the page or use ☁️ Cluster Offload for large datasets.`);
+        }
       };
     }
 
@@ -3768,6 +3814,9 @@
       if (customOpt) customOpt.remove();
       currentRawSeq = item.content;
       currentDatasetLabel = item.id || key;
+      autoSwitchedCodeOnce = false;
+      const kpChk = document.getElementById('chkKeepPseudogenes');
+      if (kpChk) kpChk.checked = false;
       if (item.code) {
         document.getElementById('geneticCodeSelect').value = item.code;
       }
@@ -3791,6 +3840,7 @@
       const code = document.getElementById('geneticCodeSelect').value || 'Universal';
       const minCodons = parseInt(document.getElementById('minCodonsSlider').value, 10) || 15;
       const minZ = parseFloat(document.getElementById('minZSlider').value) || 3.5;
+      const keepPseudo = !!(document.getElementById('chkKeepPseudogenes') && document.getElementById('chkKeepPseudogenes').checked);
 
       worker.postMessage({
         type: 'stage0',
@@ -3799,7 +3849,8 @@
         geneticCode: code,
         minSenseCodons: minCodons,
         minHomologyZ: minZ,
-        stripGapsRealign: currentStripGapsMode
+        stripGapsRealign: currentStripGapsMode,
+        keepPseudogenes: keepPseudo
       });
     }
 
@@ -3831,6 +3882,14 @@
       document.getElementById('btnStripRealign').style.borderColor = strip ? 'var(--ink)' : 'var(--border)';
       document.getElementById('btnStripRealign').style.fontWeight = strip ? '600' : '500';
       runStage0Now();
+    }
+
+    function enableKeepPseudogenesNow() {
+      const chk = document.getElementById('chkKeepPseudogenes');
+      if (chk) {
+        chk.checked = true;
+        runStage0Now();
+      }
     }
 
     function isTaxonEffectivelyAdmitted(t) {
@@ -3900,6 +3959,7 @@
       let quarantinedCount = 0;
       let attentionCount = 0;
       let utrCount = 0;
+      let stopQuarantinedCount = 0;
 
       taxa.forEach(t => {
         const inc = isTaxonEffectivelyAdmitted(t);
@@ -3908,6 +3968,7 @@
         if (t.status === 'Rescued') rescuedCount++;
         if ((t.utr_5prime_trimmed || 0) + (t.utr_3prime_trimmed || 0) > 0) utrCount++;
         if (isNeedsReview(t)) attentionCount++;
+        if (t.status === 'Quarantined' && (t.internal_stops_selected || 0) > 0) stopQuarantinedCount++;
       });
 
       const medId = typeof sum.median_aa_identity === 'number' ? Math.round(sum.median_aa_identity * 100) : 0;
@@ -3939,6 +4000,16 @@
         if (rescuedCount > 0) parts.push(`<span style="color:var(--amber);">${rescuedCount} frame-rescued</span>`);
         if (utrCount > 0) parts.push(`${utrCount} UTR-trimmed`);
         verdict = parts.join(' • ');
+      }
+      if (sum.gate_abort_warning) {
+        verdict += `<div style="margin-top:6px; font-size:12.5px; color:var(--red); font-weight:500;">⚠ ${escapeHtml(sum.gate_abort_warning)}</div>`;
+      }
+      const kpActive = !!(document.getElementById('chkKeepPseudogenes') && document.getElementById('chkKeepPseudogenes').checked);
+      if (!kpActive && stopQuarantinedCount > 0 && !(sum.recommended_code && sum.recommended_code !== stage0Data.genetic_code && (sum.recommended_code_clean_count || 0) > (sum.active_code_clean_count || 0))) {
+        verdict += `<div style="margin-top:6px; font-size:12.5px; color:var(--ink-secondary);">${stopQuarantinedCount} sequence(s) quarantined for internal stop codons — <button class="btn btn-sm" style="padding:2px 8px; font-size:12px;" onclick="enableKeepPseudogenesNow()">Keep Homologous Pseudogenes (--keep-pseudogenes)</button></div>`;
+      }
+      if (typeof thr.median_codons === 'number' && thr.median_codons > 4500) {
+        verdict += `<div style="margin-top:6px; font-size:12.5px; color:var(--amber); font-weight:500;">⚠ Very long sequences (~${thr.median_codons.toLocaleString()} codons): WALRUS models single protein-coding genes (ORFs). Multi-ORF full viral/organelle genomes should be split by gene before analysis.</div>`;
       }
       document.getElementById('heroSummarySentence').innerHTML = verdict;
 
@@ -4081,6 +4152,7 @@
       const code = document.getElementById('geneticCodeSelect').value || 'Universal';
       const refineWindows = document.getElementById('chkRefineWindows').checked;
       const forceDeNovo = document.getElementById('chkForceDeNovo').checked || currentStripGapsMode;
+      const keepPseudo = !!(document.getElementById('chkKeepPseudogenes') && document.getElementById('chkKeepPseudogenes').checked);
 
       worker.postMessage({
         type: 'stage1',
@@ -4088,7 +4160,8 @@
         label: currentDatasetLabel,
         geneticCode: code,
         refineIndelWindows: refineWindows,
-        forceDeNovoRealign: forceDeNovo
+        forceDeNovoRealign: forceDeNovo,
+        keepPseudogenes: keepPseudo
       });
     }
 
@@ -5639,6 +5712,7 @@
         `<div class="empty-state">Computing codon-level selection profile, lineage regimes, and ancestral codon reconstructions...</div>`;
 
       const code = document.getElementById('geneticCodeSelect').value || 'Universal';
+      const keepPseudo = !!(document.getElementById('chkKeepPseudogenes') && document.getElementById('chkKeepPseudogenes').checked);
       document.getElementById('wasmLed').className = 'status-dot busy';
       updatePipelineStepperUI();
 
@@ -5647,7 +5721,8 @@
         seqContent: payload,
         treeNewick: treeNwk,
         label: currentDatasetLabel,
-        geneticCode: code
+        geneticCode: code,
+        keepPseudogenes: keepPseudo
       });
     }
 
@@ -7228,6 +7303,31 @@
     let preflightAcknowledgedForCurrentDataset = false;
     let pendingPreflightAction = null;
 
+    function stripNexusCommentsPreservingQuotes(line) {
+      let out = '';
+      let inSq = false, inDq = false, bracketDepth = 0;
+      for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (bracketDepth > 0) {
+          if (c === '[') bracketDepth++;
+          else if (c === ']') bracketDepth--;
+          continue;
+        }
+        if (c === "'" && !inDq) {
+          inSq = !inSq;
+          out += c;
+        } else if (c === '"' && !inSq) {
+          inDq = !inDq;
+          out += c;
+        } else if (c === '[' && !inSq && !inDq) {
+          bracketDepth = 1;
+        } else {
+          out += c;
+        }
+      }
+      return out;
+    }
+
     function inspectRawSequenceCohort(rawText) {
       // Normalize CRLF and classic Mac CR (\r) line endings so NEXUS/PHYLIP/FASTA line splits work reliably
       const s = String(rawText || '').replace(/\r\n?/g, '\n');
@@ -7241,15 +7341,31 @@
           const seqMap = new Map();
           const lines = m[1].split('\n');
           for (let line of lines) {
-            line = line.replace(/\[.*?\]/g, '').trim();
+            line = stripNexusCommentsPreservingQuotes(line).trim();
             if (!line || line === ';') continue;
-            const parts = line.split(/\s+/);
-            if (parts.length >= 2) {
-              const name = parts[0].replace(/^['"]|['"]$/g, '');
-              const seqPart = parts.slice(1).join('').replace(/[^A-Za-z\-?.]/g, '');
-              if (name && seqPart) {
-                seqMap.set(name, (seqMap.get(name) || '') + seqPart);
+            let name = '', rest = '';
+            if (line[0] === "'" || line[0] === '"') {
+              const q = line[0];
+              let endIdx = 1;
+              while (endIdx < line.length) {
+                if (line[endIdx] === q) {
+                  if (q === "'" && line[endIdx + 1] === "'") { endIdx += 2; continue; }
+                  break;
+                }
+                endIdx++;
               }
+              name = line.slice(1, endIdx).replace(/''/g, "'");
+              rest = line.slice(endIdx + 1).trim();
+            } else {
+              const parts = line.split(/\s+/);
+              if (parts.length >= 2) {
+                name = parts[0];
+                rest = parts.slice(1).join('');
+              }
+            }
+            const seqPart = rest.replace(/[^A-Za-z\-?.]/g, '');
+            if (name && seqPart) {
+              seqMap.set(name, (seqMap.get(name) || '') + seqPart);
             }
           }
           seqMap.forEach(seq => {
@@ -7286,7 +7402,7 @@
         const blocks = s.split(/^>/m);
         for (let i = 1; i < blocks.length; i++) {
           const nlIdx = blocks[i].indexOf('\n');
-          const body = (nlIdx >= 0 ? blocks[i].slice(nlIdx + 1) : '').replace(/\s+/g, '');
+          const body = (nlIdx >= 0 ? blocks[i].slice(nlIdx + 1) : '').replace(/\n\(.*[\s\S]*$/, '').replace(/\s+/g, '');
           if (body.length > 0) {
             lengthsWithGaps.push(body.length);
             lengthsUngapped.push(body.replace(/[\-?.]/g, '').length);
@@ -7299,7 +7415,7 @@
         return { numTaxa: 0, maxCodons: 0, medianCodons: 0, isPreAligned: false, rawBytes };
       }
       const firstLen = lengthsWithGaps[0];
-      const allSameLen = numTaxa >= 2 && lengthsWithGaps.every(l => l === firstLen);
+      const allSameLen = numTaxa >= 2 && firstLen > 0 && (firstLen % 3 === 0) && lengthsWithGaps.every(l => l === firstLen);
       const maxNt = Math.max(...lengthsWithGaps);
       const sortedUngapped = [...lengthsUngapped].sort((a, b) => a - b);
       const medNt = sortedUngapped[Math.floor(sortedUngapped.length / 2)] || maxNt;
@@ -7325,23 +7441,23 @@
       // Empirical single-threaded WASM stage runtime estimates (seconds)
       const stage0Sec = 0.08 + 1.5e-6 * stage0Pairs * Math.min(C, 600);
       const stage1Sec = needDeNovoPoa
-        ? (0.20 + 2.2e-6 * N * C * bandWidth)
-        : (0.15 + 1.8e-4 * N * C);
+        ? (0.20 + 2.8e-6 * N * C * bandWidth + 0.025 * N * (Math.min(C, 600) / 100.0))
+        : (0.15 + 2.0e-4 * N * C);
       const stage2Sec = 0.20 + 2.2e-4 * N * C + 1.5e-6 * N * N * C;
       const stage3Sec = 1.00 + 4.8e-3 * N * C;
       const totalSec = stage0Sec + stage1Sec + stage2Sec + stage3Sec;
 
       // Peak WebAssembly linear heap estimate (MB) against 2,048 MB hard cap
-      // Banded POA DP requires O(B * C) space, while Stage 3 allocates 61-state codon CLVs O(N * C)
-      const poaRamMb = needDeNovoPoa ? (0.00015 * bandWidth * C) : (0.00004 * bandWidth * C);
-      const phyloRamMb = 0.018 * N * C;
+      // Accounts for 61-state codon CLVs across (2N - 1) nodes + Stage 1 Inside-Outside window cavity buffers
+      const poaRamMb = needDeNovoPoa ? (0.00018 * bandWidth * C + 0.85 * N) : (0.00005 * bandWidth * C + 0.25 * N);
+      const phyloRamMb = 0.024 * N * C;
       const bufRamMb = (info.rawBytes / 1e6) * 4.0;
       const peakRamMb = Math.round(64 + phyloRamMb + poaRamMb + bufRamMb);
 
       const isOver5Min = totalSec > 300;
-      const isHighRam = peakRamMb > 1024;
+      const isHighRam = peakRamMb > 1024 || N > 350;
       const needsWarning = isOver5Min || isHighRam;
-      const isCriticalOom = peakRamMb > 1750 || info.rawBytes > 30 * 1024 * 1024;
+      const isCriticalOom = peakRamMb > 1700 || N > 650 || info.rawBytes > 30 * 1024 * 1024;
 
       return {
         ...info,
@@ -7424,6 +7540,9 @@
       if (est.isHighRam) {
         reasons.push(`Storing 61-state codon conditional likelihood vectors (CLVs) across ${2 * est.numTaxa - 1} branches × ${est.maxCodons} sites requires ~${est.peakRamMb} MB of WebAssembly linear heap.`);
       }
+      if (est.maxCodons > 4500) {
+        reasons.push(`Note: sequences are ~${est.maxCodons.toLocaleString()} codons long — if this is a multi-ORF viral or organelle genome, split individual protein-coding genes before analysis.`);
+      }
       if (reasons.length === 0) {
         reasons.push(`This dataset contains ${est.numTaxa} sequences and ~${est.maxCodons} codons (${(est.numTaxa * est.maxCodons).toLocaleString()} total codon cells).`);
       }
@@ -7492,7 +7611,7 @@
       sendTelemetry('custom_input', {
         mode: (!forceLocal && defaultLaunchMode === 'cluster') ? 'cluster' : 'wasm',
         n_taxa: est.numTaxa || 0,
-        n_sites: Math.round((est.maxNt || 0) / 3)
+        n_sites: est.maxCodons || 0
       });
       if (!forceLocal && defaultLaunchMode === 'cluster') {
         currentRawSeq = content;
@@ -7503,6 +7622,7 @@
       }
       currentRawSeq = content;
       currentDatasetLabel = label;
+      autoSwitchedCodeOnce = false;
       autoAdvanceChain = !!runFullAuto;
       manualAdmissionOverride.clear();
       manualFrameOverride.clear();
@@ -7685,8 +7805,9 @@
       }
 
       const code = document.getElementById('geneticCodeSelect').value || 'Universal';
+      const keepPseudo = !!(document.getElementById('chkKeepPseudogenes') && document.getElementById('chkKeepPseudogenes').checked);
       document.getElementById('wasmLed').className = 'status-dot busy';
-      worker.postMessage({ type: 'ping', seqContent: payload, label: currentDatasetLabel, geneticCode: code });
+      worker.postMessage({ type: 'ping', seqContent: payload, label: currentDatasetLabel, geneticCode: code, keepPseudogenes: keepPseudo });
     }
 
     function exportFullPipelineJson() {
@@ -7761,6 +7882,7 @@
     let activeClusterJobId = '';
     let clusterPollTimer = null;
     let clusterHydratedJobId = '';
+    let clusterReportedErrorJobId = '';
 
     async function resolveClusterEndpoint() {
       const qUrl = new URLSearchParams(window.location.search).get('cluster');
@@ -7855,7 +7977,9 @@
     function detectLikelyAligned(seqText) {
       if (!seqText) return false;
       const trimmed = seqText.trimStart();
-      if (/^#NEXUS/i.test(trimmed)) return true;
+      if (/^#NEXUS/i.test(trimmed) || /^BEGIN\s+/i.test(trimmed) || /^\d+\s+\d+\s*\r?\n/.test(trimmed)) {
+        return !!inspectRawSequenceCohort(seqText).isPreAligned;
+      }
       const lens = [];
       let cur = 0, seen = false, hasGap = false;
       const lines = trimmed.split(/\r?\n/);
@@ -7907,6 +8031,11 @@
       if (codeSel && Array.from(codeSel.options).some(o => o.value === appCode)) {
         codeSel.value = appCode;
       }
+      const clKeepPseudo = document.getElementById('clOptKeepPseudo');
+      const appKeepPseudo = document.getElementById('chkKeepPseudogenes');
+      if (clKeepPseudo && appKeepPseudo) {
+        clKeepPseudo.checked = !!appKeepPseudo.checked;
+      }
 
       const errEl = document.getElementById('clSubmitError');
       if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
@@ -7947,8 +8076,11 @@
     function launchSampleOnCluster(sampleKey) {
       const item = (window.WALRUS_SAMPLES || {})[sampleKey];
       if (!item) return;
-      if (item.code && document.getElementById('geneticCodeSelect')) {
-        document.getElementById('geneticCodeSelect').value = item.code;
+      // coxi_mtdna.fa intentionally sets item.code = "Universal" to showcase Stage 0 code detection;
+      // when launching directly on the cluster, pre-select Vertebrate-mtDNA so it runs cleanly.
+      const clusterCode = (sampleKey === 'coxi_mtdna.fa') ? 'Vertebrate-mtDNA' : (item.code || 'Universal');
+      if (document.getElementById('geneticCodeSelect')) {
+        document.getElementById('geneticCodeSelect').value = clusterCode;
       }
       openClusterModalWithPayload(item.content, sampleKey, '');
     }
@@ -8042,7 +8174,8 @@
           options: {
             mode: document.getElementById('clOptMode')?.value || 'unaligned',
             genetic_code: document.getElementById('clOptCode')?.value || 'Universal',
-            coevolution: !!document.getElementById('clOptCoev')?.checked
+            coevolution: !!document.getElementById('clOptCoev')?.checked,
+            keep_pseudogenes: !!document.getElementById('clOptKeepPseudo')?.checked
           },
           pow: { token: ch.token, solution }
         };
@@ -8065,7 +8198,7 @@
           mode: 'cluster',
           stage: sub.cached ? 'cached' : 'queued',
           n_taxa: subEst.numTaxa || 0,
-          n_sites: Math.round((subEst.maxNt || 0) / 3),
+          n_sites: subEst.maxCodons || 0,
           threads: sub.threads || 16
         });
 
@@ -8159,7 +8292,8 @@
             errEl.textContent = st.error || `Job ${st.status}.`;
             errEl.style.display = 'block';
           }
-          if (st.status === 'failed') {
+          if (st.status === 'failed' && clusterReportedErrorJobId !== jobId) {
+            clusterReportedErrorJobId = jobId;
             sendTelemetry('cluster_error', {
               mode: 'cluster',
               stage: 'slurm',
@@ -8267,8 +8401,8 @@
     function scrubTelemetryError(msg) {
       if (!msg) return '';
       return String(msg)
-        .replace(/'[^']{1,120}'/g, "'<id>'")
-        .replace(/"[^"]{1,120}"/g, '"<id>"')
+        .replace(/(^|[^0-9A-Za-z])'[^'\n]{1,120}'/g, "$1'<id>'")
+        .replace(/(^|[^0-9A-Za-z])"[^"\n]{1,120}"/g, '$1"<id>"')
         .slice(0, 240);
     }
 
