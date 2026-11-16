@@ -1,8 +1,10 @@
 #include "hyphy/core/console.hpp"
+#include <cctype>
+#include <cstring>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <vector>
-#include <cstring>
 
 using namespace hyphy::core;
 
@@ -95,7 +97,10 @@ void print_hyphy3_usage(const char* prog) {
 // Dispatch a resolved subcommand name to its run_* entry point. argc/argv are
 // passed through unchanged, so argv[0] must already be the program name the
 // analysis should display (e.g. "hyphy3 fel" or "hyphy3-fel").
-static int dispatch_subcommand(const std::string& cmd, int argc, char* argv[]) {
+// Returns std::nullopt when cmd is not a recognized subcommand so argv[0]
+// alias detection can fall through cleanly for platform-suffixed binaries
+// (e.g., hyphy-3, hyphy3-macos-arm64).
+static std::optional<int> try_dispatch_subcommand(const std::string& cmd, int argc, char* argv[]) {
     try {
         if (cmd == "walrus" || cmd == "WALRUS" || cmd == "characterize" || cmd == "auto" || cmd == "omni" || cmd == "one-button") {
             return run_characterize(argc, argv);
@@ -139,14 +144,25 @@ static int dispatch_subcommand(const std::string& cmd, int argc, char* argv[]) {
         } else if (cmd == "report") {
             return run_report(argc, argv);
         } else {
-            std::cerr << "Error: Unknown analysis '" << cmd << "'.\n\n";
-            print_hyphy3_usage(argv[0]);
-            return 1;
+            return std::nullopt;
         }
     } catch (const std::exception& e) {
         std::cerr << Console::danger("Error: ") << e.what() << "\n";
         return 1;
     }
+}
+
+static std::string strip_exe_suffix(const std::string& name) {
+    if (name.size() > 4) {
+        std::string tail = name.substr(name.size() - 4);
+        for (char& ch : tail) {
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        }
+        if (tail == ".exe") {
+            return name.substr(0, name.size() - 4);
+        }
+    }
+    return name;
 }
 
 int main(int argc, char* argv[]) {
@@ -155,14 +171,17 @@ int main(int argc, char* argv[]) {
     // combined binary can be installed under the standalone names — e.g. as
     // symlinks — without separate executables. argv is passed through
     // unchanged, so the analysis reports "hyphy3-fel" as its program name
-    // exactly as the real standalone binaries do.
+    // exactly as the real standalone binaries do. Unknown suffixes (such as
+    // hyphy-3 or hyphy3-macos-arm64) fall through to normal argv[1] handling.
     const std::string invoked = (argc > 0 && argv[0]) ? argv[0] : "";
     const std::string::size_type sep = invoked.find_last_of("/\\");
-    const std::string base = (sep == std::string::npos) ? invoked : invoked.substr(sep + 1);
+    const std::string base = strip_exe_suffix((sep == std::string::npos) ? invoked : invoked.substr(sep + 1));
     for (const char* prefix : {"hyphy3-", "hyphy-"}) {
         const std::string p(prefix);
         if (base.size() > p.size() && base.compare(0, p.size(), p) == 0) {
-            return dispatch_subcommand(base.substr(p.size()), argc, argv);
+            if (auto rc = try_dispatch_subcommand(base.substr(p.size()), argc, argv)) {
+                return *rc;
+            }
         }
     }
 
@@ -203,5 +222,10 @@ int main(int argc, char* argv[]) {
     }
     int sub_argc = static_cast<int>(sub_argv.size());
 
-    return dispatch_subcommand(cmd, sub_argc, sub_argv.data());
+    if (auto rc = try_dispatch_subcommand(cmd, sub_argc, sub_argv.data())) {
+        return *rc;
+    }
+    std::cerr << "Error: Unknown analysis '" << cmd << "'.\n\n";
+    print_hyphy3_usage(argv[0]);
+    return 1;
 }
