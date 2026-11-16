@@ -37,6 +37,7 @@ RUN cmake -S /src -B /build -G Ninja \
         hyphy3-relax \
         hyphy3-fubar \
         hyphy3-prime \
+        hyphy3-forecast \
         hyphy3-gard \
         hyphy3-slac \
         hyphy3-dfel \
