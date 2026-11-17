@@ -26,6 +26,8 @@
 #include <chrono>
 #include <iomanip>
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #ifdef _OPENMP
 #include <omp.h>
@@ -72,12 +74,18 @@ public:
     Scalar mg94_background_omega = -1.0;
     Scalar mg94_tree_length = 0.0;
     mutable size_t num_mss_free_params = 0;
+    uint64_t instance_id = 0;
+
+    static uint64_t next_instance_id() {
+        static std::atomic<uint64_t> counter{1};
+        return counter.fetch_add(1, std::memory_order_relaxed);
+    }
 
     BUSTEDAnalyzer(
         Tree t,
         Alignment a,
         MG94Parameters base_p = MG94Parameters{}
-    ) : tree(std::move(t)), aln(std::move(a)), base_params(base_p) {
+    ) : tree(std::move(t)), aln(std::move(a)), base_params(base_p), instance_id(next_instance_id()) {
         code = aln.code ? aln.code : GeneticCode::universal();
         size_t num_nodes = tree.num_nodes();
         branch_tau.assign(num_nodes, 0.0);
@@ -289,11 +297,114 @@ public:
         return s * base_tau;
     }
 
+    /// Thread-local cache of eigendecomposed MG94 rate matrices keyed by analyzer state & parameters.
+    const MG94Matrix& get_cached_mg94(const MG94Parameters& p, MG94Matrix& uncached_fallback) const {
+        if (p.syn_pair_rates != nullptr) {
+            uncached_fallback.update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            return uncached_fallback;
+        }
+        struct CacheEntry {
+            uint64_t inst_id = 0;
+            const void* analyzer_ptr = nullptr;
+            const void* code_ptr = nullptr;
+            size_t num_taxa = 0;
+            size_t num_codons = 0;
+            Scalar codon_f0 = 0.0;
+            Scalar alpha = 0.0, beta = 0.0;
+            Scalar theta_AC = 0.0, theta_AT = 0.0, theta_CG = 0.0, theta_CT = 0.0, theta_GT = 0.0;
+            Scalar delta = 0.0, psi = 0.0;
+            uint64_t lru_tick = 0;
+            MG94Matrix mat;
+        };
+        constexpr size_t CACHE_CAP = 32;
+        struct ThreadCache {
+            std::vector<CacheEntry> entries;
+            uint64_t clock = 0;
+        };
+        thread_local ThreadCache cache;
+        if (cache.entries.size() < CACHE_CAP) {
+            cache.entries.reserve(CACHE_CAP);
+        }
+
+        const Scalar f0 = (aln.codon_frequencies_f3x4.size() > 0) ? aln.codon_frequencies_f3x4(0) : 0.0;
+        const void* cptr = code.get();
+        for (auto& e : cache.entries) {
+            if (e.inst_id == instance_id &&
+                e.analyzer_ptr == this &&
+                e.code_ptr == cptr &&
+                e.num_taxa == aln.num_taxa &&
+                e.num_codons == aln.num_codons &&
+                e.codon_f0 == f0 &&
+                e.alpha == p.alpha &&
+                e.beta == p.beta &&
+                e.theta_AC == p.theta_AC &&
+                e.theta_AT == p.theta_AT &&
+                e.theta_CG == p.theta_CG &&
+                e.theta_CT == p.theta_CT &&
+                e.theta_GT == p.theta_GT &&
+                e.delta == p.delta &&
+                e.psi == p.psi) {
+                e.lru_tick = ++cache.clock;
+                return e.mat;
+            }
+        }
+
+        CacheEntry* dst = nullptr;
+        if (cache.entries.size() < CACHE_CAP) {
+            cache.entries.emplace_back();
+            dst = &cache.entries.back();
+        } else {
+            size_t victim = 0;
+            for (size_t i = 1; i < cache.entries.size(); ++i) {
+                if (cache.entries[i].lru_tick < cache.entries[victim].lru_tick) {
+                    victim = i;
+                }
+            }
+            dst = &cache.entries[victim];
+        }
+        dst->inst_id = instance_id;
+        dst->analyzer_ptr = this;
+        dst->code_ptr = cptr;
+        dst->num_taxa = aln.num_taxa;
+        dst->num_codons = aln.num_codons;
+        dst->codon_f0 = f0;
+        dst->alpha = p.alpha;
+        dst->beta = p.beta;
+        dst->theta_AC = p.theta_AC;
+        dst->theta_AT = p.theta_AT;
+        dst->theta_CG = p.theta_CG;
+        dst->theta_CT = p.theta_CT;
+        dst->theta_GT = p.theta_GT;
+        dst->delta = p.delta;
+        dst->psi = p.psi;
+        dst->lru_tick = ++cache.clock;
+        dst->mat.update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+        return dst->mat;
+    }
+
+    static void compute_tile_schedule(
+        size_t num_patterns,
+        size_t M,
+        size_t num_nodes,
+        int& out_n_threads,
+        size_t& out_tile_size,
+        size_t& out_num_tiles
+    ) {
+        size_t min_per_t = (M * num_nodes >= 64) ? 16 : 32;
+        int n_threads = LikelihoodEngine::optimal_omp_threads(num_patterns, min_per_t);
+        const size_t target_tile = (n_threads > 1)
+            ? std::clamp<size_t>((num_patterns + static_cast<size_t>(n_threads) - 1) / static_cast<size_t>(n_threads), 16, 64)
+            : 64;
+        out_tile_size = std::min<size_t>(target_tile, std::max<size_t>(1, num_patterns));
+        out_num_tiles = (num_patterns + out_tile_size - 1) / out_tile_size;
+        out_n_threads = std::max<int>(1, std::min<int>(n_threads, static_cast<int>(out_num_tiles)));
+    }
+
     std::vector<std::array<Matrix, 3>> build_one_set_bridge_mix(
         Scalar s,
         Scalar alpha_m,
-        const std::vector<MG94Matrix>& mg,
-        const MG94Matrix& mg_bg,
+        const std::vector<const MG94Matrix*>& mg,
+        const MG94Matrix* mg_bg,
         const std::vector<Scalar>& weights,
         Scalar eps_sink,
         Scalar bio_scale,
@@ -313,13 +424,13 @@ public:
                         P_bridges[b_idx][r] = Matrix::Zero(S, S);
                         Scalar use_bio = (eps_sink > 0.0) ? bio_scale : 1.0;
                         for (size_t k = 0; k < K; ++k) {
-                            P_bridges[b_idx][r] += (use_bio * weights[k]) * mg[k].transition_matrix(alpha_m * bl);
+                            P_bridges[b_idx][r] += (use_bio * weights[k]) * mg[k]->transition_matrix(alpha_m * bl);
                         }
                         if (eps_sink > 0.0) {
                             P_bridges[b_idx][r].noalias() += eps_sink * P_sink;
                         }
                     } else {
-                        P_bridges[b_idx][r] = mg_bg.transition_matrix(alpha_m * bl);
+                        P_bridges[b_idx][r] = mg_bg->transition_matrix(alpha_m * bl);
                     }
                 } else {
                     P_bridges[b_idx][r] = Matrix::Identity(S, S);
@@ -332,10 +443,10 @@ public:
     std::vector<std::array<Matrix, 3>> build_two_set_bridge_mix(
         Scalar s,
         Scalar alpha_m,
-        const std::vector<MG94Matrix>& mg_t,
-        const std::vector<MG94Matrix>& mg_b,
-        const std::vector<MG94Matrix>& mg_u,
-        const MG94Matrix& mg_unclass,
+        const std::vector<const MG94Matrix*>& mg_t,
+        const std::vector<const MG94Matrix*>& mg_b,
+        const std::vector<const MG94Matrix*>& mg_u,
+        const MG94Matrix* mg_unclass,
         const std::vector<Scalar>& weights_test,
         const std::vector<Scalar>& weights_bg,
         const std::vector<Scalar>* weights_unclass,
@@ -364,7 +475,7 @@ public:
                         P_bridges[b_idx][r] = Matrix::Zero(S, S);
                         Scalar use_bio = (eps_sink_test > 0.0) ? bio_scale_t : 1.0;
                         for (size_t k = 0; k < K_t; ++k) {
-                            P_bridges[b_idx][r] += (use_bio * weights_test[k]) * mg_t[k].transition_matrix(alpha_m * bl);
+                            P_bridges[b_idx][r] += (use_bio * weights_test[k]) * mg_t[k]->transition_matrix(alpha_m * bl);
                         }
                         if (eps_sink_test > 0.0) {
                             P_bridges[b_idx][r].noalias() += eps_sink_test * P_sink;
@@ -373,7 +484,7 @@ public:
                         P_bridges[b_idx][r] = Matrix::Zero(S, S);
                         Scalar use_bio = (eps_sink_bg > 0.0) ? bio_scale_b : 1.0;
                         for (size_t k = 0; k < K_b; ++k) {
-                            P_bridges[b_idx][r] += (use_bio * weights_bg[k]) * mg_b[k].transition_matrix(alpha_m * bl);
+                            P_bridges[b_idx][r] += (use_bio * weights_bg[k]) * mg_b[k]->transition_matrix(alpha_m * bl);
                         }
                         if (eps_sink_bg > 0.0) {
                             P_bridges[b_idx][r].noalias() += eps_sink_bg * P_sink;
@@ -381,10 +492,10 @@ public:
                     } else if (has_unclass_dist && weights_unclass != nullptr) {
                         P_bridges[b_idx][r] = Matrix::Zero(S, S);
                         for (size_t k = 0; k < K_u; ++k) {
-                            P_bridges[b_idx][r] += (*weights_unclass)[k] * mg_u[k].transition_matrix(alpha_m * bl);
+                            P_bridges[b_idx][r] += (*weights_unclass)[k] * mg_u[k]->transition_matrix(alpha_m * bl);
                         }
                     } else {
-                        P_bridges[b_idx][r] = mg_unclass.transition_matrix(alpha_m * bl);
+                        P_bridges[b_idx][r] = mg_unclass->transition_matrix(alpha_m * bl);
                     }
                 } else {
                     P_bridges[b_idx][r] = Matrix::Identity(S, S);
@@ -416,51 +527,61 @@ public:
         Scalar bio_scale = 1.0 - eps_sink;
         const MG94Parameters& active_base = custom_base_params ? *custom_base_params : base_params;
 
-        // Build K rate matrices
-        std::vector<MG94Matrix> mg(K);
+        // Build K rate matrices (cached per thread when syn_pair_rates == nullptr)
+        std::vector<MG94Matrix> mg_fallback(K);
+        std::vector<const MG94Matrix*> mg(K);
         for (size_t k = 0; k < K; ++k) {
             MG94Parameters p = active_base;
             p.alpha = 1.0;
             p.beta = omegas[k];
             p.delta = delta;
             p.psi = psi;
-            mg[k].update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg[k] = &get_cached_mg94(p, mg_fallback[k]);
         }
         bool has_bg = (num_test_branches + 1 < num_nodes);
-        MG94Matrix mg_bg;
+        MG94Matrix mg_bg_fallback;
+        const MG94Matrix* mg_bg = nullptr;
         if (has_bg) {
             MG94Parameters p_bg = active_base;
             p_bg.alpha = 1.0;
             p_bg.beta = (mg94_background_omega >= 0.0) ? mg94_background_omega : mg94_omega;
             p_bg.delta = delta;
             p_bg.psi = psi;
-            mg_bg.update(p_bg, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg_bg = &get_cached_mg94(p_bg, mg_bg_fallback);
         }
 
         // Precompute branch transition matrices P_mix[m][node_id]
         std::vector<std::vector<Matrix>> P_mix(M, std::vector<Matrix>(num_nodes));
         std::vector<std::vector<std::array<Matrix, 3>>> P_bridges_mix(M);
-        for (size_t m = 0; m < M; ++m) {
+        const size_t total_branch_evals = M * num_nodes;
+        int prep_threads = (total_branch_evals >= 48)
+            ? LikelihoodEngine::optimal_omp_threads(total_branch_evals, 16)
+            : 1;
+        (void)prep_threads;
+        #pragma omp parallel for schedule(static) num_threads(prep_threads) if(prep_threads > 1)
+        for (size_t idx = 0; idx < total_branch_evals; ++idx) {
+            size_t m = idx / num_nodes;
+            size_t n_i = idx % num_nodes;
+            int nid = tree.nodes[n_i].id;
+            if (nid == tree.root_id) continue;
             Scalar alpha_m = syn_rates[m];
-            for (const auto& node : tree.nodes) {
-                if (node.id != tree.root_id) {
-                    Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[node.id] : branch_tau[node.id]);
-                    if (is_test_branch[node.id]) {
-                        P_mix[m][node.id] = Matrix::Zero(S, S);
-                        Scalar use_bio = (eps_sink > 0.0) ? bio_scale : 1.0;
-                        for (size_t k = 0; k < K; ++k) {
-                            P_mix[m][node.id] += (use_bio * weights[k]) * mg[k].transition_matrix(alpha_m * bl);
-                        }
-                        if (eps_sink > 0.0) {
-                            P_mix[m][node.id].noalias() += eps_sink * P_sink;
-                        }
-                    } else {
-                        P_mix[m][node.id] = mg_bg.transition_matrix(alpha_m * bl);
-                    }
+            Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[nid] : branch_tau[nid]);
+            if (is_test_branch[nid]) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                Scalar use_bio = (eps_sink > 0.0) ? bio_scale : 1.0;
+                for (size_t k = 0; k < K; ++k) {
+                    P_mix[m][nid] += (use_bio * weights[k]) * mg[k]->transition_matrix(alpha_m * bl);
                 }
+                if (eps_sink > 0.0) {
+                    P_mix[m][nid].noalias() += eps_sink * P_sink;
+                }
+            } else {
+                P_mix[m][nid] = mg_bg->transition_matrix(alpha_m * bl);
             }
-            if (!tree.bridges.empty()) {
-                P_bridges_mix[m] = build_one_set_bridge_mix(s, alpha_m, mg, mg_bg, weights, eps_sink, bio_scale, custom_branch_lengths);
+        }
+        if (!tree.bridges.empty()) {
+            for (size_t m = 0; m < M; ++m) {
+                P_bridges_mix[m] = build_one_set_bridge_mix(s, syn_rates[m], mg, mg_bg, weights, eps_sink, bio_scale, custom_branch_lengths);
             }
         }
 
@@ -469,9 +590,9 @@ public:
         }
 
         std::vector<Scalar> pat_ll_vec(num_patterns, -1e20);
-        int n_threads = LikelihoodEngine::optimal_omp_threads(num_patterns, 32);
-        const size_t tile_size = std::min<size_t>(64, std::max<size_t>(1, num_patterns));
-        const size_t num_tiles = (num_patterns + tile_size - 1) / tile_size;
+        int n_threads = 1;
+        size_t tile_size = 64, num_tiles = 1;
+        compute_tile_schedule(num_patterns, M, num_nodes, n_threads, tile_size, num_tiles);
 
         #pragma omp parallel num_threads(n_threads)
         {
@@ -564,33 +685,57 @@ public:
 
         std::vector<std::vector<std::vector<Matrix>>> P_comp(M, std::vector<std::vector<Matrix>>(K, std::vector<Matrix>(num_nodes)));
         std::vector<std::vector<Matrix>> P_mix(M, std::vector<Matrix>(num_nodes));
-        std::vector<MG94Matrix> mg_vec(K);
+        std::vector<MG94Matrix> mg_fallback(K);
+        std::vector<const MG94Matrix*> mg_vec(K);
         for (size_t k = 0; k < K; ++k) {
             MG94Parameters p = active_base;
             p.alpha = 1.0;
             p.beta = omegas[k];
             p.delta = delta;
             p.psi = psi;
-            mg_vec[k].update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
-            for (size_t m = 0; m < M; ++m) {
-                Scalar alpha_m = syn_rates[m];
-                for (const auto& node : tree.nodes) {
-                    if (node.id != tree.root_id) {
-                        Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[node.id] : branch_tau[node.id]);
-                        P_comp[m][k][node.id] = mg_vec[k].transition_matrix(alpha_m * bl);
-                    }
-                }
-            }
+            mg_vec[k] = &get_cached_mg94(p, mg_fallback[k]);
         }
         bool has_bg = (num_test_branches + 1 < num_nodes);
-        MG94Matrix mg_bg_step;
+        MG94Matrix mg_bg_fallback;
+        const MG94Matrix* mg_bg_step = nullptr;
         if (has_bg) {
             MG94Parameters p_bg = active_base;
             p_bg.alpha = 1.0;
             p_bg.beta = (mg94_background_omega >= 0.0) ? mg94_background_omega : mg94_omega;
             p_bg.delta = delta;
             p_bg.psi = psi;
-            mg_bg_step.update(p_bg, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg_bg_step = &get_cached_mg94(p_bg, mg_bg_fallback);
+        }
+
+        const size_t total_branch_evals = M * num_nodes;
+        int prep_threads = (total_branch_evals >= 48)
+            ? LikelihoodEngine::optimal_omp_threads(total_branch_evals, 16)
+            : 1;
+        (void)prep_threads;
+        #pragma omp parallel for schedule(static) num_threads(prep_threads) if(prep_threads > 1)
+        for (size_t idx = 0; idx < total_branch_evals; ++idx) {
+            size_t m = idx / num_nodes;
+            size_t n_i = idx % num_nodes;
+            int nid = tree.nodes[n_i].id;
+            if (nid == tree.root_id) continue;
+            Scalar alpha_m = syn_rates[m];
+            Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[nid] : branch_tau[nid]);
+            if (is_test_branch[nid]) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                Scalar use_bio = (out_new_eps_sink != nullptr) ? bio_scale : 1.0;
+                for (size_t k = 0; k < K; ++k) {
+                    P_comp[m][k][nid] = mg_vec[k]->transition_matrix(alpha_m * bl);
+                    P_mix[m][nid] += (use_bio * weights[k]) * P_comp[m][k][nid];
+                }
+                if (out_new_eps_sink != nullptr) {
+                    P_mix[m][nid].noalias() += eps_sink * P_sink;
+                }
+            } else {
+                for (size_t k = 0; k < K; ++k) {
+                    P_comp[m][k][nid] = mg_vec[k]->transition_matrix(alpha_m * bl);
+                }
+                P_mix[m][nid] = mg_bg_step->transition_matrix(alpha_m * bl);
+            }
         }
 
         std::vector<std::vector<std::vector<std::array<Matrix, 3>>>> P_bridge_comp(
@@ -604,7 +749,7 @@ public:
                     for (int r = 0; r < 3; ++r) {
                         if (wb.weights[r] > 0.0 || r == 0) {
                             Scalar bl = bridge_resolution_tau(b_idx, r, s, custom_branch_lengths);
-                            P_bridge_comp[m][k][b_idx][r] = mg_vec[k].transition_matrix(alpha_m * bl);
+                            P_bridge_comp[m][k][b_idx][r] = mg_vec[k]->transition_matrix(alpha_m * bl);
                         } else {
                             P_bridge_comp[m][k][b_idx][r] = Matrix::Identity(S, S);
                         }
@@ -614,36 +759,18 @@ public:
         }
 
         std::vector<std::vector<std::array<Matrix, 3>>> P_bridges_mix(M);
-        for (size_t m = 0; m < M; ++m) {
-            Scalar alpha_m = syn_rates[m];
-            for (const auto& node : tree.nodes) {
-                if (node.id != tree.root_id) {
-                    if (is_test_branch[node.id]) {
-                        P_mix[m][node.id] = Matrix::Zero(S, S);
-                        Scalar use_bio = (out_new_eps_sink != nullptr) ? bio_scale : 1.0;
-                        for (size_t k = 0; k < K; ++k) {
-                            P_mix[m][node.id] += (use_bio * weights[k]) * P_comp[m][k][node.id];
-                        }
-                        if (out_new_eps_sink != nullptr) {
-                            P_mix[m][node.id].noalias() += eps_sink * P_sink;
-                        }
-                    } else {
-                        Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[node.id] : branch_tau[node.id]);
-                        P_mix[m][node.id] = mg_bg_step.transition_matrix(alpha_m * bl);
-                    }
-                }
-            }
-            if (!tree.bridges.empty()) {
-                P_bridges_mix[m] = build_one_set_bridge_mix(s, alpha_m, mg_vec, mg_bg_step, weights, (out_new_eps_sink != nullptr) ? eps_sink : 0.0, bio_scale, custom_branch_lengths);
+        if (!tree.bridges.empty()) {
+            for (size_t m = 0; m < M; ++m) {
+                P_bridges_mix[m] = build_one_set_bridge_mix(s, syn_rates[m], mg_vec, mg_bg_step, weights, (out_new_eps_sink != nullptr) ? eps_sink : 0.0, bio_scale, custom_branch_lengths);
             }
         }
 
         Matrix pat_weight_accum = Matrix::Zero(K, num_patterns);
         std::vector<Scalar> pat_sink_accum(num_patterns, 0.0);
         std::vector<Scalar> pat_wt_accum(num_patterns, 0.0);
-        int n_threads = LikelihoodEngine::optimal_omp_threads(num_patterns, 32);
-        const size_t tile_size = std::min<size_t>(64, std::max<size_t>(1, num_patterns));
-        const size_t num_tiles = (num_patterns + tile_size - 1) / tile_size;
+        int n_threads = 1;
+        size_t tile_size = 64, num_tiles = 1;
+        compute_tile_schedule(num_patterns, M, num_nodes, n_threads, tile_size, num_tiles);
 
         #pragma omp parallel num_threads(n_threads)
         {
@@ -870,57 +997,67 @@ public:
         Scalar bio_scale = 1.0 - eps_sink;
         const MG94Parameters& active_base = custom_base_params ? *custom_base_params : base_params;
 
-        std::vector<MG94Matrix> mg(K);
+        std::vector<MG94Matrix> mg_fallback(K);
+        std::vector<const MG94Matrix*> mg(K);
         for (size_t k = 0; k < K; ++k) {
             MG94Parameters p = active_base;
             p.alpha = 1.0;
             p.beta = omegas[k];
             p.delta = delta;
             p.psi = psi;
-            mg[k].update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg[k] = &get_cached_mg94(p, mg_fallback[k]);
         }
         bool has_bg = (num_test_branches + 1 < num_nodes);
-        MG94Matrix mg_bg;
+        MG94Matrix mg_bg_fallback;
+        const MG94Matrix* mg_bg = nullptr;
         if (has_bg) {
             MG94Parameters p_bg = active_base;
             p_bg.alpha = 1.0;
             p_bg.beta = (mg94_background_omega >= 0.0) ? mg94_background_omega : mg94_omega;
             p_bg.delta = delta;
             p_bg.psi = psi;
-            mg_bg.update(p_bg, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg_bg = &get_cached_mg94(p_bg, mg_bg_fallback);
         }
 
         std::vector<std::vector<Matrix>> P_mix(M, std::vector<Matrix>(num_nodes));
         std::vector<std::vector<std::array<Matrix, 3>>> P_bridges_mix(M);
-        for (size_t m = 0; m < M; ++m) {
+        const size_t total_branch_evals = M * num_nodes;
+        int prep_threads = (total_branch_evals >= 48)
+            ? LikelihoodEngine::optimal_omp_threads(total_branch_evals, 16)
+            : 1;
+        (void)prep_threads;
+        #pragma omp parallel for schedule(static) num_threads(prep_threads) if(prep_threads > 1)
+        for (size_t idx = 0; idx < total_branch_evals; ++idx) {
+            size_t m = idx / num_nodes;
+            size_t n_i = idx % num_nodes;
+            int nid = tree.nodes[n_i].id;
+            if (nid == tree.root_id) continue;
             Scalar alpha_m = syn_rates[m];
-            for (const auto& node : tree.nodes) {
-                if (node.id != tree.root_id) {
-                    Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[node.id] : branch_tau[node.id]);
-                    if (is_test_branch[node.id]) {
-                        P_mix[m][node.id] = Matrix::Zero(S, S);
-                        Scalar use_bio = (eps_sink > 0.0) ? bio_scale : 1.0;
-                        for (size_t k = 0; k < K; ++k) {
-                            P_mix[m][node.id] += (use_bio * weights[k]) * mg[k].transition_matrix(alpha_m * bl);
-                        }
-                        if (eps_sink > 0.0) {
-                            P_mix[m][node.id].noalias() += eps_sink * P_sink;
-                        }
-                    } else {
-                        P_mix[m][node.id] = mg_bg.transition_matrix(alpha_m * bl);
-                    }
+            Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[nid] : branch_tau[nid]);
+            if (is_test_branch[nid]) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                Scalar use_bio = (eps_sink > 0.0) ? bio_scale : 1.0;
+                for (size_t k = 0; k < K; ++k) {
+                    P_mix[m][nid] += (use_bio * weights[k]) * mg[k]->transition_matrix(alpha_m * bl);
                 }
+                if (eps_sink > 0.0) {
+                    P_mix[m][nid].noalias() += eps_sink * P_sink;
+                }
+            } else {
+                P_mix[m][nid] = mg_bg->transition_matrix(alpha_m * bl);
             }
-            if (!tree.bridges.empty()) {
-                P_bridges_mix[m] = build_one_set_bridge_mix(s, alpha_m, mg, mg_bg, weights, eps_sink, bio_scale, custom_branch_lengths);
+        }
+        if (!tree.bridges.empty()) {
+            for (size_t m = 0; m < M; ++m) {
+                P_bridges_mix[m] = build_one_set_bridge_mix(s, syn_rates[m], mg, mg_bg, weights, eps_sink, bio_scale, custom_branch_lengths);
             }
         }
 
         Matrix pat_syn_accum = Matrix::Zero(M, num_patterns);
         std::vector<Scalar> pat_wt_accum(num_patterns, 0.0);
-        int n_threads = LikelihoodEngine::optimal_omp_threads(num_patterns, 32);
-        const size_t tile_size = std::min<size_t>(64, std::max<size_t>(1, num_patterns));
-        const size_t num_tiles = (num_patterns + tile_size - 1) / tile_size;
+        int n_threads = 1;
+        size_t tile_size = 64, num_tiles = 1;
+        compute_tile_schedule(num_patterns, M, num_nodes, n_threads, tile_size, num_tiles);
 
         #pragma omp parallel num_threads(n_threads)
         {
@@ -1017,25 +1154,27 @@ public:
         Scalar bio_scale = 1.0 - eps_sink;
         const MG94Parameters& active_base = custom_base_params ? *custom_base_params : base_params;
 
-        // 1. Build K rate matrices
-        std::vector<MG94Matrix> mg(K);
+        // 1. Build K rate matrices (cached per thread when syn_pair_rates == nullptr)
+        std::vector<MG94Matrix> mg_fallback(K);
+        std::vector<const MG94Matrix*> mg(K);
         for (size_t k = 0; k < K; ++k) {
             MG94Parameters p = active_base;
             p.alpha = 1.0;
             p.beta = omegas[k];
             p.delta = delta;
             p.psi = psi;
-            mg[k].update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg[k] = &get_cached_mg94(p, mg_fallback[k]);
         }
         bool has_bg = (num_test_branches + 1 < num_nodes);
-        MG94Matrix mg_bg;
+        MG94Matrix mg_bg_fallback;
+        const MG94Matrix* mg_bg = nullptr;
         if (has_bg) {
             MG94Parameters p_bg = active_base;
             p_bg.alpha = 1.0;
             p_bg.beta = (mg94_background_omega >= 0.0) ? mg94_background_omega : mg94_omega;
             p_bg.delta = delta;
             p_bg.psi = psi;
-            mg_bg.update(p_bg, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg_bg = &get_cached_mg94(p_bg, mg_bg_fallback);
         }
 
         // 2. Precompute P_mix[m] and dP_mix[m] for each synonymous rate category and branch
@@ -1044,32 +1183,40 @@ public:
         std::vector<std::vector<Matrix>> dP_mix(M, std::vector<Matrix>(num_nodes));
         std::vector<std::vector<std::array<Matrix, 3>>> P_bridges_mix(M);
         std::vector<std::vector<std::array<Matrix, 3>>> dP_bridges_mix(M);
-        for (size_t m = 0; m < M; ++m) {
+        const size_t total_branch_evals = M * num_nodes;
+        int prep_threads = (total_branch_evals >= 48)
+            ? LikelihoodEngine::optimal_omp_threads(total_branch_evals, 16)
+            : 1;
+        (void)prep_threads;
+        #pragma omp parallel for schedule(static) num_threads(prep_threads) if(prep_threads > 1)
+        for (size_t idx = 0; idx < total_branch_evals; ++idx) {
+            size_t m = idx / num_nodes;
+            size_t n_i = idx % num_nodes;
+            int nid = tree.nodes[n_i].id;
+            if (nid == tree.root_id) continue;
             Scalar alpha_m = syn_rates[m];
-            for (const auto& node : tree.nodes) {
-                if (node.id != tree.root_id) {
-                    int nid = node.id;
-                    Scalar bl = branch_lengths[nid];
-                    if (is_test_branch[nid]) {
-                        P_mix[m][nid] = Matrix::Zero(S, S);
-                        dP_mix[m][nid] = Matrix::Zero(S, S);
-                        Scalar use_bio = (eps_sink > 0.0) ? bio_scale : 1.0;
-                        for (size_t k = 0; k < K; ++k) {
-                            Matrix P_k = mg[k].transition_matrix(alpha_m * bl);
-                            P_mix[m][nid] += (use_bio * weights[k]) * P_k;
-                            dP_mix[m][nid] += (use_bio * weights[k]) * alpha_m * (mg[k].Q * P_k);
-                        }
-                        if (eps_sink > 0.0) {
-                            P_mix[m][nid].noalias() += eps_sink * P_sink;
-                        }
-                    } else {
-                        Matrix P_b = mg_bg.transition_matrix(alpha_m * bl);
-                        P_mix[m][nid] = P_b;
-                        dP_mix[m][nid] = alpha_m * (mg_bg.Q * P_b);
-                    }
+            Scalar bl = branch_lengths[nid];
+            if (is_test_branch[nid]) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                dP_mix[m][nid] = Matrix::Zero(S, S);
+                Scalar use_bio = (eps_sink > 0.0) ? bio_scale : 1.0;
+                for (size_t k = 0; k < K; ++k) {
+                    Matrix P_k = mg[k]->transition_matrix(alpha_m * bl);
+                    P_mix[m][nid] += (use_bio * weights[k]) * P_k;
+                    dP_mix[m][nid] += (use_bio * weights[k]) * alpha_m * (mg[k]->Q * P_k);
                 }
+                if (eps_sink > 0.0) {
+                    P_mix[m][nid].noalias() += eps_sink * P_sink;
+                }
+            } else {
+                Matrix P_b = mg_bg->transition_matrix(alpha_m * bl);
+                P_mix[m][nid] = P_b;
+                dP_mix[m][nid] = alpha_m * (mg_bg->Q * P_b);
             }
-            if (!tree.bridges.empty()) {
+        }
+        if (!tree.bridges.empty()) {
+            for (size_t m = 0; m < M; ++m) {
+                Scalar alpha_m = syn_rates[m];
                 P_bridges_mix[m] = build_one_set_bridge_mix(1.0, alpha_m, mg, mg_bg, weights, eps_sink, bio_scale, &branch_lengths);
                 dP_bridges_mix[m].resize(tree.bridges.size());
                 for (size_t b_idx = 0; b_idx < tree.bridges.size(); ++b_idx) {
@@ -1086,12 +1233,12 @@ public:
                                 dP_bridges_mix[m][b_idx][r] = Matrix::Zero(S, S);
                                 Scalar use_bio = (eps_sink > 0.0) ? bio_scale : 1.0;
                                 for (size_t k = 0; k < K; ++k) {
-                                    Matrix P_k = mg[k].transition_matrix(alpha_m * bl);
-                                    dP_bridges_mix[m][b_idx][r] += (use_bio * weights[k]) * (alpha_m * dbl_dt) * (mg[k].Q * P_k);
+                                    Matrix P_k = mg[k]->transition_matrix(alpha_m * bl);
+                                    dP_bridges_mix[m][b_idx][r] += (use_bio * weights[k]) * (alpha_m * dbl_dt) * (mg[k]->Q * P_k);
                                 }
                             } else {
-                                Matrix P_b = mg_bg.transition_matrix(alpha_m * bl);
-                                dP_bridges_mix[m][b_idx][r] = (alpha_m * dbl_dt) * (mg_bg.Q * P_b);
+                                Matrix P_b = mg_bg->transition_matrix(alpha_m * bl);
+                                dP_bridges_mix[m][b_idx][r] = (alpha_m * dbl_dt) * (mg_bg->Q * P_b);
                             }
                         } else {
                             dP_bridges_mix[m][b_idx][r] = Matrix::Zero(S, S);
@@ -1133,9 +1280,9 @@ public:
         // 3. Parallel batched inside-outside GEMM traversal (deterministic pattern-indexed accumulation)
         std::vector<Scalar> pat_ll_vec(num_patterns, 0.0);
         Matrix pat_grad_mat = Matrix::Zero(num_nodes, num_patterns);
-        int n_threads = LikelihoodEngine::optimal_omp_threads(num_patterns, 32);
-        const size_t tile_size = std::min<size_t>(64, std::max<size_t>(1, num_patterns));
-        const size_t num_tiles = (num_patterns + tile_size - 1) / tile_size;
+        int n_threads = 1;
+        size_t tile_size = 64, num_tiles = 1;
+        compute_tile_schedule(num_patterns, M, num_nodes, n_threads, tile_size, num_tiles);
 
         #pragma omp parallel num_threads(n_threads)
         {
@@ -3024,30 +3171,32 @@ public:
         Scalar bio_scale_t = 1.0 - eps_sink_test;
         Scalar bio_scale_b = 1.0 - eps_sink_bg;
 
-        std::vector<MG94Matrix> mg_t(K_t);
+        std::vector<MG94Matrix> mg_t_fallback(K_t), mg_b_fallback(K_b);
+        std::vector<const MG94Matrix*> mg_t(K_t), mg_b(K_b);
         for (size_t k = 0; k < K_t; ++k) {
             MG94Parameters p = active_base;
             p.alpha = 1.0;
             p.beta = omegas_test[k];
             p.delta = delta;
             p.psi = psi;
-            mg_t[k].update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg_t[k] = &get_cached_mg94(p, mg_t_fallback[k]);
         }
 
-        std::vector<MG94Matrix> mg_b(K_b);
         for (size_t k = 0; k < K_b; ++k) {
             MG94Parameters p = active_base;
             p.alpha = 1.0;
             p.beta = omegas_bg[k];
             p.delta = delta;
             p.psi = psi;
-            mg_b[k].update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg_b[k] = &get_cached_mg94(p, mg_b_fallback[k]);
         }
 
         bool has_unclass_dist = (num_unclassified_branches > 0 && omegas_unclass != nullptr && weights_unclass != nullptr && !omegas_unclass->empty() && omegas_unclass->size() == weights_unclass->size());
         size_t K_u = has_unclass_dist ? omegas_unclass->size() : 0;
-        std::vector<MG94Matrix> mg_u(K_u);
-        MG94Matrix mg_unclass;
+        std::vector<MG94Matrix> mg_u_fallback(K_u);
+        std::vector<const MG94Matrix*> mg_u(K_u);
+        MG94Matrix mg_unclass_fallback;
+        const MG94Matrix* mg_unclass = nullptr;
         if (has_unclass_dist) {
             for (size_t k = 0; k < K_u; ++k) {
                 MG94Parameters p_u = active_base;
@@ -3055,7 +3204,7 @@ public:
                 p_u.beta = (*omegas_unclass)[k];
                 p_u.delta = delta;
                 p_u.psi = psi;
-                mg_u[k].update(p_u, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+                mg_u[k] = &get_cached_mg94(p_u, mg_u_fallback[k]);
             }
         } else if (num_unclassified_branches > 0) {
             MG94Parameters p_u = active_base;
@@ -3063,49 +3212,56 @@ public:
             p_u.beta = (mg94_background_omega >= 0.0) ? mg94_background_omega : mg94_omega;
             p_u.delta = delta;
             p_u.psi = psi;
-            mg_unclass.update(p_u, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg_unclass = &get_cached_mg94(p_u, mg_unclass_fallback);
         }
 
         std::vector<std::vector<Matrix>> P_mix(M, std::vector<Matrix>(num_nodes));
         std::vector<std::vector<std::array<Matrix, 3>>> P_bridges_mix(M);
-        for (size_t m = 0; m < M; ++m) {
+        const size_t total_branch_evals = M * num_nodes;
+        int prep_threads = (total_branch_evals >= 48)
+            ? LikelihoodEngine::optimal_omp_threads(total_branch_evals, 16)
+            : 1;
+        (void)prep_threads;
+        #pragma omp parallel for schedule(static) num_threads(prep_threads) if(prep_threads > 1)
+        for (size_t idx = 0; idx < total_branch_evals; ++idx) {
+            size_t m = idx / num_nodes;
+            size_t n_i = idx % num_nodes;
+            int nid = tree.nodes[n_i].id;
+            if (nid == tree.root_id) continue;
             Scalar alpha_m = syn_rates[m];
-            for (const auto& node : tree.nodes) {
-                if (node.id != tree.root_id) {
-                    int nid = node.id;
-                    Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[nid] : branch_tau[nid]);
-                    int part = (static_cast<size_t>(nid) < branch_partition.size()) ? branch_partition[nid] : (is_test_branch[nid] ? 0 : 1);
-                    if (part == 0) {
-                        P_mix[m][nid] = Matrix::Zero(S, S);
-                        Scalar use_bio = (eps_sink_test > 0.0) ? bio_scale_t : 1.0;
-                        for (size_t k = 0; k < K_t; ++k) {
-                            P_mix[m][nid] += (use_bio * weights_test[k]) * mg_t[k].transition_matrix(alpha_m * bl);
-                        }
-                        if (eps_sink_test > 0.0) {
-                            P_mix[m][nid].noalias() += eps_sink_test * P_sink;
-                        }
-                    } else if (part == 1) {
-                        P_mix[m][nid] = Matrix::Zero(S, S);
-                        Scalar use_bio = (eps_sink_bg > 0.0) ? bio_scale_b : 1.0;
-                        for (size_t k = 0; k < K_b; ++k) {
-                            P_mix[m][nid] += (use_bio * weights_bg[k]) * mg_b[k].transition_matrix(alpha_m * bl);
-                        }
-                        if (eps_sink_bg > 0.0) {
-                            P_mix[m][nid].noalias() += eps_sink_bg * P_sink;
-                        }
-                    } else if (has_unclass_dist) {
-                        P_mix[m][nid] = Matrix::Zero(S, S);
-                        for (size_t k = 0; k < K_u; ++k) {
-                            P_mix[m][nid] += (*weights_unclass)[k] * mg_u[k].transition_matrix(alpha_m * bl);
-                        }
-                    } else {
-                        P_mix[m][nid] = mg_unclass.transition_matrix(alpha_m * bl);
-                    }
+            Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[nid] : branch_tau[nid]);
+            int part = (static_cast<size_t>(nid) < branch_partition.size()) ? branch_partition[nid] : (is_test_branch[nid] ? 0 : 1);
+            if (part == 0) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                Scalar use_bio = (eps_sink_test > 0.0) ? bio_scale_t : 1.0;
+                for (size_t k = 0; k < K_t; ++k) {
+                    P_mix[m][nid] += (use_bio * weights_test[k]) * mg_t[k]->transition_matrix(alpha_m * bl);
                 }
+                if (eps_sink_test > 0.0) {
+                    P_mix[m][nid].noalias() += eps_sink_test * P_sink;
+                }
+            } else if (part == 1) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                Scalar use_bio = (eps_sink_bg > 0.0) ? bio_scale_b : 1.0;
+                for (size_t k = 0; k < K_b; ++k) {
+                    P_mix[m][nid] += (use_bio * weights_bg[k]) * mg_b[k]->transition_matrix(alpha_m * bl);
+                }
+                if (eps_sink_bg > 0.0) {
+                    P_mix[m][nid].noalias() += eps_sink_bg * P_sink;
+                }
+            } else if (has_unclass_dist) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                for (size_t k = 0; k < K_u; ++k) {
+                    P_mix[m][nid] += (*weights_unclass)[k] * mg_u[k]->transition_matrix(alpha_m * bl);
+                }
+            } else {
+                P_mix[m][nid] = mg_unclass->transition_matrix(alpha_m * bl);
             }
-            if (!tree.bridges.empty()) {
+        }
+        if (!tree.bridges.empty()) {
+            for (size_t m = 0; m < M; ++m) {
                 P_bridges_mix[m] = build_two_set_bridge_mix(
-                    s, alpha_m, mg_t, mg_b, mg_u, mg_unclass,
+                    s, syn_rates[m], mg_t, mg_b, mg_u, mg_unclass,
                     weights_test, weights_bg, weights_unclass, has_unclass_dist,
                     eps_sink_test, eps_sink_bg, bio_scale_t, bio_scale_b, custom_branch_lengths
                 );
@@ -3253,7 +3409,8 @@ public:
         std::vector<std::vector<std::vector<Matrix>>> P_comp_b(M, std::vector<std::vector<Matrix>>(K_b, std::vector<Matrix>(num_nodes)));
         std::vector<std::vector<std::vector<Matrix>>> P_comp_u(has_unclass_dist ? M : 0, std::vector<std::vector<Matrix>>(K_u, std::vector<Matrix>(has_unclass_dist ? num_nodes : 0)));
         std::vector<std::vector<Matrix>> P_mix(M, std::vector<Matrix>(num_nodes));
-        std::vector<MG94Matrix> mg_t_vec(K_t), mg_b_vec(K_b), mg_u_vec(K_u);
+        std::vector<MG94Matrix> mg_t_fallback(K_t), mg_b_fallback(K_b), mg_u_fallback(K_u);
+        std::vector<const MG94Matrix*> mg_t_vec(K_t), mg_b_vec(K_b), mg_u_vec(K_u);
 
         for (size_t k = 0; k < K_t; ++k) {
             MG94Parameters p = active_base;
@@ -3261,16 +3418,7 @@ public:
             p.beta = omegas_test[k];
             p.delta = delta;
             p.psi = psi;
-            mg_t_vec[k].update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
-            for (size_t m = 0; m < M; ++m) {
-                Scalar alpha_m = syn_rates[m];
-                for (const auto& node : tree.nodes) {
-                    if (node.id != tree.root_id && branch_partition[node.id] == 0) {
-                        Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[node.id] : branch_tau[node.id]);
-                        P_comp_t[m][k][node.id] = mg_t_vec[k].transition_matrix(alpha_m * bl);
-                    }
-                }
-            }
+            mg_t_vec[k] = &get_cached_mg94(p, mg_t_fallback[k]);
         }
 
         for (size_t k = 0; k < K_b; ++k) {
@@ -3279,19 +3427,11 @@ public:
             p.beta = omegas_bg[k];
             p.delta = delta;
             p.psi = psi;
-            mg_b_vec[k].update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
-            for (size_t m = 0; m < M; ++m) {
-                Scalar alpha_m = syn_rates[m];
-                for (const auto& node : tree.nodes) {
-                    if (node.id != tree.root_id && branch_partition[node.id] == 1) {
-                        Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[node.id] : branch_tau[node.id]);
-                        P_comp_b[m][k][node.id] = mg_b_vec[k].transition_matrix(alpha_m * bl);
-                    }
-                }
-            }
+            mg_b_vec[k] = &get_cached_mg94(p, mg_b_fallback[k]);
         }
 
-        MG94Matrix mg_unclass;
+        MG94Matrix mg_unclass_fallback;
+        const MG94Matrix* mg_unclass = nullptr;
         if (has_unclass_dist) {
             for (size_t k = 0; k < K_u; ++k) {
                 MG94Parameters p_u = active_base;
@@ -3299,16 +3439,7 @@ public:
                 p_u.beta = (*omegas_unclass)[k];
                 p_u.delta = delta;
                 p_u.psi = psi;
-                mg_u_vec[k].update(p_u, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
-                for (size_t m = 0; m < M; ++m) {
-                    Scalar alpha_m = syn_rates[m];
-                    for (const auto& node : tree.nodes) {
-                        if (node.id != tree.root_id && branch_partition[node.id] == 2) {
-                            Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[node.id] : branch_tau[node.id]);
-                            P_comp_u[m][k][node.id] = mg_u_vec[k].transition_matrix(alpha_m * bl);
-                        }
-                    }
-                }
+                mg_u_vec[k] = &get_cached_mg94(p_u, mg_u_fallback[k]);
             }
         } else if (num_unclassified_branches > 0) {
             MG94Parameters p_u = active_base;
@@ -3316,46 +3447,56 @@ public:
             p_u.beta = (mg94_background_omega >= 0.0) ? mg94_background_omega : mg94_omega;
             p_u.delta = delta;
             p_u.psi = psi;
-            mg_unclass.update(p_u, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg_unclass = &get_cached_mg94(p_u, mg_unclass_fallback);
         }
 
         std::vector<std::vector<std::array<Matrix, 3>>> P_bridges_mix(M);
-        for (size_t m = 0; m < M; ++m) {
+        const size_t total_branch_evals = M * num_nodes;
+        int prep_threads = (total_branch_evals >= 48)
+            ? LikelihoodEngine::optimal_omp_threads(total_branch_evals, 16)
+            : 1;
+        (void)prep_threads;
+        #pragma omp parallel for schedule(static) num_threads(prep_threads) if(prep_threads > 1)
+        for (size_t idx = 0; idx < total_branch_evals; ++idx) {
+            size_t m = idx / num_nodes;
+            size_t n_i = idx % num_nodes;
+            int nid = tree.nodes[n_i].id;
+            if (nid == tree.root_id) continue;
             Scalar alpha_m = syn_rates[m];
-            for (const auto& node : tree.nodes) {
-                if (node.id != tree.root_id) {
-                    int nid = node.id;
-                    int part = branch_partition[nid];
-                    if (part == 0) {
-                        P_mix[m][nid] = Matrix::Zero(S, S);
-                        for (size_t k = 0; k < K_t; ++k) {
-                            P_mix[m][nid] += (bio_scale_t * weights_test[k]) * P_comp_t[m][k][nid];
-                        }
-                        if (out_new_eps_test != nullptr) {
-                            P_mix[m][nid].noalias() += eps_sink_test * P_sink;
-                        }
-                    } else if (part == 1) {
-                        P_mix[m][nid] = Matrix::Zero(S, S);
-                        for (size_t k = 0; k < K_b; ++k) {
-                            P_mix[m][nid] += (bio_scale_b * weights_bg[k]) * P_comp_b[m][k][nid];
-                        }
-                        if (out_new_eps_bg != nullptr) {
-                            P_mix[m][nid].noalias() += eps_sink_bg * P_sink;
-                        }
-                    } else if (has_unclass_dist) {
-                        P_mix[m][nid] = Matrix::Zero(S, S);
-                        for (size_t k = 0; k < K_u; ++k) {
-                            P_mix[m][nid] += (*weights_unclass)[k] * P_comp_u[m][k][nid];
-                        }
-                    } else {
-                        Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[nid] : branch_tau[nid]);
-                        P_mix[m][nid] = mg_unclass.transition_matrix(alpha_m * bl);
-                    }
+            Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[nid] : branch_tau[nid]);
+            int part = branch_partition[nid];
+            if (part == 0) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                for (size_t k = 0; k < K_t; ++k) {
+                    P_comp_t[m][k][nid] = mg_t_vec[k]->transition_matrix(alpha_m * bl);
+                    P_mix[m][nid] += (bio_scale_t * weights_test[k]) * P_comp_t[m][k][nid];
                 }
+                if (out_new_eps_test != nullptr) {
+                    P_mix[m][nid].noalias() += eps_sink_test * P_sink;
+                }
+            } else if (part == 1) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                for (size_t k = 0; k < K_b; ++k) {
+                    P_comp_b[m][k][nid] = mg_b_vec[k]->transition_matrix(alpha_m * bl);
+                    P_mix[m][nid] += (bio_scale_b * weights_bg[k]) * P_comp_b[m][k][nid];
+                }
+                if (out_new_eps_bg != nullptr) {
+                    P_mix[m][nid].noalias() += eps_sink_bg * P_sink;
+                }
+            } else if (has_unclass_dist) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                for (size_t k = 0; k < K_u; ++k) {
+                    P_comp_u[m][k][nid] = mg_u_vec[k]->transition_matrix(alpha_m * bl);
+                    P_mix[m][nid] += (*weights_unclass)[k] * P_comp_u[m][k][nid];
+                }
+            } else {
+                P_mix[m][nid] = mg_unclass->transition_matrix(alpha_m * bl);
             }
-            if (!tree.bridges.empty()) {
+        }
+        if (!tree.bridges.empty()) {
+            for (size_t m = 0; m < M; ++m) {
                 P_bridges_mix[m] = build_two_set_bridge_mix(
-                    s, alpha_m, mg_t_vec, mg_b_vec, mg_u_vec, mg_unclass,
+                    s, syn_rates[m], mg_t_vec, mg_b_vec, mg_u_vec, mg_unclass,
                     weights_test, weights_bg, weights_unclass, has_unclass_dist,
                     (out_new_eps_test != nullptr) ? eps_sink_test : 0.0,
                     (out_new_eps_bg != nullptr) ? eps_sink_bg : 0.0,
@@ -3571,66 +3712,75 @@ public:
         Scalar bio_scale_t = 1.0 - eps_sink_test;
         Scalar bio_scale_b = 1.0 - eps_sink_bg;
 
-        std::vector<MG94Matrix> mg_t(K_t), mg_b(K_b), mg_u(K_u);
+        std::vector<MG94Matrix> mg_t_fallback(K_t), mg_b_fallback(K_b), mg_u_fallback(K_u);
+        std::vector<const MG94Matrix*> mg_t(K_t), mg_b(K_b), mg_u(K_u);
         for (size_t k = 0; k < K_t; ++k) {
             MG94Parameters p = active_base;
             p.alpha = 1.0; p.beta = omegas_test[k]; p.delta = delta; p.psi = psi;
-            mg_t[k].update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg_t[k] = &get_cached_mg94(p, mg_t_fallback[k]);
         }
         for (size_t k = 0; k < K_b; ++k) {
             MG94Parameters p = active_base;
             p.alpha = 1.0; p.beta = omegas_bg[k]; p.delta = delta; p.psi = psi;
-            mg_b[k].update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg_b[k] = &get_cached_mg94(p, mg_b_fallback[k]);
         }
-        MG94Matrix mg_unclass;
+        MG94Matrix mg_unclass_fallback;
+        const MG94Matrix* mg_unclass = nullptr;
         if (has_unclass_dist) {
             for (size_t k = 0; k < K_u; ++k) {
                 MG94Parameters p_u = active_base;
                 p_u.alpha = 1.0; p_u.beta = (*omegas_unclass)[k]; p_u.delta = delta; p_u.psi = psi;
-                mg_u[k].update(p_u, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+                mg_u[k] = &get_cached_mg94(p_u, mg_u_fallback[k]);
             }
         } else if (num_unclassified_branches > 0) {
             MG94Parameters p_u = active_base;
             p_u.alpha = 1.0; p_u.beta = (mg94_background_omega >= 0.0) ? mg94_background_omega : mg94_omega; p_u.delta = delta; p_u.psi = psi;
-            mg_unclass.update(p_u, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg_unclass = &get_cached_mg94(p_u, mg_unclass_fallback);
         }
 
         std::vector<std::vector<Matrix>> P_mix(M, std::vector<Matrix>(num_nodes));
         std::vector<std::vector<std::array<Matrix, 3>>> P_bridges_mix(M);
-        for (size_t m = 0; m < M; ++m) {
+        const size_t total_branch_evals = M * num_nodes;
+        int prep_threads = (total_branch_evals >= 48)
+            ? LikelihoodEngine::optimal_omp_threads(total_branch_evals, 16)
+            : 1;
+        (void)prep_threads;
+        #pragma omp parallel for schedule(static) num_threads(prep_threads) if(prep_threads > 1)
+        for (size_t idx = 0; idx < total_branch_evals; ++idx) {
+            size_t m = idx / num_nodes;
+            size_t n_i = idx % num_nodes;
+            int nid = tree.nodes[n_i].id;
+            if (nid == tree.root_id) continue;
             Scalar alpha_m = syn_rates[m];
-            for (const auto& node : tree.nodes) {
-                if (node.id != tree.root_id) {
-                    int nid = node.id;
-                    Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[nid] : branch_tau[nid]);
-                    int part = branch_partition[nid];
-                    if (part == 0) {
-                        P_mix[m][nid] = Matrix::Zero(S, S);
-                        Scalar use_bio = (eps_sink_test > 0.0) ? bio_scale_t : 1.0;
-                        for (size_t k = 0; k < K_t; ++k) {
-                            P_mix[m][nid] += (use_bio * weights_test[k]) * mg_t[k].transition_matrix(alpha_m * bl);
-                        }
-                        if (eps_sink_test > 0.0) P_mix[m][nid].noalias() += eps_sink_test * P_sink;
-                    } else if (part == 1) {
-                        P_mix[m][nid] = Matrix::Zero(S, S);
-                        Scalar use_bio = (eps_sink_bg > 0.0) ? bio_scale_b : 1.0;
-                        for (size_t k = 0; k < K_b; ++k) {
-                            P_mix[m][nid] += (use_bio * weights_bg[k]) * mg_b[k].transition_matrix(alpha_m * bl);
-                        }
-                        if (eps_sink_bg > 0.0) P_mix[m][nid].noalias() += eps_sink_bg * P_sink;
-                    } else if (has_unclass_dist) {
-                        P_mix[m][nid] = Matrix::Zero(S, S);
-                        for (size_t k = 0; k < K_u; ++k) {
-                            P_mix[m][nid] += (*weights_unclass)[k] * mg_u[k].transition_matrix(alpha_m * bl);
-                        }
-                    } else {
-                        P_mix[m][nid] = mg_unclass.transition_matrix(alpha_m * bl);
-                    }
+            Scalar bl = s * (custom_branch_lengths ? (*custom_branch_lengths)[nid] : branch_tau[nid]);
+            int part = branch_partition[nid];
+            if (part == 0) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                Scalar use_bio = (eps_sink_test > 0.0) ? bio_scale_t : 1.0;
+                for (size_t k = 0; k < K_t; ++k) {
+                    P_mix[m][nid] += (use_bio * weights_test[k]) * mg_t[k]->transition_matrix(alpha_m * bl);
                 }
+                if (eps_sink_test > 0.0) P_mix[m][nid].noalias() += eps_sink_test * P_sink;
+            } else if (part == 1) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                Scalar use_bio = (eps_sink_bg > 0.0) ? bio_scale_b : 1.0;
+                for (size_t k = 0; k < K_b; ++k) {
+                    P_mix[m][nid] += (use_bio * weights_bg[k]) * mg_b[k]->transition_matrix(alpha_m * bl);
+                }
+                if (eps_sink_bg > 0.0) P_mix[m][nid].noalias() += eps_sink_bg * P_sink;
+            } else if (has_unclass_dist) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                for (size_t k = 0; k < K_u; ++k) {
+                    P_mix[m][nid] += (*weights_unclass)[k] * mg_u[k]->transition_matrix(alpha_m * bl);
+                }
+            } else {
+                P_mix[m][nid] = mg_unclass->transition_matrix(alpha_m * bl);
             }
-            if (!tree.bridges.empty()) {
+        }
+        if (!tree.bridges.empty()) {
+            for (size_t m = 0; m < M; ++m) {
                 P_bridges_mix[m] = build_two_set_bridge_mix(
-                    s, alpha_m, mg_t, mg_b, mg_u, mg_unclass,
+                    s, syn_rates[m], mg_t, mg_b, mg_u, mg_unclass,
                     weights_test, weights_bg, weights_unclass, has_unclass_dist,
                     eps_sink_test, eps_sink_bg, bio_scale_t, bio_scale_b, custom_branch_lengths
                 );
@@ -3756,77 +3906,87 @@ public:
         Scalar bio_scale_t = 1.0 - eps_sink_test;
         Scalar bio_scale_b = 1.0 - eps_sink_bg;
 
-        std::vector<MG94Matrix> mg_t(K_t), mg_b(K_b), mg_u(K_u);
+        std::vector<MG94Matrix> mg_t_fallback(K_t), mg_b_fallback(K_b), mg_u_fallback(K_u);
+        std::vector<const MG94Matrix*> mg_t(K_t), mg_b(K_b), mg_u(K_u);
         for (size_t k = 0; k < K_t; ++k) {
             MG94Parameters p = active_base;
             p.alpha = 1.0; p.beta = omegas_test[k]; p.delta = delta; p.psi = psi;
-            mg_t[k].update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg_t[k] = &get_cached_mg94(p, mg_t_fallback[k]);
         }
         for (size_t k = 0; k < K_b; ++k) {
             MG94Parameters p = active_base;
             p.alpha = 1.0; p.beta = omegas_bg[k]; p.delta = delta; p.psi = psi;
-            mg_b[k].update(p, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg_b[k] = &get_cached_mg94(p, mg_b_fallback[k]);
         }
-        MG94Matrix mg_unclass;
+        MG94Matrix mg_unclass_fallback;
+        const MG94Matrix* mg_unclass = nullptr;
         if (has_unclass_dist) {
             for (size_t k = 0; k < K_u; ++k) {
                 MG94Parameters p_u = active_base;
                 p_u.alpha = 1.0; p_u.beta = (*omegas_unclass)[k]; p_u.delta = delta; p_u.psi = psi;
-                mg_u[k].update(p_u, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+                mg_u[k] = &get_cached_mg94(p_u, mg_u_fallback[k]);
             }
         } else if (num_unclassified_branches > 0) {
             MG94Parameters p_u = active_base;
             p_u.alpha = 1.0; p_u.beta = (mg94_background_omega >= 0.0) ? mg94_background_omega : mg94_omega; p_u.delta = delta; p_u.psi = psi;
-            mg_unclass.update(p_u, aln.pos_nuc_frequencies, aln.codon_frequencies_f3x4, *code);
+            mg_unclass = &get_cached_mg94(p_u, mg_unclass_fallback);
         }
 
         std::vector<std::vector<Matrix>> P_mix(M, std::vector<Matrix>(num_nodes));
         std::vector<std::vector<Matrix>> dP_mix(M, std::vector<Matrix>(num_nodes));
         std::vector<std::vector<std::array<Matrix, 3>>> P_bridges_mix(M);
         std::vector<std::vector<std::array<Matrix, 3>>> dP_bridges_mix(M);
-        for (size_t m = 0; m < M; ++m) {
+        const size_t total_branch_evals = M * num_nodes;
+        int prep_threads = (total_branch_evals >= 48)
+            ? LikelihoodEngine::optimal_omp_threads(total_branch_evals, 16)
+            : 1;
+        (void)prep_threads;
+        #pragma omp parallel for schedule(static) num_threads(prep_threads) if(prep_threads > 1)
+        for (size_t idx = 0; idx < total_branch_evals; ++idx) {
+            size_t m = idx / num_nodes;
+            size_t n_i = idx % num_nodes;
+            int nid = tree.nodes[n_i].id;
+            if (nid == tree.root_id) continue;
             Scalar alpha_m = syn_rates[m];
-            for (const auto& node : tree.nodes) {
-                if (node.id != tree.root_id) {
-                    int nid = node.id;
-                    Scalar bl = branch_lengths[nid];
-                    int part = branch_partition[nid];
-                    if (part == 0) {
-                        P_mix[m][nid] = Matrix::Zero(S, S);
-                        dP_mix[m][nid] = Matrix::Zero(S, S);
-                        Scalar use_bio = (eps_sink_test > 0.0) ? bio_scale_t : 1.0;
-                        for (size_t k = 0; k < K_t; ++k) {
-                            Matrix P_k = mg_t[k].transition_matrix(alpha_m * bl);
-                            P_mix[m][nid] += (use_bio * weights_test[k]) * P_k;
-                            dP_mix[m][nid] += (use_bio * weights_test[k]) * alpha_m * (mg_t[k].Q * P_k);
-                        }
-                        if (eps_sink_test > 0.0) P_mix[m][nid].noalias() += eps_sink_test * P_sink;
-                    } else if (part == 1) {
-                        P_mix[m][nid] = Matrix::Zero(S, S);
-                        dP_mix[m][nid] = Matrix::Zero(S, S);
-                        Scalar use_bio = (eps_sink_bg > 0.0) ? bio_scale_b : 1.0;
-                        for (size_t k = 0; k < K_b; ++k) {
-                            Matrix P_k = mg_b[k].transition_matrix(alpha_m * bl);
-                            P_mix[m][nid] += (use_bio * weights_bg[k]) * P_k;
-                            dP_mix[m][nid] += (use_bio * weights_bg[k]) * alpha_m * (mg_b[k].Q * P_k);
-                        }
-                        if (eps_sink_bg > 0.0) P_mix[m][nid].noalias() += eps_sink_bg * P_sink;
-                    } else if (has_unclass_dist) {
-                        P_mix[m][nid] = Matrix::Zero(S, S);
-                        dP_mix[m][nid] = Matrix::Zero(S, S);
-                        for (size_t k = 0; k < K_u; ++k) {
-                            Matrix P_k = mg_u[k].transition_matrix(alpha_m * bl);
-                            P_mix[m][nid] += (*weights_unclass)[k] * P_k;
-                            dP_mix[m][nid] += (*weights_unclass)[k] * alpha_m * (mg_u[k].Q * P_k);
-                        }
-                    } else {
-                        Matrix P_u = mg_unclass.transition_matrix(alpha_m * bl);
-                        P_mix[m][nid] = P_u;
-                        dP_mix[m][nid] = alpha_m * (mg_unclass.Q * P_u);
-                    }
+            Scalar bl = branch_lengths[nid];
+            int part = branch_partition[nid];
+            if (part == 0) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                dP_mix[m][nid] = Matrix::Zero(S, S);
+                Scalar use_bio = (eps_sink_test > 0.0) ? bio_scale_t : 1.0;
+                for (size_t k = 0; k < K_t; ++k) {
+                    Matrix P_k = mg_t[k]->transition_matrix(alpha_m * bl);
+                    P_mix[m][nid] += (use_bio * weights_test[k]) * P_k;
+                    dP_mix[m][nid] += (use_bio * weights_test[k]) * alpha_m * (mg_t[k]->Q * P_k);
                 }
+                if (eps_sink_test > 0.0) P_mix[m][nid].noalias() += eps_sink_test * P_sink;
+            } else if (part == 1) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                dP_mix[m][nid] = Matrix::Zero(S, S);
+                Scalar use_bio = (eps_sink_bg > 0.0) ? bio_scale_b : 1.0;
+                for (size_t k = 0; k < K_b; ++k) {
+                    Matrix P_k = mg_b[k]->transition_matrix(alpha_m * bl);
+                    P_mix[m][nid] += (use_bio * weights_bg[k]) * P_k;
+                    dP_mix[m][nid] += (use_bio * weights_bg[k]) * alpha_m * (mg_b[k]->Q * P_k);
+                }
+                if (eps_sink_bg > 0.0) P_mix[m][nid].noalias() += eps_sink_bg * P_sink;
+            } else if (has_unclass_dist) {
+                P_mix[m][nid] = Matrix::Zero(S, S);
+                dP_mix[m][nid] = Matrix::Zero(S, S);
+                for (size_t k = 0; k < K_u; ++k) {
+                    Matrix P_k = mg_u[k]->transition_matrix(alpha_m * bl);
+                    P_mix[m][nid] += (*weights_unclass)[k] * P_k;
+                    dP_mix[m][nid] += (*weights_unclass)[k] * alpha_m * (mg_u[k]->Q * P_k);
+                }
+            } else {
+                Matrix P_u = mg_unclass->transition_matrix(alpha_m * bl);
+                P_mix[m][nid] = P_u;
+                dP_mix[m][nid] = alpha_m * (mg_unclass->Q * P_u);
             }
-            if (!tree.bridges.empty()) {
+        }
+        if (!tree.bridges.empty()) {
+            for (size_t m = 0; m < M; ++m) {
+                Scalar alpha_m = syn_rates[m];
                 P_bridges_mix[m] = build_two_set_bridge_mix(
                     1.0, alpha_m, mg_t, mg_b, mg_u, mg_unclass,
                     weights_test, weights_bg, weights_unclass, has_unclass_dist,
@@ -3847,25 +4007,25 @@ public:
                                 dP_bridges_mix[m][b_idx][r] = Matrix::Zero(S, S);
                                 Scalar use_bio = (eps_sink_test > 0.0) ? bio_scale_t : 1.0;
                                 for (size_t k = 0; k < K_t; ++k) {
-                                    Matrix P_k = mg_t[k].transition_matrix(alpha_m * bl);
-                                    dP_bridges_mix[m][b_idx][r] += (use_bio * weights_test[k]) * (alpha_m * dbl_dt) * (mg_t[k].Q * P_k);
+                                    Matrix P_k = mg_t[k]->transition_matrix(alpha_m * bl);
+                                    dP_bridges_mix[m][b_idx][r] += (use_bio * weights_test[k]) * (alpha_m * dbl_dt) * (mg_t[k]->Q * P_k);
                                 }
                             } else if (part == 1) {
                                 dP_bridges_mix[m][b_idx][r] = Matrix::Zero(S, S);
                                 Scalar use_bio = (eps_sink_bg > 0.0) ? bio_scale_b : 1.0;
                                 for (size_t k = 0; k < K_b; ++k) {
-                                    Matrix P_k = mg_b[k].transition_matrix(alpha_m * bl);
-                                    dP_bridges_mix[m][b_idx][r] += (use_bio * weights_bg[k]) * (alpha_m * dbl_dt) * (mg_b[k].Q * P_k);
+                                    Matrix P_k = mg_b[k]->transition_matrix(alpha_m * bl);
+                                    dP_bridges_mix[m][b_idx][r] += (use_bio * weights_bg[k]) * (alpha_m * dbl_dt) * (mg_b[k]->Q * P_k);
                                 }
                             } else if (has_unclass_dist) {
                                 dP_bridges_mix[m][b_idx][r] = Matrix::Zero(S, S);
                                 for (size_t k = 0; k < K_u; ++k) {
-                                    Matrix P_k = mg_u[k].transition_matrix(alpha_m * bl);
-                                    dP_bridges_mix[m][b_idx][r] += (*weights_unclass)[k] * (alpha_m * dbl_dt) * (mg_u[k].Q * P_k);
+                                    Matrix P_k = mg_u[k]->transition_matrix(alpha_m * bl);
+                                    dP_bridges_mix[m][b_idx][r] += (*weights_unclass)[k] * (alpha_m * dbl_dt) * (mg_u[k]->Q * P_k);
                                 }
                             } else {
-                                Matrix P_u = mg_unclass.transition_matrix(alpha_m * bl);
-                                dP_bridges_mix[m][b_idx][r] = (alpha_m * dbl_dt) * (mg_unclass.Q * P_u);
+                                Matrix P_u = mg_unclass->transition_matrix(alpha_m * bl);
+                                dP_bridges_mix[m][b_idx][r] = (alpha_m * dbl_dt) * (mg_unclass->Q * P_u);
                             }
                         } else {
                             dP_bridges_mix[m][b_idx][r] = Matrix::Zero(S, S);

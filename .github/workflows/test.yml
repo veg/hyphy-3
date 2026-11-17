@@ -171,7 +171,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake g++ libomp-dev ccache
           python -m pip install --upgrade pip
-          python -m pip install pytest nanobind jsonschema
+          python -m pip install pytest nanobind jsonschema numpy
 
       - uses: actions/cache/restore@v4
         if: steps.changed.outputs.run == 'true'

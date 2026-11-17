@@ -117,8 +117,8 @@ mkdir -p build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build . -j 8
 
-# Run unit & parity tests
-ctest --output-on-failure
+# Run fast unit & parity tests (~30 s; for the exhaustive multi-dataset suite run: ctest -V --output-on-failure)
+ctest -LE deep --output-on-failure
 
 # Run WALRUS or any individual analysis
 ./hyphy3 walrus --input ../benchmarks/data/CD2.nex --html cd2_walrus.html --threads 8

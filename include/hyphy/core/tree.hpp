@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hyphy/core/types.hpp"
+#include "hyphy/core/nexus_utils.hpp"
 #include <array>
 #include <string>
 #include <vector>
@@ -271,7 +272,13 @@ public:
 
     static Tree from_newick(std::string_view newick_sv, bool keep_rooted = true) {
         Tree tree;
-        std::string newick(newick_sv);
+        std::string newick;
+        if (looks_like_nexus_tree_input(newick_sv)) {
+            std::string extracted = extract_nexus_tree_newick(strip_nexus_comments(newick_sv), 0);
+            newick = extracted.empty() ? std::string(newick_sv) : std::move(extracted);
+        } else {
+            newick.assign(newick_sv);
+        }
 
         // Strip trailing semicolon and whitespace
         while (!newick.empty() && (newick.back() == ';' || newick.back() == ' ' || newick.back() == '\t' || newick.back() == '\n' || newick.back() == '\r')) {

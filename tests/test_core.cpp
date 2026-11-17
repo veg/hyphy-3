@@ -270,3 +270,58 @@ TEST_CASE("Issue #3: Tree::select_branches supports model tags, keywords, branch
     // Zero matches should throw std::runtime_error
     CHECK_THROWS_AS(tree.select_branches("NonExistentGroup"), std::runtime_error);
 }
+
+TEST_CASE("NEXUS: Embedded tree TRANSLATE resolution on CD2.nex and edge cases") {
+    // 1. Alignment::load resolves TRANSLATE IDs (1->Pig, 2->Cow, 3->Horse, 8->Cat) inside embedded_tree_newick
+    auto aln = Alignment::load(HYPHY3_SOURCE_DIR "/tests/data/CD2.nex");
+    REQUIRE(!aln.embedded_tree_newick.empty());
+
+    auto emb_tree = Tree::from_newick(aln.embedded_tree_newick);
+    REQUIRE(emb_tree.num_leaves() == 10);
+    for (const char* taxon : {"Pig", "Cow", "Horse", "Cat", "RhMonkey", "Baboon", "Human", "Chimp", "Rat", "Mouse"}) {
+        CHECK(emb_tree.leaf_name_to_id.count(taxon) == 1);
+    }
+    for (const char* numeric_id : {"1", "2", "3", "8"}) {
+        CHECK(emb_tree.leaf_name_to_id.count(numeric_id) == 0);
+    }
+    auto pr_sel = emb_tree.select_branches("PR");
+    CHECK(pr_sel.num_selected == 8); // 4 primate tips + 4 annotated internal PR branches
+
+    auto leaf_map = LikelihoodEngine::build_leaf_to_taxon_map(emb_tree, aln);
+    CHECK(leaf_map.size() == emb_tree.num_nodes());
+
+    // 2. Tree::from_newick_file directly parses a #NEXUS file with BEGIN TREES + TRANSLATE
+    auto direct_tree = Tree::from_newick_file(HYPHY3_SOURCE_DIR "/tests/data/CD2.nex");
+    REQUIRE(direct_tree.num_leaves() == 10);
+    for (const char* taxon : {"Pig", "Cow", "Horse", "Cat", "RhMonkey", "Baboon", "Human", "Chimp", "Rat", "Mouse"}) {
+        CHECK(direct_tree.leaf_name_to_id.count(taxon) == 1);
+    }
+
+    // 3. Quoted multi-word names, node model tags, internal bootstrap numbers, and trailing BEGIN HYPHY block
+    std::string edge_nex = R"(#NEXUS
+BEGIN TREES;
+  TRANSLATE
+    1 'Canis lupus',
+    2 "Felis catus";
+  UTREE * t1 = [&U] ((1{FG}:0.15,2:0.25)1:0.05,Outgroup:0.30);
+END;
+BEGIN HYPHY;
+  Tree ignored_tree = (A:0.1,B:0.1);
+END;
+)";
+    std::string nwk = extract_nexus_tree_newick(strip_nexus_comments(edge_nex), 0);
+    REQUIRE(!nwk.empty());
+    auto edge_tree = Tree::from_newick(nwk);
+    REQUIRE(edge_tree.num_leaves() == 3);
+    CHECK(edge_tree.leaf_name_to_id.count("Canis lupus") == 1);
+    CHECK(edge_tree.leaf_name_to_id.count("Felis catus") == 1);
+    CHECK(edge_tree.leaf_name_to_id.count("Outgroup") == 1);
+    CHECK(edge_tree.leaf_name_to_id.count("1") == 0);
+    CHECK(edge_tree.select_branches("FG").num_selected == 1);
+
+    bool found_internal_bootstrap = false;
+    for (const auto& nd : edge_tree.nodes) {
+        if (!nd.is_leaf && nd.name == "1") found_internal_bootstrap = true;
+    }
+    CHECK(found_internal_bootstrap);
+}

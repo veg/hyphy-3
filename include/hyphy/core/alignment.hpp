@@ -2,6 +2,7 @@
 
 #include "hyphy/core/types.hpp"
 #include "hyphy/core/genetic_code.hpp"
+#include "hyphy/core/nexus_utils.hpp"
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -193,47 +194,7 @@ public:
         std::string raw = read_file_or_gzip(filepath);
 
         // 1. Remove NEXUS comments [ ... ], preserving '[' and ']' inside quoted labels ('...' or "...")
-        std::string text;
-        text.reserve(raw.size());
-        int comment_depth = 0;
-        char active_quote = '\0';
-        for (size_t ri = 0; ri < raw.size(); ++ri) {
-            char c = raw[ri];
-            if (comment_depth > 0) {
-                if (c == '[') {
-                    comment_depth++;
-                } else if (c == ']') {
-                    comment_depth--;
-                } else if (c == '\n' || c == '\r') {
-                    // Preserve line breaks outside comment contents so row structure stays intact
-                    text += c;
-                }
-                continue;
-            }
-            if (active_quote != '\0') {
-                text += c;
-                if (c == active_quote) {
-                    // Doubled single-quote '' inside '...' is an escaped apostrophe in NEXUS
-                    if (c == '\'' && ri + 1 < raw.size() && raw[ri + 1] == '\'') {
-                        text += raw[++ri];
-                    } else {
-                        active_quote = '\0';
-                    }
-                } else if (c == '\n' || c == '\r') {
-                    // Guard against unclosed stray apostrophe on a line eating the rest of the file
-                    active_quote = '\0';
-                }
-                continue;
-            }
-            if (c == '[') {
-                comment_depth++;
-            } else {
-                if (c == '\'' || c == '"') {
-                    active_quote = c;
-                }
-                text += c;
-            }
-        }
+        std::string text = strip_nexus_comments(raw);
 
         // Case-insensitive search helper
         auto find_case_insensitive = [](const std::string& haystack, const std::string& needle, size_t start_pos = 0) -> size_t {
@@ -491,31 +452,8 @@ public:
             }
         }
 
-        // 3. Find embedded tree in BEGIN TREES; TREE <name> = <newick>;
-        size_t tree_pos = find_case_insensitive(text, "TREE ");
-        if (tree_pos == std::string::npos) {
-            tree_pos = find_case_insensitive(text, "TREE\t");
-        }
-        if (tree_pos != std::string::npos) {
-            size_t eq_pos = text.find('=', tree_pos);
-            if (eq_pos != std::string::npos) {
-                size_t lparen = text.find('(', eq_pos);
-                if (lparen != std::string::npos) {
-                    int paren_depth = 0;
-                    size_t r_pos = lparen;
-                    for (; r_pos < text.size(); ++r_pos) {
-                        if (text[r_pos] == '(') paren_depth++;
-                        else if (text[r_pos] == ')') {
-                            paren_depth--;
-                            if (paren_depth == 0) break;
-                        }
-                    }
-                    if (r_pos < text.size()) {
-                        aln.embedded_tree_newick = text.substr(lparen, r_pos - lparen + 1) + ";";
-                    }
-                }
-            }
-        }
+        // 3. Find embedded tree in BEGIN TREES (applying TRANSLATE leaf mappings if present)
+        aln.embedded_tree_newick = extract_nexus_tree_newick(text, mat_pos);
 
         if (do_finalize) {
             if (as_nucleotide) {
