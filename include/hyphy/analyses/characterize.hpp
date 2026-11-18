@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <numeric>
 #include <optional>
 #include <sstream>
@@ -52,7 +53,9 @@ struct CharacterizeSettings {
     bool emit_legacy_jsons = false;    // Decision 7: Optional Vision/Datamonkey legacy JSON bundle
     bool quiet = false;
     std::string genetic_code_name = "Universal";
-    std::string foreground_tag = "";   // Decision 5: Optional user foreground tag (auto-discovered if empty)
+    std::string foreground_tag = "";   // Decision 5: Optional user foreground tag or tip list (auto-discovered if empty)
+    std::string label_map_file = "";   // Optional 2-column CSV/TSV branch label map (--labels)
+    std::string internal_nodes_mode = "All"; // Internal branch propagation: All, Parsimony, MRCA, Paraphyletic, Only, None
 };
 
 struct SpatialDomainSegment {
@@ -112,9 +115,18 @@ struct RecombinationBridgeSegment {
     bool routed_to_spr_tree = false; // Decision 3: True if segment p <= 0.01 routed to local SPR tree T_{u->v}
 };
 
+struct RegimeGroupSummary {
+    std::string name;
+    size_t num_branches = 0;
+    Scalar relax_k = 1.0;
+    Scalar relax_lrt = 0.0;
+    Scalar relax_p_value = 1.0;
+    std::string relax_call = "Baseline";
+};
+
 struct CladeMacroRegimeSummary {
-    // Tier 2 Triggered: Dual-level autonomous macro-regime partition (or user {Foreground} contrast)
-    bool triggered = false; // True if user supplied {Foreground} tags OR autonomous split achieves Delta BIC >= 10
+    // Tier 2 Triggered: Dual-level autonomous macro-regime partition (or user {Foreground}/multi-group contrast)
+    bool triggered = false; // True if user supplied {Foreground}/--labels tags OR autonomous split achieves Delta BIC >= 10
     std::string partition_source = "None (Homogeneous Tree-Wide Regime)";
     std::string test_regime_label = "Focal Clade";
     std::string reference_regime_label = "Background";
@@ -126,6 +138,7 @@ struct CladeMacroRegimeSummary {
     Scalar clade_relax_p_value = 1.0;
     std::string clade_relax_call = "Baseline"; // "Intensified", "Relaxed", or "Baseline"
     size_t contrast_fel_differing_sites = 0;
+    std::vector<RegimeGroupSummary> regime_groups;
 };
 
 struct BranchEvolutionaryProfile {
@@ -204,6 +217,8 @@ struct UnifiedSiteAtlasEntry {
     Scalar contrast_fel_lrt = 0.0;
     Scalar contrast_fel_p_value = 1.0;
     Scalar contrast_fel_bh_q = 1.0;
+    std::map<std::string, Scalar> regime_betas;
+    std::string top_contrast;
 
     // Tier 1 (#1): Model-Free Amino-Acid Exchangeability, Toggle & Convergence Classifier
     // (Replaces locked-in 5-property scales with empirical state-space concentration & homoplasy)
@@ -351,6 +366,10 @@ public:
     ) {
         auto t0 = std::chrono::steady_clock::now();
         if (!gcode) gcode = GeneticCode::universal();
+        (void)Tree::normalize_internal_label_mode(settings.internal_nodes_mode);
+        if (!settings.label_map_file.empty()) {
+            (void)Tree::parse_label_map_file(settings.label_map_file);
+        }
 
         JointAlignSettings jas;
         jas.p_value_threshold = settings.p_value_threshold;
@@ -379,6 +398,10 @@ public:
         std::optional<Tree> input_tree = std::nullopt
     ) {
         auto t0 = std::chrono::steady_clock::now();
+        (void)Tree::normalize_internal_label_mode(settings.internal_nodes_mode);
+        if (!settings.label_map_file.empty()) {
+            (void)Tree::parse_label_map_file(settings.label_map_file);
+        }
 
         JointAlignSettings jas;
         jas.p_value_threshold = settings.p_value_threshold;
@@ -522,6 +545,17 @@ public:
             {"has_positive_selection", res.gene_wide.has_gene_wide_positive_selection}
         };
 
+        json rg_arr = json::array();
+        for (const auto& rg : res.clade_macro_regime.regime_groups) {
+            rg_arr.push_back({
+                {"name", rg.name},
+                {"num_branches", rg.num_branches},
+                {"relax_k", finite_or_null(rg.relax_k)},
+                {"relax_lrt", finite_or_null(rg.relax_lrt)},
+                {"relax_p_value", finite_or_null(rg.relax_p_value)},
+                {"relax_call", rg.relax_call}
+            });
+        }
         j["clade_macro_regime"] = {
             {"triggered", res.clade_macro_regime.triggered},
             {"partition_source", res.clade_macro_regime.partition_source},
@@ -534,7 +568,8 @@ public:
             {"clade_relax_delta_bic", finite_or_null(res.clade_macro_regime.clade_relax_delta_bic)},
             {"clade_relax_p_value", finite_or_null(res.clade_macro_regime.clade_relax_p_value)},
             {"clade_relax_call", res.clade_macro_regime.clade_relax_call},
-            {"contrast_fel_differing_sites", res.clade_macro_regime.contrast_fel_differing_sites}
+            {"contrast_fel_differing_sites", res.clade_macro_regime.contrast_fel_differing_sites},
+            {"regime_groups", rg_arr}
         };
 
         json dom_arr = json::array();
@@ -629,6 +664,10 @@ public:
 
         json site_arr = json::array();
         for (const auto& s : res.site_atlas) {
+            json rb_obj = json::object();
+            for (const auto& [r_name, r_beta] : s.regime_betas) {
+                rb_obj[r_name] = finite_or_null(r_beta);
+            }
             site_arr.push_back({
                 {"site", s.site_index + 1},
                 {"column_homology_posterior", finite_or_null(s.column_homology_posterior)},
@@ -661,6 +700,8 @@ public:
                 {"contrast_fel_lrt", finite_or_null(s.contrast_fel_lrt)},
                 {"contrast_fel_p_value", finite_or_null(s.contrast_fel_p_value)},
                 {"contrast_fel_bh_q", finite_or_null(s.contrast_fel_bh_q)},
+                {"regime_betas", rb_obj},
+                {"top_contrast", s.top_contrast},
                 {"expected_nonsyn_subs", finite_or_null(s.expected_nonsyn_subs)},
                 {"effective_aa_alphabet", finite_or_null(s.effective_aa_alphabet)},
                 {"expected_neutral_n_eff", finite_or_null(s.expected_neutral_n_eff)},
@@ -2218,7 +2259,18 @@ function renderPhylogram() {
   } else if (mode === 'lof') {
     leg.innerHTML = `<b>Core-Invasion / Loss-of-Constraint Audit:</b> <span style="color:#dc2626;font-weight:700;">&#9644; LoF Alert (BF &ge; 25 &amp; Bonferroni p &le; 0.05)</span> <span style="color:#f59e0b;font-weight:700;">&#9644; Elevated Core Subs (BF &ge; 10)</span> <span style="color:#94a3b8;font-weight:700;">&#9644; Intact Core Constraint</span>`;
   } else {
-    leg.innerHTML = `<b>Macro-Regime Partition:</b> <span style="color:#7c3aed;font-weight:700;">&#9644; Test / Foreground Clade</span> <span style="color:#0d9488;font-weight:700;">&#9644; Reference Clade</span>`;
+    const groups = (DATA.clade_macro_regime || {}).regime_groups || [];
+    if (groups.length > 2) {
+      const palette = ['#7c3aed', '#ea580c', '#2563eb', '#db2777', '#059669', '#0d9488'];
+      const items = groups.map((g, idx) => {
+        const isRef = /^(r|ref|reference|bg|background)$/i.test(g.name || '');
+        const col = isRef ? '#0d9488' : palette[idx % palette.length];
+        return `<span style="color:${col};font-weight:700;">&#9644; ${escHtml(g.name)} (${g.num_branches || 0})</span>`;
+      }).join(' ');
+      leg.innerHTML = `<b>Macro-Regime Partition:</b> ${items}`;
+    } else {
+      leg.innerHTML = `<b>Macro-Regime Partition:</b> <span style="color:#7c3aed;font-weight:700;">&#9644; Test / Foreground Clade</span> <span style="color:#0d9488;font-weight:700;">&#9644; Reference Clade</span>`;
+    }
   }
 
   // Assign leaf y-positions and x-depths
@@ -2273,6 +2325,17 @@ function renderPhylogram() {
       if ((bp.lof_bayes_factor || 0) >= 10) return { col: '#f59e0b', w: 2.6 };
       return { col: '#cbd5e1', w: 1.5 };
     } else {
+      const groups = (DATA.clade_macro_regime || {}).regime_groups || [];
+      if (groups.length > 2) {
+        const palette = ['#7c3aed', '#ea580c', '#2563eb', '#db2777', '#059669', '#0d9488'];
+        const mrLow = (bp.macro_regime || '').toLowerCase();
+        const gIdx = groups.findIndex(g => (g.name || '').toLowerCase() === mrLow);
+        if (gIdx >= 0) {
+          const isRef = /^(r|ref|reference|bg|background)$/i.test(groups[gIdx].name || '');
+          return { col: isRef ? '#0d9488' : palette[gIdx % palette.length], w: isRef ? 1.8 : 2.8 };
+        }
+        return { col: '#94a3b8', w: 1.5 };
+      }
       const isTest = (bp.macro_regime || '').toLowerCase().includes('test') || (bp.macro_regime || '').toLowerCase().includes('fg');
       return { col: isTest ? '#7c3aed' : '#0d9488', w: isTest ? 2.8 : 1.8 };
     }
@@ -2635,6 +2698,22 @@ function openSiteDrawer(siteNum) {
       </div>
       <div style="margin-top:8px;font-size:12px;"><b>Mechanism Summary:</b> ${escHtml(s.key_property_driver || 'Consistent with neutral amino-acid breadth')}</div>
     </div>
+    ${(DATA.clade_macro_regime || {}).triggered ? (() => {
+      const rb = s.regime_betas || {};
+      const betaCards = Object.keys(rb).length > 0
+        ? Object.entries(rb).map(([k, v]) => `<div class="kv-box"><div class="k">&beta; (${escHtml(k)})</div><div class="v">${fmtNum(v, 3)}</div></div>`).join('')
+        : `<div class="kv-box"><div class="k">&beta;<sub>test</sub> vs &beta;<sub>ref</sub></div><div class="v">${fmtNum(s.beta_test, 3)} vs ${fmtNum(s.beta_reference, 3)}</div></div>`;
+      return `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:11.5px;font-weight:800;text-transform:uppercase;color:var(--muted);">5. Macro-Regime Differential Selection (Contrast-FEL)</div>
+          <div class="kv-grid">
+            <div class="kv-box"><div class="k">Contrast-FEL LRT (p / BH q)</div><div class="v">${fmtNum(s.contrast_fel_lrt, 2)} (${fmtP(s.contrast_fel_p_value)} / ${fmtNum(s.contrast_fel_bh_q, 2)})</div></div>
+            <div class="kv-box"><div class="k">Top Contrast</div><div class="v">${escHtml(s.top_contrast || '—')}</div></div>
+            ${betaCards}
+          </div>
+        </div>
+      `;
+    })() : ''}
   `;
 
   document.getElementById('drawerBackdrop').classList.add('open');
@@ -2697,6 +2776,17 @@ renderSitesTab();
 
 private:
     CharacterizeResult run_unified_tensor_characterization(JointAlignResult&& ja_res) {
+        (void)Tree::normalize_internal_label_mode(settings.internal_nodes_mode);
+        std::vector<std::pair<std::string, std::vector<std::string>>> parsed_label_groups;
+        std::vector<std::string> csv_group_order;
+        if (!settings.label_map_file.empty()) {
+            parsed_label_groups = Tree::parse_label_map_file(settings.label_map_file);
+            csv_group_order.reserve(parsed_label_groups.size());
+            for (const auto& grp : parsed_label_groups) {
+                csv_group_order.push_back(grp.first);
+            }
+        }
+
         CharacterizeResult res;
         res.joint_align = std::move(ja_res);
 
@@ -2759,6 +2849,124 @@ private:
         Scalar conv = (mg94_base.scale_factor > 1e-12) ? (3.0 / mg94_base.scale_factor) : 1.0;
         Vector pi_codon = aln.codon_frequencies_f3x4;
         std::vector<size_t> leaf_to_taxon = LikelihoodEngine::build_leaf_to_taxon_map(work_tree, aln);
+
+        if (!parsed_label_groups.empty()) {
+            work_tree.apply_label_map(parsed_label_groups, settings.internal_nodes_mode, settings.label_map_file);
+        }
+
+        std::string resolved_fg_spec = settings.foreground_tag;
+        if (!resolved_fg_spec.empty()) {
+            auto to_low_clean = [](std::string s) {
+                size_t a = s.find_first_not_of(" \t\r\n");
+                if (a == std::string::npos) return std::string{};
+                size_t b = s.find_last_not_of(" \t\r\n");
+                s = s.substr(a, b - a + 1);
+                if (s.size() >= 2 && s.front() == '{' && s.back() == '}') {
+                    s = s.substr(1, s.size() - 2);
+                }
+                std::transform(s.begin(), s.end(), s.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                return s;
+            };
+            auto is_fg_syn = [](const std::string& sl) {
+                return sl == "fg" || sl == "test" || sl == "foreground" || sl == "t";
+            };
+            auto is_bg_syn = [](const std::string& sl) {
+                return sl == "bg" || sl == "ref" || sl == "reference" || sl == "background" || sl == "r";
+            };
+
+            std::vector<std::string> fg_tokens;
+            {
+                std::stringstream ss(resolved_fg_spec);
+                std::string tok;
+                while (std::getline(ss, tok, ',')) {
+                    std::string tl = to_low_clean(tok);
+                    if (!tl.empty()) fg_tokens.push_back(tl);
+                }
+            }
+            bool tag_exists_on_tree = false;
+            if (!fg_tokens.empty()) {
+                for (const auto& nd : work_tree.nodes) {
+                    if (nd.id == work_tree.root_id || nd.model_tag.empty()) continue;
+                    std::string mt_low = to_low_clean(nd.model_tag);
+                    for (const auto& tok : fg_tokens) {
+                        if (mt_low == tok ||
+                            (is_fg_syn(tok) && is_fg_syn(mt_low)) ||
+                            (is_bg_syn(tok) && is_bg_syn(mt_low))) {
+                            tag_exists_on_tree = true;
+                            break;
+                        }
+                    }
+                    if (tag_exists_on_tree) break;
+                }
+            }
+            if (!tag_exists_on_tree) {
+                work_tree.apply_branch_labels("Foreground", resolved_fg_spec, settings.internal_nodes_mode);
+                resolved_fg_spec = "Foreground";
+            }
+        }
+
+        if (!parsed_label_groups.empty() || !settings.foreground_tag.empty()) {
+            auto& opt_tr = res.joint_align.optimized_tree;
+            bool direct_match = (opt_tr.nodes.size() == work_tree.nodes.size() &&
+                                 opt_tr.root_id == work_tree.root_id);
+            if (direct_match) {
+                for (size_t i = 0; i < work_tree.nodes.size(); ++i) {
+                    if (opt_tr.nodes[i].name != work_tree.nodes[i].name ||
+                        opt_tr.nodes[i].is_leaf != work_tree.nodes[i].is_leaf) {
+                        direct_match = false;
+                        break;
+                    }
+                }
+            }
+            if (direct_match) {
+                for (size_t i = 0; i < work_tree.nodes.size(); ++i) {
+                    opt_tr.nodes[i].model_tag = work_tree.nodes[i].model_tag;
+                }
+            } else {
+                auto build_leaf_sets = [&](const Tree& t_in) -> std::vector<std::vector<size_t>> {
+                    Tree t_tmp = t_in;
+                    t_tmp.compute_post_order();
+                    auto l2t = LikelihoodEngine::build_leaf_to_taxon_map(t_tmp, aln);
+                    std::vector<std::vector<size_t>> lsets(t_tmp.num_nodes());
+                    for (int32_t nid : t_tmp.post_order) {
+                        if (nid < 0 || static_cast<size_t>(nid) >= t_tmp.num_nodes()) continue;
+                        if (t_tmp.nodes[nid].is_leaf) {
+                            if (static_cast<size_t>(nid) < l2t.size() && l2t[nid] < N) {
+                                lsets[nid].push_back(l2t[nid]);
+                            }
+                        } else {
+                            for (int32_t ch : t_tmp.nodes[nid].children) {
+                                if (ch >= 0 && static_cast<size_t>(ch) < lsets.size()) {
+                                    lsets[nid].insert(lsets[nid].end(), lsets[ch].begin(), lsets[ch].end());
+                                }
+                            }
+                            std::sort(lsets[nid].begin(), lsets[nid].end());
+                        }
+                    }
+                    return lsets;
+                };
+                auto wt_lsets = build_leaf_sets(work_tree);
+                auto opt_lsets = build_leaf_sets(opt_tr);
+                for (size_t oid = 0; oid < opt_tr.num_nodes(); ++oid) {
+                    if (static_cast<int32_t>(oid) == opt_tr.root_id || opt_lsets[oid].empty()) continue;
+                    std::vector<size_t> comp_set;
+                    for (size_t t = 0; t < N; ++t) {
+                        if (!std::binary_search(opt_lsets[oid].begin(), opt_lsets[oid].end(), t)) {
+                            comp_set.push_back(t);
+                        }
+                    }
+                    for (size_t wid = 0; wid < work_tree.num_nodes(); ++wid) {
+                        if (static_cast<int32_t>(wid) == work_tree.root_id || wt_lsets[wid].empty()) continue;
+                        if (wt_lsets[wid] == opt_lsets[oid] ||
+                            (!work_tree.nodes[wid].is_leaf && wt_lsets[wid] == comp_set)) {
+                            opt_tr.nodes[oid].model_tag = work_tree.nodes[wid].model_tag;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
 
         // Decision 3: Localize Ohmic Wheatstone bridges and store alternate SPR topologies T_{u->v}
         // for any segment with p <= 0.01 so Inside-Outside cavities route through T_{u->v}!
@@ -5212,108 +5420,135 @@ private:
         }
 
         // ---------------------------------------------------------------------
-        // 3D. Tier 2 (Triggered-Only): BIC-Gated Dual-Level Macro-Regime Partition
-        //   Either use user-supplied {Foreground} tags or auto-discover the internal
-        //   subtree with the largest shift in mean log(K_b). If autonomous, ONLY
-        //   trigger the split (and Contrast-FEL site calls) when the Clade RELAX LRT
-        //   overcomes the tree-search BIC penalty: ΔBIC = LRT - ln(B * C) >= 10.0!
+        // 3D. Tier 2 (Triggered-Only): BIC-Gated Dual-Level or Multi-Group Macro-Regime Partition
+        //   Supports:
+        //     - Multi-group named partitions via `--labels <csv|tsv>` or multi-tag Newick / `-b Tag1,Tag2,...`
+        //     - Single focal tag/tip-list partitions via `-b` / `{Foreground}` tags
+        //     - Autonomous BIC-gated internal clade discovery (ΔBIC >= 10.0) when unlabeled
         // ---------------------------------------------------------------------
         {
-            std::vector<bool> is_test_branch(B, false);
-            bool found_user_tags = false;
-
             auto to_low = [](std::string s) {
+                size_t a = s.find_first_not_of(" \t\r\n");
+                if (a == std::string::npos) return std::string{};
+                size_t b = s.find_last_not_of(" \t\r\n");
+                s = s.substr(a, b - a + 1);
+                if (s.size() >= 2 && s.front() == '{' && s.back() == '}') s = s.substr(1, s.size() - 2);
                 for (char& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                return s;
+            };
+            auto trim_tag = [](std::string s) {
+                size_t a = s.find_first_not_of(" \t\r\n");
+                if (a == std::string::npos) return std::string{};
+                size_t b = s.find_last_not_of(" \t\r\n");
+                s = s.substr(a, b - a + 1);
                 if (s.size() >= 2 && s.front() == '{' && s.back() == '}') s = s.substr(1, s.size() - 2);
                 return s;
             };
-            if (!settings.foreground_tag.empty()) {
-                std::string fg_low = to_low(settings.foreground_tag);
+            auto is_fg_syn = [](const std::string& sl) {
+                return sl == "fg" || sl == "test" || sl == "foreground" || sl == "t";
+            };
+            auto is_ref_syn = [](const std::string& sl) {
+                return sl == "r" || sl == "ref" || sl == "reference" || sl == "background" || sl == "bg";
+            };
+
+            // Collect present distinct non-empty model_tag groups across active_branches (preserving CSV order first)
+            std::vector<std::string> present_group_names;
+            std::unordered_map<std::string, size_t> group_low_to_idx;
+            std::vector<int> active_tag_idx(B, -1);
+
+            auto register_tag_if_present = [&](const std::string& cand_name) -> void {
+                std::string cl = to_low(cand_name);
+                if (cl.empty() || group_low_to_idx.count(cl) > 0) return;
+                bool exists = false;
                 for (size_t bi = 0; bi < B; ++bi) {
-                    int32_t bid = active_branches[bi];
-                    const std::string& nm = res.branch_profiles[bi].branch_name;
-                    const std::string& mt = work_tree.nodes[bid].model_tag;
-                    if (nm.find(settings.foreground_tag) != std::string::npos ||
-                        (!mt.empty() && to_low(mt) == fg_low) ||
-                        to_low(nm) == fg_low) {
-                        is_test_branch[bi] = true;
-                        found_user_tags = true;
+                    if (to_low(work_tree.nodes[active_branches[bi]].model_tag) == cl) {
+                        exists = true;
+                        break;
                     }
                 }
-            } else {
-                for (size_t bi = 0; bi < B; ++bi) {
-                    int32_t bid = active_branches[bi];
-                    const std::string& nm = res.branch_profiles[bi].branch_name;
-                    std::string mt_low = to_low(work_tree.nodes[bid].model_tag);
-                    if (mt_low == "fg" || mt_low == "test" || mt_low == "foreground" || mt_low == "t" ||
-                        nm.find("{FG}") != std::string::npos || nm.find("{TEST}") != std::string::npos ||
-                        nm.find("{Foreground}") != std::string::npos) {
-                        is_test_branch[bi] = true;
-                        found_user_tags = true;
-                    }
+                if (exists) {
+                    size_t idx = present_group_names.size();
+                    group_low_to_idx[cl] = idx;
+                    present_group_names.push_back(trim_tag(cand_name));
                 }
+            };
+            for (const auto& cname : csv_group_order) {
+                register_tag_if_present(cname);
             }
-
-            std::string cand_regime_label = "None (Homogeneous Tree-Wide Regime)";
-            if (found_user_tags) {
-                res.clade_macro_regime.partition_source = "User {Foreground} Tags";
-                cand_regime_label = "Labeled Foreground";
-            } else {
-                res.clade_macro_regime.partition_source = "Autonomous BIC-Gated Clade Scan";
-                int32_t best_clade_root = -1;
-                Scalar best_z = -1.0;
-                std::vector<bool> best_mask(B, false);
-
-                for (const auto& nd : work_tree.nodes) {
-                    if (nd.id == work_tree.root_id || nd.is_leaf) continue;
-                    std::unordered_set<int32_t> sub_nodes;
-                    std::vector<int32_t> stk = {nd.id};
-                    while (!stk.empty()) {
-                        int32_t cur = stk.back();
-                        stk.pop_back();
-                        sub_nodes.insert(cur);
-                        for (int32_t ch : work_tree.nodes[cur].children) stk.push_back(ch);
-                    }
-                    if (sub_nodes.size() < 2 || sub_nodes.size() + 2 > B) continue;
-
-                    Scalar s1 = 0.0, s2 = 0.0;
-                    size_t n1 = 0, n2 = 0;
-                    std::vector<bool> mask(B, false);
-                    for (size_t bi = 0; bi < B; ++bi) {
-                        Scalar lk = std::log(std::max<Scalar>(0.05, res.branch_profiles[bi].relax_k));
-                        if (sub_nodes.count(active_branches[bi])) {
-                            mask[bi] = true;
-                            s1 += lk;
-                            n1++;
-                        } else {
-                            s2 += lk;
-                            n2++;
-                        }
-                    }
-                    if (n1 >= 2 && n2 >= 2) {
-                        Scalar z = std::abs(s1 / n1 - s2 / n2) * std::sqrt(static_cast<Scalar>(n1 * n2) / static_cast<Scalar>(B));
-                        if (z > best_z) {
-                            best_z = z;
-                            best_clade_root = nd.id;
-                            best_mask = std::move(mask);
-                        }
-                    }
-                }
-                if (best_clade_root >= 0) {
-                    is_test_branch = std::move(best_mask);
-                    cand_regime_label = work_tree.nodes[best_clade_root].name.empty()
-                        ? ("Clade_Node_" + std::to_string(best_clade_root)) : work_tree.nodes[best_clade_root].name;
-                }
-            }
-
-            size_t n_test = 0, n_ref = 0;
             for (size_t bi = 0; bi < B; ++bi) {
-                if (is_test_branch[bi]) n_test++;
-                else n_ref++;
+                std::string mt = trim_tag(work_tree.nodes[active_branches[bi]].model_tag);
+                if (!mt.empty()) register_tag_if_present(mt);
+            }
+            for (size_t bi = 0; bi < B; ++bi) {
+                std::string mt_low = to_low(work_tree.nodes[active_branches[bi]].model_tag);
+                auto it = group_low_to_idx.find(mt_low);
+                if (it != group_low_to_idx.end()) active_tag_idx[bi] = static_cast<int>(it->second);
             }
 
-            if (n_test > 0 && n_ref > 0) {
-                auto eval_clade_relax = [&](Scalar K_val) -> Scalar {
+            std::vector<std::string> fg_tokens;
+            if (!resolved_fg_spec.empty()) {
+                std::stringstream ss(resolved_fg_spec);
+                std::string item;
+                while (std::getline(ss, item, ',')) {
+                    std::string clean = trim_tag(item);
+                    if (!clean.empty()) fg_tokens.push_back(clean);
+                }
+            }
+
+            bool use_multi_group = false;
+            std::vector<std::string> mg_names;
+            if (fg_tokens.size() >= 2) {
+                std::unordered_set<std::string> seen_low;
+                for (const auto& tok : fg_tokens) {
+                    std::string tl = to_low(tok);
+                    auto it = group_low_to_idx.find(tl);
+                    if (it != group_low_to_idx.end() && seen_low.insert(tl).second) {
+                        mg_names.push_back(present_group_names[it->second]);
+                    }
+                }
+                if (mg_names.size() >= 2) {
+                    use_multi_group = true;
+                } else {
+                    mg_names.clear();
+                }
+            } else if (resolved_fg_spec.empty() && present_group_names.size() >= 2) {
+                use_multi_group = true;
+                mg_names = present_group_names;
+            }
+
+            if (use_multi_group) {
+                // Place any reference-named group last so it serves as baseline index ref_r = K - 1
+                size_t K = mg_names.size();
+                size_t found_ref_pos = K;
+                for (size_t r = 0; r < K; ++r) {
+                    if (is_ref_syn(to_low(mg_names[r]))) {
+                        found_ref_pos = r;
+                        break;
+                    }
+                }
+                if (found_ref_pos < K && found_ref_pos + 1 != K) {
+                    std::string ref_nm = std::move(mg_names[found_ref_pos]);
+                    mg_names.erase(mg_names.begin() + static_cast<std::ptrdiff_t>(found_ref_pos));
+                    mg_names.push_back(std::move(ref_nm));
+                }
+                const size_t ref_r = K - 1;
+
+                std::unordered_map<std::string, int> mg_low_to_id;
+                for (size_t r = 0; r < K; ++r) {
+                    mg_low_to_id[to_low(mg_names[r])] = static_cast<int>(r);
+                }
+                std::vector<int> branch_group(B, -1);
+                std::vector<size_t> grp_counts(K, 0);
+                for (size_t bi = 0; bi < B; ++bi) {
+                    std::string mt_low = to_low(work_tree.nodes[active_branches[bi]].model_tag);
+                    auto it = mg_low_to_id.find(mt_low);
+                    if (it != mg_low_to_id.end()) {
+                        branch_group[bi] = it->second;
+                        grp_counts[static_cast<size_t>(it->second)]++;
+                    }
+                }
+
+                auto eval_group_relax = [&](size_t r, Scalar K_val) -> Scalar {
                     Scalar ll = 0.0;
                     Scalar wk[3];
                     for (int cl = 0; cl < 3; ++cl) {
@@ -5322,7 +5557,7 @@ private:
                     for (size_t c = 0; c < C; ++c) {
                         Scalar pp = res.site_atlas[c].column_homology_posterior;
                         for (size_t bi = 0; bi < B; ++bi) {
-                            if (!is_test_branch[bi]) continue;
+                            if (branch_group[bi] != static_cast<int>(r)) continue;
                             Scalar m = res.gene_wide.omega_weights[0] * eval_branch_site_omega(c, bi, wk[0])
                                      + res.gene_wide.omega_weights[1] * eval_branch_site_omega(c, bi, wk[1])
                                      + res.gene_wide.omega_weights[2] * eval_branch_site_omega(c, bi, wk[2]);
@@ -5331,67 +5566,367 @@ private:
                     }
                     return ll;
                 };
-                Scalar ll_c1 = eval_clade_relax(1.0);
-                Scalar best_cl_ll = ll_c1;
-                Scalar best_cl_k = 1.0;
-                for (Scalar ck : {0.15, 0.30, 0.50, 0.70, 0.85, 1.00, 1.20, 1.50, 2.00, 3.00, 4.50}) {
-                    Scalar ll = eval_clade_relax(ck);
-                    if (ll > best_cl_ll) { best_cl_ll = ll; best_cl_k = ck; }
-                }
-                Scalar raw_cl_lrt = std::max<Scalar>(0.0, 2.0 * (best_cl_ll - ll_c1));
-                Scalar bic_penalty = std::log(static_cast<Scalar>(std::max<size_t>(2, B * C)));
-                Scalar delta_bic = raw_cl_lrt - bic_penalty;
 
-                res.clade_macro_regime.clade_relax_k = best_cl_k;
-                res.clade_macro_regime.clade_relax_lrt = raw_cl_lrt;
-                res.clade_macro_regime.clade_relax_delta_bic = delta_bic;
-                res.clade_macro_regime.clade_relax_p_value = stats::chi2_p_value(raw_cl_lrt, 1.0);
+                res.clade_macro_regime.triggered = true;
+                res.clade_macro_regime.partition_source =
+                    !settings.label_map_file.empty() ? "User --labels Group Map" : "User Multi-Group {Tags}";
+                res.clade_macro_regime.regime_groups.resize(K);
 
-                // Trigger condition: either explicit user {Foreground} tags OR autonomous ΔBIC >= 10.0
-                bool trigger_regime = found_user_tags || (delta_bic >= 10.0);
-                res.clade_macro_regime.triggered = trigger_regime;
+                Scalar joint_relax_lrt = 0.0;
+                size_t total_test_br = 0;
+                size_t best_nonref_r = 0;
+                Scalar best_nonref_lrt = -1.0;
+                Scalar best_nonref_dev = -1.0;
+                std::string joined_test_labels;
 
-                if (trigger_regime) {
-                    res.clade_macro_regime.test_regime_label = cand_regime_label;
-                    res.clade_macro_regime.num_test_branches = n_test;
-                    res.clade_macro_regime.num_reference_branches = n_ref;
-                    if (res.clade_macro_regime.clade_relax_p_value <= 0.05) {
-                        res.clade_macro_regime.clade_relax_call = (best_cl_k > 1.0) ? "Intensified" : "Relaxed";
-                    } else {
-                        res.clade_macro_regime.clade_relax_call = "Baseline";
-                    }
-                    for (size_t bi = 0; bi < B; ++bi) {
-                        res.branch_profiles[bi].macro_regime = is_test_branch[bi]
-                            ? ("Test (" + cand_regime_label + ")") : "Reference";
-                    }
-
-                    // Run Site-level Contrast-FEL ONLY when macro-regime split is triggered
-                    for (size_t c = 0; c < C; ++c) {
-                        auto& entry = res.site_atlas[c];
-                        Scalar best_shared_ll = -1e18;
-                        Scalar best_ref_ll = -1e18, best_test_ll = -1e18;
-                        size_t g_ref = 6, g_test = 6;
-                        for (size_t g = 0; g < G; ++g) {
-                            Scalar l_ref = 0.0, l_test = 0.0;
-                            for (size_t bi = 0; bi < B; ++bi) {
-                                if (is_test_branch[bi]) l_test += std::log(W_tensor[c][bi][g]);
-                                else l_ref += std::log(W_tensor[c][bi][g]);
-                            }
-                            if (l_ref + l_test > best_shared_ll) best_shared_ll = l_ref + l_test;
-                            if (l_ref > best_ref_ll) { best_ref_ll = l_ref; g_ref = g; }
-                            if (l_test > best_test_ll) { best_test_ll = l_test; g_test = g; }
+                for (size_t r = 0; r < K; ++r) {
+                    Scalar ll1 = eval_group_relax(r, 1.0);
+                    Scalar best_ll = ll1;
+                    Scalar best_k = 1.0;
+                    for (Scalar ck : {0.15, 0.30, 0.50, 0.70, 0.85, 1.00, 1.20, 1.50, 2.00, 3.00, 4.50}) {
+                        Scalar ll = eval_group_relax(r, ck);
+                        if (ll > best_ll) {
+                            best_ll = ll;
+                            best_k = ck;
                         }
-                        Scalar eff_alpha = std::max<Scalar>(0.25, entry.alpha);
-                        entry.beta_reference = omega_grid[g_ref] * eff_alpha;
-                        entry.beta_test = omega_grid[g_test] * eff_alpha;
-                        entry.contrast_fel_lrt = std::max<Scalar>(0.0, 2.0 * ((best_ref_ll + best_test_ll) - best_shared_ll))
-                                               * entry.column_homology_posterior;
-                        entry.contrast_fel_p_value = stats::chi2_p_value(entry.contrast_fel_lrt, 1.0);
-                        if (entry.contrast_fel_p_value <= settings.p_value_threshold) {
-                            res.clade_macro_regime.contrast_fel_differing_sites++;
+                    }
+                    Scalar lrt_r = std::max<Scalar>(0.0, 2.0 * (best_ll - ll1));
+                    Scalar p_r = stats::chi2_p_value(lrt_r, 1.0);
+                    std::string call_r = (p_r <= 0.05) ? ((best_k > 1.0) ? "Intensified" : "Relaxed") : "Baseline";
+
+                    res.clade_macro_regime.regime_groups[r] = {
+                        mg_names[r], grp_counts[r], best_k, lrt_r, p_r, call_r
+                    };
+
+                    if (r != ref_r) {
+                        if (!joined_test_labels.empty()) joined_test_labels += ",";
+                        joined_test_labels += mg_names[r];
+                        total_test_br += grp_counts[r];
+                        joint_relax_lrt += lrt_r;
+                        Scalar dev_r = std::abs(std::log(std::max<Scalar>(0.01, best_k)));
+                        if (lrt_r > best_nonref_lrt || (lrt_r == best_nonref_lrt && dev_r > best_nonref_dev)) {
+                            best_nonref_lrt = lrt_r;
+                            best_nonref_dev = dev_r;
+                            best_nonref_r = r;
+                        }
+                    }
+                }
+
+                Scalar df_relax = static_cast<Scalar>(K - 1);
+                Scalar bic_pen = df_relax * std::log(static_cast<Scalar>(std::max<size_t>(2, B * C)));
+                res.clade_macro_regime.test_regime_label = joined_test_labels;
+                res.clade_macro_regime.reference_regime_label = mg_names[ref_r];
+                res.clade_macro_regime.num_test_branches = total_test_br;
+                res.clade_macro_regime.num_reference_branches = grp_counts[ref_r];
+                res.clade_macro_regime.clade_relax_k = res.clade_macro_regime.regime_groups[best_nonref_r].relax_k;
+                res.clade_macro_regime.clade_relax_lrt = joint_relax_lrt;
+                res.clade_macro_regime.clade_relax_delta_bic = joint_relax_lrt - bic_pen;
+                res.clade_macro_regime.clade_relax_p_value = stats::chi2_p_value(joint_relax_lrt, df_relax);
+                if (res.clade_macro_regime.clade_relax_p_value <= 0.05) {
+                    res.clade_macro_regime.clade_relax_call =
+                        (res.clade_macro_regime.clade_relax_k > 1.0) ? "Intensified" : "Relaxed";
+                } else {
+                    res.clade_macro_regime.clade_relax_call = "Baseline";
+                }
+
+                for (size_t bi = 0; bi < B; ++bi) {
+                    int gid = branch_group[bi];
+                    res.branch_profiles[bi].macro_regime =
+                        (gid >= 0 && static_cast<size_t>(gid) < K) ? mg_names[static_cast<size_t>(gid)] : "Unlabeled";
+                }
+
+                std::vector<std::vector<Scalar>> grp_ll(K, std::vector<Scalar>(G, 0.0));
+                std::vector<Scalar> best_grp_ll(K, -1e18);
+                std::vector<size_t> best_g(K, 6);
+                for (size_t c = 0; c < C; ++c) {
+                    auto& entry = res.site_atlas[c];
+                    for (size_t r = 0; r < K; ++r) {
+                        std::fill(grp_ll[r].begin(), grp_ll[r].end(), 0.0);
+                        best_grp_ll[r] = -1e18;
+                        best_g[r] = 6;
+                    }
+                    for (size_t g = 0; g < G; ++g) {
+                        for (size_t bi = 0; bi < B; ++bi) {
+                            int gid = branch_group[bi];
+                            if (gid >= 0 && static_cast<size_t>(gid) < K) {
+                                grp_ll[static_cast<size_t>(gid)][g] += std::log(W_tensor[c][bi][g]);
+                            }
+                        }
+                    }
+                    Scalar best_shared_ll = -1e18;
+                    for (size_t g = 0; g < G; ++g) {
+                        Scalar shared = 0.0;
+                        for (size_t r = 0; r < K; ++r) {
+                            shared += grp_ll[r][g];
+                            if (grp_ll[r][g] > best_grp_ll[r]) {
+                                best_grp_ll[r] = grp_ll[r][g];
+                                best_g[r] = g;
+                            }
+                        }
+                        if (shared > best_shared_ll) best_shared_ll = shared;
+                    }
+                    Scalar sum_best_ll = 0.0;
+                    for (size_t r = 0; r < K; ++r) sum_best_ll += best_grp_ll[r];
+
+                    Scalar eff_alpha = std::max<Scalar>(0.25, entry.alpha);
+                    entry.regime_betas.clear();
+                    for (size_t r = 0; r < K; ++r) {
+                        entry.regime_betas[mg_names[r]] = omega_grid[best_g[r]] * eff_alpha;
+                    }
+                    entry.beta_reference = entry.regime_betas[mg_names[ref_r]];
+                    Scalar w_ref = std::max<Scalar>(1e-4, omega_grid[best_g[ref_r]]);
+                    Scalar max_dev = -1.0;
+                    Scalar chosen_beta_test = entry.beta_reference;
+                    for (size_t r = 0; r < K; ++r) {
+                        if (r == ref_r) continue;
+                        Scalar dev = std::abs(std::log(std::max<Scalar>(1e-4, omega_grid[best_g[r]]) / w_ref));
+                        if (dev > max_dev) {
+                            max_dev = dev;
+                            chosen_beta_test = entry.regime_betas[mg_names[r]];
+                        }
+                    }
+                    entry.beta_test = chosen_beta_test;
+
+                    entry.contrast_fel_lrt = std::max<Scalar>(0.0, 2.0 * (sum_best_ll - best_shared_ll))
+                                           * entry.column_homology_posterior;
+                    entry.contrast_fel_p_value = stats::chi2_p_value(entry.contrast_fel_lrt, df_relax);
+                    if (entry.contrast_fel_p_value <= settings.p_value_threshold) {
+                        res.clade_macro_regime.contrast_fel_differing_sites++;
+                        Scalar max_pair_lrt = -1.0;
+                        size_t p_a = 0, p_b = 1;
+                        for (size_t a = 0; a < K; ++a) {
+                            for (size_t b = a + 1; b < K; ++b) {
+                                Scalar joint_ab = -1e18;
+                                for (size_t g = 0; g < G; ++g) {
+                                    joint_ab = std::max(joint_ab, grp_ll[a][g] + grp_ll[b][g]);
+                                }
+                                Scalar lrt_ab = std::max<Scalar>(0.0, 2.0 * ((best_grp_ll[a] + best_grp_ll[b]) - joint_ab));
+                                if (lrt_ab > max_pair_lrt) {
+                                    max_pair_lrt = lrt_ab;
+                                    p_a = a;
+                                    p_b = b;
+                                }
+                            }
+                        }
+                        Scalar ba = entry.regime_betas[mg_names[p_a]];
+                        Scalar bb = entry.regime_betas[mg_names[p_b]];
+                        if (ba > bb + 1e-9) entry.top_contrast = mg_names[p_a] + " > " + mg_names[p_b];
+                        else if (bb > ba + 1e-9) entry.top_contrast = mg_names[p_a] + " < " + mg_names[p_b];
+                        else entry.top_contrast = mg_names[p_a] + " != " + mg_names[p_b];
+                    }
+                }
+            } else {
+                std::vector<bool> is_test_branch(B, false);
+                bool found_user_tags = false;
+                std::string cand_regime_label = "None (Homogeneous Tree-Wide Regime)";
+
+                if (!resolved_fg_spec.empty()) {
+                    std::string fg_low = to_low(resolved_fg_spec);
+                    std::string matched_tag_display;
+                    bool uniform_tag = true;
+                    for (size_t bi = 0; bi < B; ++bi) {
+                        int32_t bid = active_branches[bi];
+                        const std::string& nm = res.branch_profiles[bi].branch_name;
+                        const std::string& mt = work_tree.nodes[bid].model_tag;
+                        std::string mt_low = to_low(mt);
+                        bool hit = (nm.find(resolved_fg_spec) != std::string::npos) ||
+                                   (!mt_low.empty() && (mt_low == fg_low || (is_fg_syn(fg_low) && is_fg_syn(mt_low)))) ||
+                                   (to_low(nm) == fg_low);
+                        if (hit) {
+                            is_test_branch[bi] = true;
+                            found_user_tags = true;
+                            std::string clean_mt = trim_tag(mt);
+                            if (clean_mt.empty()) {
+                                uniform_tag = false;
+                            } else if (matched_tag_display.empty()) {
+                                matched_tag_display = clean_mt;
+                            } else if (to_low(matched_tag_display) != to_low(clean_mt)) {
+                                uniform_tag = false;
+                            }
+                        }
+                    }
+                    if (found_user_tags) {
+                        res.clade_macro_regime.partition_source = "User {Foreground} Tags";
+                        cand_regime_label = (uniform_tag && !matched_tag_display.empty() && !is_fg_syn(to_low(matched_tag_display)))
+                            ? matched_tag_display : "Labeled Foreground";
+                    }
+                } else if (present_group_names.size() == 1 &&
+                           (!settings.label_map_file.empty() || is_fg_syn(to_low(present_group_names[0])))) {
+                    for (size_t bi = 0; bi < B; ++bi) {
+                        if (active_tag_idx[bi] == 0) {
+                            is_test_branch[bi] = true;
+                            found_user_tags = true;
+                        }
+                    }
+                    if (found_user_tags) {
+                        res.clade_macro_regime.partition_source =
+                            !settings.label_map_file.empty() ? "User --labels Group Map" : "User {Foreground} Tags";
+                        cand_regime_label = is_fg_syn(to_low(present_group_names[0]))
+                            ? "Labeled Foreground" : present_group_names[0];
+                    }
+                }
+
+                if (!found_user_tags) {
+                    res.clade_macro_regime.partition_source = "Autonomous BIC-Gated Clade Scan";
+                    int32_t best_clade_root = -1;
+                    Scalar best_z = -1.0;
+                    std::vector<bool> best_mask(B, false);
+
+                    for (const auto& nd : work_tree.nodes) {
+                        if (nd.id == work_tree.root_id || nd.is_leaf) continue;
+                        std::unordered_set<int32_t> sub_nodes;
+                        std::vector<int32_t> stk = {nd.id};
+                        while (!stk.empty()) {
+                            int32_t cur = stk.back();
+                            stk.pop_back();
+                            sub_nodes.insert(cur);
+                            for (int32_t ch : work_tree.nodes[cur].children) stk.push_back(ch);
+                        }
+                        if (sub_nodes.size() < 2 || sub_nodes.size() + 2 > B) continue;
+
+                        Scalar s1 = 0.0, s2 = 0.0;
+                        size_t n1 = 0, n2 = 0;
+                        std::vector<bool> mask(B, false);
+                        for (size_t bi = 0; bi < B; ++bi) {
+                            Scalar lk = std::log(std::max<Scalar>(0.05, res.branch_profiles[bi].relax_k));
+                            if (sub_nodes.count(active_branches[bi])) {
+                                mask[bi] = true;
+                                s1 += lk;
+                                n1++;
+                            } else {
+                                s2 += lk;
+                                n2++;
+                            }
+                        }
+                        if (n1 >= 2 && n2 >= 2) {
+                            Scalar z = std::abs(s1 / n1 - s2 / n2) * std::sqrt(static_cast<Scalar>(n1 * n2) / static_cast<Scalar>(B));
+                            if (z > best_z) {
+                                best_z = z;
+                                best_clade_root = nd.id;
+                                best_mask = std::move(mask);
+                            }
+                        }
+                    }
+                    if (best_clade_root >= 0) {
+                        is_test_branch = std::move(best_mask);
+                        cand_regime_label = work_tree.nodes[best_clade_root].name.empty()
+                            ? ("Clade_Node_" + std::to_string(best_clade_root)) : work_tree.nodes[best_clade_root].name;
+                    }
+                }
+
+                size_t n_test = 0, n_ref = 0;
+                for (size_t bi = 0; bi < B; ++bi) {
+                    if (is_test_branch[bi]) n_test++;
+                    else n_ref++;
+                }
+
+                if (n_test > 0 && n_ref > 0) {
+                    auto eval_clade_relax = [&](Scalar K_val) -> Scalar {
+                        Scalar ll = 0.0;
+                        Scalar wk[3];
+                        for (int cl = 0; cl < 3; ++cl) {
+                            wk[cl] = std::pow(std::max<Scalar>(0.01, res.gene_wide.omega_classes[cl]), K_val);
+                        }
+                        for (size_t c = 0; c < C; ++c) {
+                            Scalar pp = res.site_atlas[c].column_homology_posterior;
+                            for (size_t bi = 0; bi < B; ++bi) {
+                                if (!is_test_branch[bi]) continue;
+                                Scalar m = res.gene_wide.omega_weights[0] * eval_branch_site_omega(c, bi, wk[0])
+                                         + res.gene_wide.omega_weights[1] * eval_branch_site_omega(c, bi, wk[1])
+                                         + res.gene_wide.omega_weights[2] * eval_branch_site_omega(c, bi, wk[2]);
+                                ll += pp * std::log(std::max<Scalar>(1e-30, m));
+                            }
+                        }
+                        return ll;
+                    };
+                    Scalar ll_c1 = eval_clade_relax(1.0);
+                    Scalar best_cl_ll = ll_c1;
+                    Scalar best_cl_k = 1.0;
+                    for (Scalar ck : {0.15, 0.30, 0.50, 0.70, 0.85, 1.00, 1.20, 1.50, 2.00, 3.00, 4.50}) {
+                        Scalar ll = eval_clade_relax(ck);
+                        if (ll > best_cl_ll) { best_cl_ll = ll; best_cl_k = ck; }
+                    }
+                    Scalar raw_cl_lrt = std::max<Scalar>(0.0, 2.0 * (best_cl_ll - ll_c1));
+                    Scalar bic_penalty = std::log(static_cast<Scalar>(std::max<size_t>(2, B * C)));
+                    Scalar delta_bic = raw_cl_lrt - bic_penalty;
+
+                    res.clade_macro_regime.clade_relax_k = best_cl_k;
+                    res.clade_macro_regime.clade_relax_lrt = raw_cl_lrt;
+                    res.clade_macro_regime.clade_relax_delta_bic = delta_bic;
+                    res.clade_macro_regime.clade_relax_p_value = stats::chi2_p_value(raw_cl_lrt, 1.0);
+
+                    // Trigger condition: either explicit user {Foreground} tags OR autonomous ΔBIC >= 10.0
+                    bool trigger_regime = found_user_tags || (delta_bic >= 10.0);
+                    res.clade_macro_regime.triggered = trigger_regime;
+
+                    if (trigger_regime) {
+                        res.clade_macro_regime.test_regime_label = cand_regime_label;
+                        res.clade_macro_regime.num_test_branches = n_test;
+                        res.clade_macro_regime.num_reference_branches = n_ref;
+                        if (res.clade_macro_regime.clade_relax_p_value <= 0.05) {
+                            res.clade_macro_regime.clade_relax_call = (best_cl_k > 1.0) ? "Intensified" : "Relaxed";
+                        } else {
+                            res.clade_macro_regime.clade_relax_call = "Baseline";
+                        }
+                        res.clade_macro_regime.regime_groups = {
+                            {cand_regime_label, n_test, best_cl_k, raw_cl_lrt,
+                             res.clade_macro_regime.clade_relax_p_value, res.clade_macro_regime.clade_relax_call},
+                            {res.clade_macro_regime.reference_regime_label, n_ref, 1.0, 0.0, 1.0, "Baseline"}
+                        };
+                        for (size_t bi = 0; bi < B; ++bi) {
+                            res.branch_profiles[bi].macro_regime = is_test_branch[bi]
+                                ? ("Test (" + cand_regime_label + ")") : "Reference";
+                        }
+
+                        // Run Site-level Contrast-FEL ONLY when macro-regime split is triggered
+                        for (size_t c = 0; c < C; ++c) {
+                            auto& entry = res.site_atlas[c];
+                            Scalar best_shared_ll = -1e18;
+                            Scalar best_ref_ll = -1e18, best_test_ll = -1e18;
+                            size_t g_ref = 6, g_test = 6;
+                            for (size_t g = 0; g < G; ++g) {
+                                Scalar l_ref = 0.0, l_test = 0.0;
+                                for (size_t bi = 0; bi < B; ++bi) {
+                                    if (is_test_branch[bi]) l_test += std::log(W_tensor[c][bi][g]);
+                                    else l_ref += std::log(W_tensor[c][bi][g]);
+                                }
+                                if (l_ref + l_test > best_shared_ll) best_shared_ll = l_ref + l_test;
+                                if (l_ref > best_ref_ll) { best_ref_ll = l_ref; g_ref = g; }
+                                if (l_test > best_test_ll) { best_test_ll = l_test; g_test = g; }
+                            }
+                            Scalar eff_alpha = std::max<Scalar>(0.25, entry.alpha);
+                            entry.beta_reference = omega_grid[g_ref] * eff_alpha;
+                            entry.beta_test = omega_grid[g_test] * eff_alpha;
+                            entry.regime_betas[cand_regime_label] = entry.beta_test;
+                            entry.regime_betas[res.clade_macro_regime.reference_regime_label] = entry.beta_reference;
+                            entry.contrast_fel_lrt = std::max<Scalar>(0.0, 2.0 * ((best_ref_ll + best_test_ll) - best_shared_ll))
+                                                   * entry.column_homology_posterior;
+                            entry.contrast_fel_p_value = stats::chi2_p_value(entry.contrast_fel_lrt, 1.0);
+                            if (entry.contrast_fel_p_value <= settings.p_value_threshold) {
+                                res.clade_macro_regime.contrast_fel_differing_sites++;
+                                if (entry.beta_test > entry.beta_reference + 1e-9) {
+                                    entry.top_contrast = cand_regime_label + " > " + res.clade_macro_regime.reference_regime_label;
+                                } else if (entry.beta_reference > entry.beta_test + 1e-9) {
+                                    entry.top_contrast = cand_regime_label + " < " + res.clade_macro_regime.reference_regime_label;
+                                } else {
+                                    entry.top_contrast = cand_regime_label + " != " + res.clade_macro_regime.reference_regime_label;
+                                }
+                            }
+                        }
+                    } else {
+                        res.clade_macro_regime.test_regime_label = "None (Homogeneous Tree-Wide Regime)";
+                        res.clade_macro_regime.num_test_branches = 0;
+                        res.clade_macro_regime.num_reference_branches = B;
+                        res.clade_macro_regime.clade_relax_k = 1.0;
+                        res.clade_macro_regime.clade_relax_lrt = 0.0;
+                        res.clade_macro_regime.clade_relax_p_value = 1.0;
+                        res.clade_macro_regime.clade_relax_call = "Homogeneous";
+                        for (size_t bi = 0; bi < B; ++bi) {
+                            res.branch_profiles[bi].macro_regime = "Homogeneous";
                         }
                     }
                 } else {
+                    res.clade_macro_regime.triggered = false;
                     res.clade_macro_regime.test_regime_label = "None (Homogeneous Tree-Wide Regime)";
                     res.clade_macro_regime.num_test_branches = 0;
                     res.clade_macro_regime.num_reference_branches = B;

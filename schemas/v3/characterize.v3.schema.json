@@ -7,6 +7,8 @@
   "additionalProperties": false,
   "required": [
     "$schema",
+    "schema_version",
+    "software",
     "alignment_and_network",
     "analysis",
     "branch_profiles",
@@ -25,6 +27,27 @@
   "properties": {
     "$schema": {
       "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "software": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "git_commit": { "type": "string" },
+        "build_type": { "type": "string" },
+        "compiler": { "type": "string" }
+      },
+      "required": [
+        "name",
+        "version",
+        "git_commit",
+        "build_type",
+        "compiler"
+      ]
     },
     "analysis": {
       "type": "object",
@@ -248,7 +271,30 @@
         "clade_relax_delta_bic": { "type": "number" },
         "clade_relax_p_value": { "type": "number", "minimum": 0, "maximum": 1 },
         "clade_relax_call": { "type": "string" },
-        "contrast_fel_differing_sites": { "type": "integer", "minimum": 0 }
+        "contrast_fel_differing_sites": { "type": "integer", "minimum": 0 },
+        "regime_groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "num_branches": { "type": "integer", "minimum": 0 },
+              "relax_k": { "type": "number", "minimum": 0 },
+              "relax_lrt": { "type": "number", "minimum": 0 },
+              "relax_p_value": { "type": "number", "minimum": 0, "maximum": 1 },
+              "relax_call": { "type": "string" }
+            },
+            "required": [
+              "name",
+              "num_branches",
+              "relax_k",
+              "relax_lrt",
+              "relax_p_value",
+              "relax_call"
+            ]
+          }
+        }
       },
       "required": [
         "triggered",
@@ -262,7 +308,8 @@
         "clade_relax_delta_bic",
         "clade_relax_p_value",
         "clade_relax_call",
-        "contrast_fel_differing_sites"
+        "contrast_fel_differing_sites",
+        "regime_groups"
       ]
     },
     "spatial_domains": {
@@ -377,6 +424,7 @@
         "additionalProperties": false,
         "properties": {
           "branch_name": { "type": "string" },
+          "model_tag": { "type": "string" },
           "is_leaf": { "type": "boolean" },
           "branch_length_subs": { "type": "number", "minimum": 0 },
           "compositional_regime": { "type": "string" },
@@ -410,6 +458,7 @@
         },
         "required": [
           "branch_name",
+          "model_tag",
           "is_leaf",
           "branch_length_subs",
           "compositional_regime",
@@ -476,6 +525,11 @@
           "contrast_fel_lrt": { "type": "number", "minimum": 0 },
           "contrast_fel_p_value": { "type": "number", "minimum": 0, "maximum": 1 },
           "contrast_fel_bh_q": { "type": "number", "minimum": 0, "maximum": 1 },
+          "regime_betas": {
+            "type": "object",
+            "additionalProperties": { "type": "number", "minimum": 0 }
+          },
+          "top_contrast": { "type": "string" },
           "expected_nonsyn_subs": { "type": "number", "minimum": 0 },
           "effective_aa_alphabet": { "type": "number", "minimum": 1 },
           "expected_neutral_n_eff": { "type": "number", "minimum": 1 },
@@ -526,6 +580,8 @@
           "contrast_fel_lrt",
           "contrast_fel_p_value",
           "contrast_fel_bh_q",
+          "regime_betas",
+          "top_contrast",
           "expected_nonsyn_subs",
           "effective_aa_alphabet",
           "expected_neutral_n_eff",

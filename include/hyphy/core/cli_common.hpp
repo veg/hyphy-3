@@ -49,6 +49,10 @@ struct CommonCLIOptions {
     std::string code_name = "Universal";
     std::string branches = "All";
     std::string branch_regex;
+    std::string label_map_file;
+    std::string internal_nodes_mode = "All";
+    std::string out_tree_file;
+    std::string out_msa_file;
     std::string embeddings_file;
     std::string out_poa_file;
     std::string out_stk_file;
@@ -56,6 +60,7 @@ struct CommonCLIOptions {
 
     bool force_unaligned = false;
     bool auto_align = false;
+    bool keep_pseudogenes = false;
     bool use_ohmic = false;
     bool use_hyphaeon = false;
     bool full_model = true;
@@ -220,9 +225,33 @@ inline CommonArgParseStatus parse_common_cli_arg(int& i, int argc, char* argv[],
         opts.out_enewick_file = argv[++i];
         return CommonArgParseStatus::Handled;
     }
+    if (arg == "--out-tree" || arg == "--output-tree") {
+        if (!require_value()) return CommonArgResult::Error;
+        opts.out_tree_file = argv[++i];
+        return CommonArgParseStatus::Handled;
+    }
+    if (arg == "--out-msa") {
+        if (!require_value()) return CommonArgResult::Error;
+        opts.out_msa_file = argv[++i];
+        return CommonArgParseStatus::Handled;
+    }
+    if (arg == "--keep-pseudogenes" || arg == "--pseudogenes") {
+        opts.keep_pseudogenes = true;
+        return CommonArgParseStatus::Handled;
+    }
     if (arg == "--tree" || arg == "-t") {
         if (!require_value()) return CommonArgResult::Error;
         opts.tree_file = argv[++i];
+        return CommonArgParseStatus::Handled;
+    }
+    if (arg == "--labels" || arg == "--label-map" || arg == "--branch-labels" || arg == "--groups") {
+        if (!require_value()) return CommonArgResult::Error;
+        opts.label_map_file = argv[++i];
+        return CommonArgParseStatus::Handled;
+    }
+    if (arg == "--internal-nodes" || arg == "--label-mode") {
+        if (!require_value()) return CommonArgResult::Error;
+        opts.internal_nodes_mode = argv[++i];
         return CommonArgParseStatus::Handled;
     }
     if (arg == "--ohmic" || arg == "--omhic") {
@@ -419,6 +448,17 @@ inline bool load_codon_dataset(
         }
     }
 
+    std::vector<std::pair<std::string, std::vector<std::string>>> label_groups;
+    try {
+        (void)Tree::normalize_internal_label_mode(opts.internal_nodes_mode);
+        if (!opts.label_map_file.empty()) {
+            label_groups = Tree::parse_label_map_file(opts.label_map_file);
+        }
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error loading branch labels: ") << e.what() << "\n";
+        return false;
+    }
+
     bool built_from_unaligned = false;
     if (!opts.force_unaligned) {
         try {
@@ -438,6 +478,15 @@ inline bool load_codon_dataset(
     } else {
         built_from_unaligned = true;
     }
+
+    auto finalize_loaded_tree = [&](Tree& tr) {
+        if (!label_groups.empty()) {
+            tr.apply_label_map(label_groups, opts.internal_nodes_mode, opts.label_map_file);
+        }
+        if (!opts.out_tree_file.empty()) {
+            write_file_or_throw(opts.out_tree_file, tr.to_newick(true) + "\n");
+        }
+    };
 
     if (built_from_unaligned) {
         try {
@@ -459,10 +508,14 @@ inline bool load_codon_dataset(
             }
             analyses::JointAlignSettings js;
             js.quiet = opts.quiet;
+            js.keep_pseudogenes = opts.keep_pseudogenes;
             js.run_marginalized_fel = false; // Only co-estimate the MAP alignment + coupled-SPR Ohmic tree + POA!
             analyses::JointAlignEngine jengine(js);
-            auto [dn_aln, dn_tree] = analyses::JointAlignEngine::build_de_novo_codon_alignment_and_tree(
+            auto [admitted_seqs, adm_report] = analyses::JointAlignEngine::triage_and_admit_unaligned_sequences(
                 unaligned_seqs, out.gcode, js
+            );
+            auto [dn_aln, dn_tree] = analyses::JointAlignEngine::build_de_novo_codon_alignment_and_tree(
+                admitted_seqs, out.gcode, js, &adm_report.admitted_dp_similarity
             );
             auto jres = jengine.run(dn_aln, dn_tree);
 
@@ -477,9 +530,18 @@ inline bool load_codon_dataset(
             }
 
             out.aln = std::move(jres.map_alignment);
+            if (!opts.out_msa_file.empty()) {
+                std::ostringstream msa_ss;
+                for (const auto& s : out.aln.sequences) {
+                    msa_ss << ">" << s.name << "\n" << s.raw_seq << "\n";
+                }
+                write_file_or_throw(opts.out_msa_file, msa_ss.str());
+            }
             if (opts.tree_file.empty()) {
                 out.tree = std::move(jres.optimized_tree);
                 out.ohmic_net = std::move(jres.ohmic_network);
+                LikelihoodEngine::reconcile_tree_leaf_names(out.tree, out.aln);
+                finalize_loaded_tree(out.tree);
                 out.tree_source = "De Novo Ohmic Circuit + MG94 Codon Transducer + Coupled SPR (" +
                                   std::to_string(out.aln.num_codons) + " codons, " +
                                   std::to_string(out.ohmic_net.bridges.size()) + " Wheatstone bridges)";
@@ -498,6 +560,7 @@ inline bool load_codon_dataset(
             opts.embeddings_file, capture_ohmic_net ? &out.ohmic_net : nullptr, &out.tree_source
         );
         LikelihoodEngine::reconcile_tree_leaf_names(out.tree, out.aln);
+        finalize_loaded_tree(out.tree);
     } catch (const std::exception& e) {
         std::cerr << Console::danger("Error resolving phylogeny: ") << e.what() << "\n";
         return false;
@@ -524,6 +587,10 @@ inline Provenance build_cli_provenance(
     prov.invocation.arguments["code"] = opts.code_name;
     if (!opts.branches.empty()) prov.invocation.arguments["branches"] = opts.branches;
     if (!opts.branch_regex.empty()) prov.invocation.arguments["branch_regex"] = opts.branch_regex;
+    if (!opts.label_map_file.empty()) {
+        prov.invocation.arguments["labels"] = opts.label_map_file;
+        prov.invocation.arguments["internal_nodes"] = opts.internal_nodes_mode;
+    }
     prov.invocation.arguments["pvalue_threshold"] = std::to_string(opts.pvalue_threshold);
     prov.invocation.arguments["full_model"] = opts.full_model ? "true" : "false";
     prov.invocation.arguments["json_format"] = (opts.json_format == JSONFormat::Legacy) ? "legacy" : "modern_v3";

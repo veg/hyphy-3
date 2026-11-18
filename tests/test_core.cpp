@@ -325,3 +325,98 @@ END;
     }
     CHECK(found_internal_bootstrap);
 }
+
+TEST_CASE("Issue #25: Tree::parse_label_map_file, apply_label_map, and apply_branch_labels") {
+    std::string tmp_csv = "test_issue25_labels.csv";
+    {
+        std::ofstream out(tmp_csv);
+        out << "# Taxon-to-group CSV with header and extra absent species\n"
+            << "Species,Group\n"
+            << "Pig,group_A\n"
+            << "Cow,group_A\n"
+            << "Horse,group_A\n"
+            << "Cat,group_A\n"
+            << "Human,group_B\n"
+            << "Chimp,group_B\n"
+            << "RhMonkey,group_B\n"
+            << "Baboon,group_B\n"
+            << "Rat,reference\n"
+            << "Mouse,reference\n"
+            << "Missing_Sp1,group_A\n";
+    }
+    auto groups = Tree::parse_label_map_file(tmp_csv);
+    std::remove(tmp_csv.c_str());
+
+    REQUIRE(groups.size() == 3);
+    CHECK(groups[0].first == "group_A");
+    CHECK(groups[1].first == "group_B");
+    CHECK(groups[2].first == "reference");
+
+    const std::string nwk =
+        "((((Pig:0.14,Cow:0.21):0.08,Horse:0.16,Cat:0.26):0.05,"
+        "((RhMonkey:0.002,Baboon:0.003):0.02,(Human:0.004,Chimp:0.001):0.01):0.10):0.34,"
+        "Rat:0.05,Mouse:0.09);";
+
+    // 1. All (monophyletic internal propagation)
+    {
+        Tree t = Tree::from_newick(nwk);
+        size_t n_lbl = t.apply_label_map(groups, "All", tmp_csv);
+        CHECK(n_lbl == 15); // 10 tips + 2 group_A internals + 3 group_B internals
+        CHECK(t.select_branches("group_A").num_selected == 6); // 4 tips + (Pig,Cow) + ((Pig,Cow),Horse,Cat)
+        CHECK(t.select_branches("group_B").num_selected == 7); // 4 tips + (Rh,Bab) + (Hum,Chi) + Primate ancestor
+        CHECK(t.select_branches("reference").num_selected == 2); // Rat, Mouse (sibling root children)
+    }
+
+    // 2. Parsimony (Generalized Fitch over G+1 states)
+    {
+        Tree t = Tree::from_newick(nwk);
+        t.apply_label_map(groups, "Parsimony", tmp_csv);
+        CHECK(t.select_branches("group_A").num_selected >= 6);
+        CHECK(t.select_branches("group_B").num_selected >= 7);
+        CHECK(t.select_branches("reference").num_selected == 2);
+    }
+
+    // 3. None (tips only)
+    {
+        Tree t = Tree::from_newick(nwk);
+        size_t n_lbl = t.apply_label_map(groups, "None", tmp_csv);
+        CHECK(n_lbl == 10);
+        CHECK(t.select_branches("group_A").num_selected == 4);
+        CHECK(t.select_branches("group_B").num_selected == 4);
+        CHECK(t.select_branches("reference").num_selected == 2);
+    }
+
+    // 4. apply_branch_labels (comma tip list with All vs None vs Parsimony)
+    {
+        Tree t_all = Tree::from_newick(nwk);
+        t_all.apply_branch_labels("Foreground", "Human,Chimp,Baboon,RhMonkey", "All");
+        CHECK(t_all.select_branches("Foreground").num_selected == 7);
+
+        Tree t_none = Tree::from_newick(nwk);
+        t_none.apply_branch_labels("Foreground", "Human,Chimp,Baboon,RhMonkey", "None");
+        CHECK(t_none.select_branches("Foreground").num_selected == 4);
+
+        Tree t_pars = Tree::from_newick(nwk);
+        t_pars.apply_branch_labels("Foreground", "Human,Chimp,Baboon", "Parsimony");
+        CHECK(t_pars.select_branches("Foreground").num_selected >= 4);
+
+        CHECK_THROWS_AS(t_all.apply_branch_labels("Foreground", "Human", "InvalidMode"), std::runtime_error);
+    }
+
+    // 5. Error cases: conflicting duplicate taxon, and 0 matching taxa against tree
+    {
+        std::string tmp_conflict = "test_issue25_conflict.csv";
+        {
+            std::ofstream out(tmp_conflict);
+            out << "Pig,group_A\nPig,group_B\n";
+        }
+        CHECK_THROWS_AS(Tree::parse_label_map_file(tmp_conflict), std::runtime_error);
+        std::remove(tmp_conflict.c_str());
+
+        Tree t = Tree::from_newick(nwk);
+        std::vector<std::pair<std::string, std::vector<std::string>>> no_match = {
+            {"group_A", {"NoSuchSpecies_1", "NoSuchSpecies_2"}}
+        };
+        CHECK_THROWS_AS(t.apply_label_map(no_match, "All", "nomatch.csv"), std::runtime_error);
+    }
+}

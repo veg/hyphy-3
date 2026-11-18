@@ -47,9 +47,10 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--tree") << " <in.nwk>              Input Newick tree file to prune and/or label\n"
               << "  " << Console::brand("--keep-tips") << " <file|list>      Keep only specified tips (comma list, text file, or FASTA/NEXUS alignment)\n"
               << "  " << Console::brand("--trim-tips") << " <file|list>      Remove specified tips (comma list, text file, or FASTA/NEXUS alignment)\n"
-              << "  " << Console::brand("--label") << " <tag>                Branch label/tag to assign in Newick {tag} format (default: Foreground)\n"
+              << "  " << Console::brand("--labels") << " <csv|tsv>           2-column taxon,group label map file (multi-group labeling)\n"
+              << "  " << Console::brand("--label") << " <tag>                Branch label/tag to assign in Newick {tag} format (repeatable with --list; default: Foreground)\n"
               << "  " << Console::brand("--list, --branches") << " <spec>    Branches/tips to label (comma list, text file, FASTA, regex, All, Internal, Leaves)\n"
-              << "  " << Console::brand("--internal-nodes") << " <strategy>  How to label internal branches from tip sets: All (clade), MRCA, Paraphyletic, Only, or None (default: All)\n"
+              << "  " << Console::brand("--internal-nodes") << " <strategy>  Internal branch strategy: All (clade), Parsimony, MRCA, Paraphyletic, Only, or None (default: All)\n"
               << "  " << Console::brand("--clear-tags") << "                 Strip existing {tag} annotations before labeling\n\n"
               << Console::bold("General Output & Runtime:") << "\n"
               << "  " << Console::brand("--output, -o") << " <file>          Path to output Newick tree file (use '-' for stdout)\n"
@@ -59,57 +60,15 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--help, -h") << "                   Show this help message\n\n"
               << Console::bold("Examples:") << "\n"
               << "  " << prog << " --alignment data/cd2.fna --output cd2_inferred.nwk\n"
+              << "  " << prog << " --tree species.nwk --labels species_groups.csv --internal-nodes Parsimony -o species_labeled.nwk\n"
               << "  " << prog << " --tree species.nwk --keep-tips subset_taxa.txt --label Foreground --list fg_tips.txt -o subset_labeled.nwk\n\n";
 }
 
 namespace {
 
-std::string trim_ws(std::string s) {
-    size_t a = s.find_first_not_of(" \t\r\n");
-    if (a == std::string::npos) return {};
-    size_t b = s.find_last_not_of(" \t\r\n");
-    return s.substr(a, b - a + 1);
-}
-
 std::string to_lower_str(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return s;
-}
-
-std::vector<std::string> parse_taxon_list_or_file(const std::string& spec) {
-    std::vector<std::string> items;
-    if (spec.empty()) return items;
-    std::ifstream ifs(spec);
-    if (ifs.is_open()) {
-        std::string line;
-        bool is_fasta = false;
-        while (std::getline(ifs, line)) {
-            std::string t = trim_ws(line);
-            if (t.empty() || t[0] == '#') continue;
-            if (t[0] == '>') {
-                is_fasta = true;
-                std::string hdr = trim_ws(t.substr(1));
-                size_t sp = hdr.find_first_of(" \t");
-                if (sp != std::string::npos) hdr = hdr.substr(0, sp);
-                if (!hdr.empty()) items.push_back(hdr);
-            } else if (!is_fasta) {
-                std::stringstream ss(t);
-                std::string tok;
-                while (std::getline(ss, tok, ',')) {
-                    tok = trim_ws(tok);
-                    if (!tok.empty()) items.push_back(tok);
-                }
-            }
-        }
-        return items;
-    }
-    std::stringstream ss(spec);
-    std::string tok;
-    while (std::getline(ss, tok, ',')) {
-        tok = trim_ws(tok);
-        if (!tok.empty()) items.push_back(tok);
-    }
-    return items;
 }
 
 Tree prune_tree_tips(const Tree& in_tree, const std::unordered_set<std::string>& keep_lower) {
@@ -158,106 +117,12 @@ Tree prune_tree_tips(const Tree& in_tree, const std::unordered_set<std::string>&
     return Tree::from_newick(root_pair.first + ";", true);
 }
 
-void apply_branch_labels(
-    Tree& tree,
-    const std::string& label_tag,
-    const std::string& list_spec,
-    const std::string& internal_mode_raw
-) {
-    std::string imode = to_lower_str(trim_ws(internal_mode_raw));
-    if (imode.empty()) imode = "all";
-
-    std::vector<std::string> explicit_items = parse_taxon_list_or_file(list_spec);
-    Tree::BranchSelection sel;
-    if (explicit_items.size() > 1 || (explicit_items.size() == 1 && list_spec != explicit_items[0])) {
-        sel = tree.select_branches("", "", explicit_items, false);
-    } else {
-        sel = tree.select_branches(list_spec.empty() ? "All" : list_spec, "", {}, false);
-    }
-
-    size_t N = tree.nodes.size();
-    std::vector<bool> target(N, false);
-    for (size_t i = 0; i < N; ++i) target[i] = sel.is_selected[i];
-
-    // Compute leaf descendant counts (total vs selected) in post-order
-    tree.compute_post_order();
-    std::vector<int> total_leaves(N, 0);
-    std::vector<int> selected_leaves(N, 0);
-    int global_selected_leaves = 0;
-    for (int32_t nid : tree.post_order) {
-        const auto& nd = tree.nodes[nid];
-        if (nd.is_leaf) {
-            total_leaves[nid] = 1;
-            selected_leaves[nid] = target[nid] ? 1 : 0;
-            global_selected_leaves += selected_leaves[nid];
-        } else {
-            for (int32_t cid : nd.children) {
-                total_leaves[nid] += total_leaves[cid];
-                selected_leaves[nid] += selected_leaves[cid];
-            }
-        }
-    }
-
-    if (global_selected_leaves > 0) {
-        if (imode == "all" || imode == "clade" || imode == "monophyletic") {
-            for (const auto& nd : tree.nodes) {
-                if (nd.id == tree.root_id || nd.is_leaf) continue;
-                if (total_leaves[nd.id] > 0 && selected_leaves[nd.id] == total_leaves[nd.id]) {
-                    target[nd.id] = true;
-                }
-            }
-        } else if (imode == "only" || imode == "internal-only" || imode == "internal") {
-            for (const auto& nd : tree.nodes) {
-                if (nd.id == tree.root_id) continue;
-                if (nd.is_leaf) {
-                    target[nd.id] = false;
-                } else if (total_leaves[nd.id] > 0 && selected_leaves[nd.id] == total_leaves[nd.id]) {
-                    target[nd.id] = true;
-                }
-            }
-        } else if (imode == "mrca") {
-            // Find MRCA of all selected leaves and label its entire descendant clade
-            int32_t mrca_id = tree.root_id;
-            for (int32_t nid : tree.post_order) {
-                if (selected_leaves[nid] == global_selected_leaves) {
-                    mrca_id = nid;
-                    break;
-                }
-            }
-            auto mark_clade = [&](auto& self, int32_t u) -> void {
-                if (u != tree.root_id) target[u] = true;
-                for (int32_t c : tree.nodes[u].children) self(self, c);
-            };
-            mark_clade(mark_clade, mrca_id);
-        } else if (imode == "paraphyletic") {
-            // Label internal nodes that have >= 1 selected leaf in at least 2 children (or 1 child + ancestor with selected leaves)
-            for (const auto& nd : tree.nodes) {
-                if (nd.id == tree.root_id || nd.is_leaf) continue;
-                int children_with_sel = 0;
-                for (int32_t cid : nd.children) {
-                    if (selected_leaves[cid] > 0) children_with_sel++;
-                }
-                bool outside_has_sel = (global_selected_leaves - selected_leaves[nd.id]) > 0;
-                if ((children_with_sel >= 2) || (children_with_sel >= 1 && outside_has_sel && selected_leaves[nd.id] == total_leaves[nd.id])) {
-                    target[nd.id] = true;
-                }
-            }
-        } else if (imode == "none" || imode == "leaves" || imode == "tips") {
-            for (const auto& nd : tree.nodes) {
-                if (!nd.is_leaf && !sel.is_selected[nd.id]) {
-                    target[nd.id] = false;
-                }
-            }
-        }
-    }
-
-    for (auto& nd : tree.nodes) {
-        if (nd.id == tree.root_id) continue;
-        if (target[nd.id]) {
-            nd.model_tag = label_tag;
-        }
-    }
-}
+struct PendingLabelRule {
+    std::string tag;
+    std::string list_spec;
+    bool has_tag = false;
+    bool has_list = false;
+};
 
 } // namespace
 
@@ -266,8 +131,8 @@ int run_tree(int argc, char* argv[]) {
     std::string in_tree_path;
     std::string keep_tips_spec;
     std::string trim_tips_spec;
-    std::string label_tag;
-    std::string label_list_spec;
+    std::string label_map_path;
+    std::vector<PendingLabelRule> label_rules;
     std::string internal_nodes_mode = "All";
     bool clear_tags = false;
     bool label_requested = false;
@@ -296,16 +161,32 @@ int run_tree(int argc, char* argv[]) {
             keep_tips_spec = argv[++i];
         } else if ((arg == "--trim-tips" || arg == "--remove-tips" || arg == "--trim") && i + 1 < argc) {
             trim_tips_spec = argv[++i];
+        } else if ((arg == "--labels" || arg == "--label-map" || arg == "--branch-labels" || arg == "--groups") && i + 1 < argc) {
+            label_map_path = argv[++i];
+            label_requested = true;
         } else if ((arg == "--label" || arg == "--label-branches" || arg == "--label-tree") && i + 1 < argc && argv[i + 1][0] != '-') {
-            label_tag = argv[++i];
+            std::string tag_val = argv[++i];
+            if (!label_rules.empty() && !label_rules.back().has_tag && label_rules.back().has_list) {
+                label_rules.back().tag = tag_val;
+                label_rules.back().has_tag = true;
+            } else {
+                label_rules.push_back({tag_val, "", true, false});
+            }
             label_requested = true;
         } else if (arg == "--label-tree") {
-            if (label_tag.empty()) label_tag = "Foreground";
+            if (label_rules.empty()) {
+                label_rules.push_back({"Foreground", "", true, false});
+            }
             label_requested = true;
         } else if ((arg == "--list" || arg == "--branches" || arg == "-b") && i + 1 < argc) {
-            label_list_spec = argv[++i];
+            std::string list_val = argv[++i];
+            if (!label_rules.empty() && !label_rules.back().has_list) {
+                label_rules.back().list_spec = list_val;
+                label_rules.back().has_list = true;
+            } else {
+                label_rules.push_back({"Foreground", list_val, false, true});
+            }
             label_requested = true;
-            if (label_tag.empty()) label_tag = "Foreground";
         } else if ((arg == "--internal-nodes" || arg == "--label-mode") && i + 1 < argc) {
             internal_nodes_mode = argv[++i];
         } else if (arg == "--internal-only") {
@@ -382,21 +263,25 @@ int run_tree(int argc, char* argv[]) {
                 }
                 if (!keep_tips_spec.empty()) {
                     keep_lower.clear();
-                    for (const auto& item : parse_taxon_list_or_file(keep_tips_spec)) {
+                    for (const auto& item : Tree::parse_taxon_list_or_file(keep_tips_spec)) {
                         keep_lower.insert(to_lower_str(item));
                     }
                 }
                 if (!trim_tips_spec.empty()) {
-                    for (const auto& item : parse_taxon_list_or_file(trim_tips_spec)) {
+                    for (const auto& item : Tree::parse_taxon_list_or_file(trim_tips_spec)) {
                         keep_lower.erase(to_lower_str(item));
                     }
                 }
                 tree = prune_tree_tips(tree, keep_lower);
             }
 
-            if (label_requested) {
-                if (label_tag.empty()) label_tag = "Foreground";
-                apply_branch_labels(tree, label_tag, label_list_spec, internal_nodes_mode);
+            if (!label_map_path.empty()) {
+                auto groups = Tree::parse_label_map_file(label_map_path);
+                tree.apply_label_map(groups, internal_nodes_mode, label_map_path);
+            }
+            for (const auto& rule : label_rules) {
+                std::string tag = rule.tag.empty() ? "Foreground" : rule.tag;
+                tree.apply_branch_labels(tag, rule.list_spec, internal_nodes_mode);
             }
 
             std::string nwk_out = tree.to_newick(true);
@@ -480,18 +365,34 @@ int run_tree(int argc, char* argv[]) {
         TreeEngine engine(settings);
         TreeEngineResult res = engine.run(aln);
 
+        if (clear_tags) {
+            for (auto& nd : res.optimized_tree.nodes) nd.model_tag.clear();
+        }
+        if (!label_map_path.empty()) {
+            auto groups = Tree::parse_label_map_file(label_map_path);
+            res.optimized_tree.apply_label_map(groups, internal_nodes_mode, label_map_path);
+        }
+        for (const auto& rule : label_rules) {
+            std::string tag = rule.tag.empty() ? "Foreground" : rule.tag;
+            res.optimized_tree.apply_branch_labels(tag, rule.list_spec, internal_nodes_mode);
+        }
+
         // Write Newick output
-        if (output_nwk_path.empty()) {
-            output_nwk_path = aln_path + ".nwk";
-        }
-        try {
-            write_file_or_throw(output_nwk_path, res.optimized_tree.to_newick(true) + "\n");
-        } catch (const std::exception& e) {
-            std::cerr << Console::danger("Error: ") << e.what() << "\n";
-            return 1;
-        }
-        if (!quiet) {
-            std::cout << Console::success("Saved inferred Newick tree to: ") << output_nwk_path << "\n";
+        if (output_nwk_path == "-") {
+            std::cout << res.optimized_tree.to_newick(true) << "\n";
+        } else {
+            if (output_nwk_path.empty()) {
+                output_nwk_path = aln_path + ".nwk";
+            }
+            try {
+                write_file_or_throw(output_nwk_path, res.optimized_tree.to_newick(true) + "\n");
+            } catch (const std::exception& e) {
+                std::cerr << Console::danger("Error: ") << e.what() << "\n";
+                return 1;
+            }
+            if (!quiet) {
+                std::cout << Console::success("Saved inferred Newick tree to: ") << output_nwk_path << "\n";
+            }
         }
 
         // Write JSON output if requested

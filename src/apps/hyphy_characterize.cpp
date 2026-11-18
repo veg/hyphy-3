@@ -39,12 +39,15 @@ static void print_characterize_usage(const char* prog) {
               << "  " << Console::brand("--emit-legacy-jsons") << "          Also emit legacy .FEL.json, .MEME.json & .BUSTED.json files\n"
               << "  " << Console::brand("--out-msa") << " <file>             Path to write co-estimated MAP codon alignment (FASTA)\n"
               << "  " << Console::brand("--out-stockholm") << " <file>       Path to write Stockholm 1.0 quality-annotated alignment\n"
-              << "  " << Console::brand("--out-poa") << " <file>             Path to write Partial Order Alignment (POA) graph in GFAv1\n\n"
+              << "  " << Console::brand("--out-poa") << " <file>             Path to write Partial Order Alignment (POA) graph in GFAv1\n"
+              << "  " << Console::brand("--out-tree") << " <file>            Path to write co-estimated (and labeled) Newick tree\n\n"
               << Console::bold("Parameters:") << "\n"
               << "  " << Console::brand("--code") << " <name>                Genetic code (default: Universal)\n"
               << "  " << Console::brand("--pvalue, -p") << " <float>         Per-test significance threshold (default: 0.10)\n"
               << "  " << Console::brand("--fdr") << " <float>                Benjamini-Hochberg / Simes FDR q-value threshold (default: 0.10)\n"
-              << "  " << Console::brand("--branches, -b") << " <tag>         Optional foreground branch tag for RELAX/Contrast-FEL (default: BIC-gated auto)\n"
+              << "  " << Console::brand("--branches, -b") << " <spec>        Foreground tag or tip list/file for RELAX/Contrast-FEL (default: BIC-gated auto)\n"
+              << "  " << Console::brand("--labels") << " <csv|tsv>           2-column taxon,group label map file for multi-group RELAX/Contrast-FEL\n"
+              << "  " << Console::brand("--internal-nodes") << " <strategy>  Internal branch labeling: All, Parsimony, MRCA, Paraphyletic, Only, or None (default: All)\n"
               << "  " << Console::brand("--coevolution") << "                Opt-in Tier 3 screen for epistatic co-substituting site pairs\n"
               << "  " << Console::brand("--keep-pseudogenes") << "           Admit pseudogenized sequences (repair frameshifts & mask premature stops to NNN)\n"
               << "  " << Console::brand("--no-spr") << "                     Disable coupled SPR + indel search\n"
@@ -65,6 +68,7 @@ int run_characterize(int argc, char* argv[])
     std::string out_msa_path;
     std::string out_sto_path;
     std::string out_poa_path;
+    std::string out_tree_path;
     std::string code_name = "Universal";
     CharacterizeSettings settings;
     int num_threads = 0;
@@ -105,6 +109,8 @@ int run_characterize(int argc, char* argv[])
             out_sto_path = argv[++i];
         } else if (arg == "--out-poa" && i + 1 < argc) {
             out_poa_path = argv[++i];
+        } else if ((arg == "--out-tree" || arg == "--output-tree") && i + 1 < argc) {
+            out_tree_path = argv[++i];
         } else if (arg == "--code" && i + 1 < argc) {
             code_name = argv[++i];
             settings.genetic_code_name = code_name;
@@ -126,6 +132,10 @@ int run_characterize(int argc, char* argv[])
             }
         } else if ((arg == "--branches" || arg == "-b") && i + 1 < argc) {
             settings.foreground_tag = argv[++i];
+        } else if ((arg == "--labels" || arg == "--label-map" || arg == "--branch-labels" || arg == "--groups") && i + 1 < argc) {
+            settings.label_map_file = argv[++i];
+        } else if ((arg == "--internal-nodes" || arg == "--label-mode") && i + 1 < argc) {
+            settings.internal_nodes_mode = argv[++i];
         } else if (arg == "--coevolution") {
             settings.enable_coevolution = true;
         } else if (arg == "--keep-pseudogenes" || arg == "--pseudogenes") {
@@ -386,7 +396,12 @@ int run_characterize(int argc, char* argv[])
                 << "  │  RELAX Intensified: " << res.branches_intensified
                 << "  │  RELAX Relaxed: " << res.branches_relaxed
                 << "  │  LoF / Core-Invasion: " << res.branches_loss_of_constraint
-                << "  │  Clade Split: " << (res.clade_macro_regime.triggered ? res.clade_macro_regime.test_regime_label : "Homogeneous");
+                << "  │  Clade Split: "
+                << (res.clade_macro_regime.triggered
+                        ? (res.clade_macro_regime.regime_groups.size() > 2
+                               ? (res.clade_macro_regime.test_regime_label + " vs " + res.clade_macro_regime.reference_regime_label)
+                               : res.clade_macro_regime.test_regime_label)
+                        : "Homogeneous");
 
         s_rt << std::fixed << std::setprecision(2) << res.runtime_seconds << " s";
 
@@ -469,6 +484,17 @@ int run_characterize(int argc, char* argv[])
         }
         if (!settings.quiet) {
             std::cout << Console::success("Saved POA codon graph (GFAv1) to: ") << out_poa_path << "\n";
+        }
+    }
+    if (!out_tree_path.empty()) {
+        try {
+            write_file_or_throw(out_tree_path, res.joint_align.optimized_tree.to_newick(true) + "\n");
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error: ") << e.what() << "\n";
+            return 1;
+        }
+        if (!settings.quiet) {
+            std::cout << Console::success("Saved co-estimated Newick phylogeny to: ") << out_tree_path << "\n";
         }
     }
     if (!out_html_path.empty()) {

@@ -903,7 +903,8 @@ public:
         const std::string& spec = "All",
         const std::string& regex_str = "",
         const std::vector<std::string>& explicit_names = {},
-        bool auto_detect_test_tags_when_all = false
+        bool auto_detect_test_tags_when_all = false,
+        bool throw_on_empty = true
     ) const {
         BranchSelection sel;
         size_t n = nodes.size();
@@ -1068,12 +1069,601 @@ public:
             }
         }
 
-        if (sel.num_selected == 0 && n > 1) {
+        if (throw_on_empty && sel.num_selected == 0 && n > 1) {
             std::string requested = !regex_str.empty() ? regex_str : spec;
             throw std::runtime_error("No branches matched '--branches " + requested + "'.");
         }
 
         return sel;
+    }
+
+    static std::vector<std::string> parse_taxon_list_or_file(const std::string& spec) {
+        auto trim_ws = [](const std::string& s) -> std::string {
+            size_t a = s.find_first_not_of(" \t\r\n");
+            if (a == std::string::npos) return {};
+            size_t b = s.find_last_not_of(" \t\r\n");
+            return s.substr(a, b - a + 1);
+        };
+        auto strip_quotes = [](const std::string& s) -> std::string {
+            if (s.size() >= 2 &&
+                ((s.front() == '\'' && s.back() == '\'') ||
+                 (s.front() == '"' && s.back() == '"'))) {
+                return s.substr(1, s.size() - 2);
+            }
+            return s;
+        };
+
+        std::vector<std::string> items;
+        if (spec.empty()) return items;
+
+        if (spec.find('\n') == std::string::npos && spec.find('\r') == std::string::npos) {
+            std::ifstream ifs(spec);
+            if (ifs.is_open()) {
+                std::string line;
+                bool is_fasta = false;
+                while (std::getline(ifs, line)) {
+                    std::string t = trim_ws(line);
+                    if (t.empty() || t[0] == '#') continue;
+                    if (t[0] == '>') {
+                        is_fasta = true;
+                        std::string hdr = trim_ws(t.substr(1));
+                        size_t sp = hdr.find_first_of(" \t");
+                        if (sp != std::string::npos) hdr = hdr.substr(0, sp);
+                        hdr = strip_quotes(trim_ws(hdr));
+                        if (!hdr.empty()) items.push_back(std::move(hdr));
+                    } else if (!is_fasta) {
+                        std::stringstream ss(t);
+                        std::string tok;
+                        while (std::getline(ss, tok, ',')) {
+                            tok = strip_quotes(trim_ws(tok));
+                            if (!tok.empty()) items.push_back(std::move(tok));
+                        }
+                    }
+                }
+                return items;
+            }
+        }
+
+        std::stringstream ss(spec);
+        std::string tok;
+        while (std::getline(ss, tok, ',')) {
+            tok = strip_quotes(trim_ws(tok));
+            if (!tok.empty()) items.push_back(std::move(tok));
+        }
+        return items;
+    }
+
+    /**
+     * @brief Parse a 2-column CSV/TSV/semicolon branch label map file
+     *        (`Taxon,Group` / `Taxon\tGroup`) preserving first-seen group order.
+     */
+    static std::vector<std::pair<std::string, std::vector<std::string>>> parse_label_map_file(
+        const std::string& filepath
+    ) {
+        auto trim_ws = [](const std::string& s) -> std::string {
+            size_t a = s.find_first_not_of(" \t\r\n");
+            if (a == std::string::npos) return {};
+            size_t b = s.find_last_not_of(" \t\r\n");
+            return s.substr(a, b - a + 1);
+        };
+        auto to_low = [](std::string s) {
+            std::transform(s.begin(), s.end(), s.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return s;
+        };
+        auto strip_quotes = [](const std::string& s) -> std::string {
+            if (s.size() >= 2 &&
+                ((s.front() == '\'' && s.back() == '\'') ||
+                 (s.front() == '"' && s.back() == '"'))) {
+                return s.substr(1, s.size() - 2);
+            }
+            return s;
+        };
+        auto strip_braces = [&](const std::string& s) -> std::string {
+            if (s.size() >= 2 && s.front() == '{' && s.back() == '}') {
+                return trim_ws(s.substr(1, s.size() - 2));
+            }
+            return s;
+        };
+
+        std::ifstream ifs(filepath);
+        if (!ifs.is_open()) {
+            throw std::runtime_error("Could not open branch label file: " + filepath);
+        }
+
+        const std::unordered_set<std::string> col0_headers = {
+            "taxon", "taxa", "species", "tip", "tips", "branch", "branches",
+            "sequence", "name", "sample", "id"
+        };
+        const std::unordered_set<std::string> col1_headers = {
+            "label", "labels", "group", "groups", "regime", "regimes", "tag",
+            "tags", "clade", "set", "partition", "category", "phenotype", "trait"
+        };
+
+        std::vector<std::pair<std::string, std::vector<std::string>>> groups;
+        std::unordered_map<std::string, size_t> group_idx_by_low;
+        std::unordered_map<std::string, std::string> taxon_to_group_low;
+
+        std::string raw_line;
+        bool seen_first_data_row = false;
+        while (std::getline(ifs, raw_line)) {
+            std::string line = trim_ws(raw_line);
+            if (line.empty() || line[0] == '#') continue;
+
+            char delim = '\0';
+            size_t dpos = line.find('\t');
+            if (dpos != std::string::npos) {
+                delim = '\t';
+            } else if ((dpos = line.find(',')) != std::string::npos) {
+                delim = ',';
+            } else if ((dpos = line.find(';')) != std::string::npos) {
+                delim = ';';
+            }
+            if (delim == '\0') {
+                throw std::runtime_error(
+                    "Invalid row in branch label file '" + filepath +
+                    "' (expected 2 columns separated by tab, comma, or semicolon): " + line
+                );
+            }
+
+            std::string col0 = strip_quotes(trim_ws(line.substr(0, dpos)));
+            size_t next_dpos = line.find(delim, dpos + 1);
+            std::string col1_raw = (next_dpos == std::string::npos)
+                ? line.substr(dpos + 1)
+                : line.substr(dpos + 1, next_dpos - (dpos + 1));
+            std::string col1 = trim_ws(strip_braces(strip_quotes(trim_ws(col1_raw))));
+
+            if (!seen_first_data_row) {
+                seen_first_data_row = true;
+                if (col0_headers.count(to_low(col0)) > 0 && col1_headers.count(to_low(col1)) > 0) {
+                    continue;
+                }
+            }
+
+            if (col0.empty()) {
+                throw std::runtime_error(
+                    "Empty taxon/branch name in branch label file '" + filepath + "': " + line
+                );
+            }
+            if (col1.empty()) {
+                continue; // Unlabeled row
+            }
+
+            std::string clean_label;
+            clean_label.reserve(col1.size());
+            bool prev_ws = false;
+            for (unsigned char ch : col1) {
+                if (std::isspace(ch)) {
+                    if (!prev_ws) {
+                        clean_label.push_back('_');
+                        prev_ws = true;
+                    }
+                } else {
+                    clean_label.push_back(static_cast<char>(ch));
+                    prev_ws = false;
+                }
+            }
+
+            if (clean_label.find_first_of(",():;{}[]") != std::string::npos) {
+                throw std::runtime_error(
+                    "Invalid Newick character in group label '" + clean_label + "' from '" + filepath + "'."
+                );
+            }
+
+            std::string tax_low = to_low(col0);
+            std::string grp_low = to_low(clean_label);
+            auto it_existing = taxon_to_group_low.find(tax_low);
+            if (it_existing != taxon_to_group_low.end()) {
+                if (it_existing->second != grp_low) {
+                    throw std::runtime_error(
+                        "Conflicting group labels for taxon '" + col0 + "' in '" + filepath + "'."
+                    );
+                }
+                continue;
+            }
+            taxon_to_group_low.emplace(tax_low, grp_low);
+
+            auto it_g = group_idx_by_low.find(grp_low);
+            if (it_g == group_idx_by_low.end()) {
+                size_t new_idx = groups.size();
+                group_idx_by_low.emplace(grp_low, new_idx);
+                groups.emplace_back(clean_label, std::vector<std::string>{col0});
+            } else {
+                groups[it_g->second].second.push_back(col0);
+            }
+        }
+
+        if (groups.empty()) {
+            throw std::runtime_error("Branch label file '" + filepath + "' contained no taxon-to-group mappings.");
+        }
+        return groups;
+    }
+
+    static std::string normalize_internal_label_mode(const std::string& internal_mode_raw) {
+        std::string m;
+        size_t a = internal_mode_raw.find_first_not_of(" \t\r\n");
+        if (a != std::string::npos) {
+            size_t b = internal_mode_raw.find_last_not_of(" \t\r\n");
+            m = internal_mode_raw.substr(a, b - a + 1);
+        }
+        std::transform(m.begin(), m.end(), m.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (m.empty() || m == "all" || m == "clade" || m == "monophyletic") return "all";
+        if (m == "parsimony" || m == "fitch") return "parsimony";
+        if (m == "mrca") return "mrca";
+        if (m == "paraphyletic") return "paraphyletic";
+        if (m == "only" || m == "internal" || m == "internal-only") return "only";
+        if (m == "none" || m == "leaves" || m == "tips" || m == "terminal") return "none";
+        throw std::runtime_error(
+            "Unknown --internal-nodes strategy '" + internal_mode_raw +
+            "'. Expected All, Parsimony, MRCA, Paraphyletic, Only, or None."
+        );
+    }
+
+    /**
+     * @brief Assign `model_tag = label_tag` to selected branches and propagate
+     *        to internal branches according to `internal_mode_raw`.
+     */
+    size_t apply_branch_labels(
+        const std::string& label_tag,
+        const std::string& list_spec,
+        const std::string& internal_mode_raw = "All",
+        bool allow_empty_match = false
+    ) {
+        auto trim_ws = [](const std::string& s) -> std::string {
+            size_t a = s.find_first_not_of(" \t\r\n");
+            if (a == std::string::npos) return {};
+            size_t b = s.find_last_not_of(" \t\r\n");
+            return s.substr(a, b - a + 1);
+        };
+        std::string clean_tag = trim_ws(label_tag);
+        if (clean_tag.size() >= 2 && clean_tag.front() == '{' && clean_tag.back() == '}') {
+            clean_tag = trim_ws(clean_tag.substr(1, clean_tag.size() - 2));
+        }
+        if (clean_tag.empty()) {
+            throw std::runtime_error("Branch label tag cannot be empty.");
+        }
+        std::string imode = normalize_internal_label_mode(internal_mode_raw);
+        std::vector<std::string> explicit_items = parse_taxon_list_or_file(list_spec);
+        bool use_explicit = (explicit_items.size() > 1) ||
+                            (explicit_items.size() == 1 && list_spec != explicit_items[0]);
+        return apply_branch_labels_resolved(
+            clean_tag,
+            use_explicit ? explicit_items : std::vector<std::string>{},
+            use_explicit ? std::string{} : (list_spec.empty() ? std::string{"All"} : list_spec),
+            imode,
+            allow_empty_match
+        );
+    }
+
+    /**
+     * @brief Apply multiple named branch label groups (e.g. parsed from CSV/TSV)
+     *        onto the tree with clade/parsimony internal-branch propagation.
+     */
+    size_t apply_label_map(
+        const std::vector<std::pair<std::string, std::vector<std::string>>>& groups,
+        const std::string& internal_mode_raw = "All",
+        const std::string& source_name = "--labels"
+    ) {
+        std::string imode = normalize_internal_label_mode(internal_mode_raw);
+        if (groups.empty() || nodes.size() <= 1 || root_id == INVALID_INDEX) return 0;
+
+        auto to_low = [](std::string s) {
+            size_t a = s.find_first_not_of(" \t\r\n");
+            if (a == std::string::npos) return std::string{};
+            size_t b = s.find_last_not_of(" \t\r\n");
+            s = s.substr(a, b - a + 1);
+            if (s.size() >= 2 &&
+                ((s.front() == '\'' && s.back() == '\'') ||
+                 (s.front() == '"' && s.back() == '"'))) {
+                s = s.substr(1, s.size() - 2);
+            }
+            std::transform(s.begin(), s.end(), s.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return s;
+        };
+
+        const size_t G = groups.size();
+        const size_t N = nodes.size();
+        std::unordered_map<std::string, size_t> taxon_to_g;
+        for (size_t g = 0; g < G; ++g) {
+            for (const auto& t : groups[g].second) {
+                std::string tl = to_low(t);
+                if (!tl.empty()) taxon_to_g[tl] = g;
+            }
+        }
+
+        std::vector<int> node_group(N, -1);
+        std::vector<std::vector<std::string>> present_items(G);
+        size_t matched_nodes = 0;
+        for (const auto& nd : nodes) {
+            if (nd.id == root_id) continue;
+            std::string nl = to_low(nd.name);
+            auto it = taxon_to_g.find(nl);
+            if (it != taxon_to_g.end()) {
+                node_group[nd.id] = static_cast<int>(it->second);
+                present_items[it->second].push_back(nd.name);
+                matched_nodes++;
+            }
+        }
+
+        if (matched_nodes == 0) {
+            throw std::runtime_error(
+                "No taxa in '" + source_name + "' matched any branch or tip in the tree."
+            );
+        }
+
+        compute_post_order();
+
+        if (imode == "all") {
+            std::vector<int> total_leaves(N, 0);
+            std::vector<std::vector<int>> group_leaves(G, std::vector<int>(N, 0));
+            for (int32_t nid : post_order) {
+                const auto& nd = nodes[nid];
+                if (nd.is_leaf) {
+                    total_leaves[nid] = 1;
+                    if (node_group[nid] >= 0) {
+                        group_leaves[node_group[nid]][nid] = 1;
+                    }
+                } else {
+                    for (int32_t cid : nd.children) {
+                        total_leaves[nid] += total_leaves[cid];
+                        for (size_t g = 0; g < G; ++g) {
+                            group_leaves[g][nid] += group_leaves[g][cid];
+                        }
+                    }
+                }
+            }
+            for (const auto& nd : nodes) {
+                if (nd.id == root_id || nd.is_leaf || total_leaves[nd.id] <= 0) continue;
+                for (size_t g = 0; g < G; ++g) {
+                    if (group_leaves[g][nd.id] == total_leaves[nd.id]) {
+                        node_group[nd.id] = static_cast<int>(g);
+                        break;
+                    }
+                }
+            }
+        } else if (imode == "parsimony") {
+            const size_t num_states = G + 1; // State G == unlabeled
+            std::vector<std::vector<uint8_t>> fitch(N, std::vector<uint8_t>(num_states, 0));
+            for (int32_t nid : post_order) {
+                const auto& nd = nodes[nid];
+                if (nd.is_leaf) {
+                    int s = (node_group[nid] >= 0 && static_cast<size_t>(node_group[nid]) < G)
+                          ? node_group[nid]
+                          : static_cast<int>(G);
+                    fitch[nid][s] = 1;
+                } else if (!nd.children.empty()) {
+                    std::vector<size_t> counts(num_states, 0);
+                    size_t max_c = 0;
+                    for (int32_t cid : nd.children) {
+                        for (size_t s = 0; s < num_states; ++s) {
+                            if (fitch[cid][s]) {
+                                counts[s]++;
+                                if (counts[s] > max_c) max_c = counts[s];
+                            }
+                        }
+                    }
+                    for (size_t s = 0; s < num_states; ++s) {
+                        if (counts[s] == max_c && max_c > 0) fitch[nid][s] = 1;
+                    }
+                } else {
+                    fitch[nid][G] = 1;
+                }
+            }
+
+            auto is_ref_name = [&](const std::string& raw) -> bool {
+                std::string rl = to_low(raw);
+                return rl == "reference" || rl == "ref" || rl == "background" || rl == "bg" || rl == "r";
+            };
+            std::vector<int> state(N, -1);
+            if (root_id >= 0 && static_cast<size_t>(root_id) < N) {
+                size_t n_opt = 0;
+                int single_s = -1;
+                int ref_s = -1;
+                for (size_t s = 0; s < num_states; ++s) {
+                    if (fitch[root_id][s]) {
+                        n_opt++;
+                        single_s = static_cast<int>(s);
+                        if (s < G && ref_s < 0 && is_ref_name(groups[s].first)) {
+                            ref_s = static_cast<int>(s);
+                        }
+                    }
+                }
+                if (n_opt == 1) {
+                    state[root_id] = single_s;
+                } else if (fitch[root_id][G]) {
+                    state[root_id] = static_cast<int>(G);
+                } else if (ref_s >= 0) {
+                    state[root_id] = ref_s;
+                } else {
+                    state[root_id] = -1;
+                }
+            }
+
+            for (auto it = post_order.rbegin(); it != post_order.rend(); ++it) {
+                int32_t nid = *it;
+                if (nid == root_id) continue;
+                int32_t pid = nodes[nid].parent_id;
+                int p_state = (pid >= 0 && static_cast<size_t>(pid) < N) ? state[pid] : -1;
+                if (p_state >= 0 && fitch[nid][static_cast<size_t>(p_state)]) {
+                    state[nid] = p_state;
+                } else {
+                    size_t n_opt = 0;
+                    int single_s = -1;
+                    for (size_t s = 0; s < num_states; ++s) {
+                        if (fitch[nid][s]) {
+                            n_opt++;
+                            single_s = static_cast<int>(s);
+                        }
+                    }
+                    state[nid] = (n_opt == 1) ? single_s : -1;
+                }
+                if (!nodes[nid].is_leaf && node_group[nid] < 0 &&
+                    state[nid] >= 0 && static_cast<size_t>(state[nid]) < G) {
+                    node_group[nid] = state[nid];
+                }
+            }
+        } else {
+            size_t total_assigned = 0;
+            for (size_t g = 0; g < G; ++g) {
+                if (present_items[g].empty()) continue;
+                total_assigned += apply_branch_labels_resolved(
+                    groups[g].first, present_items[g], "", imode, /*allow_empty_match=*/true
+                );
+            }
+            return total_assigned;
+        }
+
+        size_t assigned = 0;
+        for (auto& nd : nodes) {
+            if (nd.id == root_id) continue;
+            if (node_group[nd.id] >= 0 && static_cast<size_t>(node_group[nd.id]) < G) {
+                nd.model_tag = groups[static_cast<size_t>(node_group[nd.id])].first;
+                assigned++;
+            }
+        }
+        return assigned;
+    }
+
+private:
+    size_t apply_branch_labels_resolved(
+        const std::string& clean_tag,
+        const std::vector<std::string>& explicit_items,
+        const std::string& fallback_spec,
+        const std::string& imode,
+        bool allow_empty_match
+    ) {
+        BranchSelection sel = select_branches(
+            explicit_items.empty() ? fallback_spec : std::string{},
+            "",
+            explicit_items,
+            false,
+            !allow_empty_match
+        );
+        if (sel.num_selected == 0) return 0;
+
+        size_t N = nodes.size();
+        std::vector<bool> target = sel.is_selected;
+
+        compute_post_order();
+        std::vector<int> total_leaves(N, 0);
+        std::vector<int> selected_leaves(N, 0);
+        int global_selected_leaves = 0;
+        for (int32_t nid : post_order) {
+            const auto& nd = nodes[nid];
+            if (nd.is_leaf) {
+                total_leaves[nid] = 1;
+                selected_leaves[nid] = target[nid] ? 1 : 0;
+                global_selected_leaves += selected_leaves[nid];
+            } else {
+                for (int32_t cid : nd.children) {
+                    total_leaves[nid] += total_leaves[cid];
+                    selected_leaves[nid] += selected_leaves[cid];
+                }
+            }
+        }
+
+        if (global_selected_leaves > 0) {
+            if (imode == "all") {
+                for (const auto& nd : nodes) {
+                    if (nd.id == root_id || nd.is_leaf) continue;
+                    if (total_leaves[nd.id] > 0 && selected_leaves[nd.id] == total_leaves[nd.id]) {
+                        target[nd.id] = true;
+                    }
+                }
+            } else if (imode == "parsimony") {
+                std::vector<uint8_t> fitch(N, 0); // bit 0: unselected, bit 1: selected
+                for (int32_t nid : post_order) {
+                    const auto& nd = nodes[nid];
+                    if (nd.is_leaf) {
+                        fitch[nid] = target[nid] ? 2 : 1;
+                    } else if (!nd.children.empty()) {
+                        size_t c0 = 0, c1 = 0;
+                        for (int32_t cid : nd.children) {
+                            if (fitch[cid] & 1) c0++;
+                            if (fitch[cid] & 2) c1++;
+                        }
+                        if (c0 > c1) fitch[nid] = 1;
+                        else if (c1 > c0) fitch[nid] = 2;
+                        else fitch[nid] = 3;
+                    } else {
+                        fitch[nid] = 1;
+                    }
+                }
+                std::vector<int> state(N, 0);
+                if (root_id >= 0 && static_cast<size_t>(root_id) < N) {
+                    // Break root tie toward unselected (state 0)
+                    state[root_id] = (fitch[root_id] == 2) ? 1 : 0;
+                }
+                for (auto it = post_order.rbegin(); it != post_order.rend(); ++it) {
+                    int32_t nid = *it;
+                    if (nid == root_id) continue;
+                    int32_t pid = nodes[nid].parent_id;
+                    int p_state = (pid >= 0 && static_cast<size_t>(pid) < N) ? state[pid] : 0;
+                    uint8_t p_bit = static_cast<uint8_t>(1u << static_cast<unsigned>(p_state));
+                    if (fitch[nid] & p_bit) {
+                        state[nid] = p_state;
+                    } else {
+                        state[nid] = (fitch[nid] == 2) ? 1 : 0;
+                    }
+                    if (!nodes[nid].is_leaf) {
+                        target[nid] = (state[nid] == 1);
+                    }
+                }
+            } else if (imode == "only") {
+                for (const auto& nd : nodes) {
+                    if (nd.id == root_id) continue;
+                    if (nd.is_leaf) {
+                        target[nd.id] = false;
+                    } else if (total_leaves[nd.id] > 0 && selected_leaves[nd.id] == total_leaves[nd.id]) {
+                        target[nd.id] = true;
+                    }
+                }
+            } else if (imode == "mrca") {
+                int32_t mrca_id = root_id;
+                for (int32_t nid : post_order) {
+                    if (selected_leaves[nid] == global_selected_leaves) {
+                        mrca_id = nid;
+                        break;
+                    }
+                }
+                auto mark_clade = [&](auto& self, int32_t u) -> void {
+                    if (u != root_id) target[u] = true;
+                    for (int32_t c : nodes[u].children) self(self, c);
+                };
+                mark_clade(mark_clade, mrca_id);
+            } else if (imode == "paraphyletic") {
+                for (const auto& nd : nodes) {
+                    if (nd.id == root_id || nd.is_leaf) continue;
+                    int children_with_sel = 0;
+                    for (int32_t cid : nd.children) {
+                        if (selected_leaves[cid] > 0) children_with_sel++;
+                    }
+                    bool outside_has_sel = (global_selected_leaves - selected_leaves[nd.id]) > 0;
+                    if ((children_with_sel >= 2) ||
+                        (children_with_sel >= 1 && outside_has_sel && selected_leaves[nd.id] == total_leaves[nd.id])) {
+                        target[nd.id] = true;
+                    }
+                }
+            } else if (imode == "none") {
+                for (const auto& nd : nodes) {
+                    if (!nd.is_leaf && !sel.is_selected[nd.id]) {
+                        target[nd.id] = false;
+                    }
+                }
+            }
+        }
+
+        size_t assigned = 0;
+        for (auto& nd : nodes) {
+            if (nd.id == root_id) continue;
+            if (target[nd.id]) {
+                nd.model_tag = clean_tag;
+                assigned++;
+            }
+        }
+        return assigned;
     }
 };
 

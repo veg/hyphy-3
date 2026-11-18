@@ -28,10 +28,16 @@ static void print_banner() {
 static void print_usage(const char* prog) {
     print_banner();
     std::cout << Console::bold("Usage:") << " " << prog << " [OPTIONS]\n\n"
-              << Console::bold("Required arguments:") << "\n"
-              << "  " << Console::brand("--alignment") << " <file>   Path to codon alignment (FASTA or NEXUS)\n\n"
+              << Console::bold("Required arguments (choose one):") << "\n"
+              << "  " << Console::brand("--alignment, -a") << " <file>  Path to codon alignment (FASTA or NEXUS)\n"
+              << "  " << Console::brand("--unaligned, -u") << " <file>  Path to unaligned CDS FASTA (co-infers MSA + tree via JointAlign)\n\n"
               << Console::bold("Optional arguments:") << "\n"
               << "  " << Console::brand("--tree") << " <file>        Path to Newick tree file or 'auto' (optional; auto-infers ML tree via TreeEngine if omitted or 'auto')\n"
+              << "  " << Console::brand("--labels") << " <csv|tsv>   2-column taxon,group label map file for multi-group contrasts\n"
+              << "  " << Console::brand("--internal-nodes") << " <mode> Internal branch labeling strategy: All, Parsimony, MRCA, Paraphyletic, Only, or None\n"
+              << "  " << Console::brand("--keep-pseudogenes") << "   Admit pseudogenized sequences when co-aligning unaligned FASTA (-u)\n"
+              << "  " << Console::brand("--out-tree") << " <file>    Write resolved (and labeled) Newick tree to file\n"
+              << "  " << Console::brand("--out-msa") << " <file>     Write co-estimated codon alignment when using --unaligned (-u)\n"
               << "  " << Console::brand("--ohmic, --omhic") << "     Infer Ohmic network & Wheatstone bridges (empirical conductances)\n"
               << "  " << Console::brand("--hyphaeon") << "           Opt-in: HyphAeon 384D transformer conductances (needs Python aeon-core)\n"
               << "  " << Console::brand("--embeddings") << " <file>  Path to precomputed [N x D] taxon embeddings TSV/CSV for Ohmic\n"

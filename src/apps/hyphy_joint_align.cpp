@@ -39,6 +39,8 @@ static void print_usage(const char* prog) {
               << "  " << Console::brand("--gap-open") << " <float>      Codon deletion opening penalty in nats (default: 3.2)\n"
               << "  " << Console::brand("--gap-extend") << " <float>    Codon deletion extension penalty in nats (default: 0.85)\n"
               << "  " << Console::brand("--keep-pseudogenes") << "      Admit pseudogenized sequences (repair frameshifts & mask premature stops to NNN)\n"
+              << "  " << Console::brand("--labels") << " <csv|tsv>       Apply 2-column taxon,group labels to the co-estimated tree\n"
+              << "  " << Console::brand("--internal-nodes") << " <mode>  Internal branch labeling: All, Parsimony, MRCA, Paraphyletic, Only, or None (default: All)\n"
               << "  " << Console::brand("--out-msa") << " <file>        Write MAP co-estimated codon alignment to FASTA file\n"
               << "  " << Console::brand("--out-stk") << " <file>        Write Stockholm 1.0 MSA with per-column (#=GC PP_cons) & per-residue (#=GR PP) confidence\n"
               << "  " << Console::brand("--out-poa") << " <file>        Write Partial Order Alignment (POA) codon graph in GFA v1.0 format (*.gfa)\n"
@@ -68,6 +70,8 @@ int run_joint_align(int argc, char* argv[]) {
     std::string out_tree_path;
     std::string out_enewick_path;
     std::string out_json_path;
+    std::string label_map_path;
+    std::string internal_nodes_mode = "All";
     JointAlignSettings settings;
     int num_threads = 0;
 
@@ -111,6 +115,10 @@ int run_joint_align(int argc, char* argv[]) {
             settings.gap_extend_penalty = parse_double_full("--gap-extend", argv[++i]);
         } else if (arg == "--keep-pseudogenes" || arg == "--pseudogenes") {
             settings.keep_pseudogenes = true;
+        } else if ((arg == "--labels" || arg == "--label-map" || arg == "--branch-labels" || arg == "--groups") && i + 1 < argc) {
+            label_map_path = argv[++i];
+        } else if ((arg == "--internal-nodes" || arg == "--label-mode") && i + 1 < argc) {
+            internal_nodes_mode = argv[++i];
         } else if (arg == "--out-msa" && i + 1 < argc) {
             out_msa_path = argv[++i];
         } else if ((arg == "--out-stk" || arg == "--out-stockholm") && i + 1 < argc) {
@@ -261,6 +269,17 @@ int run_joint_align(int argc, char* argv[]) {
         return 0;
     }
 
+    std::vector<std::pair<std::string, std::vector<std::string>>> label_groups;
+    try {
+        (void)Tree::normalize_internal_label_mode(internal_nodes_mode);
+        if (!label_map_path.empty()) {
+            label_groups = Tree::parse_label_map_file(label_map_path);
+        }
+    } catch (const std::exception& e) {
+        std::cerr << Console::danger("Error: ") << e.what() << "\n";
+        return 1;
+    }
+
     JointAlignEngine engine(settings);
     JointAlignResult res;
 
@@ -273,6 +292,15 @@ int run_joint_align(int argc, char* argv[]) {
             res = engine.run(aln, tr);
         } else {
             res = engine.run(aln);
+        }
+    }
+
+    if (!label_groups.empty()) {
+        try {
+            res.optimized_tree.apply_label_map(label_groups, internal_nodes_mode, label_map_path);
+        } catch (const std::exception& e) {
+            std::cerr << Console::danger("Error applying --labels: ") << e.what() << "\n";
+            return 1;
         }
     }
 

@@ -3,6 +3,7 @@
 #include "nlohmann/json.hpp"
 #undef NDEBUG
 #include <cassert>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -390,6 +391,74 @@ int main() {
         auto moves = JointAlignEngine::run_stage2_coupled_topology_search(large_tree, large_aln, mg_p, wins, jas);
         (void)moves;
         std::cout << "[PASS] Stage 2 Coupled SPR on >1,024-Taxon Alignment in ScalableWoodbury Mode (#36)\n";
+    }
+
+    // 9. Test Unaligned WALRUS (-u) with 3-Group --labels CSV + Missing Species (#25)
+    {
+        std::string ifitm3_path = std::string(HYPHY3_SOURCE_DIR) + "/tests/data/unaligned_cds/mammalian_ifitm3_unaligned.fa";
+        std::string tmp_csv = "test_ifitm3_3groups.csv";
+        {
+            std::ofstream out(tmp_csv);
+            out << "taxon,group\n"
+                << "NM_001136124_NM_001136124,group_A\n"
+                << "NM_001201382_NM_001201382,group_A\n"
+                << "XM_007465909_XM_007465909,group_A\n"
+                << "XM_081536074_XM_081536074,group_A\n"
+                << "XM_081062756_XM_081062756,group_B\n"
+                << "XM_079707615_XM_079707615,group_B\n"
+                << "NM_025378_NM_025378,group_B\n"
+                << "NM_021034_NM_021034,group_B\n"
+                << "NM_001198757_NM_001198757,reference\n"
+                << "XM_063094505_XM_063094505,reference\n"
+                << "XM_061160117_XM_061160117,reference\n"
+                << "XM_027959998_XM_027959998,reference\n"
+                << "XM_029206959_XM_029206959,reference\n"
+                << "Missing_Sp1,group_A\n";
+        }
+        CharacterizeSettings cs_csv;
+        cs_csv.quiet = true;
+        cs_csv.label_map_file = tmp_csv;
+        cs_csv.internal_nodes_mode = "All";
+        CharacterizeEngine c_eng_csv(cs_csv);
+        auto res_csv = c_eng_csv.run_from_unaligned_file(ifitm3_path);
+        std::remove(tmp_csv.c_str());
+
+        std::string labeled_nwk = res_csv.joint_align.optimized_tree.to_newick(true);
+        assert(labeled_nwk.find("{group_A}") != std::string::npos);
+        assert(labeled_nwk.find("{group_B}") != std::string::npos);
+        assert(labeled_nwk.find("{reference}") != std::string::npos);
+        assert(res_csv.clade_macro_regime.triggered == true);
+        assert(res_csv.clade_macro_regime.partition_source == "User --labels Group Map");
+        assert(res_csv.clade_macro_regime.regime_groups.size() == 3);
+        assert(!res_csv.site_atlas.empty());
+        assert(res_csv.site_atlas[0].regime_betas.size() == 3);
+
+        auto j_csv = nlohmann::json::parse(CharacterizeEngine::to_json(res_csv));
+        assert(j_csv["clade_macro_regime"]["regime_groups"].size() == 3);
+        assert(j_csv["site_atlas"][0]["regime_betas"].size() == 3);
+        std::cout << "[PASS] Unaligned WALRUS (-u) with 3-Group --labels CSV & Multi-Group Contrast-FEL (#25)\n";
+    }
+
+    // 10. Test Direct Comma-Separated Tip List (-b Human,Chimp,Baboon,RhMonkey) on Unlabeled cd2.fna (#25)
+    {
+        Alignment cd2 = Alignment::load(std::string(HYPHY3_SOURCE_DIR) + "/benchmarks/data/cd2.fna");
+        Tree cd2_unlabeled = Tree::from_newick(
+            "((((Pig:0.147969,Cow:0.213430):0.085099,Horse:0.165787,Cat:0.264806):0.058611,"
+            "((RhMonkey:0.002015,Baboon:0.003108):0.022733,(Human:0.004349,Chimp:0.000799):0.011873):0.101856):0.340802,"
+            "Rat:0.050958,Mouse:0.097950);"
+        );
+        CharacterizeSettings cs_tips;
+        cs_tips.quiet = true;
+        cs_tips.foreground_tag = "Human,Chimp,Baboon,RhMonkey";
+        cs_tips.internal_nodes_mode = "All";
+        CharacterizeEngine c_eng_tips(cs_tips);
+        auto res_tips = c_eng_tips.run_from_alignment(cd2, cd2_unlabeled);
+
+        assert(res_tips.clade_macro_regime.triggered == true);
+        assert(res_tips.clade_macro_regime.partition_source == "User {Foreground} Tags");
+        assert(res_tips.clade_macro_regime.num_test_branches == 7); // 4 tips + 3 internal primate clade branches
+        assert(res_tips.joint_align.optimized_tree.to_newick(true).find("{Foreground}") != std::string::npos);
+        std::cout << "[PASS] Direct Tip List (-b Human,Chimp,Baboon,RhMonkey) with Clade Propagation (#25)\n";
     }
 
     return 0;
